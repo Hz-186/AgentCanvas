@@ -12,6 +12,7 @@ import (
 func NewRouter(log *slog.Logger, healthHandler *handler.HealthHandler) *gin.Engine {
 	r := gin.New()
 
+	// middleware
 	r.Use(middleware.RequestID())
 	r.Use(middleware.Recovery(log))
 	r.Use(middleware.CORS())
