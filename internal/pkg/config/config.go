@@ -1,17 +1,18 @@
 package config
 
 import (
-	"encoding/json"
 	"os"
+
+	"gopkg.in/yaml.v3"
 )
 
 type Config struct {
-	App           AppConfig           `json:"app"`
-	MySQL         MySQLConfig         `json:"mysql"`
-	Redis         RedisConfig         `json:"redis"`
-	MinIO         MinIOConfig         `json:"minio"`
-	Elasticsearch ElasticsearchConfig `json:"elasticsearch"`
-	Security      SecurityConfig      `json:"security"`
+	App           AppConfig           `yaml:"app"`
+	MySQL         MySQLConfig         `yaml:"mysql"`
+	Redis         RedisConfig         `yaml:"redis"`
+	MinIO         MinIOConfig         `yaml:"minio"`
+	Elasticsearch ElasticsearchConfig `yaml:"elasticsearch"`
+	Security      SecurityConfig      `yaml:"security"`
 }
 
 type AppConfig struct {
@@ -61,7 +62,7 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	var config Config
 
-	if err := json.Unmarshal(data, &config); err != nil {
+	if err := yaml.Unmarshal(data, &config); err != nil {
 		return nil, err
 	}
 

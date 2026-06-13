@@ -22,8 +22,8 @@ minio:
 elasticsearch:
   addresses:
     - http://localhost:9200
-  username: elastic
-  password: changeme
+  username: ""
+  password: ""
   chunk_index: agentcanvas_chunks_v1
 
 security:

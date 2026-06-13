@@ -1,4 +1,4 @@
-package api
+package main
 
 import (
 	"agentcanvas/internal/bootstrap"
@@ -14,6 +14,9 @@ func main() {
 	configPath := os.Getenv("AGENTCANVAS_CONFIG_PATH")
 	if configPath == "" {
 		configPath = "configs/config.local.yaml"
+		if _, err := os.Stat(configPath); os.IsNotExist(err) {
+			configPath = "configs/config.yaml"
+		}
 	}
 
 	cfg, err := config.LoadConfig(configPath)
