@@ -1,0 +1,32 @@
+app:
+  name: agentcanvas
+  env: local
+  port: 8080
+  base_url: http://localhost:8080
+
+mysql:
+  dsn: root:password@tcp(localhost:3306)/agentcanvas?charset=utf8mb4&parseTime=True&loc=Local
+
+redis:
+  addr: localhost:6379
+  password: ""
+  db: 0
+
+minio:
+  endpoint: localhost:9000
+  access_key: minioadmin
+  secret_key: minioadmin
+  bucket: agentcanvas
+  use_ssl: false
+
+elasticsearch:
+  addresses:
+    - http://localhost:9200
+  username: elastic
+  password: changeme
+  chunk_index: agentcanvas_chunks_v1
+
+security:
+  jwt_secret: XXXX
+  refresh_token_pepper: XXXX
+  secret_encrypt_key: XXXX
