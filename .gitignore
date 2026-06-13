@@ -1,0 +1,18 @@
+# Local config
+configs/config.local.yaml
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# IDE files
+.idea/
+
+# Build outputs
+bin/
+dist/
+tmp/
+
+# OS files
+.DS_Store
