@@ -1,0 +1,46 @@
+app:
+  name: agentcanvas
+  env: local
+  port: 8080
+  base_url: http://localhost:8080
+
+mysql:
+  dsn: root:password@tcp(localhost:3306)/agentcanvas?charset=utf8mb4&parseTime=True&loc=Local
+  max_open_conns: 20
+  max_idle_conns: 10
+
+redis:
+  addr: localhost:6379
+  password: ""
+  db: 0
+
+minio:
+  endpoint: localhost:9000
+  access_key: minioadmin
+  secret_key: minioadmin
+  bucket: agentcanvas
+  use_ssl: false
+
+elasticsearch:
+  addresses:
+    - http://localhost:9200
+  username: ""
+  password: ""
+  chunk_index: agentcanvas_chunks_v1
+
+security:
+  jwt_secret: replace-me-with-long-random-string
+  refresh_token_pepper: replace-me-with-another-long-random-string
+  secret_encrypt_key: replace-me-with-base64-encoded-32-bytes
+  access_token_ttl_minutes: 30
+  refresh_token_ttl_days: 30
+
+oauth:
+  github:
+    client_id: "your-github-oauth-app-client-id"
+    client_secret: "your-github-oauth-app-client-secret"
+    redirect_url: http://localhost:8080/api/v1/auth/github/callback
+    scopes:
+      - read:user
+      - user:email
+
