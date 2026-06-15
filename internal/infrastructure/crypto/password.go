@@ -7,7 +7,10 @@ type PasswordHasher struct {
 }
 
 func NewPasswordHasher(cost int) *PasswordHasher {
-	return &PasswordHasher{Cost: bcrypt.DefaultCost}
+	if cost <= 0 {
+		cost = bcrypt.DefaultCost
+	}
+	return &PasswordHasher{Cost: cost}
 }
 
 func (h *PasswordHasher) Hash(password string) (string, error) {
@@ -18,6 +21,6 @@ func (h *PasswordHasher) Hash(password string) (string, error) {
 	return string(data), nil
 }
 
-func (h *PasswordHasher) Verify(password, hash string) bool {
+func (h *PasswordHasher) Verify(hash, password string) bool {
 	return bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)) == nil
 }
