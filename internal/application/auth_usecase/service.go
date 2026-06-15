@@ -138,7 +138,7 @@ func (s *Service) Register(ctx context.Context, req RegisterRequest, client Clie
 	if err := s.users.Create(ctx, u); err != nil {
 		return nil, err
 	}
-	if err := s.audit(ctx, u.ID, u.ID, "auth.register", "user", u.ID, nil, client); err != nil {
+	if err := s.audit(ctx, u.ID, u.ID, "auth.register", "user", strconv.FormatInt(u.ID, 10), nil, client); err != nil {
 		return nil, err
 	}
 	tokens, err := s.issueTokens(ctx, u.ID, client)
@@ -164,7 +164,7 @@ func (s *Service) Login(ctx context.Context, req LoginRequest, client ClientInfo
 	_ = s.users.UpdateLastLogin(ctx, u.ID, now)
 	u.LastLoginAt = &now
 
-	_ = s.audit(ctx, u.ID, u.ID, "auth.login", "user", u.ID, nil, client)
+	_ = s.audit(ctx, u.ID, u.ID, "auth.login", "user", strconv.FormatInt(u.ID, 10), nil, client)
 
 	tokens, err := s.issueTokens(ctx, u.ID, client)
 	if err != nil {
@@ -255,7 +255,7 @@ func (s *Service) HandleGitHubCallback(ctx context.Context, code, state string, 
 	_ = s.users.UpdateLastLogin(ctx, u.ID, now)
 	u.LastLoginAt = &now
 	_ = account
-	_ = s.audit(ctx, u.ID, u.ID, "auth.github_login", "user", u.ID, map[string]any{"github_user_id": providerUserID}, client)
+	_ = s.audit(ctx, u.ID, u.ID, "auth.github_login", "user", strconv.FormatInt(u.ID, 10), map[string]any{"github_user_id": providerUserID}, client)
 	tokens, err := s.issueTokens(ctx, u.ID, client)
 	if err != nil {
 		return nil, err
@@ -308,6 +308,10 @@ func (s *Service) VerifyAccessToken(raw string) (*cryptoinfra.JWTClaims, error) 
 	return s.jwt.VerifyAccessToken(raw)
 }
 
+func (s *Service) HashToken(raw string) string {
+	return s.tokenHasher.Hash(raw)
+}
+
 func (s *Service) createGitHubUser(ctx context.Context, ghUser *oauthinfra.GitHubUser, providerUserID, scopes string) (*user.User, *authdomain.OAuthAccount, error) {
 	username := strings.TrimSpace(ghUser.Login)
 	if username == "" {
@@ -318,10 +322,8 @@ func (s *Service) createGitHubUser(ctx context.Context, ghUser *oauthinfra.GitHu
 	} else if err != nil && err != gorm.ErrRecordNotFound {
 		return nil, nil, err
 	}
-	var emailPtr *string
 	if ghUser.Email != "" {
 		email := strings.ToLower(ghUser.Email)
-		emailPtr = &email
 		if existing, err := s.users.FindByEmail(ctx, email); err == nil {
 			account := &authdomain.OAuthAccount{
 				UserID:           existing.ID,
@@ -340,13 +342,9 @@ func (s *Service) createGitHubUser(ctx context.Context, ghUser *oauthinfra.GitHu
 			return nil, nil, err
 		}
 	}
-	emailVal := ""
-	if emailPtr != nil {
-		emailVal = *emailPtr
-	}
 	u := &user.User{
 		Username:  username,
-		Email:     emailVal,
+		Email:     ghUser.Email,
 		AvatarURL: ghUser.AvatarURL,
 		LoginType: user.LoginTypeGithub,
 		Status:    user.StatusActive,
@@ -395,7 +393,7 @@ func (s *Service) issueTokens(ctx context.Context, userID int64, client ClientIn
 	}, nil
 }
 
-func (s *Service) audit(ctx context.Context, ownerID, actorID int64, action, resourceType string, resourceID int64, detail map[string]any, client ClientInfo) error {
+func (s *Service) audit(ctx context.Context, ownerID, actorID int64, action, resourceType, resourceID string, detail map[string]any, client ClientInfo) error {
 	detailJSON := "{}"
 	if detail != nil {
 		if data, err := json.Marshal(detail); err == nil {
