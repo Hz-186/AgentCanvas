@@ -2,11 +2,11 @@
 
 AgentCanvas 是一个用 Go 编写的单人版 Agent Flow + RAG 知识库项目。
 
-当前项目已经完成 Phase 1：用户登录、GitHub OAuth、Provider Key 管理。系统已经具备单人应用的平台壳子，后续会在此基础上继续实现知识库、RAG Chat 和 Agent Flow。
+当前项目已经完成 Phase 2：Elasticsearch 知识库最小闭环。系统已经具备单人应用的平台壳子、模型配置能力，以及 txt/md 文档上传、异步解析切片、ES BM25 检索能力。
 
 ## 当前阶段
 
-Phase 1：用户登录、GitHub OAuth、Provider Key 管理。
+Phase 2：Elasticsearch 知识库最小闭环。
 
 已经包含：
 
@@ -29,10 +29,18 @@ Phase 1：用户登录、GitHub OAuth、Provider Key 管理。
 - Provider API Key 加密存储与脱敏展示
 - Provider 连通性测试
 - 审计日志记录与查询
+- 知识库创建、列表、详情、更新和删除
+- txt/md 文档上传到 MinIO
+- MySQL ingestion job 异步任务表
+- Worker 轮询处理文档解析、切片和索引
+- document chunks 保存到 MySQL
+- chunks 同步写入 Elasticsearch
+- 知识库关键词搜索和高亮返回
+- retrieval logs 检索日志记录
 
 还没有包含：
 
-- 知识库上传和检索
+- PDF / docx / xlsx 解析
 - RAG Chat
 - Agent Flow Runtime
 - 前端画布
@@ -122,6 +130,20 @@ go run ./cmd/api
 http://localhost:8080
 ```
 
+## 启动 Worker
+
+Phase 2 的文档解析、切片和 ES 索引由独立 worker 执行：
+
+```bash
+make worker
+```
+
+或者：
+
+```bash
+go run ./cmd/worker
+```
+
 ## 健康检查
 
 基础健康检查：
@@ -206,12 +228,42 @@ DELETE /api/v1/api-tokens/:id
 GET    /api/v1/audit-logs
 ```
 
+## Phase 2 API
+
+Knowledge Base：
+
+```text
+POST   /api/v1/knowledge-bases
+GET    /api/v1/knowledge-bases
+GET    /api/v1/knowledge-bases/:id
+PATCH  /api/v1/knowledge-bases/:id
+DELETE /api/v1/knowledge-bases/:id
+POST   /api/v1/knowledge-bases/:id/search
+```
+
+Document：
+
+```text
+POST   /api/v1/knowledge-bases/:id/documents
+GET    /api/v1/knowledge-bases/:id/documents
+GET    /api/v1/documents/:id
+DELETE /api/v1/documents/:id
+GET    /api/v1/documents/:id/chunks
+```
+
+Ingestion Job：
+
+```text
+GET    /api/v1/ingestion-jobs/:id
+```
+
 ## 常用命令
 
 ```bash
 make docker-up      # 启动本地依赖
 make docker-down    # 停止本地依赖
 make run            # 启动 API
+make worker         # 启动文档处理 Worker
 make dev            # 启动依赖并运行 API
 make tidy           # 整理 Go 依赖
 make test           # 运行测试/编译检查
@@ -248,6 +300,6 @@ http://localhost:5601
 
 ## 当前状态说明
 
-当前阶段已经完成基础工程骨架与 Phase 1 平台能力：用户认证、GitHub OAuth、API Token、模型 Provider 配置、Provider Key 加密存储和审计日志。
+当前阶段已经完成基础工程骨架、Phase 1 平台能力，以及 Phase 2 的 txt/md 知识库最小闭环：创建知识库、上传文档、后台 worker 解析切片、写入 MySQL 与 Elasticsearch，并通过搜索接口返回命中 chunk 和高亮内容。
 
-下一阶段会开始实现 Phase 2：Elasticsearch 知识库最小闭环，包括知识库、文档上传、解析切片、索引和检索测试。
+下一阶段会开始实现 Phase 3：普通 RAG Chat，不做画布，基于已有知识库检索结果接入 LLM 生成回答。

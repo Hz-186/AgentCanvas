@@ -108,6 +108,9 @@ func (c *Config) setDefaults() {
 	if c.OAuth.GitHub.RedirectURL == "" && c.App.BaseURL != "" {
 		c.OAuth.GitHub.RedirectURL = c.App.BaseURL + "/api/v1/auth/github/callback"
 	}
+	if c.Elasticsearch.ChunkIndex == "" {
+		c.Elasticsearch.ChunkIndex = "agentcanvas_chunks_v1"
+	}
 }
 
 func (c *Config) Validate() error {

@@ -569,8 +569,8 @@ minio:
 elasticsearch:
   addresses:
     - http://localhost:9200
-  username: elastic
-  password: changeme
+  username: ""
+  password: ""
   chunk_index: agentcanvas_chunks_v1
 
 security:
@@ -578,6 +578,16 @@ security:
   refresh_token_pepper: change-me
   secret_encrypt_key: 32-bytes-base64-key
 ```
+
+配置文件约定：
+
+1. `configs/config.yaml` 作为默认配置与仓库中的参考模板，可以提交到 GitHub；
+2. `configs/config.local.yaml` 作为本地真实配置，不提交到 GitHub；
+3. 服务启动时优先读取环境变量 `AGENTCANVAS_CONFIG_PATH` 指定的配置；
+4. 如果没有指定环境变量，则优先读取 `configs/config.local.yaml`；
+5. 如果本地配置不存在，再回退读取 `configs/config.yaml`。
+
+这样既能保证本地开发优先使用 local 配置，也能保证别人 clone 项目后可以参考默认配置启动或复制模板。
 
 ### 5.6 健康检查 API
 
@@ -1093,6 +1103,8 @@ internal/
 ### 7.5 检索接口设计
 
 上层不直接依赖 ES。
+
+当前第一版只实现 Elasticsearch BM25 检索，但接口设计不能把上层锁死在 ES 上。后续可以增加 ES dense_vector、Milvus、Qdrant、HybridRetriever 或 MockRetriever。Agent Runtime、Knowledge Retrieval Node 和 application usecase 都只依赖 `Retriever` / `RetrievalIndexer` 接口，不直接依赖具体 ES client。
 
 ```go
 type RetrievalIndexer interface {
@@ -3089,6 +3101,35 @@ Redis 存短期状态：
 5. 系统加密主密钥；
 6. 完整 LLM 请求中可能包含的敏感 header。
 
+### 15.6 运行时资源访问约定
+
+Phase 0 当前采用 `bootstrap.NewApp` 统一初始化 MySQL、Redis、MinIO、Elasticsearch，并通过构造函数把依赖传给 handler / usecase / repository。
+
+后期如果为了开发便利，希望支持类似 `GetDB()`、`GetCache()` 的访问方式，可以增加一个受控的运行时资源容器，例如：
+
+```text
+internal/bootstrap/runtime.go
+```
+
+示例职责：
+
+```go
+func GetDB() *gorm.DB
+func GetCache() *redis.Client
+func GetMinIO() *minio.Client
+func GetElasticsearch() *elasticsearch.Client
+```
+
+使用边界：
+
+1. 优先使用构造函数注入依赖，保持模块依赖清晰；
+2. `GetDB()` / `GetCache()` 只作为工程便利入口，不作为业务分层的主要依赖方式；
+3. repository、usecase、runtime node 更推荐显式持有依赖；
+4. 如果加入全局资源访问器，必须在应用启动阶段完成初始化，未初始化时应直接 panic 或返回明确错误；
+5. 测试中要能替换这些资源，避免全局状态污染测试。
+
+这个方案保留了小项目开发便利性，但不改变整体依赖注入为主的架构方向。
+
 ---
 
 ## 16. Retrieval 抽象与 ES 实现
@@ -3122,6 +3163,14 @@ QdrantRetriever
 HybridRetriever
 MockRetriever
 ```
+
+实现约定：
+
+1. 第一版的真实实现放在 `internal/infrastructure/retrieval/elasticsearch`；
+2. `internal/domain/retrieval` 只放接口、请求结构、返回结构和通用类型；
+3. application、runtime、node 层只依赖 `Retriever` 接口；
+4. 不要在 Agent 节点里直接调用 Elasticsearch client；
+5. 如果后续引入 Milvus/Qdrant，只新增新的 infrastructure 实现，不改上层调用方式。
 
 ### 16.2 接口分层
 

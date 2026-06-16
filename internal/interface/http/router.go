@@ -12,14 +12,16 @@ import (
 )
 
 type RouterDeps struct {
-	Logger          *slog.Logger
-	HealthHandler   *handler.HealthHandler
-	AuthHandler     *handler.AuthHandler
-	OAuthHandler    *handler.OAuthHandler
-	ProviderHandler *handler.ProviderHandler
-	AuditHandler    *handler.AuditHandler
-	AuthService     *authusecase.Service
-	APITokens       authdomain.APITokenRepository
+	Logger           *slog.Logger
+	HealthHandler    *handler.HealthHandler
+	AuthHandler      *handler.AuthHandler
+	OAuthHandler     *handler.OAuthHandler
+	ProviderHandler  *handler.ProviderHandler
+	AuditHandler     *handler.AuditHandler
+	KnowledgeHandler *handler.KnowledgeHandler
+	DocumentHandler  *handler.DocumentHandler
+	AuthService      *authusecase.Service
+	APITokens        authdomain.APITokenRepository
 }
 
 func NewRouter(deps RouterDeps) *gin.Engine {
@@ -65,6 +67,21 @@ func NewRouter(deps RouterDeps) *gin.Engine {
 			protected.DELETE("/api-tokens/:id", deps.AuthHandler.DeleteAPIToken)
 
 			protected.GET("/audit-logs", deps.AuditHandler.List)
+
+			protected.POST("/knowledge-bases", deps.KnowledgeHandler.Create)
+			protected.GET("/knowledge-bases", deps.KnowledgeHandler.List)
+			protected.GET("/knowledge-bases/:id", deps.KnowledgeHandler.Get)
+			protected.PATCH("/knowledge-bases/:id", deps.KnowledgeHandler.Update)
+			protected.DELETE("/knowledge-bases/:id", deps.KnowledgeHandler.Delete)
+			protected.POST("/knowledge-bases/:id/documents", deps.KnowledgeHandler.UploadDocument)
+			protected.GET("/knowledge-bases/:id/documents", deps.KnowledgeHandler.ListDocuments)
+			protected.POST("/knowledge-bases/:id/search", deps.KnowledgeHandler.Search)
+
+			protected.GET("/documents/:id", deps.DocumentHandler.Get)
+			protected.DELETE("/documents/:id", deps.DocumentHandler.Delete)
+			protected.GET("/documents/:id/chunks", deps.DocumentHandler.ListChunks)
+
+			protected.GET("/ingestion-jobs/:id", deps.KnowledgeHandler.GetIngestionJob)
 		}
 	}
 
