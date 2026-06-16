@@ -2,11 +2,11 @@
 
 AgentCanvas 是一个用 Go 编写的单人版 Agent Flow + RAG 知识库项目。
 
-当前项目还处在基础工程阶段，暂时不包含登录、知识库、RAG Chat 和 Agent 画布。这个阶段主要是把后端服务、配置、日志、数据库连接和基础依赖先搭起来。
+当前项目已经完成 Phase 1：用户登录、GitHub OAuth、Provider Key 管理。系统已经具备单人应用的平台壳子，后续会在此基础上继续实现知识库、RAG Chat 和 Agent Flow。
 
 ## 当前阶段
 
-Phase 0：基础工程骨架。
+Phase 1：用户登录、GitHub OAuth、Provider Key 管理。
 
 已经包含：
 
@@ -20,12 +20,18 @@ Phase 0：基础工程骨架。
 - 健康检查接口
 - Docker Compose 本地依赖
 - 数据库 migration 目录
+- 用户注册和邮箱密码登录
+- JWT access token 与 refresh token session
+- GitHub OAuth 登录
+- 当前用户信息接口
+- API Token 创建、列表和撤销
+- Provider 配置管理
+- Provider API Key 加密存储与脱敏展示
+- Provider 连通性测试
+- 审计日志记录与查询
 
 还没有包含：
 
-- 用户注册和登录
-- GitHub OAuth
-- Provider Key 管理
 - 知识库上传和检索
 - RAG Chat
 - Agent Flow Runtime
@@ -38,6 +44,8 @@ cmd/                  程序入口
 configs/              配置文件
 deployments/          Docker Compose 等部署相关文件
 internal/bootstrap/   应用初始化和依赖组装
+internal/application/  应用用例层
+internal/domain/       领域实体和仓储接口
 internal/interface/   HTTP 接口层
 internal/infrastructure/ MySQL、Redis、MinIO、Elasticsearch 等外部依赖
 internal/pkg/         项目内部通用工具
@@ -47,14 +55,17 @@ scripts/              本地开发脚本
 
 ## 配置文件
 
-项目里有两个配置文件：
+仓库提供本地配置模板：
 
 ```text
-configs/config.yaml
-configs/config.local.yaml
+configs/config.local.yaml.example
 ```
 
-`config.yaml` 是默认配置，也作为提交到仓库里的参考模板。
+首次启动前可以复制一份本地配置：
+
+```bash
+cp configs/config.local.yaml.example configs/config.local.yaml
+```
 
 `config.local.yaml` 是本地配置文件，不应该提交到 GitHub。它可以放本机数据库、Redis、MinIO、Elasticsearch 等真实连接信息。
 
@@ -62,8 +73,7 @@ configs/config.local.yaml
 
 ```text
 1. 如果设置了 AGENTCANVAS_CONFIG_PATH，读取这个路径
-2. 否则优先读取 configs/config.local.yaml
-3. 如果 config.local.yaml 不存在，回退读取 configs/config.yaml
+2. 否则读取 configs/config.local.yaml
 ```
 
 ## 本地依赖
@@ -157,6 +167,45 @@ curl http://localhost:8080/api/v1/health/es
 }
 ```
 
+## Phase 1 API
+
+认证接口：
+
+```text
+POST /api/v1/auth/register
+POST /api/v1/auth/login
+POST /api/v1/auth/refresh
+POST /api/v1/auth/logout
+GET  /api/v1/auth/me
+```
+
+GitHub OAuth：
+
+```text
+GET /api/v1/auth/github/redirect
+GET /api/v1/auth/github/callback
+```
+
+Provider 管理：
+
+```text
+GET    /api/v1/model-providers
+POST   /api/v1/model-providers
+GET    /api/v1/model-providers/:id
+PATCH  /api/v1/model-providers/:id
+DELETE /api/v1/model-providers/:id
+POST   /api/v1/model-providers/:id/test
+```
+
+API Token 与审计日志：
+
+```text
+GET    /api/v1/api-tokens
+POST   /api/v1/api-tokens
+DELETE /api/v1/api-tokens/:id
+GET    /api/v1/audit-logs
+```
+
 ## 常用命令
 
 ```bash
@@ -199,6 +248,6 @@ http://localhost:5601
 
 ## 当前状态说明
 
-当前阶段只保证基础服务可以启动，并且能够连接 MySQL、Redis、MinIO 和 Elasticsearch。
+当前阶段已经完成基础工程骨架与 Phase 1 平台能力：用户认证、GitHub OAuth、API Token、模型 Provider 配置、Provider Key 加密存储和审计日志。
 
-下一阶段会开始补用户体系、登录、GitHub OAuth 和模型 Provider 配置。
+下一阶段会开始实现 Phase 2：Elasticsearch 知识库最小闭环，包括知识库、文档上传、解析切片、索引和检索测试。
