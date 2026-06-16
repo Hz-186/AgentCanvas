@@ -1,7 +1,9 @@
 package config
 
 import (
+	"fmt"
 	"os"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -13,6 +15,7 @@ type Config struct {
 	MinIO         MinIOConfig         `yaml:"minio"`
 	Elasticsearch ElasticsearchConfig `yaml:"elasticsearch"`
 	Security      SecurityConfig      `yaml:"security"`
+	OAuth         OAuthConfig         `yaml:"oauth"`
 }
 
 type AppConfig struct {
@@ -50,9 +53,22 @@ type ElasticsearchConfig struct {
 }
 
 type SecurityConfig struct {
-	JWTSecret          string `yaml:"jwt_secret"`
-	RefreshTokenPepper string `yaml:"refresh_token_pepper"`
-	SecretEncryptKey   string `yaml:"secret_encrypt_key"`
+	JWTSecret             string `yaml:"jwt_secret"`
+	RefreshTokenPepper    string `yaml:"refresh_token_pepper"`
+	SecretEncryptKey      string `yaml:"secret_encrypt_key"`
+	AccessTokenTTLMinutes int    `yaml:"access_token_ttl_minutes"`
+	RefreshTokenTTLDays   int    `yaml:"refresh_token_ttl_days"`
+}
+
+type OAuthConfig struct {
+	GitHub GitHubOAuthConfig `yaml:"github"`
+}
+
+type GitHubOAuthConfig struct {
+	ClientID     string   `yaml:"client_id"`
+	ClientSecret string   `yaml:"client_secret"`
+	RedirectURL  string   `yaml:"redirect_url"`
+	Scopes       []string `yaml:"scopes"`
 }
 
 func LoadConfig(path string) (*Config, error) {
@@ -60,11 +76,60 @@ func LoadConfig(path string) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	var config Config
+	var cfg Config
 
-	if err := yaml.Unmarshal(data, &config); err != nil {
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, err
 	}
 
-	return &config, nil
+	cfg.setDefaults()
+	return &cfg, cfg.Validate()
+}
+
+func (c *Config) setDefaults() {
+	if c.App.Name == "" {
+		c.App.Name = "agentcanvas"
+	}
+	if c.App.Env == "" {
+		c.App.Env = "local"
+	}
+	if c.App.Port == 0 {
+		c.App.Port = 8080
+	}
+	if c.Security.AccessTokenTTLMinutes == 0 {
+		c.Security.AccessTokenTTLMinutes = 30
+	}
+	if c.Security.RefreshTokenTTLDays == 0 {
+		c.Security.RefreshTokenTTLDays = 30
+	}
+	if len(c.OAuth.GitHub.Scopes) == 0 {
+		c.OAuth.GitHub.Scopes = []string{"read:user", "user:email"}
+	}
+	if c.OAuth.GitHub.RedirectURL == "" && c.App.BaseURL != "" {
+		c.OAuth.GitHub.RedirectURL = c.App.BaseURL + "/api/v1/auth/github/callback"
+	}
+}
+
+func (c *Config) Validate() error {
+	if c.MySQL.DSN == "" {
+		return fmt.Errorf("mysql.dsn is required")
+	}
+	if c.Security.JWTSecret == "" {
+		return fmt.Errorf("security.jwt_secret is required")
+	}
+	if c.Security.RefreshTokenPepper == "" {
+		return fmt.Errorf("security.refresh_token_pepper is required")
+	}
+	if c.Security.SecretEncryptKey == "" {
+		return fmt.Errorf("security.secret_encrypt_key is required")
+	}
+	return nil
+}
+
+func (c SecurityConfig) AccessTokenTTL() time.Duration {
+	return time.Duration(c.AccessTokenTTLMinutes) * time.Minute
+}
+
+func (c SecurityConfig) RefreshTokenTTL() time.Duration {
+	return time.Duration(c.RefreshTokenTTLDays) * 24 * time.Hour
 }

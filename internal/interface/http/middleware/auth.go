@@ -15,7 +15,6 @@ import (
 
 const UserIDKey = "user_id"
 
-
 func Auth(authService *authusecase.Service, apiTokens authdomain.APITokenRepository) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		authorization := strings.TrimSpace(c.GetHeader("Authorization"))

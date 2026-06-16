@@ -8,7 +8,7 @@ type Log struct {
 	ActorID      int64     `json:"actor_id" gorm:"column:actor_id"`
 	Action       string    `json:"action" gorm:"column:action"`
 	ResourceType string    `json:"resource_type" gorm:"column:resource_type"`
-	ResourceID   int64     `json:"resource_id" gorm:"column:resource_id"`
+	ResourceID   string    `json:"resource_id" gorm:"column:resource_id"`
 	DetailJSON   string    `json:"detail_json" gorm:"column:detail_json"`
 	IPAddress    string    `json:"ip_address" gorm:"column:ip_address"`
 	UserAgent    string    `json:"user_agent" gorm:"column:user_agent"`
