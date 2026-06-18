@@ -268,6 +268,9 @@ func (s *Service) UploadDocument(ctx context.Context, ownerID, kbID int64, req U
 		AttemptCount: 0,
 	}
 	if err := s.jobs.Create(ctx, job); err != nil {
+		doc.ParserStatus = knowledge.DocumentStatusFailed
+		doc.ParserError = err.Error()
+		_ = s.documents.Update(ctx, doc)
 		return nil, err
 	}
 	if err := s.kbs.AdjustCounts(ctx, ownerID, kbID, 1, 0); err != nil {

@@ -105,6 +105,81 @@ func TestProcessJobParsesChunksIndexesAndCompletes(t *testing.T) {
 	}
 }
 
+func TestProcessJobReplacesExistingChunksIdempotently(t *testing.T) {
+	ctx := context.Background()
+	kbs := &fakeKBRepo{
+		items: map[int64]*knowledge.KnowledgeBase{
+			10: {
+				ID:           10,
+				OwnerID:      1,
+				ChunkSize:    20,
+				ChunkOverlap: 0,
+			},
+		},
+	}
+	docs := &fakeDocumentRepo{
+		items: map[int64]*knowledge.Document{
+			20: {
+				ID:               20,
+				OwnerID:          1,
+				KBID:             10,
+				Name:             "Guide",
+				OriginalFilename: "guide.md",
+				FileType:         "md",
+				ObjectKey:        "raw/guide.md",
+				ParserStatus:     knowledge.DocumentStatusCompleted,
+				ChunkCount:       2,
+			},
+		},
+	}
+	chunks := &fakeChunkRepo{
+		byDocument: map[int64][]knowledge.DocumentChunk{
+			20: {
+				{ID: 1, OwnerID: 1, KBID: 10, DocumentID: 20, ChunkIndex: 0, Content: "old one"},
+				{ID: 2, OwnerID: 1, KBID: 10, DocumentID: 20, ChunkIndex: 1, Content: "old two"},
+			},
+		},
+	}
+	indexer := &fakeIndexer{}
+	service := NewService(
+		kbs,
+		docs,
+		chunks,
+		&fakeJobRepo{},
+		fakeReadStorage{objects: map[string]string{
+			"raw/guide.md": "Fresh content for a single replacement chunk.",
+		}},
+		parser.NewTextParser(),
+		chunker.NewFixedTokenChunker(),
+		indexer,
+		"test_chunks",
+	)
+
+	err := service.ProcessJob(ctx, &knowledge.IngestionJob{
+		ID:         30,
+		OwnerID:    1,
+		KBID:       10,
+		DocumentID: 20,
+	})
+	if err != nil {
+		t.Fatalf("ProcessJob() error = %v", err)
+	}
+
+	doc := docs.items[20]
+	if doc.ChunkCount != 1 {
+		t.Fatalf("ChunkCount = %d, want 1", doc.ChunkCount)
+	}
+	if chunks.deletedByDocument[20] != 1 {
+		t.Fatalf("DeleteByDocument calls = %d, want 1", chunks.deletedByDocument[20])
+	}
+	if indexer.deletedByDocument[20] != 1 {
+		t.Fatalf("DeleteByDocument index calls = %d, want 1", indexer.deletedByDocument[20])
+	}
+	if kbs.chunkDelta != -1 {
+		t.Fatalf("kb chunk delta = %d, want -1", kbs.chunkDelta)
+	}
+}
+
 func TestProcessNextMarksJobAndDocumentFailed(t *testing.T) {
 	ctx := context.Background()
 	kbs := &fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{
@@ -224,8 +299,9 @@ func (s fakeReadStorage) Get(_ context.Context, objectKey string) (io.ReadCloser
 }
 
 type fakeIndexer struct {
-	ensureCalled bool
-	indexed      []retrieval.ChunkIndexDocument
+	ensureCalled      bool
+	indexed           []retrieval.ChunkIndexDocument
+	deletedByDocument map[int64]int
 }
 
 func (i *fakeIndexer) EnsureIndex(context.Context) error {
@@ -238,7 +314,11 @@ func (i *fakeIndexer) IndexChunks(_ context.Context, docs []retrieval.ChunkIndex
 	return nil
 }
 
-func (i *fakeIndexer) DeleteByDocument(context.Context, int64, int64) error {
+func (i *fakeIndexer) DeleteByDocument(_ context.Context, _ int64, documentID int64) error {
+	if i.deletedByDocument == nil {
+		i.deletedByDocument = make(map[int64]int)
+	}
+	i.deletedByDocument[documentID]++
 	return nil
 }
 
@@ -317,8 +397,9 @@ func (r *fakeDocumentRepo) SoftDeleteByKnowledgeBase(context.Context, int64, int
 }
 
 type fakeChunkRepo struct {
-	nextID     int64
-	byDocument map[int64][]knowledge.DocumentChunk
+	nextID            int64
+	byDocument        map[int64][]knowledge.DocumentChunk
+	deletedByDocument map[int64]int
 }
 
 func (r *fakeChunkRepo) CreateBatch(_ context.Context, chunks []knowledge.DocumentChunk) error {
@@ -355,6 +436,10 @@ func (r *fakeChunkRepo) UpdateIndexRefs(_ context.Context, chunks []knowledge.Do
 }
 
 func (r *fakeChunkRepo) DeleteByDocument(_ context.Context, _ int64, documentID int64) error {
+	if r.deletedByDocument == nil {
+		r.deletedByDocument = make(map[int64]int)
+	}
+	r.deletedByDocument[documentID]++
 	if r.byDocument != nil {
 		delete(r.byDocument, documentID)
 	}

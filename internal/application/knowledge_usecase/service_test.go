@@ -3,6 +3,7 @@ package knowledge_usecase
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"mime/multipart"
 	"net/textproto"
@@ -98,6 +99,80 @@ func TestUploadDocumentRejectsUnsupportedFileType(t *testing.T) {
 	}
 }
 
+func TestUploadDocumentMarksDocumentFailedWhenStorageFails(t *testing.T) {
+	ctx := context.Background()
+	documents := &fakeDocumentRepo{}
+	jobs := &fakeJobRepo{}
+	kbs := &fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{10: {ID: 10, OwnerID: 1}}}
+	service := NewService(
+		kbs,
+		documents,
+		&fakeChunkRepo{},
+		jobs,
+		&fakeRetrievalLogRepo{},
+		nil,
+		&fakeWriteStorage{err: errors.New("storage unavailable")},
+		&fakeRetriever{},
+		&fakeIndexer{},
+	)
+
+	header := mustMultipartFileHeader(t, "guide.md", "text/markdown", "# Intro")
+	if _, err := service.UploadDocument(ctx, 1, 10, UploadDocumentRequest{FileHeader: header}, ClientInfo{}); err == nil {
+		t.Fatal("UploadDocument() error = nil, want storage error")
+	}
+	doc := documents.items[1]
+	if doc == nil {
+		t.Fatal("document was not created")
+	}
+	if doc.ParserStatus != knowledge.DocumentStatusFailed {
+		t.Fatalf("ParserStatus = %q, want failed", doc.ParserStatus)
+	}
+	if doc.ParserError == "" {
+		t.Fatal("ParserError is empty")
+	}
+	if len(jobs.items) != 0 {
+		t.Fatalf("jobs = %d, want 0", len(jobs.items))
+	}
+	if kbs.documentDelta != 0 {
+		t.Fatalf("document delta = %d, want 0", kbs.documentDelta)
+	}
+}
+
+func TestUploadDocumentMarksDocumentFailedWhenJobCreateFails(t *testing.T) {
+	ctx := context.Background()
+	documents := &fakeDocumentRepo{}
+	kbs := &fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{10: {ID: 10, OwnerID: 1}}}
+	service := NewService(
+		kbs,
+		documents,
+		&fakeChunkRepo{},
+		&fakeJobRepo{createErr: errors.New("job table unavailable")},
+		&fakeRetrievalLogRepo{},
+		nil,
+		&fakeWriteStorage{objects: map[string]string{}},
+		&fakeRetriever{},
+		&fakeIndexer{},
+	)
+
+	header := mustMultipartFileHeader(t, "guide.md", "text/markdown", "# Intro")
+	if _, err := service.UploadDocument(ctx, 1, 10, UploadDocumentRequest{FileHeader: header}, ClientInfo{}); err == nil {
+		t.Fatal("UploadDocument() error = nil, want job create error")
+	}
+	doc := documents.items[1]
+	if doc == nil {
+		t.Fatal("document was not created")
+	}
+	if doc.ParserStatus != knowledge.DocumentStatusFailed {
+		t.Fatalf("ParserStatus = %q, want failed", doc.ParserStatus)
+	}
+	if doc.ParserError == "" {
+		t.Fatal("ParserError is empty")
+	}
+	if kbs.documentDelta != 0 {
+		t.Fatalf("document delta = %d, want 0", kbs.documentDelta)
+	}
+}
+
 func TestSearchCallsRetrieverAndWritesRetrievalLog(t *testing.T) {
 	ctx := context.Background()
 	logs := &fakeRetrievalLogRepo{}
@@ -150,6 +225,43 @@ func TestSearchCallsRetrieverAndWritesRetrievalLog(t *testing.T) {
 	}
 }
 
+func TestSearchRejectsInvalidRequests(t *testing.T) {
+	ctx := context.Background()
+	cases := []struct {
+		name string
+		req  SearchRequest
+	}{
+		{name: "blank query", req: SearchRequest{Query: "   "}},
+		{name: "negative top k", req: SearchRequest{Query: "AgentCanvas", TopK: -1}},
+		{name: "too large top k", req: SearchRequest{Query: "AgentCanvas", TopK: 51}},
+		{name: "unsupported mode", req: SearchRequest{Query: "AgentCanvas", Mode: retrieval.ModeVector}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			retriever := &fakeRetriever{}
+			service := NewService(
+				&fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{10: {ID: 10, OwnerID: 1}}},
+				&fakeDocumentRepo{},
+				&fakeChunkRepo{},
+				&fakeJobRepo{},
+				&fakeRetrievalLogRepo{},
+				nil,
+				&fakeWriteStorage{},
+				retriever,
+				&fakeIndexer{},
+			)
+
+			if _, err := service.Search(ctx, 1, 10, tc.req); err == nil {
+				t.Fatal("Search() error = nil, want invalid input")
+			}
+			if retriever.called {
+				t.Fatal("retriever was called for invalid request")
+			}
+		})
+	}
+}
+
 func mustMultipartFileHeader(t *testing.T, filename, contentType, content string) *multipart.FileHeader {
 	t.Helper()
 
@@ -183,9 +295,13 @@ func mustMultipartFileHeader(t *testing.T, filename, contentType, content string
 
 type fakeWriteStorage struct {
 	objects map[string]string
+	err     error
 }
 
 func (s *fakeWriteStorage) Put(_ context.Context, objectKey string, reader io.Reader, _ int64, _ string) error {
+	if s.err != nil {
+		return s.err
+	}
 	data, err := io.ReadAll(reader)
 	if err != nil {
 		return err
@@ -200,9 +316,11 @@ func (s *fakeWriteStorage) Put(_ context.Context, objectKey string, reader io.Re
 type fakeRetriever struct {
 	request  retrieval.RetrievalRequest
 	response *retrieval.RetrievalResponse
+	called   bool
 }
 
 func (r *fakeRetriever) Search(_ context.Context, req retrieval.RetrievalRequest) (*retrieval.RetrievalResponse, error) {
+	r.called = true
 	r.request = req
 	if r.response != nil {
 		return r.response, nil
@@ -348,11 +466,15 @@ func (r *fakeChunkRepo) DeleteByKnowledgeBase(context.Context, int64, int64) err
 }
 
 type fakeJobRepo struct {
-	nextID int64
-	items  map[int64]*knowledge.IngestionJob
+	nextID    int64
+	items     map[int64]*knowledge.IngestionJob
+	createErr error
 }
 
 func (r *fakeJobRepo) Create(_ context.Context, job *knowledge.IngestionJob) error {
+	if r.createErr != nil {
+		return r.createErr
+	}
 	r.nextID++
 	job.ID = r.nextID
 	if r.items == nil {
