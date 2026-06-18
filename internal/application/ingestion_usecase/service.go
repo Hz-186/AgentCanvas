@@ -202,11 +202,19 @@ func (s *Service) ProcessJob(ctx context.Context, job *knowledge.IngestionJob) e
 }
 
 func (s *Service) failJob(ctx context.Context, job *knowledge.IngestionJob, cause error) error {
+	final, err := s.jobs.MarkFailed(ctx, job.ID, cause.Error())
+	if err != nil {
+		return err
+	}
 	doc, err := s.documents.FindByID(ctx, job.OwnerID, job.DocumentID)
 	if err == nil {
-		doc.ParserStatus = knowledge.DocumentStatusFailed
+		if final {
+			doc.ParserStatus = knowledge.DocumentStatusFailed
+		} else {
+			doc.ParserStatus = knowledge.DocumentStatusPending
+		}
 		doc.ParserError = cause.Error()
 		_ = s.documents.Update(ctx, doc)
 	}
-	return s.jobs.MarkFailed(ctx, job.ID, cause.Error())
+	return nil
 }

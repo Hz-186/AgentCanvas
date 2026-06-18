@@ -41,7 +41,7 @@ func (r *IngestionJobRepository) ClaimNext(ctx context.Context, workerID string)
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var job knowledge.IngestionJob
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE", Options: "SKIP LOCKED"}).
-			Where("status = ? AND attempt_count < max_attempts", knowledge.IngestionJobStatusPending).
+			Where("status = ? AND (max_attempts <= 0 OR attempt_count < max_attempts)", knowledge.IngestionJobStatusPending).
 			Order("priority DESC, created_at ASC").
 			First(&job).Error; err != nil {
 			return err
@@ -74,19 +74,47 @@ func (r *IngestionJobRepository) MarkCompleted(ctx context.Context, id int64) er
 		Where("id = ?", id).
 		Updates(map[string]any{
 			"status":      knowledge.IngestionJobStatusCompleted,
+			"locked_by":   "",
+			"locked_at":   nil,
 			"finished_at": now,
 			"updated_at":  now,
 		}).Error
 }
 
-func (r *IngestionJobRepository) MarkFailed(ctx context.Context, id int64, message string) error {
+func (r *IngestionJobRepository) MarkFailed(ctx context.Context, id int64, message string) (bool, error) {
 	now := time.Now().UTC()
-	return r.db.WithContext(ctx).Model(&knowledge.IngestionJob{}).
-		Where("id = ?", id).
-		Updates(map[string]any{
-			"status":        knowledge.IngestionJobStatusFailed,
+	final := false
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var job knowledge.IngestionJob
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("id = ?", id).
+			First(&job).Error; err != nil {
+			return err
+		}
+
+		maxAttempts := job.MaxAttempts
+		if maxAttempts <= 0 {
+			maxAttempts = 1
+		}
+		final = job.AttemptCount >= maxAttempts
+
+		updates := map[string]any{
 			"error_message": message,
-			"finished_at":   now,
+			"locked_by":     "",
+			"locked_at":     nil,
 			"updated_at":    now,
-		}).Error
+		}
+		if final {
+			updates["status"] = knowledge.IngestionJobStatusFailed
+			updates["finished_at"] = now
+		} else {
+			updates["status"] = knowledge.IngestionJobStatusPending
+			updates["finished_at"] = nil
+		}
+
+		return tx.Model(&knowledge.IngestionJob{}).
+			Where("id = ?", id).
+			Updates(updates).Error
+	})
+	return final, err
 }

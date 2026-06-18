@@ -153,6 +153,64 @@ func TestProcessNextMarksJobAndDocumentFailed(t *testing.T) {
 	}
 }
 
+func TestProcessNextRetriesJobBeforeMaxAttempts(t *testing.T) {
+	ctx := context.Background()
+	kbs := &fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{
+		10: {ID: 10, OwnerID: 1, ChunkSize: 20},
+	}}
+	docs := &fakeDocumentRepo{items: map[int64]*knowledge.Document{
+		20: {
+			ID:               20,
+			OwnerID:          1,
+			KBID:             10,
+			OriginalFilename: "guide.md",
+			ObjectKey:        "missing.md",
+			ParserStatus:     knowledge.DocumentStatusPending,
+		},
+	}}
+	jobs := &fakeJobRepo{
+		next: &knowledge.IngestionJob{
+			ID:           30,
+			OwnerID:      1,
+			KBID:         10,
+			DocumentID:   20,
+			AttemptCount: 1,
+			MaxAttempts:  3,
+		},
+	}
+	service := NewService(
+		kbs,
+		docs,
+		&fakeChunkRepo{},
+		jobs,
+		fakeReadStorage{objects: map[string]string{}},
+		parser.NewTextParser(),
+		chunker.NewFixedTokenChunker(),
+		&fakeIndexer{},
+		"test_chunks",
+	)
+
+	processed, err := service.ProcessNext(ctx, "worker-1")
+	if !processed {
+		t.Fatal("processed = false, want true")
+	}
+	if err == nil {
+		t.Fatal("ProcessNext() error = nil, want storage error")
+	}
+	if jobs.retrying[30] == "" {
+		t.Fatal("job was not released for retry")
+	}
+	if jobs.failed[30] != "" {
+		t.Fatalf("job was marked failed before max attempts: %q", jobs.failed[30])
+	}
+	if docs.items[20].ParserStatus == knowledge.DocumentStatusFailed {
+		t.Fatal("document was marked failed before max attempts")
+	}
+	if docs.items[20].ParserError == "" {
+		t.Fatal("ParserError is empty")
+	}
+}
+
 type fakeReadStorage struct {
 	objects map[string]string
 }
@@ -309,8 +367,10 @@ func (r *fakeChunkRepo) DeleteByKnowledgeBase(context.Context, int64, int64) err
 
 type fakeJobRepo struct {
 	next      *knowledge.IngestionJob
+	claimed   *knowledge.IngestionJob
 	completed map[int64]bool
 	failed    map[int64]string
+	retrying  map[int64]string
 }
 
 func (r *fakeJobRepo) Create(context.Context, *knowledge.IngestionJob) error {
@@ -326,6 +386,8 @@ func (r *fakeJobRepo) ClaimNext(context.Context, string) (*knowledge.IngestionJo
 		return nil, gorm.ErrRecordNotFound
 	}
 	job := r.next
+	job.AttemptCount++
+	r.claimed = job
 	r.next = nil
 	return job, nil
 }
@@ -338,10 +400,31 @@ func (r *fakeJobRepo) MarkCompleted(_ context.Context, id int64) error {
 	return nil
 }
 
-func (r *fakeJobRepo) MarkFailed(_ context.Context, id int64, message string) error {
-	if r.failed == nil {
-		r.failed = make(map[int64]string)
+func (r *fakeJobRepo) MarkFailed(_ context.Context, id int64, message string) (bool, error) {
+	job := r.claimed
+	if job == nil || job.ID != id {
+		job = r.next
 	}
-	r.failed[id] = message
-	return nil
+	maxAttempts := 1
+	attemptCount := 0
+	if job != nil && job.ID == id {
+		job.ErrorMessage = message
+		attemptCount = job.AttemptCount
+		if job.MaxAttempts > 0 {
+			maxAttempts = job.MaxAttempts
+		}
+	}
+	final := attemptCount >= maxAttempts
+	if final {
+		if r.failed == nil {
+			r.failed = make(map[int64]string)
+		}
+		r.failed[id] = message
+	} else {
+		if r.retrying == nil {
+			r.retrying = make(map[int64]string)
+		}
+		r.retrying[id] = message
+	}
+	return final, nil
 }

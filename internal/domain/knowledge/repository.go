@@ -33,7 +33,7 @@ type IngestionJobRepository interface {
 	FindByID(ctx context.Context, ownerID, id int64) (*IngestionJob, error)
 	ClaimNext(ctx context.Context, workerID string) (*IngestionJob, error)
 	MarkCompleted(ctx context.Context, id int64) error
-	MarkFailed(ctx context.Context, id int64, message string) error
+	MarkFailed(ctx context.Context, id int64, message string) (bool, error)
 }
 
 type RetrievalLogRepository interface {

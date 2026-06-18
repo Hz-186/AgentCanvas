@@ -375,6 +375,6 @@ func (r *fakeJobRepo) MarkCompleted(context.Context, int64) error {
 	return nil
 }
 
-func (r *fakeJobRepo) MarkFailed(context.Context, int64, string) error {
-	return nil
+func (r *fakeJobRepo) MarkFailed(context.Context, int64, string) (bool, error) {
+	return true, nil
 }
