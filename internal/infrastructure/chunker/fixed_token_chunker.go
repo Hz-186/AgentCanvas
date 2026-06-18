@@ -34,13 +34,10 @@ func (c *FixedTokenChunker) Chunk(text string, chunkSize, overlap int) []Chunk {
 		overlap = chunkSize / 4
 	}
 
-	chunks := make([]Chunk, 0, len(runes)/chunkSize+1)
+	chunks := make([]Chunk, 0, estimateTokens(string(runes))/chunkSize+1)
 	start := 0
 	for start < len(runes) {
-		end := start + chunkSize
-		if end > len(runes) {
-			end = len(runes)
-		}
+		end := tokenBudgetEnd(runes, start, chunkSize)
 
 		content := strings.TrimSpace(string(runes[start:end]))
 		if content != "" {
@@ -55,10 +52,51 @@ func (c *FixedTokenChunker) Chunk(text string, chunkSize, overlap int) []Chunk {
 		if end == len(runes) {
 			break
 		}
-		start = end - overlap
+		nextStart := tokenOverlapStart(runes, start, end, overlap)
+		if nextStart <= start {
+			nextStart = end
+		}
+		start = nextStart
 	}
 
 	return chunks
+}
+
+func tokenBudgetEnd(runes []rune, start, budget int) int {
+	end := start
+	lastValidEnd := start
+	for end < len(runes) {
+		candidate := strings.TrimSpace(string(runes[start : end+1]))
+		if candidate == "" {
+			end++
+			continue
+		}
+		if estimateTokens(candidate) > budget {
+			break
+		}
+		lastValidEnd = end + 1
+		end++
+	}
+	if lastValidEnd == start {
+		return start + 1
+	}
+	return lastValidEnd
+}
+
+func tokenOverlapStart(runes []rune, start, end, overlap int) int {
+	if overlap <= 0 {
+		return end
+	}
+	for i := end - 1; i >= start; i-- {
+		candidate := strings.TrimSpace(string(runes[i:end]))
+		if candidate == "" {
+			continue
+		}
+		if estimateTokens(candidate) > overlap {
+			return i + 1
+		}
+	}
+	return start
 }
 
 func estimateTokens(text string) int {
