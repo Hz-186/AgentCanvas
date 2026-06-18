@@ -2,11 +2,11 @@
 
 AgentCanvas 是一个用 Go 编写的单人版 Agent Flow + RAG 知识库项目。
 
-当前项目已经完成 Phase 3：普通 RAG Chat。系统已经具备单人应用的平台壳子、模型配置能力、txt/md 文档上传、异步解析切片、ES BM25 检索，以及基于知识库上下文调用 OpenAI-compatible LLM 的普通问答能力。
+当前项目已经完成 Phase 4：Agent Flow DSL 与 Runtime。系统已经具备单人应用的平台壳子、模型配置能力、txt/md 文档上传、异步解析切片、ES BM25 检索、基于知识库上下文调用 OpenAI-compatible LLM 的普通问答能力，以及通过 JSON DSL 创建、发布并运行 Agent Flow 的后端闭环。
 
 ## 当前阶段
 
-Phase 3：普通 RAG Chat。
+Phase 4：Agent Flow DSL 与 Runtime。
 
 已经包含：
 
@@ -46,11 +46,17 @@ Phase 3：普通 RAG Chat。
 - model usage 日志记录
 - OpenAI-compatible /chat/completions 客户端
 - DeepSeek、Qwen、openai_compatible 复用 OpenAI-compatible 协议
+- Agent 创建、列表、详情、更新和删除
+- Flow Version 保存、校验和发布
+- Flow DSL v1 解析与 DAG 校验
+- Agent Runtime 顺序执行 Begin、Retrieval、Prompt、LLM、Message 节点
+- Agent Run 创建、状态记录和输出持久化
+- run events 与 node logs 记录和查询
+- POST + text/event-stream 流式 Agent Run 接口
 
 还没有包含：
 
 - PDF / docx / xlsx 解析
-- Agent Flow Runtime
 - 前端画布
 
 ## 目录说明
