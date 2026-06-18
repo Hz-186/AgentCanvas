@@ -1,0 +1,356 @@
+package chat_usecase
+
+import (
+	"context"
+	"errors"
+	"strings"
+	"time"
+	"unicode/utf8"
+
+	"agentcanvas/internal/domain/conversation"
+	"agentcanvas/internal/domain/knowledge"
+	providerdomain "agentcanvas/internal/domain/provider"
+	"agentcanvas/internal/domain/retrieval"
+	"agentcanvas/internal/domain/usage"
+	cryptoinfra "agentcanvas/internal/infrastructure/crypto"
+	"agentcanvas/internal/infrastructure/llm"
+	agenterrors "agentcanvas/internal/pkg/errors"
+
+	"gorm.io/gorm"
+)
+
+const (
+	defaultTopK = 8
+	maxTopK     = 20
+)
+
+type Service struct {
+	providers     providerdomain.Repository
+	kbs           knowledge.KnowledgeBaseRepository
+	conversations conversation.Repository
+	messages      conversation.MessageRepository
+	usages        usage.Repository
+	retriever     retrieval.Retriever
+	llm           llm.ChatClient
+	secrets       *cryptoinfra.SecretBox
+	packer        *ContextPacker
+	prompts       *PromptBuilder
+}
+
+type ChatRequest struct {
+	ProviderID     int64   `json:"provider_id" binding:"required"`
+	KBIDs          []int64 `json:"kb_ids" binding:"required"`
+	Question       string  `json:"question" binding:"required"`
+	ConversationID int64   `json:"conversation_id"`
+	Model          string  `json:"model"`
+	TopK           int     `json:"top_k"`
+}
+
+type ChatResponse struct {
+	Conversation       *conversation.Conversation      `json:"conversation"`
+	UserMessage        *conversation.Message           `json:"user_message"`
+	AssistantMessage   *conversation.Message           `json:"assistant_message"`
+	References         []conversation.MessageReference `json:"references"`
+	Usage              llm.Usage                       `json:"usage"`
+	RetrievalLatencyMS int                             `json:"retrieval_latency_ms"`
+}
+
+type StreamEvent struct {
+	Type string `json:"type"`
+	Data any    `json:"data"`
+}
+
+func NewService(
+	providers providerdomain.Repository,
+	kbs knowledge.KnowledgeBaseRepository,
+	conversations conversation.Repository,
+	messages conversation.MessageRepository,
+	usages usage.Repository,
+	retriever retrieval.Retriever,
+	llmClient llm.ChatClient,
+	secrets *cryptoinfra.SecretBox,
+) *Service {
+	return &Service{
+		providers:     providers,
+		kbs:           kbs,
+		conversations: conversations,
+		messages:      messages,
+		usages:        usages,
+		retriever:     retriever,
+		llm:           llmClient,
+		secrets:       secrets,
+		packer:        NewContextPacker(),
+		prompts:       NewPromptBuilder(),
+	}
+}
+
+func (s *Service) Chat(ctx context.Context, ownerID int64, req ChatRequest) (*ChatResponse, error) {
+	prepared, err := s.prepare(ctx, ownerID, req)
+	if err != nil {
+		return nil, err
+	}
+	started := time.Now()
+	resp, err := s.llm.Chat(ctx, prepared.providerConfig, prepared.llmRequest)
+	latencyMS := int(time.Since(started).Milliseconds())
+	if err != nil {
+		_ = s.writeUsage(ctx, ownerID, prepared.provider, prepared.model, llm.Usage{}, latencyMS, false, err.Error())
+		return nil, err
+	}
+	assistantMessage, refs, err := s.saveAssistant(ctx, ownerID, prepared.conversation.ID, resp.Content, prepared.packed.References, resp.Usage.CompletionTokens)
+	if err != nil {
+		return nil, err
+	}
+	_ = s.writeUsage(ctx, ownerID, prepared.provider, prepared.model, resp.Usage, latencyMS, true, "")
+	return &ChatResponse{
+		Conversation:       prepared.conversation,
+		UserMessage:        prepared.userMessage,
+		AssistantMessage:   assistantMessage,
+		References:         refs,
+		Usage:              resp.Usage,
+		RetrievalLatencyMS: prepared.retrievalLatencyMS,
+	}, nil
+}
+
+func (s *Service) StreamChat(ctx context.Context, ownerID int64, req ChatRequest, emit func(StreamEvent) error) error {
+	prepared, err := s.prepare(ctx, ownerID, req)
+	if err != nil {
+		return err
+	}
+	if err := emit(StreamEvent{Type: "conversation", Data: prepared.conversation}); err != nil {
+		return err
+	}
+	if err := emit(StreamEvent{Type: "user_message", Data: prepared.userMessage}); err != nil {
+		return err
+	}
+	if err := emit(StreamEvent{Type: "retrieval", Data: map[string]any{"references": prepared.packed.References, "latency_ms": prepared.retrievalLatencyMS}}); err != nil {
+		return err
+	}
+
+	started := time.Now()
+	content := strings.Builder{}
+	usageData := llm.Usage{}
+	err = s.llm.StreamChat(ctx, prepared.providerConfig, prepared.llmRequest, func(event llm.StreamEvent) error {
+		if event.Delta != "" {
+			content.WriteString(event.Delta)
+			return emit(StreamEvent{Type: "delta", Data: map[string]string{"content": event.Delta}})
+		}
+		if event.Usage.TotalTokens > 0 || event.Usage.PromptTokens > 0 || event.Usage.CompletionTokens > 0 {
+			usageData = event.Usage
+		}
+		return nil
+	})
+	latencyMS := int(time.Since(started).Milliseconds())
+	if err != nil {
+		_ = s.writeUsage(ctx, ownerID, prepared.provider, prepared.model, usageData, latencyMS, false, err.Error())
+		return err
+	}
+	assistantMessage, refs, err := s.saveAssistant(ctx, ownerID, prepared.conversation.ID, content.String(), prepared.packed.References, usageData.CompletionTokens)
+	if err != nil {
+		return err
+	}
+	_ = s.writeUsage(ctx, ownerID, prepared.provider, prepared.model, usageData, latencyMS, true, "")
+	return emit(StreamEvent{Type: "done", Data: ChatResponse{
+		Conversation:       prepared.conversation,
+		UserMessage:        prepared.userMessage,
+		AssistantMessage:   assistantMessage,
+		References:         refs,
+		Usage:              usageData,
+		RetrievalLatencyMS: prepared.retrievalLatencyMS,
+	}})
+}
+
+func (s *Service) ListConversations(ctx context.Context, ownerID int64) ([]conversation.Conversation, error) {
+	return s.conversations.ListByOwner(ctx, ownerID)
+}
+
+func (s *Service) GetConversation(ctx context.Context, ownerID, id int64) (*conversation.Conversation, error) {
+	item, err := s.conversations.FindByID(ctx, ownerID, id)
+	if err != nil {
+		return nil, mapNotFound(err)
+	}
+	return item, nil
+}
+
+func (s *Service) ListMessages(ctx context.Context, ownerID, conversationID int64) ([]conversation.Message, error) {
+	if _, err := s.GetConversation(ctx, ownerID, conversationID); err != nil {
+		return nil, err
+	}
+	return s.messages.ListByConversation(ctx, ownerID, conversationID)
+}
+
+func (s *Service) DeleteConversation(ctx context.Context, ownerID, id int64) error {
+	if _, err := s.GetConversation(ctx, ownerID, id); err != nil {
+		return err
+	}
+	return s.conversations.SoftDelete(ctx, ownerID, id)
+}
+
+type preparedChat struct {
+	provider           *providerdomain.ModelProvider
+	providerConfig     llm.ChatProviderConfig
+	model              string
+	conversation       *conversation.Conversation
+	userMessage        *conversation.Message
+	packed             PackedContext
+	llmRequest         llm.ChatRequest
+	retrievalLatencyMS int
+}
+
+func (s *Service) prepare(ctx context.Context, ownerID int64, req ChatRequest) (*preparedChat, error) {
+	question := strings.TrimSpace(req.Question)
+	topK := req.TopK
+	if topK == 0 {
+		topK = defaultTopK
+	}
+	if req.ProviderID <= 0 || len(req.KBIDs) == 0 || question == "" || topK <= 0 || topK > maxTopK {
+		return nil, agenterrors.ErrInvalidInput
+	}
+	provider, model, providerConfig, err := s.providerConfig(ctx, ownerID, req.ProviderID, req.Model)
+	if err != nil {
+		return nil, err
+	}
+	for _, kbID := range req.KBIDs {
+		kb, err := s.kbs.FindByID(ctx, ownerID, kbID)
+		if err != nil {
+			return nil, mapNotFound(err)
+		}
+		if kb.Status != knowledge.KnowledgeBaseStatusActive {
+			return nil, agenterrors.ErrInvalidInput
+		}
+	}
+	conv, err := s.ensureConversation(ctx, ownerID, req.ConversationID, question)
+	if err != nil {
+		return nil, err
+	}
+	userMessage := &conversation.Message{
+		OwnerID:        ownerID,
+		ConversationID: conv.ID,
+		Role:           conversation.RoleUser,
+		Content:        question,
+		ContentType:    conversation.ContentTypeText,
+		TokenCount:     estimateTokens(question),
+	}
+	if err := s.messages.Create(ctx, userMessage); err != nil {
+		return nil, err
+	}
+	_ = s.conversations.UpdateLastMessageAt(ctx, ownerID, conv.ID)
+
+	retrievalResp, err := s.retriever.Search(ctx, retrieval.RetrievalRequest{
+		OwnerID:         ownerID,
+		KBIDs:           req.KBIDs,
+		Query:           question,
+		TopK:            topK,
+		Mode:            retrieval.ModeKeyword,
+		EnableHighlight: true,
+	})
+	if err != nil {
+		return nil, err
+	}
+	packed := s.packer.Pack(ownerID, retrievalResp.Results)
+	prompt := s.prompts.Build(question, packed.Text)
+	return &preparedChat{
+		provider:           provider,
+		providerConfig:     providerConfig,
+		model:              model,
+		conversation:       conv,
+		userMessage:        userMessage,
+		packed:             packed,
+		retrievalLatencyMS: retrievalResp.LatencyMS,
+		llmRequest: llm.ChatRequest{
+			Model: model,
+			Messages: []llm.ChatMessage{
+				{Role: conversation.RoleSystem, Content: prompt},
+				{Role: conversation.RoleUser, Content: question},
+			},
+		},
+	}, nil
+}
+
+func (s *Service) providerConfig(ctx context.Context, ownerID, providerID int64, requestedModel string) (*providerdomain.ModelProvider, string, llm.ChatProviderConfig, error) {
+	provider, err := s.providers.FindByID(ctx, ownerID, providerID)
+	if err != nil {
+		return nil, "", llm.ChatProviderConfig{}, mapNotFound(err)
+	}
+	if provider.Status != providerdomain.StatusActive {
+		return nil, "", llm.ChatProviderConfig{}, agenterrors.ErrInvalidInput
+	}
+	model := strings.TrimSpace(requestedModel)
+	if model == "" {
+		model = strings.TrimSpace(provider.DefaultChatModel)
+	}
+	if model == "" {
+		return nil, "", llm.ChatProviderConfig{}, agenterrors.ErrInvalidInput
+	}
+	apiKey, err := s.secrets.Decrypt(provider.EncryptedAPIKey)
+	if err != nil {
+		return nil, "", llm.ChatProviderConfig{}, err
+	}
+	return provider, model, llm.ChatProviderConfig{ProviderType: provider.ProviderType, BaseURL: provider.BaseURL, APIKey: apiKey}, nil
+}
+
+func (s *Service) ensureConversation(ctx context.Context, ownerID, conversationID int64, question string) (*conversation.Conversation, error) {
+	if conversationID > 0 {
+		item, err := s.conversations.FindByID(ctx, ownerID, conversationID)
+		if err != nil {
+			return nil, mapNotFound(err)
+		}
+		return item, nil
+	}
+	title := question
+	if utf8.RuneCountInString(title) > 40 {
+		title = string([]rune(title)[:40])
+	}
+	item := &conversation.Conversation{OwnerID: ownerID, Title: title, Source: conversation.SourceRAGChat}
+	if err := s.conversations.Create(ctx, item); err != nil {
+		return nil, err
+	}
+	return item, nil
+}
+
+func (s *Service) saveAssistant(ctx context.Context, ownerID, conversationID int64, content string, references []conversation.MessageReference, tokenCount int) (*conversation.Message, []conversation.MessageReference, error) {
+	message := &conversation.Message{
+		OwnerID:        ownerID,
+		ConversationID: conversationID,
+		Role:           conversation.RoleAssistant,
+		Content:        content,
+		ContentType:    conversation.ContentTypeText,
+		TokenCount:     tokenCount,
+	}
+	if message.TokenCount == 0 {
+		message.TokenCount = estimateTokens(content)
+	}
+	if err := s.messages.Create(ctx, message); err != nil {
+		return nil, nil, err
+	}
+	for i := range references {
+		references[i].MessageID = message.ID
+	}
+	if err := s.messages.CreateReferences(ctx, references); err != nil {
+		return nil, nil, err
+	}
+	_ = s.conversations.UpdateLastMessageAt(ctx, ownerID, conversationID)
+	return message, references, nil
+}
+
+func (s *Service) writeUsage(ctx context.Context, ownerID int64, provider *providerdomain.ModelProvider, model string, usageData llm.Usage, latencyMS int, success bool, message string) error {
+	return s.usages.Create(ctx, &usage.ModelUsageLog{
+		OwnerID:          ownerID,
+		ProviderID:       provider.ID,
+		ProviderType:     provider.ProviderType,
+		ModelName:        model,
+		UsageType:        usage.TypeChat,
+		PromptTokens:     usageData.PromptTokens,
+		CompletionTokens: usageData.CompletionTokens,
+		TotalTokens:      usageData.TotalTokens,
+		LatencyMS:        latencyMS,
+		Success:          success,
+		ErrorMessage:     message,
+	})
+}
+
+func mapNotFound(err error) error {
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return agenterrors.ErrNotFound
+	}
+	return err
+}
