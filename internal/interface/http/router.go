@@ -20,6 +20,7 @@ type RouterDeps struct {
 	AuditHandler     *handler.AuditHandler
 	KnowledgeHandler *handler.KnowledgeHandler
 	DocumentHandler  *handler.DocumentHandler
+	ChatHandler      *handler.ChatHandler
 	AuthService      *authusecase.Service
 	APITokens        authdomain.APITokenRepository
 }
@@ -82,6 +83,13 @@ func NewRouter(deps RouterDeps) *gin.Engine {
 			protected.GET("/documents/:id/chunks", deps.DocumentHandler.ListChunks)
 
 			protected.GET("/ingestion-jobs/:id", deps.KnowledgeHandler.GetIngestionJob)
+
+			protected.POST("/rag/chat", deps.ChatHandler.Chat)
+			protected.POST("/rag/chat/stream", deps.ChatHandler.StreamChat)
+			protected.GET("/conversations", deps.ChatHandler.ListConversations)
+			protected.GET("/conversations/:id", deps.ChatHandler.GetConversation)
+			protected.GET("/conversations/:id/messages", deps.ChatHandler.ListMessages)
+			protected.DELETE("/conversations/:id", deps.ChatHandler.DeleteConversation)
 		}
 	}
 
