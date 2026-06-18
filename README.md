@@ -32,10 +32,13 @@ Phase 2：Elasticsearch 知识库最小闭环。
 - 知识库创建、列表、详情、更新和删除
 - txt/md 文档上传到 MinIO
 - MySQL ingestion job 异步任务表
+- ingestion job 失败重试与最大尝试次数控制
 - Worker 轮询处理文档解析、切片和索引
+- 基于估算 token 预算的 fixed-token 切片
 - document chunks 保存到 MySQL
 - chunks 同步写入 Elasticsearch
 - 知识库关键词搜索和高亮返回
+- 上传失败、重复处理和删除路径的状态一致性处理
 - retrieval logs 检索日志记录
 
 还没有包含：
@@ -300,6 +303,6 @@ http://localhost:5601
 
 ## 当前状态说明
 
-当前阶段已经完成基础工程骨架、Phase 1 平台能力，以及 Phase 2 的 txt/md 知识库最小闭环：创建知识库、上传文档、后台 worker 解析切片、写入 MySQL 与 Elasticsearch，并通过搜索接口返回命中 chunk 和高亮内容。
+当前阶段已经完成基础工程骨架、Phase 1 平台能力，以及 Phase 2 的 txt/md 知识库最小闭环：创建知识库、上传文档、后台 worker 解析切片、写入 MySQL 与 Elasticsearch，并通过搜索接口返回命中 chunk 和高亮内容。Phase 2 还补齐了 ingestion job 失败重试、上传失败状态回写、重复处理幂等替换、搜索参数校验，以及 fixed-token 切片的估算 token 预算控制。
 
 下一阶段会开始实现 Phase 3：普通 RAG Chat，不做画布，基于已有知识库检索结果接入 LLM 生成回答。
