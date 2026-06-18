@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 
+	agentusecase "agentcanvas/internal/application/agent_usecase"
 	auditusecase "agentcanvas/internal/application/audit_usecase"
 	authusecase "agentcanvas/internal/application/auth_usecase"
 	chatusecase "agentcanvas/internal/application/chat_usecase"
@@ -75,6 +76,11 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 	conversationRepo := mysqlinfra.NewConversationRepository(db)
 	messageRepo := mysqlinfra.NewMessageRepository(db)
 	usageRepo := mysqlinfra.NewUsageRepository(db)
+	agentRepo := mysqlinfra.NewAgentRepository(db)
+	flowVersionRepo := mysqlinfra.NewFlowVersionRepository(db)
+	runRepo := mysqlinfra.NewRunRepository(db)
+	runEventRepo := mysqlinfra.NewRunEventRepository(db)
+	nodeLogRepo := mysqlinfra.NewNodeLogRepository(db)
 	fileStorage := minioinfra.NewFileStorage(minioClient, cfg.MinIO.Bucket)
 
 	jwtService := cryptoinfra.NewJWTService(cfg.Security.JWTSecret, cfg.Security.AccessTokenTTL())
@@ -87,6 +93,7 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 	auditService := auditusecase.NewService(auditRepo)
 	knowledgeService := knowledgeusecase.NewService(knowledgeRepo, documentRepo, chunkRepo, ingestionJobRepo, retrievalLogRepo, auditRepo, fileStorage, esStore, esStore)
 	chatService := chatusecase.NewService(providerRepo, knowledgeRepo, conversationRepo, messageRepo, usageRepo, esStore, llm.NewOpenAICompatibleChatClient(), secretBox)
+	agentService := agentusecase.NewService(agentRepo, flowVersionRepo, runRepo, runEventRepo, nodeLogRepo, providerRepo, messageRepo, esStore, llm.NewOpenAICompatibleChatClient(), secretBox)
 
 	healthHandler := handler.NewHealthHandler(db, redisClient, minioClient, esClient, cfg.MinIO.Bucket)
 	authHandler := handler.NewAuthHandler(authService)
@@ -96,6 +103,7 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 	knowledgeHandler := handler.NewKnowledgeHandler(knowledgeService)
 	documentHandler := handler.NewDocumentHandler(knowledgeService)
 	chatHandler := handler.NewChatHandler(chatService)
+	agentHandler := handler.NewAgentHandler(agentService)
 
 	router := httpserver.NewRouter(httpserver.RouterDeps{
 		Logger:           log,
@@ -107,6 +115,7 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 		KnowledgeHandler: knowledgeHandler,
 		DocumentHandler:  documentHandler,
 		ChatHandler:      chatHandler,
+		AgentHandler:     agentHandler,
 		AuthService:      authService,
 		APITokens:        apiTokenRepo,
 	})

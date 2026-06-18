@@ -21,6 +21,7 @@ type RouterDeps struct {
 	KnowledgeHandler *handler.KnowledgeHandler
 	DocumentHandler  *handler.DocumentHandler
 	ChatHandler      *handler.ChatHandler
+	AgentHandler     *handler.AgentHandler
 	AuthService      *authusecase.Service
 	APITokens        authdomain.APITokenRepository
 }
@@ -90,6 +91,23 @@ func NewRouter(deps RouterDeps) *gin.Engine {
 			protected.GET("/conversations/:id", deps.ChatHandler.GetConversation)
 			protected.GET("/conversations/:id/messages", deps.ChatHandler.ListMessages)
 			protected.DELETE("/conversations/:id", deps.ChatHandler.DeleteConversation)
+
+			protected.POST("/agents", deps.AgentHandler.Create)
+			protected.GET("/agents", deps.AgentHandler.List)
+			protected.GET("/agents/:id", deps.AgentHandler.Get)
+			protected.PATCH("/agents/:id", deps.AgentHandler.Update)
+			protected.DELETE("/agents/:id", deps.AgentHandler.Delete)
+			protected.POST("/agents/:id/flow-versions", deps.AgentHandler.CreateFlowVersion)
+			protected.GET("/agents/:id/flow-versions", deps.AgentHandler.ListFlowVersions)
+			protected.GET("/flow-versions/:id", deps.AgentHandler.GetFlowVersion)
+			protected.POST("/flow-versions/:id/publish", deps.AgentHandler.PublishFlowVersion)
+			protected.POST("/flow-versions/:id/validate", deps.AgentHandler.ValidateFlowVersion)
+			protected.POST("/agents/:id/runs", deps.AgentHandler.Run)
+			protected.POST("/agents/:id/runs/stream", deps.AgentHandler.StreamRun)
+			protected.GET("/runs/:id", deps.AgentHandler.GetRun)
+			protected.GET("/runs/:id/events", deps.AgentHandler.ListRunEvents)
+			protected.GET("/runs/:id/node-logs", deps.AgentHandler.ListNodeLogs)
+			protected.POST("/runs/:id/cancel", deps.AgentHandler.CancelRun)
 		}
 	}
 
