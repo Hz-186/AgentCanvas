@@ -2,11 +2,11 @@
 
 AgentCanvas 是一个用 Go 编写的单人版 Agent Flow + RAG 知识库项目。
 
-当前项目已经完成 Phase 2：Elasticsearch 知识库最小闭环。系统已经具备单人应用的平台壳子、模型配置能力，以及 txt/md 文档上传、异步解析切片、ES BM25 检索能力。
+当前项目已经完成 Phase 3：普通 RAG Chat。系统已经具备单人应用的平台壳子、模型配置能力、txt/md 文档上传、异步解析切片、ES BM25 检索，以及基于知识库上下文调用 OpenAI-compatible LLM 的普通问答能力。
 
 ## 当前阶段
 
-Phase 2：Elasticsearch 知识库最小闭环。
+Phase 3：普通 RAG Chat。
 
 已经包含：
 
@@ -40,11 +40,16 @@ Phase 2：Elasticsearch 知识库最小闭环。
 - 知识库关键词搜索和高亮返回
 - 上传失败、重复处理和删除路径的状态一致性处理
 - retrieval logs 检索日志记录
+- 普通 RAG Chat 同步问答接口
+- POST + text/event-stream 流式 RAG Chat 接口
+- conversation、message、reference 持久化
+- model usage 日志记录
+- OpenAI-compatible /chat/completions 客户端
+- DeepSeek、Qwen、openai_compatible 复用 OpenAI-compatible 协议
 
 还没有包含：
 
 - PDF / docx / xlsx 解析
-- RAG Chat
 - Agent Flow Runtime
 - 前端画布
 
@@ -260,6 +265,48 @@ Ingestion Job：
 GET    /api/v1/ingestion-jobs/:id
 ```
 
+## Phase 3 API
+
+RAG Chat：
+
+```text
+POST /api/v1/rag/chat
+POST /api/v1/rag/chat/stream
+```
+
+请求体：
+
+```json
+{
+  "provider_id": 1,
+  "kb_ids": [1],
+  "question": "请总结这份文档",
+  "conversation_id": 0,
+  "model": "",
+  "top_k": 8
+}
+```
+
+流式事件：
+
+```text
+conversation
+user_message
+retrieval
+delta
+done
+error
+```
+
+Conversation：
+
+```text
+GET    /api/v1/conversations
+GET    /api/v1/conversations/:id
+GET    /api/v1/conversations/:id/messages
+DELETE /api/v1/conversations/:id
+```
+
 ## 常用命令
 
 ```bash
@@ -303,6 +350,6 @@ http://localhost:5601
 
 ## 当前状态说明
 
-当前阶段已经完成基础工程骨架、Phase 1 平台能力，以及 Phase 2 的 txt/md 知识库最小闭环：创建知识库、上传文档、后台 worker 解析切片、写入 MySQL 与 Elasticsearch，并通过搜索接口返回命中 chunk 和高亮内容。Phase 2 还补齐了 ingestion job 失败重试、上传失败状态回写、重复处理幂等替换、搜索参数校验，以及 fixed-token 切片的估算 token 预算控制。
+当前阶段已经完成基础工程骨架、Phase 1 平台能力、Phase 2 的 txt/md 知识库最小闭环，以及 Phase 3 普通 RAG Chat。用户可以选择 provider 和知识库提问，后端会检索 ES chunks、组装带引用编号的上下文、调用 OpenAI-compatible Chat Completions，并保存 conversation、messages、references 和 model usage。
 
-下一阶段会开始实现 Phase 3：普通 RAG Chat，不做画布，基于已有知识库检索结果接入 LLM 生成回答。
+下一阶段会开始实现 Agent Flow DSL 与 Runtime，继续保持不依赖前端画布也能通过 JSON DSL 调试运行。
