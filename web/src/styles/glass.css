@@ -1,0 +1,51 @@
+/* ============================================================
+   液态玻璃 / 磨砂玻璃工具类
+   仅用于工具栏、侧栏、检查器、浮层、菜单、状态栏、弹窗。
+   正文 / 表单 / 代码 / 长文本使用 .surface 实底以保证可读性。
+   ============================================================ */
+
+.glass {
+  background: var(--glass-bg);
+  -webkit-backdrop-filter: blur(var(--blur-md)) saturate(180%);
+  backdrop-filter: blur(var(--blur-md)) saturate(180%);
+  border: 1px solid var(--glass-border);
+  box-shadow:
+    var(--shadow-glass),
+    inset 0 1px 0 var(--glass-highlight);
+}
+
+.glass-strong {
+  background: var(--glass-bg-strong);
+  -webkit-backdrop-filter: blur(var(--blur-lg)) saturate(190%);
+  backdrop-filter: blur(var(--blur-lg)) saturate(190%);
+  border: 1px solid var(--glass-border);
+  box-shadow:
+    var(--shadow-glass),
+    inset 0 1px 0 var(--glass-highlight);
+}
+
+/* 当浏览器不支持 backdrop-filter 时回退为接近不透明的实底，保证可读 */
+@supports not ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {
+  .glass,
+  .glass-strong {
+    background: var(--glass-bg-strong);
+  }
+}
+
+/* 实底可读容器：正文、表单、代码、长列表 */
+.surface {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+}
+
+.surface-2 {
+  background: var(--bg-surface-2);
+}
+
+.elevated {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-lg);
+}
