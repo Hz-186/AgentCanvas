@@ -53,3 +53,20 @@ func TestValidatorRejectsCycle(t *testing.T) {
 		t.Fatal("Validate() expected cycle error")
 	}
 }
+
+func TestValidatorRejectsUnreachableNode(t *testing.T) {
+	dsl := &DSL{
+		SchemaVersion: SchemaVersionV1,
+		FlowID:        "flow_test",
+		Nodes: []Node{
+			{ID: "begin_1", Type: "begin", Config: json.RawMessage(`{}`)},
+			{ID: "message_1", Type: "message", Config: json.RawMessage(`{}`)},
+			{ID: "prompt_1", Type: "prompt", Config: json.RawMessage(`{}`)},
+		},
+		Edges: []Edge{{From: "begin_1", To: "message_1"}},
+	}
+	validator := NewValidator(testNodeValidator{types: map[string]bool{"begin": true, "message": true, "prompt": true}})
+	if err := validator.Validate(dsl); err == nil {
+		t.Fatal("Validate() expected unreachable node error")
+	}
+}

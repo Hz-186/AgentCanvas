@@ -28,6 +28,7 @@ func (v *Validator) Validate(dsl *DSL) error {
 	}
 	nodeByID := make(map[string]Node, len(dsl.Nodes))
 	beginCount := 0
+	beginID := ""
 	for _, node := range dsl.Nodes {
 		node.ID = strings.TrimSpace(node.ID)
 		node.Type = strings.TrimSpace(node.Type)
@@ -39,6 +40,7 @@ func (v *Validator) Validate(dsl *DSL) error {
 		}
 		if node.Type == "begin" {
 			beginCount++
+			beginID = node.ID
 		}
 		if v.nodes != nil {
 			if err := v.nodes.ValidateNodeConfig(node.Type, node.Config); err != nil {
@@ -90,6 +92,22 @@ func (v *Validator) Validate(dsl *DSL) error {
 	}
 	if visited != len(nodeByID) {
 		return fmt.Errorf("%w: flow contains cycle", agenterrors.ErrInvalidInput)
+	}
+	reachable := map[string]bool{beginID: true}
+	queue = []string{beginID}
+	for len(queue) > 0 {
+		id := queue[0]
+		queue = queue[1:]
+		for _, next := range adjacency[id] {
+			if reachable[next] {
+				continue
+			}
+			reachable[next] = true
+			queue = append(queue, next)
+		}
+	}
+	if len(reachable) != len(nodeByID) {
+		return fmt.Errorf("%w: all nodes must be reachable from begin", agenterrors.ErrInvalidInput)
 	}
 	return nil
 }
