@@ -7,6 +7,8 @@ import {
   LogOut,
   MessageSquareText,
   Moon,
+  PanelRightClose,
+  PanelRightOpen,
   Search,
   Settings,
   Sparkles,
@@ -45,10 +47,10 @@ function PublicOnly({ children }: { children: React.ReactNode }) {
 }
 
 const nav = [
-  { to: '/app/agents', label: 'Agents', icon: Bot },
-  { to: '/app/knowledge', label: 'Knowledge', icon: Database },
-  { to: '/app/chat', label: 'RAG Chat', icon: MessageSquareText },
-  { to: '/app/settings', label: 'Settings', icon: Settings },
+  { to: '/app/agents', label: '智能体', icon: Bot },
+  { to: '/app/knowledge', label: '知识库', icon: Database },
+  { to: '/app/chat', label: 'RAG 对话', icon: MessageSquareText },
+  { to: '/app/settings', label: '设置', icon: Settings },
 ];
 
 function AppShell() {
@@ -56,16 +58,22 @@ function AppShell() {
   const logout = useAuthStore((state) => state.logout);
   const navigate = useNavigate();
   const location = useLocation();
+  const isCanvas = location.pathname.includes('/canvas');
   const [theme, setTheme] = useState(() => document.documentElement.dataset.theme ?? 'light');
+  const [inspectorOpen, setInspectorOpen] = useState(() => !location.pathname.includes('/canvas'));
 
   const pageTitle = useMemo(() => {
-    if (location.pathname.includes('/canvas')) return 'Flow Canvas';
+    if (isCanvas) return 'Flow Canvas';
     return nav.find((item) => location.pathname.startsWith(item.to))?.label ?? 'Workspace';
-  }, [location.pathname]);
+  }, [isCanvas, location.pathname]);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
   }, [theme]);
+
+  useEffect(() => {
+    if (isCanvas) setInspectorOpen(false);
+  }, [isCanvas]);
 
   return (
     <div className="app-shell">
@@ -76,7 +84,7 @@ function AppShell() {
           </div>
           <div className="min-w-0">
             <strong className="truncate">AgentCanvas</strong>
-            <span className="truncate">Visual Agent Platform</span>
+            <span className="truncate">可视化 Agent 工作台</span>
           </div>
         </div>
         <div className="topbar-center">
@@ -86,6 +94,12 @@ function AppShell() {
           </label>
         </div>
         <div className="topbar-actions">
+          <IconButton
+            label={inspectorOpen ? '收起右侧信息栏' : '展开右侧信息栏'}
+            onClick={() => setInspectorOpen((value) => !value)}
+          >
+            {inspectorOpen ? <PanelRightClose size={17} /> : <PanelRightOpen size={17} />}
+          </IconButton>
           <IconButton label={theme === 'dark' ? '切换浅色主题' : '切换深色主题'} onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>
             {theme === 'dark' ? <Sun size={17} /> : <Moon size={17} />}
           </IconButton>
@@ -95,7 +109,7 @@ function AppShell() {
         </div>
       </header>
 
-      <div className="workspace">
+      <div className={`workspace ${inspectorOpen ? 'inspector-open' : 'inspector-closed'} ${isCanvas ? 'workspace-canvas' : ''}`}>
         <aside className="sidebar glass">
           <p className="eyebrow">Workspace</p>
           <nav className="nav-list" aria-label="主导航">
@@ -124,25 +138,25 @@ function AppShell() {
           <Outlet />
         </main>
 
-        <aside className="inspector glass">
+        <aside className="inspector glass" aria-hidden={!inspectorOpen}>
           <h2>{pageTitle}</h2>
-          <p>当前工作区保持桌面软件式布局。可在窄窗口中自动收起侧栏与检查器，核心操作仍保留在主区域。</p>
+          <p>右侧信息栏可以随时收起；在画布页会默认隐藏，把空间优先留给核心工作区。</p>
           <div className="stack" style={{ marginTop: 16 }}>
             <div className="row">
               <Brain size={16} />
-              <span className="muted">Phase 5 Visual Workspace</span>
+              <span className="muted">第五阶段可视化工作台</span>
             </div>
             <div className="row">
               <ChevronRight size={16} />
-              <span className="muted">REST + SSE Connected</span>
+              <span className="muted">REST 与 SSE 已接入</span>
             </div>
           </div>
         </aside>
       </div>
 
       <footer className="statusbar glass">
-        <span className="truncate">AgentCanvas Phase 5</span>
-        <span className="truncate">macOS glass workspace · {pageTitle}</span>
+        <span className="truncate">AgentCanvas 第五阶段</span>
+        <span className="truncate">macOS 玻璃质感工作台 · {pageTitle}</span>
       </footer>
     </div>
   );

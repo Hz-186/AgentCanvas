@@ -5,23 +5,81 @@
    ============================================================ */
 
 .glass {
-  background: var(--glass-bg);
-  -webkit-backdrop-filter: blur(var(--blur-md)) saturate(180%);
-  backdrop-filter: blur(var(--blur-md)) saturate(180%);
-  border: 1px solid var(--glass-border);
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.34), rgba(255, 255, 255, 0.08)),
+    var(--glass-bg);
+  -webkit-backdrop-filter: blur(var(--blur-md)) saturate(190%) contrast(104%);
+  backdrop-filter: blur(var(--blur-md)) saturate(190%) contrast(104%);
+  border: 1px solid color-mix(in srgb, var(--glass-border) 78%, rgba(255, 255, 255, 0.28));
   box-shadow:
     var(--shadow-glass),
-    inset 0 1px 0 var(--glass-highlight);
+    inset 0 1px 0 var(--glass-highlight),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.12);
 }
 
 .glass-strong {
-  background: var(--glass-bg-strong);
-  -webkit-backdrop-filter: blur(var(--blur-lg)) saturate(190%);
-  backdrop-filter: blur(var(--blur-lg)) saturate(190%);
-  border: 1px solid var(--glass-border);
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.42), rgba(255, 255, 255, 0.12)),
+    var(--glass-bg-strong);
+  -webkit-backdrop-filter: blur(var(--blur-lg)) saturate(210%) contrast(106%);
+  backdrop-filter: blur(var(--blur-lg)) saturate(210%) contrast(106%);
+  border: 1px solid color-mix(in srgb, var(--glass-border) 78%, rgba(255, 255, 255, 0.32));
   box-shadow:
     var(--shadow-glass),
-    inset 0 1px 0 var(--glass-highlight);
+    inset 0 1px 0 var(--glass-highlight),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.16);
+}
+
+.glass::before,
+.glass-strong::before {
+  content: "";
+  position: absolute;
+  inset: -55%;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(circle at 24% 22%, rgba(255, 255, 255, 0.72), transparent 15%),
+    radial-gradient(circle at 72% 62%, rgba(10, 132, 255, 0.16), transparent 22%),
+    conic-gradient(from 140deg, rgba(255, 255, 255, 0.18), transparent 18%, rgba(255, 255, 255, 0.22), transparent 44%, rgba(10, 132, 255, 0.1), transparent 70%);
+  filter: blur(24px) saturate(145%);
+  opacity: 0.62;
+  transform: translate3d(0, 0, 0);
+  animation: liquid-glass-flow 16s var(--ease-in-out) infinite alternate;
+}
+
+.glass::after,
+.glass-strong::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(115deg, rgba(255, 255, 255, 0.34), transparent 32%),
+    linear-gradient(290deg, transparent 58%, rgba(255, 255, 255, 0.18));
+  opacity: 0.58;
+  mix-blend-mode: screen;
+}
+
+.glass > *,
+.glass-strong > * {
+  position: relative;
+  z-index: 1;
+}
+
+@keyframes liquid-glass-flow {
+  from {
+    transform: translate3d(-3%, -2%, 0) rotate(-5deg) scale(1);
+  }
+  to {
+    transform: translate3d(3%, 2%, 0) rotate(5deg) scale(1.08);
+  }
 }
 
 /* 当浏览器不支持 backdrop-filter 时回退为接近不透明的实底，保证可读 */

@@ -1,10 +1,8 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { type CSSProperties, type MouseEvent as ReactMouseEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import {
-  Background,
   Controls,
   Handle,
-  MiniMap,
   Position,
   ReactFlow,
   addEdge,
@@ -17,7 +15,17 @@ import {
   type NodeChange,
   type NodeProps,
 } from '@xyflow/react';
-import { Bot, BrainCircuit, Database, MessageSquare, Play, Save, Send, Sparkles, Workflow } from 'lucide-react';
+import {
+  Bot,
+  BrainCircuit,
+  Database,
+  MessageSquare,
+  Play,
+  Save,
+  Send,
+  Sparkles,
+  Workflow,
+} from 'lucide-react';
 import { agentApi, knowledgeApi, settingsApi } from '../api/resources';
 import { Button, EmptyState, Field, Panel, Segmented, Select, StatusBadge, TextArea, TextInput, Toast } from '../components/ui';
 import type { Agent, FlowVersion, KnowledgeBase, ModelProvider } from '../types/api';
@@ -66,6 +74,11 @@ function AgentNode({ data, selected }: NodeProps<CanvasNode>) {
 }
 
 const nodeTypes = { agentNode: AgentNode };
+const DEFAULT_PALETTE_WIDTH = 128;
+const COLLAPSED_PALETTE_WIDTH = 58;
+const DEFAULT_PANEL_WIDTH = 360;
+const MIN_PANEL_WIDTH = 260;
+const PANEL_COLLAPSE_THRESHOLD = 210;
 
 function normalizeDSL(raw: unknown): FlowDSL | null {
   if (!raw) return null;
@@ -165,11 +178,16 @@ export function CanvasPage() {
   const [providers, setProviders] = useState<ModelProvider[]>([]);
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([]);
   const [mode, setMode] = useState<'config' | 'debug' | 'dsl'>('config');
+  const [paletteWidth, setPaletteWidth] = useState(DEFAULT_PALETTE_WIDTH);
+  const [configWidth, setConfigWidth] = useState(DEFAULT_PANEL_WIDTH);
+  const [sidePanelOpen, setSidePanelOpen] = useState(true);
+  const [pendingConnectId, setPendingConnectId] = useState<string>('');
   const [runInput, setRunInput] = useState('{\n  "query": "请总结知识库内容"\n}');
   const [events, setEvents] = useState<RuntimeEvent[]>([]);
   const [runOutput, setRunOutput] = useState<Record<string, unknown> | null>(null);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
+  const canvasBodyRef = useRef<HTMLDivElement | null>(null);
 
   const selected = useMemo(() => nodes.find((node) => node.id === selectedId) ?? null, [nodes, selectedId]);
   const dsl = useMemo(() => toDSL(agentId, nodes, edges), [agentId, nodes, edges]);
@@ -205,6 +223,77 @@ export function CanvasPage() {
   const onEdgesChange = useCallback((changes: EdgeChange[]) => setEdges((current) => applyEdgeChanges(changes, current)), []);
   const onConnect = useCallback((connection: Connection) => setEdges((current) => addEdge(connection, current)), []);
 
+  const startResize = useCallback((side: 'palette' | 'panel', startX: number) => {
+    const body = canvasBodyRef.current;
+    if (!body) return;
+    const rect = body.getBoundingClientRect();
+
+    function onMove(event: PointerEvent) {
+      if (side === 'palette') {
+        const next = event.clientX - rect.left;
+        if (next < 88) {
+          setPaletteWidth(COLLAPSED_PALETTE_WIDTH);
+        } else {
+          setPaletteWidth(Math.min(220, Math.max(112, next)));
+        }
+        return;
+      }
+
+      const next = rect.right - event.clientX;
+      if (next < PANEL_COLLAPSE_THRESHOLD) {
+        setSidePanelOpen(false);
+        setConfigWidth(DEFAULT_PANEL_WIDTH);
+      } else {
+        setSidePanelOpen(true);
+        setConfigWidth(Math.min(460, Math.max(MIN_PANEL_WIDTH, next)));
+      }
+    }
+
+    function onUp() {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      document.body.classList.remove('is-resizing-panels');
+    }
+
+    document.body.classList.add('is-resizing-panels');
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    onMove({ clientX: startX } as PointerEvent);
+  }, []);
+
+  function connectByShiftClick(node: CanvasNode) {
+    if (!pendingConnectId) {
+      setPendingConnectId(node.id);
+      setSelectedId(node.id);
+      setMessage(`已选择 ${node.data.label}，按住 Shift 点击另一个模块即可连线`);
+      return;
+    }
+    if (pendingConnectId === node.id) {
+      setPendingConnectId('');
+      setMessage('已取消快速连线');
+      return;
+    }
+    const edgeId = `edge-${pendingConnectId}-${node.id}`;
+    setEdges((current) => {
+      if (current.some((edge) => edge.source === pendingConnectId && edge.target === node.id)) return current;
+      return [...current, { id: edgeId, source: pendingConnectId, target: node.id }];
+    });
+    setPendingConnectId('');
+    setSelectedId(node.id);
+    setMessage('已通过 Shift 点击创建连线');
+  }
+
+  function handleNodeClick(event: ReactMouseEvent, node: CanvasNode) {
+    if (event.shiftKey) {
+      connectByShiftClick(node);
+      return;
+    }
+    setPendingConnectId('');
+    setSelectedId(node.id);
+    setSidePanelOpen(true);
+    setConfigWidth((width) => Math.max(width, DEFAULT_PANEL_WIDTH));
+  }
+
   function addNode(type: NodeType) {
     if (type === 'begin' && nodes.some((node) => node.data.nodeType === 'begin')) {
       setError('Begin 节点已经存在');
@@ -220,6 +309,8 @@ export function CanvasPage() {
     setNodes((current) => [...current, node]);
     if (selectedId) setEdges((current) => [...current, { id: `edge-${selectedId}-${nodeId}`, source: selectedId, target: nodeId }]);
     setSelectedId(nodeId);
+    setSidePanelOpen(true);
+    setConfigWidth((width) => Math.max(width, DEFAULT_PANEL_WIDTH));
     setError('');
   }
 
@@ -303,7 +394,14 @@ export function CanvasPage() {
         </div>
       </header>
 
-      <div className="canvas-body">
+      <div
+        ref={canvasBodyRef}
+        className={`canvas-body ${sidePanelOpen ? 'side-panel-open' : 'side-panel-closed'} ${paletteWidth <= COLLAPSED_PALETTE_WIDTH ? 'palette-collapsed' : ''}`}
+        style={{
+          '--palette-width': `${paletteWidth}px`,
+          '--config-width': `${configWidth}px`,
+        } as CSSProperties}
+      >
         <aside className="node-palette">
           {(Object.keys(nodeMeta) as NodeType[]).map((type) => {
             const Icon = nodeMeta[type].icon;
@@ -315,6 +413,16 @@ export function CanvasPage() {
             );
           })}
         </aside>
+        <div
+          className="canvas-resizer canvas-resizer-left"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="拖动调整模块栏宽度"
+          onPointerDown={(event) => {
+            event.preventDefault();
+            startResize('palette', event.clientX);
+          }}
+        />
 
         <section className="flow-surface">
           <ReactFlow
@@ -324,16 +432,24 @@ export function CanvasPage() {
             onNodesChange={onNodesChange}
             onEdgesChange={onEdgesChange}
             onConnect={onConnect}
-            onNodeClick={(_, node) => setSelectedId(node.id)}
+            onNodeClick={handleNodeClick}
             fitView
           >
-            <Background />
-            <MiniMap pannable zoomable />
             <Controls />
           </ReactFlow>
         </section>
+        <div
+          className="canvas-resizer canvas-resizer-right"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="拖动调整配置面板宽度，拖到较窄时自动收起"
+          onPointerDown={(event) => {
+            event.preventDefault();
+            startResize('panel', event.clientX);
+          }}
+        />
 
-        <aside className="config-panel">
+        <aside className="config-panel" aria-hidden={!sidePanelOpen}>
           {mode === 'config' && selected && config ? (
             <Panel title={selected.data.label} eyebrow={selected.id}>
               <Field label="显示名称">
