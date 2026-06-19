@@ -16,3 +16,7 @@ tmp/
 
 # OS files
 .DS_Store
+
+# doc / study
+doc
+
