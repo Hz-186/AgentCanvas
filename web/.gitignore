@@ -3,6 +3,7 @@ node_modules/
 
 # build output (embedded by Go at build time; not committed)
 dist/
+*.tsbuildinfo
 
 # logs
 *.log

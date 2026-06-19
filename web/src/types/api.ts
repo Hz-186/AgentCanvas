@@ -182,7 +182,23 @@ export interface DocumentChunk {
 
 export interface UploadDocumentResponse {
   document: AgentDocument;
-  job_id?: number;
+  job?: IngestionJob;
+}
+
+export interface IngestionJob {
+  id: number;
+  owner_id: number;
+  kb_id: number;
+  document_id: number;
+  job_type: string;
+  status: string;
+  error_message: string;
+  attempt_count: number;
+  max_attempts: number;
+  started_at: string | null;
+  finished_at: string | null;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface RetrievalResult {
@@ -292,7 +308,7 @@ export interface FlowVersion {
   owner_id: number;
   agent_id: number;
   version_no: number;
-  dsl_json: string;
+  dsl_json: unknown;
   description: string;
   is_draft: boolean;
   is_published: boolean;
@@ -301,7 +317,7 @@ export interface FlowVersion {
 }
 
 export interface CreateFlowVersionRequest {
-  dsl_json: string;
+  dsl_json: unknown;
   description?: string;
 }
 
