@@ -1,12 +1,17 @@
 package httpserver
 
 import (
+	"io/fs"
+	"net/http"
+	"strings"
+
 	authusecase "agentcanvas/internal/application/auth_usecase"
 	authdomain "agentcanvas/internal/domain/auth"
 	"log/slog"
 
 	"agentcanvas/internal/interface/http/handler"
 	"agentcanvas/internal/interface/http/middleware"
+	webui "agentcanvas/web"
 
 	"github.com/gin-gonic/gin"
 )
@@ -111,5 +116,26 @@ func NewRouter(deps RouterDeps) *gin.Engine {
 		}
 	}
 
+	registerWebUI(r)
+
 	return r
+}
+
+func registerWebUI(r *gin.Engine) {
+	dist, err := fs.Sub(webui.Files, "dist")
+	if err != nil {
+		return
+	}
+	files := http.FS(dist)
+	fileServer := http.FileServer(files)
+
+	r.GET("/", gin.WrapH(fileServer))
+	r.GET("/assets/*filepath", gin.WrapH(fileServer))
+	r.NoRoute(func(c *gin.Context) {
+		if strings.HasPrefix(c.Request.URL.Path, "/api/") {
+			c.JSON(http.StatusNotFound, gin.H{"code": 404, "message": "not found", "data": nil})
+			return
+		}
+		c.FileFromFS("index.html", files)
+	})
 }
