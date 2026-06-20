@@ -1,12 +1,12 @@
 # AgentCanvas
 
-AgentCanvas 是一个用 Go 编写的单人版 Agent Flow + RAG 知识库项目。
+AgentCanvas 是一个用 Go + React 编写的单人版 Agent Flow + RAG 知识库项目。
 
-当前项目已经完成 Phase 4：Agent Flow DSL 与 Runtime。系统已经具备单人应用的平台壳子、模型配置能力、txt/md 文档上传、异步解析切片、ES BM25 检索、基于知识库上下文调用 OpenAI-compatible LLM 的普通问答能力，以及通过 JSON DSL 创建、发布并运行 Agent Flow 的后端闭环。
+当前项目已经完成 Phase 5：前端画布与 Agent 调试。系统已经具备单人应用的平台壳子、模型配置能力、txt/md 文档上传、异步解析切片、ES BM25 检索、基于知识库上下文调用 OpenAI-compatible LLM 的普通问答能力、通过 JSON DSL 创建发布并运行 Agent Flow 的后端闭环，以及浏览器中的可视化工作台、React Flow 画布和 SSE 调试台。
 
 ## 当前阶段
 
-Phase 4：Agent Flow DSL 与 Runtime。
+Phase 5：前端画布与 Agent 调试。
 
 已经包含：
 
@@ -53,11 +53,24 @@ Phase 4：Agent Flow DSL 与 Runtime。
 - Agent Run 创建、状态记录和输出持久化
 - run events 与 node logs 记录和查询
 - POST + text/event-stream 流式 Agent Run 接口
+- React 18 + TypeScript + Vite 前端工程
+- 前端浅色 / 深色主题和 macOS 风格工作台布局
+- 登录、注册和 GitHub OAuth 前端页面
+- 设置页 Provider 管理、API Token 管理和审计日志查看
+- 知识库列表、创建、文档上传、chunk 查看和检索测试
+- RAG Chat 页面，支持流式问答和引用展示
+- Agent 工作区，支持创建、打开和删除 Agent
+- React Flow 可视化画布，支持 Begin、Knowledge Retrieval、Prompt、LLM、Message 五类节点
+- 画布节点拖拽、连线、配置、DSL 双向序列化、保存、发布和校验
+- Agent 调试台，支持 POST + text/event-stream 运行并展示事件时间线
+- Go embed 托管 Vite 构建产物，支持 SPA history fallback
 
 还没有包含：
 
+- Memory、HTTP Tool、Switch、JSON Output、Guardrail
+- ES dense_vector、Hybrid Search、Rerank
 - PDF / docx / xlsx 解析
-- 前端画布
+- 多人协作和多租户工作区
 
 ## 目录说明
 
@@ -73,6 +86,7 @@ internal/infrastructure/ MySQL、Redis、MinIO、Elasticsearch 等外部依赖
 internal/pkg/         项目内部通用工具
 migrations/           数据库迁移 SQL
 scripts/              本地开发脚本
+web/                  React + Vite 前端工作台
 ```
 
 ## 配置文件
@@ -126,13 +140,19 @@ docker compose -f deployments/docker-compose.yml up -d
 make docker-down
 ```
 
-## 启动 API
+## 启动完整应用
 
 ```bash
 make run
 ```
 
-或者：
+`make run` 会先执行 `make build-web`，再启动 Go API。启动成功后可以直接访问：
+
+```text
+http://localhost:8080
+```
+
+如只启动后端 API，可以执行：
 
 ```bash
 go run ./cmd/api
@@ -143,6 +163,25 @@ go run ./cmd/api
 ```text
 http://localhost:8080
 ```
+
+## 前端开发
+
+前端工程位于：
+
+```text
+web/
+```
+
+常用命令：
+
+```bash
+npm --prefix web run dev
+npm --prefix web run typecheck
+npm --prefix web run test
+npm --prefix web run build
+```
+
+Vite 开发服务会通过代理访问后端 `/api`。
 
 ## 启动 Worker
 
@@ -313,6 +352,74 @@ GET    /api/v1/conversations/:id/messages
 DELETE /api/v1/conversations/:id
 ```
 
+## Phase 4 API
+
+Agent：
+
+```text
+POST   /api/v1/agents
+GET    /api/v1/agents
+GET    /api/v1/agents/:id
+PATCH  /api/v1/agents/:id
+DELETE /api/v1/agents/:id
+```
+
+Flow Version：
+
+```text
+POST /api/v1/agents/:id/flow-versions
+GET  /api/v1/agents/:id/flow-versions
+GET  /api/v1/flow-versions/:id
+POST /api/v1/flow-versions/:id/publish
+POST /api/v1/flow-versions/:id/validate
+```
+
+Agent Run：
+
+```text
+POST /api/v1/agents/:id/runs
+POST /api/v1/agents/:id/runs/stream
+GET  /api/v1/runs/:id
+GET  /api/v1/runs/:id/events
+GET  /api/v1/runs/:id/node-logs
+POST /api/v1/runs/:id/cancel
+```
+
+流式 Agent Run 事件：
+
+```text
+workflow_started
+node_started
+retrieval_started
+retrieval_finished
+llm_started
+llm_delta
+llm_finished
+message_written
+node_finished
+workflow_finished
+workflow_failed
+node_failed
+done
+error
+```
+
+## Phase 5 前端页面
+
+Phase 5 提供一个由 Go embed 托管的单页应用：
+
+```text
+/login
+/register
+/app/chat
+/app/knowledge
+/app/agents
+/app/agents/:id/canvas
+/app/settings
+```
+
+其中 Agent 画布会把 React Flow 节点序列化为 Flow DSL v1，再调用 Phase 4 API 保存、发布和运行。
+
 ## 常用命令
 
 ```bash
@@ -321,6 +428,7 @@ make docker-down    # 停止本地依赖
 make run            # 启动 API
 make worker         # 启动文档处理 Worker
 make dev            # 启动依赖并运行 API
+make build-web      # 构建 Vite 前端产物
 make tidy           # 整理 Go 依赖
 make test           # 运行测试/编译检查
 make migrate        # 运行 migration 命令入口
@@ -356,6 +464,6 @@ http://localhost:5601
 
 ## 当前状态说明
 
-当前阶段已经完成基础工程骨架、Phase 1 平台能力、Phase 2 的 txt/md 知识库最小闭环，以及 Phase 3 普通 RAG Chat。用户可以选择 provider 和知识库提问，后端会检索 ES chunks、组装带引用编号的上下文、调用 OpenAI-compatible Chat Completions，并保存 conversation、messages、references 和 model usage。
+当前阶段已经完成基础工程骨架、Phase 1 平台能力、Phase 2 的 txt/md 知识库最小闭环、Phase 3 普通 RAG Chat、Phase 4 Agent Flow DSL 与 Runtime，以及 Phase 5 前端画布与 Agent 调试。用户可以在浏览器中登录、配置 Provider、管理知识库、进行 RAG Chat、创建 Agent、进入画布拖拽节点、保存并发布 Flow Version，再通过 SSE 调试台观察节点运行过程。
 
-下一阶段会开始实现 Agent Flow DSL 与 Runtime，继续保持不依赖前端画布也能通过 JSON DSL 调试运行。
+下一阶段会实现 Phase 6：Memory、HTTP Tool、Switch、JSON Output、Guardrail 和 Tool 调用日志。向量检索、ES dense_vector、Hybrid Search 与 Rerank 属于 Phase 7。
