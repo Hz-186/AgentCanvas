@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Bot,
   Brain,
@@ -7,9 +7,6 @@ import {
   LogOut,
   MessageSquareText,
   Moon,
-  PanelRightClose,
-  PanelRightOpen,
-  Search,
   Settings,
   Sparkles,
   Sun,
@@ -53,14 +50,27 @@ const nav = [
   { to: '/app/settings', label: '设置', icon: Settings },
 ];
 
+function storedPanelWidth(key: string, fallback: number) {
+  const raw = localStorage.getItem(key);
+  if (raw === null) return fallback;
+  const value = Number(raw);
+  return Number.isFinite(value) ? value : fallback;
+}
+
 function AppShell() {
   const user = useAuthStore((state) => state.user);
   const logout = useAuthStore((state) => state.logout);
   const navigate = useNavigate();
   const location = useLocation();
   const isCanvas = location.pathname.includes('/canvas');
-  const [theme, setTheme] = useState(() => document.documentElement.dataset.theme ?? 'light');
+  const [theme, setTheme] = useState(() => localStorage.getItem('agentcanvas-theme') ?? document.documentElement.dataset.theme ?? 'light');
   const [inspectorOpen, setInspectorOpen] = useState(() => !location.pathname.includes('/canvas'));
+  const [sidebarWidth, setSidebarWidth] = useState(() => storedPanelWidth('agentcanvas-sidebar-width', 232));
+  const [inspectorWidth, setInspectorWidth] = useState(() => storedPanelWidth('agentcanvas-inspector-width', 320));
+  const workspaceRef = useRef<HTMLDivElement | null>(null);
+  const sidebarCollapsed = sidebarWidth === 0;
+  const sidebarCompact = sidebarWidth > 0 && sidebarWidth < 168;
+  const inspectorCompact = inspectorWidth < 340;
 
   const pageTitle = useMemo(() => {
     if (isCanvas) return 'Flow Canvas';
@@ -69,11 +79,58 @@ function AppShell() {
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
+    localStorage.setItem('agentcanvas-theme', theme);
   }, [theme]);
 
   useEffect(() => {
     if (isCanvas) setInspectorOpen(false);
   }, [isCanvas]);
+
+  useEffect(() => {
+    localStorage.setItem('agentcanvas-sidebar-width', String(sidebarWidth));
+  }, [sidebarWidth]);
+
+  useEffect(() => {
+    localStorage.setItem('agentcanvas-inspector-width', String(inspectorWidth));
+  }, [inspectorWidth]);
+
+  const startWorkspaceResize = useCallback((target: 'sidebar' | 'inspector', startX: number) => {
+    const workspace = workspaceRef.current;
+    if (!workspace) return;
+    const rect = workspace.getBoundingClientRect();
+
+    function onMove(event: PointerEvent) {
+      if (target === 'sidebar') {
+        const next = event.clientX - rect.left;
+        setSidebarWidth(next < 96 ? 0 : Math.min(320, Math.max(76, next)));
+        return;
+      }
+
+      const next = rect.right - event.clientX;
+      if (next < 288) {
+        setInspectorOpen(false);
+        return;
+      }
+      setInspectorOpen(true);
+      setInspectorWidth(Math.min(460, Math.max(300, next)));
+    }
+
+    function onUp() {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      document.body.classList.remove('is-resizing-workspace');
+    }
+
+    document.body.classList.add('is-resizing-workspace');
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    onMove({ clientX: startX } as PointerEvent);
+  }, []);
+
+  const openInspectorFromRail = useCallback(() => {
+    setInspectorWidth((width) => Math.min(460, Math.max(300, width || 320)));
+    setInspectorOpen(true);
+  }, []);
 
   return (
     <div className="app-shell">
@@ -87,19 +144,7 @@ function AppShell() {
             <span className="truncate">可视化 Agent 工作台</span>
           </div>
         </div>
-        <div className="topbar-center">
-          <label className="toolbar-search">
-            <Search size={16} />
-            <input aria-label="全局搜索" placeholder="搜索 Agent、知识库或会话" />
-          </label>
-        </div>
         <div className="topbar-actions">
-          <IconButton
-            label={inspectorOpen ? '收起右侧信息栏' : '展开右侧信息栏'}
-            onClick={() => setInspectorOpen((value) => !value)}
-          >
-            {inspectorOpen ? <PanelRightClose size={17} /> : <PanelRightOpen size={17} />}
-          </IconButton>
           <IconButton label={theme === 'dark' ? '切换浅色主题' : '切换深色主题'} onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>
             {theme === 'dark' ? <Sun size={17} /> : <Moon size={17} />}
           </IconButton>
@@ -109,7 +154,14 @@ function AppShell() {
         </div>
       </header>
 
-      <div className={`workspace ${inspectorOpen ? 'inspector-open' : 'inspector-closed'} ${isCanvas ? 'workspace-canvas' : ''}`}>
+      <div
+        ref={workspaceRef}
+        className={`workspace ${inspectorOpen ? 'inspector-open' : 'inspector-closed'} ${isCanvas ? 'workspace-canvas' : ''} ${sidebarCollapsed ? 'sidebar-collapsed' : ''} ${sidebarCompact ? 'sidebar-compact' : ''} ${inspectorCompact ? 'inspector-compact' : ''}`}
+        style={{
+          '--sidebar-width': `${sidebarWidth}px`,
+          '--inspector-width': `${inspectorWidth}px`,
+        } as CSSProperties}
+      >
         <aside className="sidebar glass">
           <p className="eyebrow">Workspace</p>
           <nav className="nav-list" aria-label="主导航">
@@ -133,10 +185,41 @@ function AppShell() {
             </div>
           </div>
         </aside>
+        <div
+          className="workspace-resizer workspace-resizer-sidebar"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="拖动调整侧边栏宽度"
+          onPointerDown={(event) => {
+            event.preventDefault();
+            startWorkspaceResize('sidebar', event.clientX);
+          }}
+        />
 
         <main className="main-view surface">
           <Outlet />
         </main>
+
+        <div
+          className="workspace-resizer workspace-resizer-inspector"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label={inspectorOpen ? '拖动调整右侧信息栏宽度，拖到较窄时收起' : '点击展开右侧信息栏'}
+          tabIndex={0}
+          onKeyDown={(event) => {
+            if (inspectorOpen || (event.key !== 'Enter' && event.key !== ' ')) return;
+            event.preventDefault();
+            openInspectorFromRail();
+          }}
+          onPointerDown={(event) => {
+            event.preventDefault();
+            if (!inspectorOpen) {
+              openInspectorFromRail();
+              return;
+            }
+            startWorkspaceResize('inspector', event.clientX);
+          }}
+        />
 
         <aside className="inspector glass" aria-hidden={!inspectorOpen}>
           <h2>{pageTitle}</h2>

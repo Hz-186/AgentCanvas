@@ -1,6 +1,8 @@
 import { type CSSProperties, type MouseEvent as ReactMouseEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import {
+  Background,
+  BackgroundVariant,
   Controls,
   Handle,
   Position,
@@ -77,8 +79,8 @@ const nodeTypes = { agentNode: AgentNode };
 const DEFAULT_PALETTE_WIDTH = 128;
 const COLLAPSED_PALETTE_WIDTH = 58;
 const DEFAULT_PANEL_WIDTH = 360;
-const MIN_PANEL_WIDTH = 260;
-const PANEL_COLLAPSE_THRESHOLD = 210;
+const MIN_PANEL_WIDTH = 300;
+const PANEL_COLLAPSE_THRESHOLD = 280;
 
 function normalizeDSL(raw: unknown): FlowDSL | null {
   if (!raw) return null;
@@ -290,8 +292,6 @@ export function CanvasPage() {
     }
     setPendingConnectId('');
     setSelectedId(node.id);
-    setSidePanelOpen(true);
-    setConfigWidth((width) => Math.max(width, DEFAULT_PANEL_WIDTH));
   }
 
   function addNode(type: NodeType) {
@@ -309,8 +309,6 @@ export function CanvasPage() {
     setNodes((current) => [...current, node]);
     if (selectedId) setEdges((current) => [...current, { id: `edge-${selectedId}-${nodeId}`, source: selectedId, target: nodeId }]);
     setSelectedId(nodeId);
-    setSidePanelOpen(true);
-    setConfigWidth((width) => Math.max(width, DEFAULT_PANEL_WIDTH));
     setError('');
   }
 
@@ -435,6 +433,7 @@ export function CanvasPage() {
             onNodeClick={handleNodeClick}
             fitView
           >
+            <Background color="rgba(0, 113, 227, 0.22)" gap={64} size={1} variant={BackgroundVariant.Lines} />
             <Controls />
           </ReactFlow>
         </section>

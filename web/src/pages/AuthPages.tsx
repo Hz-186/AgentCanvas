@@ -1,8 +1,8 @@
-import { FormEvent, useState } from 'react';
+import { FormEvent, useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Github, LockKeyhole, Sparkles, Workflow } from 'lucide-react';
+import { ActivitySquare, Github, LockKeyhole, Mail, Moon, Network, Route, Sparkles, Sun, Workflow } from 'lucide-react';
 import { authApi } from '../api/auth';
-import { Button, Field, TextInput } from '../components/ui';
+import { Button, Field, IconButton, TextInput } from '../components/ui';
 import { useAuthStore } from '../stores/authStore';
 
 function AuthFrame({
@@ -14,32 +14,46 @@ function AuthFrame({
   subtitle: string;
   children: React.ReactNode;
 }) {
+  const [theme, setTheme] = useState(() => localStorage.getItem('agentcanvas-theme') ?? document.documentElement.dataset.theme ?? 'light');
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    localStorage.setItem('agentcanvas-theme', theme);
+  }, [theme]);
+
   return (
     <main className="auth-page">
-      <section className="auth-shell glass">
+      <div className="auth-theme-toggle">
+        <IconButton
+          label={theme === 'dark' ? '切换浅色主题' : '切换深色主题'}
+          onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+        >
+          {theme === 'dark' ? <Sun size={17} /> : <Moon size={17} />}
+        </IconButton>
+      </div>
+      <section className="auth-shell">
         <aside className="auth-brand">
-          <div className="traffic" aria-hidden="true">
-            <span />
-            <span />
-            <span />
-          </div>
           <div>
             <div className="brand-mark">
               <Sparkles size={26} />
             </div>
-            <div className="auth-kicker">
-              <Workflow size={14} />
-              macOS 风格可视化 Agent 工作台
-            </div>
-            <h1>AgentCanvas</h1>
-            <p>把知识库、模型 Provider 与 Agent Flow 放在同一个沉浸、清澈、可调试的工作台里。</p>
+            <h1>Agent Canvas</h1>
+            <p>构建、路由、观测 Agent Flow。</p>
             <div className="auth-feature-grid">
-              <span>液态玻璃</span>
-              <span>流程运行</span>
-              <span>RAG 调试</span>
+              <span>
+                <Workflow size={18} />
+                流图编排
+              </span>
+              <span>
+                <Route size={18} />
+                模型路由
+              </span>
+              <span>
+                <ActivitySquare size={18} />
+                运行观测
+              </span>
             </div>
           </div>
-          <p>为专注构建 Agent 而设计，不是临时拼出来的网页入口。</p>
         </aside>
         <section className="auth-card">
           <div>
@@ -100,13 +114,19 @@ export function LoginPage() {
   }
 
   return (
-    <AuthFrame title="欢迎回来" subtitle="登录后继续构建、发布和调试你的 Agent Flow。">
+    <AuthFrame title="欢迎回来" subtitle="继续进入 Agent Canvas 工作台">
       <form className="form-stack" noValidate onSubmit={(event) => void onSubmit(event)}>
         <Field label="邮箱">
-          <TextInput autoComplete="email" type="email" inputMode="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="name@example.com" />
+          <div className="auth-input-wrap">
+            <Mail size={17} />
+            <TextInput autoComplete="email" type="email" inputMode="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="请输入邮箱地址" />
+          </div>
         </Field>
         <Field label="密码">
-          <TextInput autoComplete="current-password" type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="至少 6 位" />
+          <div className="auth-input-wrap">
+            <LockKeyhole size={17} />
+            <TextInput autoComplete="current-password" type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="请输入密码" />
+          </div>
         </Field>
         {localError || error ? <p className="auth-error">{localError || error}</p> : null}
         <Button tone="primary" disabled={loading}>
@@ -152,16 +172,25 @@ export function RegisterPage() {
   }
 
   return (
-    <AuthFrame title="创建工作台" subtitle="几秒钟后，你就能开始搭建第一个 Agent。">
+    <AuthFrame title="创建工作台" subtitle="初始化你的 Agent Canvas 工作台">
       <form className="form-stack" noValidate onSubmit={(event) => void onSubmit(event)}>
         <Field label="用户名">
-          <TextInput autoComplete="username" value={username} onChange={(event) => setUsername(event.target.value)} placeholder="你的名字" />
+          <div className="auth-input-wrap">
+            <Network size={17} />
+            <TextInput autoComplete="username" value={username} onChange={(event) => setUsername(event.target.value)} placeholder="你的名字" />
+          </div>
         </Field>
         <Field label="邮箱">
-          <TextInput autoComplete="email" type="email" inputMode="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="name@example.com" />
+          <div className="auth-input-wrap">
+            <Mail size={17} />
+            <TextInput autoComplete="email" type="email" inputMode="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="请输入邮箱地址" />
+          </div>
         </Field>
         <Field label="密码">
-          <TextInput autoComplete="new-password" type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="至少 6 位" />
+          <div className="auth-input-wrap">
+            <LockKeyhole size={17} />
+            <TextInput autoComplete="new-password" type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="至少 6 位" />
+          </div>
         </Field>
         {localError || error ? <p className="auth-error">{localError || error}</p> : null}
         <Button tone="primary" disabled={loading}>
