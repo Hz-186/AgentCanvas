@@ -100,6 +100,16 @@ html[data-theme='dark'] .auth-shell {
 }
 
 .auth-brand {
+  --tilt-x: 0deg;
+  --tilt-y: 0deg;
+  --shift-x: 0px;
+  --shift-y: 0px;
+  --lens-x: 50%;
+  --lens-y: 46%;
+  --lens-opacity: 0;
+  --glass-shadow-x: 0px;
+  --glass-shadow-y: 26px;
+  --glass-shadow-blur: 66px;
   position: relative;
   isolation: isolate;
   min-height: 420px;
@@ -114,46 +124,136 @@ html[data-theme='dark'] .auth-shell {
   backdrop-filter: blur(7px) saturate(190%) contrast(112%) brightness(1.03);
   border: 1px solid rgba(255, 255, 255, 0.48);
   box-shadow:
-    0 26px 66px rgba(40, 77, 112, 0.18),
+    var(--glass-shadow-x) var(--glass-shadow-y) var(--glass-shadow-blur) rgba(40, 77, 112, 0.18),
+    0 10px 22px rgba(255, 255, 255, 0.3) inset,
     inset 0 1px 0 rgba(255, 255, 255, 0.78),
     inset 0 0 0 1px rgba(10, 132, 255, 0.06),
     inset 0 -24px 48px rgba(10, 132, 255, 0.06);
+  transform:
+    perspective(1100px)
+    translate3d(var(--shift-x), var(--shift-y), 0)
+    rotateX(var(--tilt-x))
+    rotateY(var(--tilt-y));
+  transform-style: preserve-3d;
+  backface-visibility: hidden;
+  will-change: transform, box-shadow;
+  transition:
+    transform var(--dur-slow) var(--ease-out),
+    box-shadow var(--dur-slow) var(--ease-out),
+    border-color var(--dur-base) var(--ease-out),
+    background var(--dur-base) var(--ease-out);
 }
 
 html[data-theme='dark'] .auth-brand {
   background: rgba(30, 46, 62, 0.16);
   border-color: rgba(255, 255, 255, 0.16);
   box-shadow:
-    0 26px 66px rgba(0, 0, 0, 0.26),
+    var(--glass-shadow-x) var(--glass-shadow-y) var(--glass-shadow-blur) rgba(0, 0, 0, 0.28),
+    0 10px 22px rgba(255, 255, 255, 0.04) inset,
     inset 0 1px 0 rgba(255, 255, 255, 0.16),
     inset 0 -28px 54px rgba(10, 132, 255, 0.1);
+}
+
+.auth-brand[data-liquid-active='true'] {
+  border-color: rgba(255, 255, 255, 0.68);
+  transition:
+    transform 80ms linear,
+    box-shadow var(--dur-base) var(--ease-out),
+    border-color var(--dur-base) var(--ease-out),
+    background var(--dur-base) var(--ease-out);
 }
 
 .auth-brand::before {
   content: "";
   position: absolute;
-  inset: 0;
+  inset: -1px;
   z-index: 0;
   border-radius: inherit;
-  background: transparent;
-  opacity: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(circle at var(--lens-x) var(--lens-y), rgba(255, 255, 255, 0.36), transparent 30%),
+    linear-gradient(135deg, rgba(255, 255, 255, 0.7), transparent 30%, rgba(10, 132, 255, 0.08) 67%, rgba(255, 255, 255, 0.34));
+  box-shadow:
+    inset 1px 1px 0 rgba(255, 255, 255, 0.82),
+    inset -1px -1px 0 rgba(10, 132, 255, 0.13),
+    inset 18px 0 36px rgba(255, 255, 255, 0.14),
+    inset -22px -24px 52px rgba(10, 132, 255, 0.08);
+  opacity: 0.9;
+  transform: translateZ(12px);
 }
 
 .auth-brand::after {
   content: "";
   position: absolute;
-  inset: 12px;
-  z-index: 0;
+  inset: 10px;
+  z-index: 2;
   pointer-events: none;
   border-radius: 24px;
-  background: transparent;
-  opacity: 0;
-  mix-blend-mode: normal;
+  background:
+    radial-gradient(circle at var(--lens-x) var(--lens-y), rgba(255, 255, 255, 0.52), rgba(255, 255, 255, 0.12) 18%, transparent 34%),
+    linear-gradient(130deg, rgba(255, 255, 255, 0.42), transparent 26%, rgba(10, 132, 255, 0.14) 58%, transparent 72%),
+    linear-gradient(315deg, transparent 18%, rgba(255, 255, 255, 0.26) 44%, transparent 68%);
+  filter: blur(0.2px) saturate(130%);
+  mix-blend-mode: screen;
+  opacity: calc(var(--lens-opacity) * 0.72);
+  transform: translateZ(26px);
+  transition: opacity var(--dur-slow) var(--ease-out);
 }
 
-.auth-brand > * {
-  position: relative;
+.auth-brand-refraction {
+  position: absolute;
+  inset: 0;
   z-index: 1;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  opacity: calc(var(--lens-opacity) * 0.9);
+  filter: saturate(135%) contrast(108%);
+  mix-blend-mode: multiply;
+  transform: translateZ(14px);
+  transition: opacity var(--dur-slow) var(--ease-out);
+}
+
+html[data-theme='dark'] .auth-brand::before {
+  background:
+    radial-gradient(circle at var(--lens-x) var(--lens-y), rgba(255, 255, 255, 0.18), transparent 30%),
+    linear-gradient(135deg, rgba(255, 255, 255, 0.18), transparent 32%, rgba(10, 132, 255, 0.12) 67%, rgba(255, 255, 255, 0.1));
+  box-shadow:
+    inset 1px 1px 0 rgba(255, 255, 255, 0.2),
+    inset -1px -1px 0 rgba(10, 132, 255, 0.16),
+    inset 16px 0 34px rgba(255, 255, 255, 0.04),
+    inset -22px -24px 52px rgba(10, 132, 255, 0.12);
+}
+
+html[data-theme='dark'] .auth-brand::after {
+  opacity: calc(var(--lens-opacity) * 0.52);
+}
+
+html[data-theme='dark'] .auth-brand-refraction {
+  opacity: calc(var(--lens-opacity) * 0.58);
+  mix-blend-mode: screen;
+}
+
+.auth-brand-content {
+  position: relative;
+  z-index: 3;
+  transform: translateZ(38px);
+}
+
+@media (prefers-reduced-motion: reduce), (hover: none), (pointer: coarse) {
+  .auth-brand {
+    transform: none;
+    will-change: auto;
+  }
+
+  .auth-brand::after,
+  .auth-brand-refraction {
+    display: none;
+  }
+
+  .auth-brand-content {
+    transform: none;
+  }
 }
 
 .brand-mark {
