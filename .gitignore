@@ -13,10 +13,10 @@ configs/config.local.yaml
 bin/
 dist/
 tmp/
+.tmp-go-build/
 
 # OS files
 .DS_Store
 
 # doc / study
 doc
-

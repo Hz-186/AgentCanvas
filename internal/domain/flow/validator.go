@@ -1,6 +1,7 @@
 package flow
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -72,6 +73,17 @@ func (v *Validator) Validate(dsl *DSL) error {
 		adjacency[from] = append(adjacency[from], to)
 		indegree[to]++
 	}
+	for id, nexts := range adjacency {
+		node := nodeByID[id]
+		if node.Type != "switch" && len(nexts) > 1 {
+			return fmt.Errorf("%w: node %s has multiple outgoing edges", agenterrors.ErrInvalidInput, id)
+		}
+		if node.Type == "switch" {
+			if err := validateSwitchTargets(node, nexts); err != nil {
+				return err
+			}
+		}
+	}
 	visited := 0
 	queue := make([]string, 0, len(indegree))
 	for id, degree := range indegree {
@@ -108,6 +120,28 @@ func (v *Validator) Validate(dsl *DSL) error {
 	}
 	if len(reachable) != len(nodeByID) {
 		return fmt.Errorf("%w: all nodes must be reachable from begin", agenterrors.ErrInvalidInput)
+	}
+	return nil
+}
+
+func validateSwitchTargets(node Node, nexts []string) error {
+	allowed := make(map[string]bool, len(nexts))
+	for _, next := range nexts {
+		allowed[next] = true
+	}
+	var cfg struct {
+		Conditions []struct {
+			Target string `json:"target"`
+		} `json:"conditions"`
+	}
+	if err := json.Unmarshal(node.Config, &cfg); err != nil {
+		return fmt.Errorf("%w: invalid switch config", agenterrors.ErrInvalidInput)
+	}
+	for _, condition := range cfg.Conditions {
+		target := strings.TrimSpace(condition.Target)
+		if target == "" || !allowed[target] {
+			return fmt.Errorf("%w: switch node %s target %s must be an outgoing edge", agenterrors.ErrInvalidInput, node.ID, target)
+		}
 	}
 	return nil
 }

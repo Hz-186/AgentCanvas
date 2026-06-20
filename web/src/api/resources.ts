@@ -22,6 +22,10 @@ import type {
   RunAgentRequest,
   RunEvent,
   NodeLog,
+  Memory,
+  MemoryWriteLog,
+  ToolDefinition,
+  ToolInvocation,
   UpdateAgentRequest,
   UpdateProviderRequest,
   UploadDocumentResponse,
@@ -48,6 +52,8 @@ export const agentApi = {
   getRun: (id: number) => api.get<Run>(`/runs/${id}`),
   listRunEvents: (id: number) => api.get<RunEvent[]>(`/runs/${id}/events`),
   listNodeLogs: (id: number) => api.get<NodeLog[]>(`/runs/${id}/node-logs`),
+  listMemoryWriteLogs: (id: number) => api.get<MemoryWriteLog[]>(`/runs/${id}/memory-write-logs`),
+  listToolInvocations: (id: number) => api.get<ToolInvocation[]>(`/runs/${id}/tool-invocations`),
   cancelRun: (id: number) => api.post<Run>(`/runs/${id}/cancel`),
 };
 
@@ -104,6 +110,19 @@ export const settingsApi = {
   },
   audits: {
     list: (limit = 30, offset = 0) => api.get<AuditLog[]>('/audit-logs', { limit, offset }),
+  },
+  memories: {
+    list: () => api.get<Memory[]>('/memories'),
+    create: (body: { memory_type: string; title?: string; content: string; importance?: number; source?: string }) =>
+      api.post<Memory>('/memories', body),
+    remove: (id: number) => api.delete<{ success: boolean }>(`/memories/${id}`),
+  },
+  tools: {
+    list: () => api.get<ToolDefinition[]>('/tool-definitions'),
+    create: (body: { name: string; tool_type?: string; description?: string; config_json: Record<string, unknown> }) =>
+      api.post<ToolDefinition>('/tool-definitions', body),
+    remove: (id: number) => api.delete<{ success: boolean }>(`/tool-definitions/${id}`),
+    test: (id: number, input: Record<string, unknown>) => api.post<Record<string, unknown>>(`/tool-definitions/${id}/test`, { input }),
   },
 };
 

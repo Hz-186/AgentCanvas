@@ -18,7 +18,11 @@ type RunContext struct {
 	ConversationID  *int64
 	Input           map[string]any
 	Variables       map[string]any
+	NodeInputs      map[string]NodeInput
 	NodeOutputs     map[string]NodeOutput
+	NodeErrors      map[string]string
+	NodeLatencies   map[string]int
+	ExecutedNodes   map[string]bool
 	Events          EventEmitter
 	CurrentNodeID   string
 	CurrentNodeType string

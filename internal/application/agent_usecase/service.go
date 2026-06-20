@@ -10,8 +10,10 @@ import (
 	"agentcanvas/internal/domain/agent"
 	"agentcanvas/internal/domain/conversation"
 	"agentcanvas/internal/domain/flow"
+	"agentcanvas/internal/domain/memory"
 	providerdomain "agentcanvas/internal/domain/provider"
 	"agentcanvas/internal/domain/retrieval"
+	"agentcanvas/internal/domain/tool"
 	cryptoinfra "agentcanvas/internal/infrastructure/crypto"
 	"agentcanvas/internal/infrastructure/llm"
 	"agentcanvas/internal/runtime/engine"
@@ -24,23 +26,27 @@ import (
 )
 
 type Service struct {
-	agents    agent.Repository
-	versions  agent.FlowVersionRepository
-	runs      agent.RunRepository
-	events    agent.RunEventRepository
-	nodeLogs  agent.NodeLogRepository
-	providers providerdomain.Repository
-	messages  conversation.MessageRepository
-	retriever retrieval.Retriever
-	llm       llm.ChatClient
-	secrets   *cryptoinfra.SecretBox
-	executor  *engine.Executor
-	validator *flow.Validator
+	agents          agent.Repository
+	versions        agent.FlowVersionRepository
+	runs            agent.RunRepository
+	events          agent.RunEventRepository
+	nodeLogs        agent.NodeLogRepository
+	memories        memory.Repository
+	memoryLogs      memory.WriteLogRepository
+	tools           tool.DefinitionRepository
+	toolInvocations tool.InvocationRepository
+	providers       providerdomain.Repository
+	messages        conversation.MessageRepository
+	retriever       retrieval.Retriever
+	llm             llm.ChatClient
+	secrets         *cryptoinfra.SecretBox
+	executor        *engine.Executor
+	validator       *flow.Validator
 }
 
-func NewService(agents agent.Repository, versions agent.FlowVersionRepository, runs agent.RunRepository, events agent.RunEventRepository, nodeLogs agent.NodeLogRepository, providers providerdomain.Repository, messages conversation.MessageRepository, retriever retrieval.Retriever, llmClient llm.ChatClient, secrets *cryptoinfra.SecretBox) *Service {
-	s := &Service{agents: agents, versions: versions, runs: runs, events: events, nodeLogs: nodeLogs, providers: providers, messages: messages, retriever: retriever, llm: llmClient, secrets: secrets}
-	s.executor = engine.NewExecutor(runtimenode.DefaultNodes(runtimenode.Deps{Retriever: retriever, LLM: llmClient, Providers: s, Messages: s}))
+func NewService(agents agent.Repository, versions agent.FlowVersionRepository, runs agent.RunRepository, events agent.RunEventRepository, nodeLogs agent.NodeLogRepository, memories memory.Repository, memoryLogs memory.WriteLogRepository, tools tool.DefinitionRepository, toolInvocations tool.InvocationRepository, providers providerdomain.Repository, messages conversation.MessageRepository, retriever retrieval.Retriever, llmClient llm.ChatClient, secrets *cryptoinfra.SecretBox) *Service {
+	s := &Service{agents: agents, versions: versions, runs: runs, events: events, nodeLogs: nodeLogs, memories: memories, memoryLogs: memoryLogs, tools: tools, toolInvocations: toolInvocations, providers: providers, messages: messages, retriever: retriever, llm: llmClient, secrets: secrets}
+	s.executor = engine.NewExecutor(runtimenode.DefaultNodes(runtimenode.Deps{Retriever: retriever, LLM: llmClient, Providers: s, Messages: s, Memories: memories, MemoryWriteLogs: memoryLogs, Tools: tools, ToolInvocations: toolInvocations}))
 	s.validator = flow.NewValidator(s.executor)
 	return s
 }
@@ -204,6 +210,20 @@ func (s *Service) ListNodeLogs(ctx context.Context, ownerID, runID int64) ([]age
 	return s.nodeLogs.ListByRun(ctx, ownerID, runID)
 }
 
+func (s *Service) ListMemoryWriteLogs(ctx context.Context, ownerID, runID int64) ([]memory.WriteLog, error) {
+	if _, err := s.GetRun(ctx, ownerID, runID); err != nil {
+		return nil, err
+	}
+	return s.memoryLogs.ListByRun(ctx, ownerID, runID)
+}
+
+func (s *Service) ListToolInvocations(ctx context.Context, ownerID, runID int64) ([]tool.Invocation, error) {
+	if _, err := s.GetRun(ctx, ownerID, runID); err != nil {
+		return nil, err
+	}
+	return s.toolInvocations.ListByRun(ctx, ownerID, runID)
+}
+
 func (s *Service) CancelRun(ctx context.Context, ownerID, id int64) (*agent.Run, error) {
 	item, err := s.GetRun(ctx, ownerID, id)
 	if err != nil {
@@ -316,11 +336,16 @@ func (s *Service) loadRunVersion(ctx context.Context, ownerID, agentID, versionI
 
 func (s *Service) writeNodeLogs(ctx context.Context, ownerID, runID int64, dsl *flow.DSL, rc *engine.RunContext) error {
 	for _, spec := range dsl.Nodes {
+		if rc.ExecutedNodes != nil && !rc.ExecutedNodes[spec.ID] {
+			continue
+		}
+		inputJSON, _ := json.Marshal(rc.NodeInputs[spec.ID])
 		outputJSON, _ := json.Marshal(rc.NodeOutputs[spec.ID])
 		now := time.Now().UTC()
-		log := &agent.NodeLog{OwnerID: ownerID, RunID: runID, NodeID: spec.ID, NodeType: spec.Type, Status: agent.NodeLogStatusSucceeded, OutputJSON: outputJSON, StartedAt: now, FinishedAt: &now, CreatedAt: now}
+		log := &agent.NodeLog{OwnerID: ownerID, RunID: runID, NodeID: spec.ID, NodeType: spec.Type, Status: agent.NodeLogStatusSucceeded, InputJSON: inputJSON, OutputJSON: outputJSON, LatencyMS: rc.NodeLatencies[spec.ID], StartedAt: now, FinishedAt: &now, CreatedAt: now}
 		if _, ok := rc.NodeOutputs[spec.ID]; !ok {
 			log.Status = agent.NodeLogStatusFailed
+			log.ErrorMessage = rc.NodeErrors[spec.ID]
 		}
 		if err := s.nodeLogs.Create(ctx, log); err != nil {
 			return err
