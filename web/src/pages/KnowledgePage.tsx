@@ -1,8 +1,8 @@
 import { FormEvent, useEffect, useState } from 'react';
-import { Database, FileText, Plus, Search, Upload } from 'lucide-react';
+import { Database, FileText, Plus, Upload } from 'lucide-react';
 import { knowledgeApi } from '../api/resources';
 import { Button, EmptyState, Field, Modal, Panel, Select, StatusBadge, TextArea, TextInput, Toast } from '../components/ui';
-import type { AgentDocument, DocumentChunk, KnowledgeBase, RetrievalResult } from '../types/api';
+import type { AgentDocument, DocumentChunk, KnowledgeBase } from '../types/api';
 import { formatBytes, formatDate } from '../utils/format';
 
 export function KnowledgePage() {
@@ -10,11 +10,9 @@ export function KnowledgePage() {
   const [selectedId, setSelectedId] = useState<number>(0);
   const [documents, setDocuments] = useState<AgentDocument[]>([]);
   const [chunks, setChunks] = useState<DocumentChunk[]>([]);
-  const [results, setResults] = useState<RetrievalResult[]>([]);
   const [createOpen, setCreateOpen] = useState(false);
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
-  const [query, setQuery] = useState('');
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
 
@@ -56,13 +54,6 @@ export function KnowledgePage() {
 
   async function showChunks(documentId: number) {
     setChunks(await knowledgeApi.listChunks(documentId));
-  }
-
-  async function searchKB(event: FormEvent) {
-    event.preventDefault();
-    if (!selectedId || !query.trim()) return;
-    const resp = await knowledgeApi.search(selectedId, { query, top_k: 8, mode: 'keyword' });
-    setResults(resp.results);
   }
 
   const selected = items.find((item) => item.id === selectedId);
@@ -143,25 +134,6 @@ export function KnowledgePage() {
                   </table>
                 </div>
               )}
-            </Panel>
-
-            <Panel title="检索测试" eyebrow="Keyword Search">
-              <form className="chat-composer" onSubmit={(event) => void searchKB(event)}>
-                <TextInput value={query} onChange={(event) => setQuery(event.target.value)} placeholder="输入检索问题" />
-                <Button tone="primary">
-                  <Search size={16} />
-                  检索
-                </Button>
-              </form>
-              {results.map((item) => (
-                <article className="card" key={item.chunk_id}>
-                  <div className="card-title">
-                    <h3 className="truncate">{item.document_name}</h3>
-                    <StatusBadge tone="info">{item.score.toFixed(3)}</StatusBadge>
-                  </div>
-                  <p className="muted">{item.highlight || item.content}</p>
-                </article>
-              ))}
             </Panel>
 
             {chunks.length > 0 ? (

@@ -8,27 +8,23 @@
   position: relative;
   isolation: isolate;
   overflow: hidden;
-  background:
-    linear-gradient(135deg, rgba(255, 255, 255, 0.34), rgba(255, 255, 255, 0.08)),
-    var(--glass-bg);
-  -webkit-backdrop-filter: blur(var(--blur-md)) saturate(190%) contrast(104%);
-  backdrop-filter: blur(var(--blur-md)) saturate(190%) contrast(104%);
-  border: 1px solid color-mix(in srgb, var(--glass-border) 78%, rgba(255, 255, 255, 0.28));
+  background: var(--glass-bg);
+  -webkit-backdrop-filter: blur(12px) saturate(170%) contrast(106%);
+  backdrop-filter: blur(12px) saturate(170%) contrast(106%);
+  border: 1px solid color-mix(in srgb, var(--glass-border) 72%, rgba(255, 255, 255, 0.32));
   box-shadow:
     var(--shadow-glass),
     inset 0 1px 0 var(--glass-highlight),
-    inset 0 -1px 0 rgba(255, 255, 255, 0.12);
+    inset 0 -18px 34px rgba(255, 255, 255, 0.08);
 }
 
 .glass-strong {
   position: relative;
   isolation: isolate;
   overflow: hidden;
-  background:
-    linear-gradient(135deg, rgba(255, 255, 255, 0.42), rgba(255, 255, 255, 0.12)),
-    var(--glass-bg-strong);
-  -webkit-backdrop-filter: blur(var(--blur-lg)) saturate(210%) contrast(106%);
-  backdrop-filter: blur(var(--blur-lg)) saturate(210%) contrast(106%);
+  background: var(--glass-bg-strong);
+  -webkit-backdrop-filter: blur(var(--blur-md)) saturate(190%) contrast(106%);
+  backdrop-filter: blur(var(--blur-md)) saturate(190%) contrast(106%);
   border: 1px solid color-mix(in srgb, var(--glass-border) 78%, rgba(255, 255, 255, 0.32));
   box-shadow:
     var(--shadow-glass),
@@ -43,14 +39,11 @@
   inset: -55%;
   z-index: 0;
   pointer-events: none;
-  background:
-    radial-gradient(circle at 24% 22%, rgba(255, 255, 255, 0.72), transparent 15%),
-    radial-gradient(circle at 72% 62%, rgba(10, 132, 255, 0.16), transparent 22%),
-    conic-gradient(from 140deg, rgba(255, 255, 255, 0.18), transparent 18%, rgba(255, 255, 255, 0.22), transparent 44%, rgba(10, 132, 255, 0.1), transparent 70%);
-  filter: blur(24px) saturate(145%);
-  opacity: 0.62;
+  background: transparent;
+  filter: none;
+  opacity: 0;
   transform: translate3d(0, 0, 0);
-  animation: liquid-glass-flow 16s var(--ease-in-out) infinite alternate;
+  animation: none;
 }
 
 .glass::after,
@@ -60,11 +53,15 @@
   inset: 0;
   z-index: 0;
   pointer-events: none;
-  background:
-    linear-gradient(115deg, rgba(255, 255, 255, 0.34), transparent 32%),
-    linear-gradient(290deg, transparent 58%, rgba(255, 255, 255, 0.18));
-  opacity: 0.58;
-  mix-blend-mode: screen;
+  background: transparent;
+  background-size: auto;
+  opacity: 0;
+  mix-blend-mode: normal;
+}
+
+html[data-theme='dark'] .glass::after,
+html[data-theme='dark'] .glass-strong::after {
+  opacity: 0.32;
 }
 
 .glass > *,
@@ -92,10 +89,33 @@
 
 /* 实底可读容器：正文、表单、代码、长列表 */
 .surface {
-  background: var(--bg-surface);
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--bg-surface) 38%, transparent);
+  -webkit-backdrop-filter: blur(2px) saturate(118%);
+  backdrop-filter: blur(2px) saturate(118%);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-sm);
+  box-shadow:
+    var(--shadow-sm),
+    inset 0 1px 0 color-mix(in srgb, var(--glass-highlight) 65%, transparent);
+}
+
+.surface::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background: transparent;
+  background-size: auto;
+  opacity: 0;
+}
+
+.surface > * {
+  position: relative;
+  z-index: 1;
 }
 
 .surface-2 {

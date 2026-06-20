@@ -11,15 +11,17 @@ type EventEmitter interface {
 }
 
 type RunContext struct {
-	OwnerID        int64
-	AgentID        int64
-	FlowVersionID  int64
-	RunID          int64
-	ConversationID *int64
-	Input          map[string]any
-	Variables      map[string]any
-	NodeOutputs    map[string]NodeOutput
-	Events         EventEmitter
+	OwnerID         int64
+	AgentID         int64
+	FlowVersionID   int64
+	RunID           int64
+	ConversationID  *int64
+	Input           map[string]any
+	Variables       map[string]any
+	NodeOutputs     map[string]NodeOutput
+	Events          EventEmitter
+	CurrentNodeID   string
+	CurrentNodeType string
 }
 
 type NodeInput map[string]any

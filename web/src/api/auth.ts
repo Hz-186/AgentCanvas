@@ -1,4 +1,4 @@
-import { api } from './client';
+import { api, request } from './client';
 import type {
   AuthResponse,
   ApiToken,
@@ -10,15 +10,15 @@ import type {
 
 export const authApi = {
   register: (body: { username: string; email: string; password: string }) =>
-    api.post<AuthResponse>('/auth/register', body),
+    request<AuthResponse>('/auth/register', { method: 'POST', body, auth: false }),
   login: (body: { email: string; password: string }) =>
-    api.post<AuthResponse>('/auth/login', body),
+    request<AuthResponse>('/auth/login', { method: 'POST', body, auth: false }),
   refresh: (refresh_token: string) =>
     api.post<TokenPair>('/auth/refresh', { refresh_token }),
   logout: (refresh_token: string) =>
     api.post<{ success: boolean }>('/auth/logout', { refresh_token }),
   me: () => api.get<User>('/auth/me'),
-  githubRedirect: () => api.get<{ redirect_url: string }>('/auth/github/redirect'),
+  githubRedirect: () => request<{ redirect_url: string }>('/auth/github/redirect', { auth: false }),
 };
 
 export const tokenApi = {

@@ -52,6 +52,8 @@ func (e *Executor) Execute(ctx context.Context, rc *RunContext, dsl *flow.DSL) (
 		if !ok {
 			return nil, fmt.Errorf("%w: unsupported node type %s", agenterrors.ErrInvalidInput, spec.Type)
 		}
+		rc.CurrentNodeID = spec.ID
+		rc.CurrentNodeType = spec.Type
 		started := time.Now().UTC()
 		if err := emit(ctx, rc, runtimeevent.Event{Type: runtimeevent.NodeStarted, RunID: rc.RunID, NodeID: spec.ID, NodeType: spec.Type}); err != nil {
 			return nil, err

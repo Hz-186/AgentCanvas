@@ -83,18 +83,21 @@ html[data-theme='light'] {
   color-scheme: light;
 
   /* 背景层：从最底到最上 */
-  --bg-app: #eceef1;
-  --bg-app-gradient: linear-gradient(180deg, #f3f5f8 0%, #e7eaef 100%);
-  --bg-surface: #ffffff;
-  --bg-surface-2: #f6f7f9;
-  --bg-surface-3: #eef0f3;
-  --bg-elevated: #ffffff;
+  --bg-app: #e8eef6;
+  --bg-app-gradient:
+    linear-gradient(180deg, #f3faff 0%, #dceaf6 100%);
+  --bg-surface: rgba(226, 243, 255, 0.08);
+  --bg-surface-2: rgba(221, 240, 255, 0.11);
+  --bg-surface-3: rgba(208, 231, 250, 0.16);
+  --bg-elevated: rgba(232, 246, 255, 0.14);
 
   /* 玻璃面板 */
-  --glass-bg: rgba(255, 255, 255, 0.62);
-  --glass-bg-strong: rgba(255, 255, 255, 0.78);
-  --glass-border: rgba(0, 0, 0, 0.08);
-  --glass-highlight: rgba(255, 255, 255, 0.7);
+  --glass-bg: rgba(226, 244, 255, 0.1);
+  --glass-bg-strong: rgba(226, 244, 255, 0.16);
+  --glass-border: rgba(48, 82, 118, 0.13);
+  --glass-highlight: rgba(255, 255, 255, 0.68);
+  --tech-line: rgba(0, 113, 227, 0.16);
+  --tech-line-strong: rgba(0, 113, 227, 0.26);
 
   /* 文本 */
   --text-primary: #1c1c1e;
@@ -104,37 +107,42 @@ html[data-theme='light'] {
   --text-on-accent: #ffffff;
 
   /* 边框与分隔 */
-  --border: rgba(0, 0, 0, 0.1);
-  --border-strong: rgba(0, 0, 0, 0.16);
-  --separator: rgba(0, 0, 0, 0.07);
+  --border: rgba(43, 72, 105, 0.14);
+  --border-strong: rgba(39, 68, 98, 0.23);
+  --separator: rgba(37, 70, 104, 0.12);
 
   /* 控件 */
-  --control-bg: rgba(0, 0, 0, 0.04);
-  --control-bg-hover: rgba(0, 0, 0, 0.07);
-  --control-bg-active: rgba(0, 0, 0, 0.1);
+  --control-bg: rgba(228, 243, 255, 0.32);
+  --control-bg-hover: rgba(239, 250, 255, 0.44);
+  --control-bg-active: rgba(205, 229, 250, 0.52);
+  --input-bg: rgba(218, 237, 252, 0.62);
+  --input-bg-focus: rgba(218, 237, 252, 0.68);
 
   /* 阴影 */
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.06), 0 1px 3px rgba(0, 0, 0, 0.05);
-  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08), 0 2px 4px rgba(0, 0, 0, 0.04);
-  --shadow-lg: 0 12px 32px rgba(0, 0, 0, 0.14), 0 4px 8px rgba(0, 0, 0, 0.06);
-  --shadow-glass: 0 8px 30px rgba(0, 0, 0, 0.1);
+  --shadow-sm: 0 1px 2px rgba(34, 57, 84, 0.08), 0 1px 3px rgba(34, 57, 84, 0.06);
+  --shadow-md: 0 8px 22px rgba(35, 58, 86, 0.12), 0 2px 5px rgba(255, 255, 255, 0.34) inset;
+  --shadow-lg: 0 24px 54px rgba(35, 58, 86, 0.18), 0 6px 14px rgba(35, 58, 86, 0.08);
+  --shadow-glass: 0 24px 64px rgba(35, 58, 86, 0.18), 0 1px 0 rgba(255, 255, 255, 0.82) inset, 0 -22px 44px rgba(75, 150, 220, 0.08) inset;
 }
 
 /* ============================ 深色主题 ============================ */
 html[data-theme='dark'] {
   color-scheme: dark;
 
-  --bg-app: #15171b;
-  --bg-app-gradient: linear-gradient(180deg, #1c1f24 0%, #131519 100%);
-  --bg-surface: #1e2126;
-  --bg-surface-2: #24282e;
-  --bg-surface-3: #2b2f36;
-  --bg-elevated: #282c33;
+  --bg-app: #11161d;
+  --bg-app-gradient:
+    linear-gradient(180deg, #202630 0%, #121821 100%);
+  --bg-surface: rgba(30, 36, 45, 0.76);
+  --bg-surface-2: rgba(39, 46, 56, 0.78);
+  --bg-surface-3: rgba(48, 56, 68, 0.82);
+  --bg-elevated: rgba(44, 52, 64, 0.9);
 
-  --glass-bg: rgba(36, 40, 46, 0.6);
-  --glass-bg-strong: rgba(30, 33, 38, 0.82);
-  --glass-border: rgba(255, 255, 255, 0.1);
-  --glass-highlight: rgba(255, 255, 255, 0.08);
+  --glass-bg: rgba(47, 58, 72, 0.48);
+  --glass-bg-strong: rgba(39, 48, 61, 0.72);
+  --glass-border: rgba(255, 255, 255, 0.14);
+  --glass-highlight: rgba(255, 255, 255, 0.16);
+  --tech-line: rgba(115, 170, 225, 0.1);
+  --tech-line-strong: rgba(115, 170, 225, 0.18);
 
   --text-primary: #f2f3f5;
   --text-secondary: #b1b5bc;
@@ -146,14 +154,16 @@ html[data-theme='dark'] {
   --border-strong: rgba(255, 255, 255, 0.18);
   --separator: rgba(255, 255, 255, 0.07);
 
-  --control-bg: rgba(255, 255, 255, 0.06);
-  --control-bg-hover: rgba(255, 255, 255, 0.1);
-  --control-bg-active: rgba(255, 255, 255, 0.14);
+  --control-bg: rgba(255, 255, 255, 0.08);
+  --control-bg-hover: rgba(255, 255, 255, 0.13);
+  --control-bg-active: rgba(255, 255, 255, 0.18);
+  --input-bg: rgba(18, 24, 32, 0.48);
+  --input-bg-focus: rgba(24, 32, 43, 0.7);
 
   --accent-soft: rgba(10, 132, 255, 0.2);
 
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
   --shadow-md: 0 4px 14px rgba(0, 0, 0, 0.4);
   --shadow-lg: 0 16px 40px rgba(0, 0, 0, 0.55);
-  --shadow-glass: 0 10px 36px rgba(0, 0, 0, 0.5);
+  --shadow-glass: 0 18px 54px rgba(0, 0, 0, 0.38), inset 0 1px 0 rgba(255, 255, 255, 0.1);
 }
