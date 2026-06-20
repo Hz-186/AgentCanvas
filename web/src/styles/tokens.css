@@ -86,19 +86,18 @@ html[data-theme='light'] {
   --bg-app: #e8eef6;
   --bg-app-gradient:
     linear-gradient(180deg, #f3faff 0%, #dceaf6 100%);
-  --bg-surface: rgba(226, 243, 255, 0.13);
-  --bg-surface-2: rgba(221, 240, 255, 0.17);
-  --bg-surface-3: rgba(208, 231, 250, 0.24);
-  --bg-elevated: rgba(232, 246, 255, 0.18);
+  --bg-surface: rgba(226, 243, 255, 0.08);
+  --bg-surface-2: rgba(221, 240, 255, 0.11);
+  --bg-surface-3: rgba(208, 231, 250, 0.16);
+  --bg-elevated: rgba(232, 246, 255, 0.14);
 
   /* 玻璃面板 */
-  --glass-bg: rgba(226, 244, 255, 0.12);
-  --glass-bg-strong: rgba(232, 248, 255, 0.18);
+  --glass-bg: rgba(226, 244, 255, 0.1);
+  --glass-bg-strong: rgba(226, 244, 255, 0.16);
   --glass-border: rgba(48, 82, 118, 0.13);
   --glass-highlight: rgba(255, 255, 255, 0.68);
-  --tech-line: rgba(0, 113, 227, 0.13);
-  --tech-line-strong: rgba(0, 113, 227, 0.22);
-  --lens-tint: rgba(205, 229, 255, 0.34);
+  --tech-line: rgba(0, 113, 227, 0.16);
+  --tech-line-strong: rgba(0, 113, 227, 0.26);
 
   /* 文本 */
   --text-primary: #1c1c1e;
@@ -116,8 +115,8 @@ html[data-theme='light'] {
   --control-bg: rgba(228, 243, 255, 0.32);
   --control-bg-hover: rgba(239, 250, 255, 0.44);
   --control-bg-active: rgba(205, 229, 250, 0.52);
-  --input-bg: rgba(218, 237, 252, 0.48);
-  --input-bg-focus: rgba(226, 244, 255, 0.62);
+  --input-bg: rgba(218, 237, 252, 0.62);
+  --input-bg-focus: rgba(218, 237, 252, 0.68);
 
   /* 阴影 */
   --shadow-sm: 0 1px 2px rgba(34, 57, 84, 0.08), 0 1px 3px rgba(34, 57, 84, 0.06);
@@ -144,7 +143,6 @@ html[data-theme='dark'] {
   --glass-highlight: rgba(255, 255, 255, 0.16);
   --tech-line: rgba(115, 170, 225, 0.1);
   --tech-line-strong: rgba(115, 170, 225, 0.18);
-  --lens-tint: rgba(44, 60, 78, 0.48);
 
   --text-primary: #f2f3f5;
   --text-secondary: #b1b5bc;

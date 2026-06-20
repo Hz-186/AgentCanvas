@@ -104,9 +104,6 @@ html[data-theme='dark'] .auth-shell {
   --tilt-y: 0deg;
   --shift-x: 0px;
   --shift-y: 0px;
-  --lens-x: 50%;
-  --lens-y: 46%;
-  --lens-opacity: 0;
   --glass-shadow-x: 0px;
   --glass-shadow-y: 26px;
   --glass-shadow-blur: 66px;
@@ -171,8 +168,8 @@ html[data-theme='dark'] .auth-brand {
   border-radius: inherit;
   pointer-events: none;
   background:
-    radial-gradient(circle at var(--lens-x) var(--lens-y), rgba(255, 255, 255, 0.36), transparent 30%),
-    linear-gradient(135deg, rgba(255, 255, 255, 0.7), transparent 30%, rgba(10, 132, 255, 0.08) 67%, rgba(255, 255, 255, 0.34));
+    linear-gradient(135deg, rgba(255, 255, 255, 0.72), transparent 32%, rgba(10, 132, 255, 0.08) 68%, rgba(255, 255, 255, 0.3)),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.2), transparent 45%, rgba(10, 132, 255, 0.08));
   box-shadow:
     inset 1px 1px 0 rgba(255, 255, 255, 0.82),
     inset -1px -1px 0 rgba(10, 132, 255, 0.13),
@@ -190,34 +187,19 @@ html[data-theme='dark'] .auth-brand {
   pointer-events: none;
   border-radius: 24px;
   background:
-    radial-gradient(circle at var(--lens-x) var(--lens-y), rgba(255, 255, 255, 0.52), rgba(255, 255, 255, 0.12) 18%, transparent 34%),
-    linear-gradient(130deg, rgba(255, 255, 255, 0.42), transparent 26%, rgba(10, 132, 255, 0.14) 58%, transparent 72%),
+    linear-gradient(130deg, rgba(255, 255, 255, 0.36), transparent 28%, rgba(10, 132, 255, 0.1) 60%, transparent 74%),
     linear-gradient(315deg, transparent 18%, rgba(255, 255, 255, 0.26) 44%, transparent 68%);
   filter: blur(0.2px) saturate(130%);
   mix-blend-mode: screen;
-  opacity: calc(var(--lens-opacity) * 0.72);
+  opacity: 0.42;
   transform: translateZ(26px);
-  transition: opacity var(--dur-slow) var(--ease-out);
-}
-
-.auth-brand-refraction {
-  position: absolute;
-  inset: 0;
-  z-index: 1;
-  width: 100%;
-  height: 100%;
-  pointer-events: none;
-  opacity: calc(var(--lens-opacity) * 0.9);
-  filter: saturate(135%) contrast(108%);
-  mix-blend-mode: multiply;
-  transform: translateZ(14px);
   transition: opacity var(--dur-slow) var(--ease-out);
 }
 
 html[data-theme='dark'] .auth-brand::before {
   background:
-    radial-gradient(circle at var(--lens-x) var(--lens-y), rgba(255, 255, 255, 0.18), transparent 30%),
-    linear-gradient(135deg, rgba(255, 255, 255, 0.18), transparent 32%, rgba(10, 132, 255, 0.12) 67%, rgba(255, 255, 255, 0.1));
+    linear-gradient(135deg, rgba(255, 255, 255, 0.18), transparent 32%, rgba(10, 132, 255, 0.12) 67%, rgba(255, 255, 255, 0.1)),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.08), transparent 48%, rgba(10, 132, 255, 0.1));
   box-shadow:
     inset 1px 1px 0 rgba(255, 255, 255, 0.2),
     inset -1px -1px 0 rgba(10, 132, 255, 0.16),
@@ -226,12 +208,7 @@ html[data-theme='dark'] .auth-brand::before {
 }
 
 html[data-theme='dark'] .auth-brand::after {
-  opacity: calc(var(--lens-opacity) * 0.52);
-}
-
-html[data-theme='dark'] .auth-brand-refraction {
-  opacity: calc(var(--lens-opacity) * 0.58);
-  mix-blend-mode: screen;
+  opacity: 0.28;
 }
 
 .auth-brand-content {
@@ -246,8 +223,7 @@ html[data-theme='dark'] .auth-brand-refraction {
     will-change: auto;
   }
 
-  .auth-brand::after,
-  .auth-brand-refraction {
+  .auth-brand::after {
     display: none;
   }
 
@@ -344,7 +320,7 @@ html[data-theme='dark'] .auth-feature-grid span {
   padding: 0 16px;
   border: 1px solid color-mix(in srgb, var(--glass-border) 76%, rgba(255, 255, 255, 0.28));
   border-radius: var(--radius-md);
-  background: rgba(218, 237, 252, 0.62);
+  background: var(--input-bg);
   -webkit-backdrop-filter: blur(7px) saturate(136%);
   backdrop-filter: blur(7px) saturate(136%);
   box-shadow:
@@ -355,8 +331,11 @@ html[data-theme='dark'] .auth-feature-grid span {
 
 .auth-input-wrap:focus-within {
   border-color: var(--accent);
-  background: rgba(224, 243, 255, 0.74);
-  box-shadow: 0 0 0 3px var(--accent-soft);
+  background: var(--input-bg-focus);
+  box-shadow:
+    0 0 0 3px var(--accent-soft),
+    inset 0 1px 0 rgba(255, 255, 255, 0.48),
+    inset 0 -12px 22px rgba(10, 132, 255, 0.035);
 }
 
 .auth-input-wrap svg {
@@ -392,8 +371,8 @@ html[data-theme='dark'] .auth-feature-grid span {
 .auth-input-wrap .input:-webkit-autofill:focus {
   -webkit-text-fill-color: var(--text-primary);
   caret-color: var(--text-primary);
-  -webkit-box-shadow: 0 0 0 1000px rgba(224, 243, 255, 0.74) inset;
-  box-shadow: 0 0 0 1000px rgba(224, 243, 255, 0.74) inset;
+  -webkit-box-shadow: 0 0 0 1000px var(--input-bg-focus) inset;
+  box-shadow: 0 0 0 1000px var(--input-bg-focus) inset;
   transition: background-color 9999s ease-out;
 }
 
@@ -444,7 +423,7 @@ html[data-theme='dark'] .auth-feature-grid span {
   overflow: hidden;
   height: 100%;
   display: grid;
-  grid-template-rows: 58px minmax(0, 1fr) 30px;
+  grid-template-rows: 58px minmax(0, 1fr);
   background: var(--bg-app-gradient);
 }
 
@@ -459,7 +438,7 @@ html[data-theme='dark'] .auth-feature-grid span {
     linear-gradient(90deg, var(--tech-line) 1px, transparent 1px),
     radial-gradient(circle at 21px 21px, color-mix(in srgb, var(--tech-line-strong) 45%, transparent) 0 1px, transparent 1.5px);
   background-size: 42px 42px, 42px 42px, 84px 84px;
-  opacity: 0.64;
+  opacity: 0.78;
 }
 
 .app-shell > * {
@@ -502,12 +481,6 @@ html[data-theme='dark'] .auth-feature-grid span {
   display: block;
   font-size: var(--font-md);
   line-height: 1.15;
-}
-
-.topbar-title span {
-  display: block;
-  font-size: var(--font-xs);
-  color: var(--text-tertiary);
 }
 
 .topbar-actions {
@@ -559,8 +532,7 @@ html[data-theme='dark'] .auth-feature-grid span {
 }
 
 .sidebar,
-.inspector,
-.statusbar {
+.inspector {
   border-radius: var(--radius-lg);
 }
 
@@ -614,6 +586,11 @@ html[data-theme='dark'] .auth-feature-grid span {
     border-radius var(--dur-slow) var(--ease-out),
     opacity var(--dur-slow) var(--ease-out),
     transform var(--dur-slow) var(--ease-out);
+}
+
+.sidebar.glass,
+.inspector.glass {
+  background: color-mix(in srgb, var(--glass-bg) 76%, transparent);
 }
 
 .nav-list {
@@ -756,6 +733,9 @@ html[data-theme='dark'] .auth-feature-grid span {
   overflow: auto;
   border-radius: var(--radius-lg);
   margin: 0;
+  background: color-mix(in srgb, var(--bg-surface) 28%, transparent);
+  -webkit-backdrop-filter: blur(1.5px) saturate(112%);
+  backdrop-filter: blur(1.5px) saturate(112%);
 }
 
 .main-view::after {
@@ -799,9 +779,11 @@ html[data-theme='dark'] .auth-feature-grid span {
 
 .inspector {
   min-width: 0;
+  max-width: 100%;
   min-height: 0;
   padding: var(--space-4);
-  overflow: auto;
+  overflow-y: auto;
+  overflow-x: hidden;
   overflow-wrap: anywhere;
   opacity: 1;
   transform: translateX(0) scale(1);
@@ -818,6 +800,8 @@ html[data-theme='dark'] .auth-feature-grid span {
 }
 
 .inspector p {
+  min-width: 0;
+  max-width: 100%;
   color: var(--text-secondary);
   line-height: 1.7;
 }
@@ -838,19 +822,6 @@ html[data-theme='dark'] .auth-feature-grid span {
 .workspace.inspector-compact .inspector .stack {
   gap: 10px;
   margin-top: 12px !important;
-}
-
-.statusbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-3);
-  padding: 0 var(--space-4);
-  border-width: 1px 0 0;
-  border-left: 0;
-  border-right: 0;
-  font-size: var(--font-xs);
-  color: var(--text-secondary);
 }
 
 .grid {
@@ -1033,7 +1004,10 @@ html[data-theme='dark'] .auth-feature-grid span {
 .select:focus {
   border-color: var(--accent);
   background: var(--input-bg-focus);
-  box-shadow: 0 0 0 3px var(--accent-soft);
+  box-shadow:
+    0 0 0 3px var(--accent-soft),
+    inset 0 1px 0 color-mix(in srgb, var(--glass-highlight) 58%, transparent),
+    inset 0 -14px 26px rgba(10, 132, 255, 0.035);
 }
 
 .panel {
@@ -1190,6 +1164,7 @@ html[data-theme='dark'] .auth-feature-grid span {
   justify-content: space-between;
   gap: var(--space-3);
   padding: var(--space-4);
+  background: color-mix(in srgb, var(--glass-bg-strong) 62%, transparent);
   border-bottom: 1px solid var(--separator);
 }
 
@@ -1203,6 +1178,7 @@ html[data-theme='dark'] .auth-feature-grid span {
   min-height: 0;
   overflow: auto;
   padding: var(--space-4);
+  background: color-mix(in srgb, var(--glass-bg-strong) 62%, transparent);
 }
 
 .modal-footer {
@@ -1387,12 +1363,12 @@ html[data-theme='dark'] .auth-feature-grid span {
   overflow: hidden;
   margin: 0 var(--space-2);
   border-radius: 20px;
-  background: rgba(226, 244, 255, 0.16);
+  background: rgba(226, 244, 255, 0.08);
   background-size: auto;
   border: 1px solid color-mix(in srgb, var(--glass-border) 70%, transparent);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.68),
-    inset 0 -28px 58px rgba(10, 132, 255, 0.04),
+    inset 0 -28px 58px rgba(10, 132, 255, 0.025),
     0 16px 42px rgba(34, 62, 90, 0.11);
 }
 
@@ -1532,6 +1508,8 @@ html[data-theme='dark'] .auth-feature-grid span {
   align-items: center;
   gap: var(--space-2);
   min-width: 0;
+  max-width: 100%;
+  overflow-x: hidden;
 }
 
 .row svg {
@@ -1540,17 +1518,25 @@ html[data-theme='dark'] .auth-feature-grid span {
 
 .row span {
   min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .row-wrap {
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-2);
+  min-width: 0;
+  max-width: 100%;
 }
 
 .stack {
   display: grid;
   gap: var(--space-3);
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: hidden;
 }
 
 .error-text {
@@ -1687,15 +1673,11 @@ html[data-theme='dark'] .auth-feature-grid span {
   .app-shell {
     min-height: 100%;
     height: auto;
-    grid-template-rows: auto minmax(0, 1fr) auto;
+    grid-template-rows: auto minmax(0, 1fr);
   }
 
   .topbar {
     grid-template-columns: minmax(0, 1fr) auto;
-  }
-
-  .topbar-title span {
-    display: none;
   }
 
   .workspace {

@@ -141,7 +141,6 @@ function AppShell() {
           </div>
           <div className="min-w-0">
             <strong className="truncate">AgentCanvas</strong>
-            <span className="truncate">可视化 Agent 工作台</span>
           </div>
         </div>
         <div className="topbar-actions">
@@ -223,24 +222,19 @@ function AppShell() {
 
         <aside className="inspector glass" aria-hidden={!inspectorOpen}>
           <h2>{pageTitle}</h2>
-          <p>右侧信息栏可以随时收起；在画布页会默认隐藏，把空间优先留给核心工作区。</p>
+          <p>这里汇总当前工作区的上下文、连接状态与操作线索。需要专注编辑时，可以收起侧栏，把空间留给主画布。</p>
           <div className="stack" style={{ marginTop: 16 }}>
             <div className="row">
               <Brain size={16} />
-              <span className="muted">第五阶段可视化工作台</span>
+              <span className="muted">工作区上下文已同步</span>
             </div>
             <div className="row">
               <ChevronRight size={16} />
-              <span className="muted">REST 与 SSE 已接入</span>
+              <span className="muted">REST API 与 SSE 通道可用</span>
             </div>
           </div>
         </aside>
       </div>
-
-      <footer className="statusbar glass">
-        <span className="truncate">AgentCanvas 第五阶段</span>
-        <span className="truncate">macOS 玻璃质感工作台 · {pageTitle}</span>
-      </footer>
     </div>
   );
 }
