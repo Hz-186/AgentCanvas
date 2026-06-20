@@ -223,7 +223,10 @@ export function CanvasPage() {
 
   const onNodesChange = useCallback((changes: NodeChange<CanvasNode>[]) => setNodes((current) => applyNodeChanges(changes, current)), []);
   const onEdgesChange = useCallback((changes: EdgeChange[]) => setEdges((current) => applyEdgeChanges(changes, current)), []);
-  const onConnect = useCallback((connection: Connection) => setEdges((current) => addEdge(connection, current)), []);
+  const onConnect = useCallback((connection: Connection) => {
+    if (!connection.source || !connection.target || connection.source === connection.target) return;
+    setEdges((current) => addEdge(connection, current));
+  }, []);
 
   const startResize = useCallback((side: 'palette' | 'panel', startX: number) => {
     const body = canvasBodyRef.current;
@@ -300,6 +303,7 @@ export function CanvasPage() {
       return;
     }
     const nodeId = nodeTitle(type, nodes);
+    const shouldAutoConnect = Boolean(selectedId) && selectedId !== nodeId && nodes.some((node) => node.id === selectedId);
     const node: CanvasNode = {
       id: nodeId,
       type: 'agentNode',
@@ -307,7 +311,12 @@ export function CanvasPage() {
       data: { label: nodeMeta[type].label, nodeType: type, config: defaultConfig(type) },
     };
     setNodes((current) => [...current, node]);
-    if (selectedId) setEdges((current) => [...current, { id: `edge-${selectedId}-${nodeId}`, source: selectedId, target: nodeId }]);
+    if (shouldAutoConnect) {
+      setEdges((current) => {
+        if (current.some((edge) => edge.source === selectedId && edge.target === nodeId)) return current;
+        return [...current, { id: `edge-${selectedId}-${nodeId}`, source: selectedId, target: nodeId }];
+      });
+    }
     setSelectedId(nodeId);
     setError('');
   }
@@ -432,10 +441,16 @@ export function CanvasPage() {
             onConnect={onConnect}
             onNodeClick={handleNodeClick}
             fitView
+            proOptions={{ hideAttribution: true }}
           >
             <Background color="rgba(0, 113, 227, 0.22)" gap={64} size={1} variant={BackgroundVariant.Lines} />
             <Controls />
           </ReactFlow>
+          {nodes.length === 0 ? (
+            <div className="flow-empty-state">
+              <EmptyState icon={<Bot size={24} />} title="画布为空" />
+            </div>
+          ) : null}
         </section>
         <div
           className="canvas-resizer canvas-resizer-right"
@@ -540,7 +555,6 @@ export function CanvasPage() {
       </div>
 
       <Toast message={message} tone="good" />
-      {!selected && nodes.length === 0 ? <EmptyState icon={<Bot size={24} />} title="画布为空" /> : null}
     </div>
   );
 }

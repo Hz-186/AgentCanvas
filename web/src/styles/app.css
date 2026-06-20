@@ -1389,11 +1389,25 @@ html[data-theme='dark'] .auth-feature-grid span {
   position: relative;
   z-index: 1;
   min-height: 100%;
-  background: transparent;
+  background: rgba(226, 244, 255, 0.32);
 }
 
 .flow-surface .react-flow__pane {
   background: transparent;
+}
+
+.flow-empty-state {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+}
+
+.flow-empty-state .empty {
+  min-height: auto;
+  padding: var(--space-4);
 }
 
 .agent-node {
