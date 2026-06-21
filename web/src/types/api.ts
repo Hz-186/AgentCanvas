@@ -154,6 +154,13 @@ export interface KnowledgeBase {
   description: string;
   retrieval_backend: string;
   retrieval_mode: string;
+  embedding_provider_id: number | null;
+  embedding_model: string;
+  embedding_dimensions: number;
+  hybrid_weight: number;
+  rerank_enabled: boolean;
+  rerank_provider_id: number | null;
+  rerank_model: string;
   chunk_method: string;
   chunk_size: number;
   chunk_overlap: number;
@@ -237,6 +244,9 @@ export interface RetrievalResult {
   document_id: number;
   kb_id: number;
   score: number;
+  keyword_score: number;
+  vector_score: number;
+  final_score: number;
   content: string;
   highlight: string;
   document_name: string;

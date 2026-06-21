@@ -60,13 +60,41 @@ export const agentApi = {
 export const knowledgeApi = {
   list: () => api.get<KnowledgeBase[]>('/knowledge-bases'),
   get: (id: number) => api.get<KnowledgeBase>(`/knowledge-bases/${id}`),
-  create: (body: { name: string; description?: string; chunk_size?: number; chunk_overlap?: number }) =>
+  create: (body: {
+    name: string;
+    description?: string;
+    retrieval_mode?: string;
+    embedding_provider_id?: number;
+    embedding_model?: string;
+    embedding_dimensions?: number;
+    hybrid_weight?: number;
+    rerank_enabled?: boolean;
+    rerank_provider_id?: number;
+    rerank_model?: string;
+    chunk_size?: number;
+    chunk_overlap?: number;
+  }) =>
     api.post<KnowledgeBase>('/knowledge-bases', body),
   update: (
     id: number,
-    body: { name?: string; description?: string; chunk_size?: number; chunk_overlap?: number; status?: number },
+    body: {
+      name?: string;
+      description?: string;
+      retrieval_mode?: string;
+      embedding_provider_id?: number;
+      embedding_model?: string;
+      embedding_dimensions?: number;
+      hybrid_weight?: number;
+      rerank_enabled?: boolean;
+      rerank_provider_id?: number;
+      rerank_model?: string;
+      chunk_size?: number;
+      chunk_overlap?: number;
+      status?: number;
+    },
   ) => api.patch<KnowledgeBase>(`/knowledge-bases/${id}`, body),
   remove: (id: number) => api.delete<{ success: boolean }>(`/knowledge-bases/${id}`),
+  reindex: (id: number) => api.post<{ job_count: number }>(`/knowledge-bases/${id}/reindex`),
   listDocuments: (id: number) => api.get<AgentDocument[]>(`/knowledge-bases/${id}/documents`),
   uploadDocument: (kbId: number, file: File, name?: string) => {
     const form = new FormData();

@@ -1,24 +1,37 @@
 import { FormEvent, useEffect, useState } from 'react';
-import { Database, FileText, Plus, Upload } from 'lucide-react';
-import { knowledgeApi } from '../api/resources';
+import { Database, FileText, Plus, RefreshCw, Save, Search, Upload } from 'lucide-react';
+import { knowledgeApi, settingsApi } from '../api/resources';
 import { Button, EmptyState, Field, Modal, Panel, Select, StatusBadge, TextArea, TextInput, Toast } from '../components/ui';
-import type { AgentDocument, DocumentChunk, KnowledgeBase } from '../types/api';
+import type { AgentDocument, DocumentChunk, KnowledgeBase, ModelProvider, RetrievalResult } from '../types/api';
 import { formatBytes, formatDate } from '../utils/format';
 
 export function KnowledgePage() {
   const [items, setItems] = useState<KnowledgeBase[]>([]);
+  const [providers, setProviders] = useState<ModelProvider[]>([]);
   const [selectedId, setSelectedId] = useState<number>(0);
   const [documents, setDocuments] = useState<AgentDocument[]>([]);
   const [chunks, setChunks] = useState<DocumentChunk[]>([]);
+  const [searchResults, setSearchResults] = useState<RetrievalResult[]>([]);
   const [createOpen, setCreateOpen] = useState(false);
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
+  const [retrievalMode, setRetrievalMode] = useState('keyword');
+  const [embeddingProviderId, setEmbeddingProviderId] = useState('');
+  const [embeddingModel, setEmbeddingModel] = useState('');
+  const [embeddingDimensions, setEmbeddingDimensions] = useState(0);
+  const [hybridWeight, setHybridWeight] = useState(0.5);
+  const [rerankEnabled, setRerankEnabled] = useState(false);
+  const [rerankProviderId, setRerankProviderId] = useState('');
+  const [rerankModel, setRerankModel] = useState('');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchMode, setSearchMode] = useState('keyword');
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
 
   async function load() {
-    const list = await knowledgeApi.list();
+    const [list, providerList] = await Promise.all([knowledgeApi.list(), settingsApi.providers.list()]);
     setItems(list);
+    setProviders(providerList);
     setSelectedId((current) => current || list[0]?.id || 0);
   }
 
@@ -29,10 +42,26 @@ export function KnowledgePage() {
   useEffect(() => {
     if (!selectedId) {
       setDocuments([]);
+      setSearchResults([]);
       return;
     }
     void knowledgeApi.listDocuments(selectedId).then(setDocuments).catch((err) => setError(err instanceof Error ? err.message : '加载文档失败'));
   }, [selectedId]);
+
+  useEffect(() => {
+    const selected = items.find((item) => item.id === selectedId);
+    if (!selected) return;
+    setRetrievalMode(selected.retrieval_mode || 'keyword');
+    setSearchMode(selected.retrieval_mode || 'keyword');
+    setEmbeddingProviderId(selected.embedding_provider_id ? String(selected.embedding_provider_id) : '');
+    setEmbeddingModel(selected.embedding_model || '');
+    setEmbeddingDimensions(selected.embedding_dimensions || 0);
+    setHybridWeight(selected.hybrid_weight || 0.5);
+    setRerankEnabled(Boolean(selected.rerank_enabled));
+    setRerankProviderId(selected.rerank_provider_id ? String(selected.rerank_provider_id) : '');
+    setRerankModel(selected.rerank_model || '');
+    setSearchResults([]);
+  }, [items, selectedId]);
 
   async function createKB(event: FormEvent) {
     event.preventDefault();
@@ -54,6 +83,39 @@ export function KnowledgePage() {
 
   async function showChunks(documentId: number) {
     setChunks(await knowledgeApi.listChunks(documentId));
+  }
+
+  async function saveRetrievalSettings(event: FormEvent) {
+    event.preventDefault();
+    if (!selectedId) return;
+    const body: Parameters<typeof knowledgeApi.update>[1] = {
+      retrieval_mode: retrievalMode,
+      embedding_model: embeddingModel,
+      embedding_dimensions: embeddingDimensions,
+      hybrid_weight: hybridWeight,
+      rerank_enabled: rerankEnabled,
+      rerank_model: rerankModel,
+    };
+    if (embeddingProviderId) body.embedding_provider_id = Number(embeddingProviderId);
+    if (rerankProviderId) body.rerank_provider_id = Number(rerankProviderId);
+    const updated = await knowledgeApi.update(selectedId, body);
+    setItems((current) => current.map((item) => (item.id === updated.id ? updated : item)));
+    setMessage('检索设置已保存');
+  }
+
+  async function reindex() {
+    if (!selectedId) return;
+    const resp = await knowledgeApi.reindex(selectedId);
+    setMessage(`已创建 ${resp.job_count} 个重建任务`);
+    setDocuments(await knowledgeApi.listDocuments(selectedId));
+  }
+
+  async function testSearch(event: FormEvent) {
+    event.preventDefault();
+    if (!selectedId || !searchQuery.trim()) return;
+    const resp = await knowledgeApi.search(selectedId, { query: searchQuery, top_k: 5, mode: searchMode });
+    setSearchResults(resp.results);
+    setMessage(`检索完成 · ${resp.latency_ms}ms`);
   }
 
   const selected = items.find((item) => item.id === selectedId);
@@ -134,6 +196,109 @@ export function KnowledgePage() {
                   </table>
                 </div>
               )}
+            </Panel>
+
+            <Panel
+              title="检索设置"
+              eyebrow="Phase 7"
+              action={
+                <Button type="button" onClick={() => void reindex()}>
+                  <RefreshCw size={16} />
+                  重建索引
+                </Button>
+              }
+            >
+              <form className="form-stack" onSubmit={(event) => void saveRetrievalSettings(event)}>
+                <div className="dense-grid">
+                  <Field label="默认模式">
+                    <Select value={retrievalMode} onChange={(event) => setRetrievalMode(event.target.value)}>
+                      <option value="keyword">Keyword</option>
+                      <option value="vector">Vector</option>
+                      <option value="hybrid">Hybrid</option>
+                    </Select>
+                  </Field>
+                  <Field label="Hybrid 权重">
+                    <TextInput type="number" min={0} max={1} step={0.05} value={hybridWeight} onChange={(event) => setHybridWeight(Number(event.target.value))} />
+                  </Field>
+                </div>
+                <div className="dense-grid">
+                  <Field label="Embedding Provider">
+                    <Select value={embeddingProviderId} onChange={(event) => setEmbeddingProviderId(event.target.value)}>
+                      <option value="">未选择</option>
+                      {providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.name}</option>)}
+                    </Select>
+                  </Field>
+                  <Field label="Embedding 模型">
+                    <TextInput value={embeddingModel} onChange={(event) => setEmbeddingModel(event.target.value)} placeholder="留空使用 Provider 默认值" />
+                  </Field>
+                </div>
+                <Field label="Embedding 维度">
+                  <TextInput type="number" min={0} value={embeddingDimensions} onChange={(event) => setEmbeddingDimensions(Number(event.target.value))} />
+                </Field>
+                <div className="dense-grid">
+                  <Field label="Rerank">
+                    <Select value={rerankEnabled ? 'on' : 'off'} onChange={(event) => setRerankEnabled(event.target.value === 'on')}>
+                      <option value="off">关闭</option>
+                      <option value="on">开启</option>
+                    </Select>
+                  </Field>
+                  <Field label="Rerank Provider">
+                    <Select value={rerankProviderId} onChange={(event) => setRerankProviderId(event.target.value)}>
+                      <option value="">未选择</option>
+                      {providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.name}</option>)}
+                    </Select>
+                  </Field>
+                </div>
+                <Field label="Rerank 模型">
+                  <TextInput value={rerankModel} onChange={(event) => setRerankModel(event.target.value)} placeholder="留空使用 Provider 默认 Chat 模型" />
+                </Field>
+                <div className="row-wrap">
+                  <Button tone="primary">
+                    <Save size={16} />
+                    保存设置
+                  </Button>
+                </div>
+              </form>
+            </Panel>
+
+            <Panel title="检索测试" eyebrow="Search">
+              <form className="form-stack" onSubmit={(event) => void testSearch(event)}>
+                <div className="dense-grid">
+                  <Field label="查询">
+                    <TextInput value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} />
+                  </Field>
+                  <Field label="模式">
+                    <Select value={searchMode} onChange={(event) => setSearchMode(event.target.value)}>
+                      <option value="keyword">Keyword</option>
+                      <option value="vector">Vector</option>
+                      <option value="hybrid">Hybrid</option>
+                    </Select>
+                  </Field>
+                </div>
+                <div className="row-wrap">
+                  <Button tone="primary">
+                    <Search size={16} />
+                    检索
+                  </Button>
+                </div>
+              </form>
+              {searchResults.length > 0 ? (
+                <div className="stack">
+                  {searchResults.map((result) => (
+                    <article className="card" key={result.chunk_id}>
+                      <div className="card-title">
+                        <h3 className="truncate">{result.document_name}</h3>
+                        <StatusBadge tone="info">{result.final_score ? result.final_score.toFixed(3) : result.score.toFixed(3)}</StatusBadge>
+                      </div>
+                      <p className="muted clamp-2">{result.content}</p>
+                      <div className="meta-row">
+                        <span>keyword {Number(result.keyword_score || 0).toFixed(2)}</span>
+                        <span>vector {Number(result.vector_score || 0).toFixed(2)}</span>
+                      </div>
+                    </article>
+                  ))}
+                </div>
+              ) : null}
             </Panel>
 
             {chunks.length > 0 ? (

@@ -530,6 +530,13 @@ export function CanvasPage() {
                   <Field label="Top K">
                     <TextInput type="number" min={1} max={20} value={Number(config.top_k ?? 5)} onChange={(event) => updateSelectedConfig({ top_k: Number(event.target.value) })} />
                   </Field>
+                  <Field label="检索模式">
+                    <Select value={String(config.mode ?? 'keyword')} onChange={(event) => updateSelectedConfig({ mode: event.target.value })}>
+                      <option value="keyword">Keyword</option>
+                      <option value="vector">Vector</option>
+                      <option value="hybrid">Hybrid</option>
+                    </Select>
+                  </Field>
                 </>
               )}
               {selected.data.nodeType === 'prompt' && (
