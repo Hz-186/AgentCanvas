@@ -8,8 +8,11 @@ import (
 	"testing"
 
 	"agentcanvas/internal/domain/knowledge"
+	providerdomain "agentcanvas/internal/domain/provider"
 	"agentcanvas/internal/domain/retrieval"
 	"agentcanvas/internal/infrastructure/chunker"
+	cryptoinfra "agentcanvas/internal/infrastructure/crypto"
+	"agentcanvas/internal/infrastructure/llm"
 	"agentcanvas/internal/infrastructure/parser"
 
 	"gorm.io/gorm"
@@ -298,6 +301,68 @@ func TestProcessNextRetriesJobBeforeMaxAttempts(t *testing.T) {
 	}
 }
 
+func TestProcessJobIndexesEmbeddingVectors(t *testing.T) {
+	ctx := context.Background()
+	providerID := int64(90)
+	kbs := &fakeKBRepo{
+		items: map[int64]*knowledge.KnowledgeBase{
+			10: {
+				ID:                  10,
+				OwnerID:             1,
+				RetrievalMode:       knowledge.RetrievalModeVector,
+				EmbeddingProviderID: &providerID,
+				EmbeddingModel:      "text-embedding",
+				EmbeddingDimensions: 2,
+				ChunkSize:           20,
+				ChunkOverlap:        0,
+			},
+		},
+	}
+	docs := &fakeDocumentRepo{items: map[int64]*knowledge.Document{
+		20: {
+			ID:               20,
+			OwnerID:          1,
+			KBID:             10,
+			Name:             "Guide",
+			OriginalFilename: "guide.md",
+			FileType:         "md",
+			ObjectKey:        "raw/guide.md",
+			ParserStatus:     knowledge.DocumentStatusPending,
+		},
+	}}
+	indexer := &fakeIndexer{}
+	service := NewService(
+		kbs,
+		docs,
+		&fakeChunkRepo{},
+		&fakeJobRepo{},
+		&fakeProviderRepo{items: map[int64]*providerdomain.ModelProvider{
+			90: {ID: 90, OwnerID: 1, ProviderType: providerdomain.TypeOpenAICompatible, Status: providerdomain.StatusActive},
+		}},
+		fakeReadStorage{objects: map[string]string{"raw/guide.md": "Vector enabled retrieval content."}},
+		parser.NewTextParser(),
+		chunker.NewFixedTokenChunker(),
+		indexer,
+		&fakeEmbedder{vectors: [][]float32{{0.1, 0.2}}},
+		mustSecretBox(t),
+		"test_chunks",
+	)
+
+	if err := service.ProcessJob(ctx, &knowledge.IngestionJob{ID: 30, OwnerID: 1, KBID: 10, DocumentID: 20}); err != nil {
+		t.Fatalf("ProcessJob() error = %v", err)
+	}
+	if len(indexer.indexed) != 1 {
+		t.Fatalf("indexed chunks = %d, want 1", len(indexer.indexed))
+	}
+	indexed := indexer.indexed[0]
+	if indexed.EmbeddingModel != "text-embedding" || indexed.EmbeddingDimensions != 2 {
+		t.Fatalf("embedding metadata = %#v", indexed)
+	}
+	if len(indexed.EmbeddingVector) != 2 || indexed.EmbeddingVector[0] != 0.1 {
+		t.Fatalf("embedding vector = %#v", indexed.EmbeddingVector)
+	}
+}
+
 type fakeReadStorage struct {
 	objects map[string]string
 }
@@ -468,6 +533,52 @@ type fakeJobRepo struct {
 	completed map[int64]bool
 	failed    map[int64]string
 	retrying  map[int64]string
+}
+
+type fakeProviderRepo struct {
+	items map[int64]*providerdomain.ModelProvider
+}
+
+func (r *fakeProviderRepo) Create(context.Context, *providerdomain.ModelProvider) error {
+	return nil
+}
+
+func (r *fakeProviderRepo) ListByOwner(context.Context, int64) ([]providerdomain.ModelProvider, error) {
+	return nil, nil
+}
+
+func (r *fakeProviderRepo) FindByID(_ context.Context, ownerID, id int64) (*providerdomain.ModelProvider, error) {
+	item, ok := r.items[id]
+	if !ok || item.OwnerID != ownerID {
+		return nil, gorm.ErrRecordNotFound
+	}
+	clone := *item
+	return &clone, nil
+}
+
+func (r *fakeProviderRepo) Update(context.Context, *providerdomain.ModelProvider) error {
+	return nil
+}
+
+func (r *fakeProviderRepo) SoftDelete(context.Context, int64, int64) error {
+	return nil
+}
+
+type fakeEmbedder struct {
+	vectors [][]float32
+}
+
+func (e *fakeEmbedder) Embed(context.Context, llm.EmbeddingProviderConfig, llm.EmbeddingRequest) (*llm.EmbeddingResponse, error) {
+	return &llm.EmbeddingResponse{Embeddings: e.vectors}, nil
+}
+
+func mustSecretBox(t *testing.T) *cryptoinfra.SecretBox {
+	t.Helper()
+	box, err := cryptoinfra.NewSecretBox("01234567890123456789012345678901")
+	if err != nil {
+		t.Fatalf("NewSecretBox() error = %v", err)
+	}
+	return box
 }
 
 func (r *fakeJobRepo) Create(context.Context, *knowledge.IngestionJob) error {
