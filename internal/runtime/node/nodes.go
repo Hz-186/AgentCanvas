@@ -3,7 +3,9 @@ package node
 import (
 	"context"
 
+	"agentcanvas/internal/domain/memory"
 	"agentcanvas/internal/domain/retrieval"
+	"agentcanvas/internal/domain/tool"
 	"agentcanvas/internal/infrastructure/llm"
 	"agentcanvas/internal/runtime/engine"
 )
@@ -23,10 +25,14 @@ type MessageWriter interface {
 }
 
 type Deps struct {
-	Retriever retrieval.Retriever
-	LLM       llm.ChatClient
-	Providers ProviderConfigLoader
-	Messages  MessageWriter
+	Retriever       retrieval.Retriever
+	LLM             llm.ChatClient
+	Providers       ProviderConfigLoader
+	Messages        MessageWriter
+	Memories        memory.Repository
+	MemoryWriteLogs memory.WriteLogRepository
+	Tools           tool.DefinitionRepository
+	ToolInvocations tool.InvocationRepository
 }
 
 func DefaultNodes(deps Deps) []engine.Node {
@@ -36,5 +42,11 @@ func DefaultNodes(deps Deps) []engine.Node {
 		PromptNode{},
 		LLMNode{Client: deps.LLM, Providers: deps.Providers},
 		MessageNode{Writer: deps.Messages},
+		MemoryReadNode{Memories: deps.Memories},
+		MemoryWriteNode{Memories: deps.Memories, Logs: deps.MemoryWriteLogs},
+		HTTPToolNode{Tools: deps.Tools, Invocations: deps.ToolInvocations},
+		SwitchNode{},
+		JSONOutputNode{},
+		GuardrailNode{},
 	}
 }

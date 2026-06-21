@@ -43,18 +43,34 @@ type ClientInfo struct {
 }
 
 type CreateKnowledgeBaseRequest struct {
-	Name         string `json:"name" binding:"required"`
-	Description  string `json:"description"`
-	ChunkSize    int    `json:"chunk_size"`
-	ChunkOverlap int    `json:"chunk_overlap"`
+	Name                string  `json:"name" binding:"required"`
+	Description         string  `json:"description"`
+	RetrievalMode       string  `json:"retrieval_mode"`
+	EmbeddingProviderID *int64  `json:"embedding_provider_id"`
+	EmbeddingModel      string  `json:"embedding_model"`
+	EmbeddingDimensions int     `json:"embedding_dimensions"`
+	HybridWeight        float64 `json:"hybrid_weight"`
+	RerankEnabled       bool    `json:"rerank_enabled"`
+	RerankProviderID    *int64  `json:"rerank_provider_id"`
+	RerankModel         string  `json:"rerank_model"`
+	ChunkSize           int     `json:"chunk_size"`
+	ChunkOverlap        int     `json:"chunk_overlap"`
 }
 
 type UpdateKnowledgeBaseRequest struct {
-	Name         *string `json:"name"`
-	Description  *string `json:"description"`
-	ChunkSize    *int    `json:"chunk_size"`
-	ChunkOverlap *int    `json:"chunk_overlap"`
-	Status       *int    `json:"status"`
+	Name                *string  `json:"name"`
+	Description         *string  `json:"description"`
+	RetrievalMode       *string  `json:"retrieval_mode"`
+	EmbeddingProviderID *int64   `json:"embedding_provider_id"`
+	EmbeddingModel      *string  `json:"embedding_model"`
+	EmbeddingDimensions *int     `json:"embedding_dimensions"`
+	HybridWeight        *float64 `json:"hybrid_weight"`
+	RerankEnabled       *bool    `json:"rerank_enabled"`
+	RerankProviderID    *int64   `json:"rerank_provider_id"`
+	RerankModel         *string  `json:"rerank_model"`
+	ChunkSize           *int     `json:"chunk_size"`
+	ChunkOverlap        *int     `json:"chunk_overlap"`
+	Status              *int     `json:"status"`
 }
 
 type UploadDocumentRequest struct {
@@ -72,6 +88,10 @@ type SearchRequest struct {
 	Query string         `json:"query" binding:"required"`
 	TopK  int            `json:"top_k"`
 	Mode  retrieval.Mode `json:"mode"`
+}
+
+type ReindexKnowledgeBaseResponse struct {
+	JobCount int64 `json:"job_count"`
 }
 
 func NewService(
@@ -114,17 +134,38 @@ func (s *Service) CreateKnowledgeBase(ctx context.Context, ownerID int64, req Cr
 	if chunkSize <= 0 || chunkOverlap < 0 || chunkOverlap >= chunkSize {
 		return nil, agenterrors.ErrInvalidInput
 	}
+	retrievalMode := strings.TrimSpace(req.RetrievalMode)
+	if retrievalMode == "" {
+		retrievalMode = knowledge.RetrievalModeKeyword
+	}
+	if !validRetrievalMode(retrievalMode) {
+		return nil, agenterrors.ErrInvalidInput
+	}
+	hybridWeight := req.HybridWeight
+	if hybridWeight == 0 {
+		hybridWeight = 0.5
+	}
+	if hybridWeight < 0 || hybridWeight > 1 || req.EmbeddingDimensions < 0 {
+		return nil, agenterrors.ErrInvalidInput
+	}
 
 	kb := &knowledge.KnowledgeBase{
-		OwnerID:          ownerID,
-		Name:             name,
-		Description:      strings.TrimSpace(req.Description),
-		RetrievalBackend: knowledge.RetrievalBackendElasticsearch,
-		RetrievalMode:    knowledge.RetrievalModeKeyword,
-		ChunkMethod:      knowledge.ChunkMethodFixedToken,
-		ChunkSize:        chunkSize,
-		ChunkOverlap:     chunkOverlap,
-		Status:           knowledge.KnowledgeBaseStatusActive,
+		OwnerID:             ownerID,
+		Name:                name,
+		Description:         strings.TrimSpace(req.Description),
+		RetrievalBackend:    knowledge.RetrievalBackendElasticsearch,
+		RetrievalMode:       retrievalMode,
+		EmbeddingProviderID: req.EmbeddingProviderID,
+		EmbeddingModel:      strings.TrimSpace(req.EmbeddingModel),
+		EmbeddingDimensions: req.EmbeddingDimensions,
+		HybridWeight:        hybridWeight,
+		RerankEnabled:       req.RerankEnabled,
+		RerankProviderID:    req.RerankProviderID,
+		RerankModel:         strings.TrimSpace(req.RerankModel),
+		ChunkMethod:         knowledge.ChunkMethodFixedToken,
+		ChunkSize:           chunkSize,
+		ChunkOverlap:        chunkOverlap,
+		Status:              knowledge.KnowledgeBaseStatusActive,
 	}
 	if err := s.kbs.Create(ctx, kb); err != nil {
 		return nil, err
@@ -160,6 +201,40 @@ func (s *Service) UpdateKnowledgeBase(ctx context.Context, ownerID, id int64, re
 	if req.Description != nil {
 		kb.Description = strings.TrimSpace(*req.Description)
 	}
+	if req.RetrievalMode != nil {
+		mode := strings.TrimSpace(*req.RetrievalMode)
+		if !validRetrievalMode(mode) {
+			return nil, agenterrors.ErrInvalidInput
+		}
+		kb.RetrievalMode = mode
+	}
+	if req.EmbeddingProviderID != nil {
+		kb.EmbeddingProviderID = req.EmbeddingProviderID
+	}
+	if req.EmbeddingModel != nil {
+		kb.EmbeddingModel = strings.TrimSpace(*req.EmbeddingModel)
+	}
+	if req.EmbeddingDimensions != nil {
+		if *req.EmbeddingDimensions < 0 {
+			return nil, agenterrors.ErrInvalidInput
+		}
+		kb.EmbeddingDimensions = *req.EmbeddingDimensions
+	}
+	if req.HybridWeight != nil {
+		if *req.HybridWeight < 0 || *req.HybridWeight > 1 {
+			return nil, agenterrors.ErrInvalidInput
+		}
+		kb.HybridWeight = *req.HybridWeight
+	}
+	if req.RerankEnabled != nil {
+		kb.RerankEnabled = *req.RerankEnabled
+	}
+	if req.RerankProviderID != nil {
+		kb.RerankProviderID = req.RerankProviderID
+	}
+	if req.RerankModel != nil {
+		kb.RerankModel = strings.TrimSpace(*req.RerankModel)
+	}
 	if req.ChunkSize != nil {
 		if *req.ChunkSize <= 0 {
 			return nil, agenterrors.ErrInvalidInput
@@ -183,6 +258,40 @@ func (s *Service) UpdateKnowledgeBase(ctx context.Context, ownerID, id int64, re
 	}
 	_ = s.audit(ctx, ownerID, ownerID, "knowledge_base.update", "knowledge_base", strconv.FormatInt(kb.ID, 10), nil, client)
 	return kb, nil
+}
+
+func (s *Service) ReindexKnowledgeBase(ctx context.Context, ownerID, id int64, client ClientInfo) (*ReindexKnowledgeBaseResponse, error) {
+	if _, err := s.GetKnowledgeBase(ctx, ownerID, id); err != nil {
+		return nil, err
+	}
+	docs, err := s.documents.ListByKnowledgeBase(ctx, ownerID, id)
+	if err != nil {
+		return nil, err
+	}
+	var jobCount int64
+	for i := range docs {
+		doc := docs[i]
+		doc.ParserStatus = knowledge.DocumentStatusPending
+		doc.ParserError = ""
+		if err := s.documents.Update(ctx, &doc); err != nil {
+			return nil, err
+		}
+		job := &knowledge.IngestionJob{
+			OwnerID:      ownerID,
+			KBID:         id,
+			DocumentID:   doc.ID,
+			JobType:      knowledge.IngestionJobTypeDocument,
+			Status:       knowledge.IngestionJobStatusPending,
+			MaxAttempts:  3,
+			AttemptCount: 0,
+		}
+		if err := s.jobs.Create(ctx, job); err != nil {
+			return nil, err
+		}
+		jobCount++
+	}
+	_ = s.audit(ctx, ownerID, ownerID, "knowledge_base.reindex", "knowledge_base", strconv.FormatInt(id, 10), map[string]any{"job_count": jobCount}, client)
+	return &ReindexKnowledgeBaseResponse{JobCount: jobCount}, nil
 }
 
 func (s *Service) DeleteKnowledgeBase(ctx context.Context, ownerID, id int64, client ClientInfo) error {
@@ -324,7 +433,8 @@ func (s *Service) ListChunks(ctx context.Context, ownerID, documentID int64) ([]
 }
 
 func (s *Service) Search(ctx context.Context, ownerID, kbID int64, req SearchRequest) (*retrieval.RetrievalResponse, error) {
-	if _, err := s.GetKnowledgeBase(ctx, ownerID, kbID); err != nil {
+	kb, err := s.GetKnowledgeBase(ctx, ownerID, kbID)
+	if err != nil {
 		return nil, err
 	}
 	query := strings.TrimSpace(req.Query)
@@ -340,9 +450,12 @@ func (s *Service) Search(ctx context.Context, ownerID, kbID int64, req SearchReq
 	}
 	mode := req.Mode
 	if mode == "" {
+		mode = retrieval.Mode(kb.RetrievalMode)
+	}
+	if mode == "" {
 		mode = retrieval.ModeKeyword
 	}
-	if mode != retrieval.ModeKeyword {
+	if !validRetrievalMode(string(mode)) {
 		return nil, agenterrors.ErrInvalidInput
 	}
 
@@ -359,6 +472,15 @@ func (s *Service) Search(ctx context.Context, ownerID, kbID int64, req SearchReq
 	}
 	_ = s.logRetrieval(ctx, ownerID, kbID, query, topK, mode, resp)
 	return resp, nil
+}
+
+func validRetrievalMode(mode string) bool {
+	switch mode {
+	case knowledge.RetrievalModeKeyword, knowledge.RetrievalModeVector, knowledge.RetrievalModeHybrid:
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Service) GetIngestionJob(ctx context.Context, ownerID, id int64) (*knowledge.IngestionJob, error) {

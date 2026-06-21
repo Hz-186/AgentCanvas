@@ -22,6 +22,8 @@ type RouterDeps struct {
 	AuthHandler      *handler.AuthHandler
 	OAuthHandler     *handler.OAuthHandler
 	ProviderHandler  *handler.ProviderHandler
+	MemoryHandler    *handler.MemoryHandler
+	ToolHandler      *handler.ToolHandler
 	AuditHandler     *handler.AuditHandler
 	KnowledgeHandler *handler.KnowledgeHandler
 	DocumentHandler  *handler.DocumentHandler
@@ -75,11 +77,25 @@ func NewRouter(deps RouterDeps) *gin.Engine {
 
 			protected.GET("/audit-logs", deps.AuditHandler.List)
 
+			protected.GET("/memories", deps.MemoryHandler.List)
+			protected.POST("/memories", deps.MemoryHandler.Create)
+			protected.GET("/memories/:id", deps.MemoryHandler.Get)
+			protected.PATCH("/memories/:id", deps.MemoryHandler.Update)
+			protected.DELETE("/memories/:id", deps.MemoryHandler.Delete)
+
+			protected.GET("/tool-definitions", deps.ToolHandler.List)
+			protected.POST("/tool-definitions", deps.ToolHandler.Create)
+			protected.GET("/tool-definitions/:id", deps.ToolHandler.Get)
+			protected.PATCH("/tool-definitions/:id", deps.ToolHandler.Update)
+			protected.DELETE("/tool-definitions/:id", deps.ToolHandler.Delete)
+			protected.POST("/tool-definitions/:id/test", deps.ToolHandler.Test)
+
 			protected.POST("/knowledge-bases", deps.KnowledgeHandler.Create)
 			protected.GET("/knowledge-bases", deps.KnowledgeHandler.List)
 			protected.GET("/knowledge-bases/:id", deps.KnowledgeHandler.Get)
 			protected.PATCH("/knowledge-bases/:id", deps.KnowledgeHandler.Update)
 			protected.DELETE("/knowledge-bases/:id", deps.KnowledgeHandler.Delete)
+			protected.POST("/knowledge-bases/:id/reindex", deps.KnowledgeHandler.Reindex)
 			protected.POST("/knowledge-bases/:id/documents", deps.KnowledgeHandler.UploadDocument)
 			protected.GET("/knowledge-bases/:id/documents", deps.KnowledgeHandler.ListDocuments)
 			protected.POST("/knowledge-bases/:id/search", deps.KnowledgeHandler.Search)
@@ -112,6 +128,8 @@ func NewRouter(deps RouterDeps) *gin.Engine {
 			protected.GET("/runs/:id", deps.AgentHandler.GetRun)
 			protected.GET("/runs/:id/events", deps.AgentHandler.ListRunEvents)
 			protected.GET("/runs/:id/node-logs", deps.AgentHandler.ListNodeLogs)
+			protected.GET("/runs/:id/memory-write-logs", deps.AgentHandler.ListMemoryWriteLogs)
+			protected.GET("/runs/:id/tool-invocations", deps.AgentHandler.ListToolInvocations)
 			protected.POST("/runs/:id/cancel", deps.AgentHandler.CancelRun)
 		}
 	}

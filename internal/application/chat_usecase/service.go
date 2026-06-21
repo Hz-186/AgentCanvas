@@ -209,13 +209,17 @@ func (s *Service) prepare(ctx context.Context, ownerID int64, req ChatRequest) (
 	if err != nil {
 		return nil, err
 	}
-	for _, kbID := range req.KBIDs {
+	retrievalMode := retrieval.ModeKeyword
+	for i, kbID := range req.KBIDs {
 		kb, err := s.kbs.FindByID(ctx, ownerID, kbID)
 		if err != nil {
 			return nil, mapNotFound(err)
 		}
 		if kb.Status != knowledge.KnowledgeBaseStatusActive {
 			return nil, agenterrors.ErrInvalidInput
+		}
+		if i == 0 && kb.RetrievalMode != "" {
+			retrievalMode = retrieval.Mode(kb.RetrievalMode)
 		}
 	}
 	conv, err := s.ensureConversation(ctx, ownerID, req.ConversationID, question)
@@ -240,7 +244,7 @@ func (s *Service) prepare(ctx context.Context, ownerID int64, req ChatRequest) (
 		KBIDs:           req.KBIDs,
 		Query:           question,
 		TopK:            topK,
-		Mode:            retrieval.ModeKeyword,
+		Mode:            retrievalMode,
 		EnableHighlight: true,
 	})
 	if err != nil {

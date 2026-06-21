@@ -261,6 +261,32 @@ func (h *AgentHandler) ListNodeLogs(c *gin.Context) {
 	response.OK(c, items)
 }
 
+func (h *AgentHandler) ListMemoryWriteLogs(c *gin.Context) {
+	ownerID, id, ok := h.ownerAndID(c, "id")
+	if !ok {
+		return
+	}
+	items, err := h.service.ListMemoryWriteLogs(c.Request.Context(), ownerID, id)
+	if err != nil {
+		writeAppError(c, err)
+		return
+	}
+	response.OK(c, items)
+}
+
+func (h *AgentHandler) ListToolInvocations(c *gin.Context) {
+	ownerID, id, ok := h.ownerAndID(c, "id")
+	if !ok {
+		return
+	}
+	items, err := h.service.ListToolInvocations(c.Request.Context(), ownerID, id)
+	if err != nil {
+		writeAppError(c, err)
+		return
+	}
+	response.OK(c, items)
+}
+
 func (h *AgentHandler) CancelRun(c *gin.Context) {
 	ownerID, id, ok := h.ownerAndID(c, "id")
 	if !ok {

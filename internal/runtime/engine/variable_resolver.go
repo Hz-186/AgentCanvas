@@ -14,7 +14,7 @@ func ResolveTemplate(template string, rc *RunContext) string {
 		if len(parts) != 2 {
 			return match
 		}
-		value, ok := resolvePath(parts[1], rc)
+		value, ok := ResolveValue(parts[1], rc)
 		if !ok || value == nil {
 			return ""
 		}
@@ -22,7 +22,7 @@ func ResolveTemplate(template string, rc *RunContext) string {
 	})
 }
 
-func resolvePath(path string, rc *RunContext) (any, bool) {
+func ResolveValue(path string, rc *RunContext) (any, bool) {
 	segments := strings.Split(path, ".")
 	if len(segments) == 0 || rc == nil {
 		return nil, false
@@ -49,4 +49,25 @@ func resolvePath(path string, rc *RunContext) (any, bool) {
 		}
 	}
 	return current, true
+}
+
+func ResolveAny(value any, rc *RunContext) any {
+	switch typed := value.(type) {
+	case string:
+		return ResolveTemplate(typed, rc)
+	case map[string]any:
+		out := make(map[string]any, len(typed))
+		for key, item := range typed {
+			out[key] = ResolveAny(item, rc)
+		}
+		return out
+	case []any:
+		out := make([]any, 0, len(typed))
+		for _, item := range typed {
+			out = append(out, ResolveAny(item, rc))
+		}
+		return out
+	default:
+		return value
+	}
 }

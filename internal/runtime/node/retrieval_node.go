@@ -37,8 +37,8 @@ func (RetrievalNode) Validate(config json.RawMessage) error {
 	if cfg.TopK < 0 || cfg.TopK > 20 {
 		return fmt.Errorf("%w: retrieval top_k must be <= 20", agenterrors.ErrInvalidInput)
 	}
-	if cfg.Mode != "" && cfg.Mode != string(retrieval.ModeKeyword) {
-		return fmt.Errorf("%w: only keyword retrieval is supported", agenterrors.ErrInvalidInput)
+	if cfg.Mode != "" && cfg.Mode != string(retrieval.ModeKeyword) && cfg.Mode != string(retrieval.ModeVector) && cfg.Mode != string(retrieval.ModeHybrid) {
+		return fmt.Errorf("%w: unsupported retrieval mode", agenterrors.ErrInvalidInput)
 	}
 	return nil
 }
@@ -61,7 +61,11 @@ func (n RetrievalNode) Run(ctx context.Context, rc *engine.RunContext, input eng
 		return nil, fmt.Errorf("%w: retrieval query is required", agenterrors.ErrInvalidInput)
 	}
 	emitRuntimeEvent(ctx, rc, runtimeevent.Event{Type: runtimeevent.RetrievalStarted, RunID: rc.RunID, NodeType: n.Type()})
-	resp, err := n.Retriever.Search(ctx, retrieval.RetrievalRequest{OwnerID: rc.OwnerID, KBIDs: cfg.KBIDs, Query: query, TopK: cfg.TopK, Mode: retrieval.ModeKeyword, EnableHighlight: true})
+	mode := retrieval.Mode(cfg.Mode)
+	if mode == "" {
+		mode = retrieval.ModeKeyword
+	}
+	resp, err := n.Retriever.Search(ctx, retrieval.RetrievalRequest{OwnerID: rc.OwnerID, KBIDs: cfg.KBIDs, Query: query, TopK: cfg.TopK, Mode: mode, EnableHighlight: true})
 	if err != nil {
 		return nil, err
 	}

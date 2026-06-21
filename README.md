@@ -2,11 +2,11 @@
 
 AgentCanvas 是一个用 Go + React 编写的单人版 Agent Flow + RAG 知识库项目。
 
-当前项目已经完成 Phase 5：前端画布与 Agent 调试。系统已经具备单人应用的平台壳子、模型配置能力、txt/md 文档上传、异步解析切片、ES BM25 检索、基于知识库上下文调用 OpenAI-compatible LLM 的普通问答能力、通过 JSON DSL 创建发布并运行 Agent Flow 的后端闭环，以及浏览器中的可视化工作台、React Flow 画布和 SSE 调试台。
+当前项目已经完成 Phase 7：向量检索、Hybrid Search 与 Rerank。系统已经具备单人应用的平台壳子、模型配置能力、txt/md 文档上传、异步解析切片、ES BM25 / dense_vector 检索、Hybrid Search、可选 LLM Rerank、基于知识库上下文调用 OpenAI-compatible LLM 的普通问答能力、通过 JSON DSL 创建发布并运行 Agent Flow 的后端闭环，以及浏览器中的可视化工作台、React Flow 画布和 SSE 调试台。
 
 ## 当前阶段
 
-Phase 5：前端画布与 Agent 调试。
+Phase 7：向量检索、Hybrid Search 与 Rerank。
 
 已经包含：
 
@@ -64,11 +64,19 @@ Phase 5：前端画布与 Agent 调试。
 - 画布节点拖拽、连线、配置、DSL 双向序列化、保存、发布和校验
 - Agent 调试台，支持 POST + text/event-stream 运行并展示事件时间线
 - Go embed 托管 Vite 构建产物，支持 SPA history fallback
+- Memory、HTTP Tool、Switch、JSON Output、Guardrail
+- Tool 调用日志和 Memory 写入日志
+- 知识库级 Embedding Provider / Model / Dimensions 配置
+- Elasticsearch dense_vector chunk 索引
+- Keyword、Vector、Hybrid 三种检索模式
+- 应用层 BM25 + kNN 分数融合
+- 可选 Chat Completions Rerank，失败时降级返回原排序
+- 知识库重建索引接口与前端入口
+- RAG Chat 默认跟随知识库 retrieval_mode
+- Agent Retrieval 节点支持 keyword / vector / hybrid 模式
 
 还没有包含：
 
-- Memory、HTTP Tool、Switch、JSON Output、Guardrail
-- ES dense_vector、Hybrid Search、Rerank
 - PDF / docx / xlsx 解析
 - 多人协作和多租户工作区
 
@@ -462,8 +470,19 @@ Kibana 地址：
 http://localhost:5601
 ```
 
+## Phase 7 向量检索配置
+
+Phase 7 的向量能力按知识库配置。进入「知识库」页面，选择一个知识库后可以设置：
+
+- 默认检索模式：`keyword`、`vector` 或 `hybrid`
+- Embedding Provider、Embedding 模型和 Embedding 维度
+- Hybrid 权重，默认 `0.5`
+- 可选 Rerank Provider 与 Rerank 模型
+
+启用 `vector` 或 `hybrid` 前，需要先在「设置」中创建支持 OpenAI-compatible `/v1/embeddings` 的 Provider，并填写默认 Embedding 模型或在知识库中单独填写模型。修改 embedding 配置后，点击「重建索引」会为已有文档重新创建 ingestion job，worker 会重新解析、切片并写入 `embedding_vector`。
+
 ## 当前状态说明
 
-当前阶段已经完成基础工程骨架、Phase 1 平台能力、Phase 2 的 txt/md 知识库最小闭环、Phase 3 普通 RAG Chat、Phase 4 Agent Flow DSL 与 Runtime，以及 Phase 5 前端画布与 Agent 调试。用户可以在浏览器中登录、配置 Provider、管理知识库、进行 RAG Chat、创建 Agent、进入画布拖拽节点、保存并发布 Flow Version，再通过 SSE 调试台观察节点运行过程。
+当前阶段已经完成基础工程骨架、Phase 1 平台能力、Phase 2 的 txt/md 知识库最小闭环、Phase 3 普通 RAG Chat、Phase 4 Agent Flow DSL 与 Runtime、Phase 5 前端画布与 Agent 调试、Phase 6 Memory / Tool / Guardrail 能力，以及 Phase 7 向量检索、Hybrid Search 与 Rerank。用户可以在浏览器中登录、配置 Provider、管理知识库、进行 RAG Chat、创建 Agent、进入画布拖拽节点、保存并发布 Flow Version，再通过 SSE 调试台观察节点运行过程。
 
-下一阶段会实现 Phase 6：Memory、HTTP Tool、Switch、JSON Output、Guardrail 和 Tool 调用日志。向量检索、ES dense_vector、Hybrid Search 与 Rerank 属于 Phase 7。
+下一阶段可继续补充 PDF / docx / xlsx 解析、更多检索质量评估、多人协作和多租户工作区。

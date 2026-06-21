@@ -20,17 +20,21 @@ import {
 import {
   Bot,
   BrainCircuit,
+  Braces,
   Database,
+  GitBranch,
+  Globe2,
   MessageSquare,
   Play,
   Save,
   Send,
+  ShieldCheck,
   Sparkles,
   Workflow,
 } from 'lucide-react';
 import { agentApi, knowledgeApi, settingsApi } from '../api/resources';
 import { Button, EmptyState, Field, Panel, Segmented, Select, StatusBadge, TextArea, TextInput, Toast } from '../components/ui';
-import type { Agent, FlowVersion, KnowledgeBase, ModelProvider } from '../types/api';
+import type { Agent, FlowVersion, KnowledgeBase, MemoryWriteLog, ModelProvider, ToolDefinition, ToolInvocation } from '../types/api';
 import type { DSLEdge, DSLNode, FlowDSL, NodeConfig, NodeType } from '../types/flow';
 import type { RuntimeEvent } from '../types/events';
 import { parseJsonObject, prettyJson } from '../utils/format';
@@ -49,6 +53,12 @@ const nodeMeta: Record<NodeType, { label: string; icon: React.ElementType; descr
   prompt: { label: 'Prompt', icon: MessageSquare, description: '组装提示词' },
   llm: { label: 'LLM', icon: BrainCircuit, description: '调用模型生成内容' },
   message: { label: 'Message', icon: Send, description: '输出或写入会话消息' },
+  memory_read: { label: 'Memory Read', icon: BrainCircuit, description: '读取长期记忆' },
+  memory_write: { label: 'Memory Write', icon: Save, description: '写入或更新记忆' },
+  http_tool: { label: 'HTTP Tool', icon: Globe2, description: '调用受控 HTTP 工具' },
+  switch: { label: 'Switch', icon: GitBranch, description: '按条件选择分支' },
+  json_output: { label: 'JSON Output', icon: Braces, description: '校验结构化输出' },
+  guardrail: { label: 'Guardrail', icon: ShieldCheck, description: '检查输出规则' },
 };
 
 function defaultConfig(type: NodeType): CanvasNodeData['config'] {
@@ -56,7 +66,13 @@ function defaultConfig(type: NodeType): CanvasNodeData['config'] {
   if (type === 'knowledge_retrieval') return { kb_ids: [], top_k: 5, mode: 'keyword', query: '{{sys.query}}' };
   if (type === 'prompt') return { template: '请根据以下上下文回答用户问题：\n\n{{retrieve.context}}\n\n问题：{{sys.query}}' };
   if (type === 'llm') return { provider_id: 0, model: '', temperature: 0.7, stream: true };
-  return { content: '{{llm.content}}', with_citation: true };
+  if (type === 'message') return { content: '{{llm.content}}', with_citation: true };
+  if (type === 'memory_read') return { memory_types: ['profile_memory', 'summary_memory'], limit: 5 };
+  if (type === 'memory_write') return { memory_type: 'summary_memory', content: '{{llm.content}}', importance: 0.5, source: 'agent' };
+  if (type === 'http_tool') return { tool_id: 0, input: { query: '{{sys.query}}' } };
+  if (type === 'switch') return { conditions: [{ expr: '{{retrieval.result_count}} > 0', target: 'llm' }, { expr: 'default', target: 'message' }] };
+  if (type === 'json_output') return { value: '{{llm.content}}', schema: { type: 'object' } };
+  return { source: '{{llm.content}}', max_length: 4000, banned_terms: [], require_citation: false, require_json: false };
 }
 
 function AgentNode({ data, selected }: NodeProps<CanvasNode>) {
@@ -153,6 +169,11 @@ function validateLocal(nodes: CanvasNode[], edges: Edge[]): string {
     if (node.data.nodeType === 'prompt' && !String(config.template ?? '').trim()) return 'Prompt 节点需要模板';
     if (node.data.nodeType === 'llm' && Number(config.provider_id ?? 0) <= 0) return 'LLM 节点需要选择 Provider';
     if (node.data.nodeType === 'message' && !String(config.content ?? '').trim()) return 'Message 节点需要内容';
+    if (node.data.nodeType === 'memory_write' && (!String(config.memory_type ?? '').trim() || !String(config.content ?? '').trim())) return 'Memory Write 节点需要类型和内容';
+    if (node.data.nodeType === 'http_tool' && Number(config.tool_id ?? 0) <= 0) return 'HTTP Tool 节点需要选择 Tool';
+    if (node.data.nodeType === 'switch' && !Array.isArray(config.conditions)) return 'Switch 节点需要 conditions';
+    if (node.data.nodeType === 'json_output' && !String(config.value ?? '').trim()) return 'JSON Output 节点需要 value';
+    if (node.data.nodeType === 'guardrail' && !String(config.source ?? '').trim()) return 'Guardrail 节点需要 source';
   }
   return '';
 }
@@ -179,6 +200,7 @@ export function CanvasPage() {
   const [selectedId, setSelectedId] = useState<string>('begin');
   const [providers, setProviders] = useState<ModelProvider[]>([]);
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([]);
+  const [tools, setTools] = useState<ToolDefinition[]>([]);
   const [mode, setMode] = useState<'config' | 'debug' | 'dsl'>('config');
   const [paletteWidth, setPaletteWidth] = useState(DEFAULT_PALETTE_WIDTH);
   const [configWidth, setConfigWidth] = useState(DEFAULT_PANEL_WIDTH);
@@ -187,6 +209,8 @@ export function CanvasPage() {
   const [runInput, setRunInput] = useState('{\n  "query": "请总结知识库内容"\n}');
   const [events, setEvents] = useState<RuntimeEvent[]>([]);
   const [runOutput, setRunOutput] = useState<Record<string, unknown> | null>(null);
+  const [memoryLogs, setMemoryLogs] = useState<MemoryWriteLog[]>([]);
+  const [toolInvocations, setToolInvocations] = useState<ToolInvocation[]>([]);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const canvasBodyRef = useRef<HTMLDivElement | null>(null);
@@ -196,14 +220,16 @@ export function CanvasPage() {
 
   useEffect(() => {
     async function load() {
-      const [agentResp, providersResp, kbResp] = await Promise.all([
+      const [agentResp, providersResp, kbResp, toolResp] = await Promise.all([
         agentApi.get(agentId),
         settingsApi.providers.list(),
         knowledgeApi.list(),
+        settingsApi.tools.list(),
       ]);
       setAgent(agentResp);
       setProviders(providersResp);
       setKnowledgeBases(kbResp);
+      setTools(toolResp);
       if (agentResp.current_version_id) {
         const flow = await agentApi.getFlowVersion(agentResp.current_version_id);
         setVersion(flow);
@@ -331,6 +357,15 @@ export function CanvasPage() {
     );
   }
 
+  function updateSelectedJSON(key: string, raw: string) {
+    try {
+      updateSelectedConfig({ [key]: JSON.parse(raw) as unknown });
+      setError('');
+    } catch {
+      setError('JSON 格式不正确');
+    }
+  }
+
   async function saveFlow(): Promise<FlowVersion | null> {
     const localError = validateLocal(nodes, edges);
     if (localError) {
@@ -357,12 +392,21 @@ export function CanvasPage() {
       const input = parseJsonObject(runInput);
       setEvents([]);
       setRunOutput(null);
+      setMemoryLogs([]);
+      setToolInvocations([]);
       setError('');
       await agentApi.streamRun(agentId, { flow_version_id: version?.id ?? 0, input }, {
         onMessage: (msg) => {
           if (msg.event === 'done') {
-            const done = JSON.parse(msg.data) as { output: Record<string, unknown> };
+            const done = JSON.parse(msg.data) as { run: { id: number }; output: Record<string, unknown> };
             setRunOutput(done.output);
+            void Promise.all([
+              agentApi.listMemoryWriteLogs(done.run.id),
+              agentApi.listToolInvocations(done.run.id),
+            ]).then(([memoryResp, toolResp]) => {
+              setMemoryLogs(memoryResp);
+              setToolInvocations(toolResp);
+            });
             return;
           }
           if (msg.event === 'error') {
@@ -486,6 +530,13 @@ export function CanvasPage() {
                   <Field label="Top K">
                     <TextInput type="number" min={1} max={20} value={Number(config.top_k ?? 5)} onChange={(event) => updateSelectedConfig({ top_k: Number(event.target.value) })} />
                   </Field>
+                  <Field label="检索模式">
+                    <Select value={String(config.mode ?? 'keyword')} onChange={(event) => updateSelectedConfig({ mode: event.target.value })}>
+                      <option value="keyword">Keyword</option>
+                      <option value="vector">Vector</option>
+                      <option value="hybrid">Hybrid</option>
+                    </Select>
+                  </Field>
                 </>
               )}
               {selected.data.nodeType === 'prompt' && (
@@ -513,6 +564,73 @@ export function CanvasPage() {
                 <Field label="输出内容">
                   <TextArea value={String(config.content ?? '')} onChange={(event) => updateSelectedConfig({ content: event.target.value })} />
                 </Field>
+              )}
+              {selected.data.nodeType === 'memory_read' && (
+                <>
+                  <Field label="记忆类型">
+                    <TextInput value={Array.isArray(config.memory_types) ? config.memory_types.join(',') : ''} onChange={(event) => updateSelectedConfig({ memory_types: event.target.value.split(',').map((item) => item.trim()).filter(Boolean) })} />
+                  </Field>
+                  <Field label="Limit">
+                    <TextInput type="number" min={1} max={20} value={Number(config.limit ?? 5)} onChange={(event) => updateSelectedConfig({ limit: Number(event.target.value) })} />
+                  </Field>
+                </>
+              )}
+              {selected.data.nodeType === 'memory_write' && (
+                <>
+                  <Field label="记忆类型">
+                    <Select value={String(config.memory_type ?? 'summary_memory')} onChange={(event) => updateSelectedConfig({ memory_type: event.target.value })}>
+                      <option value="profile_memory">profile_memory</option>
+                      <option value="summary_memory">summary_memory</option>
+                      <option value="episodic_memory">episodic_memory</option>
+                      <option value="task_memory">task_memory</option>
+                    </Select>
+                  </Field>
+                  <Field label="标题"><TextInput value={String(config.title ?? '')} onChange={(event) => updateSelectedConfig({ title: event.target.value })} /></Field>
+                  <Field label="内容模板"><TextArea value={String(config.content ?? '')} onChange={(event) => updateSelectedConfig({ content: event.target.value })} /></Field>
+                  <Field label="Importance">
+                    <TextInput type="number" min={0} max={1} step={0.1} value={Number(config.importance ?? 0.5)} onChange={(event) => updateSelectedConfig({ importance: Number(event.target.value) })} />
+                  </Field>
+                </>
+              )}
+              {selected.data.nodeType === 'http_tool' && (
+                <>
+                  <Field label="Tool">
+                    <Select value={Number(config.tool_id ?? 0)} onChange={(event) => updateSelectedConfig({ tool_id: Number(event.target.value) })}>
+                      <option value={0}>选择 HTTP Tool</option>
+                      {tools.map((tool) => <option key={tool.id} value={tool.id}>{tool.name}</option>)}
+                    </Select>
+                  </Field>
+                  <Field label="输入 JSON" hint="支持 {{sys.query}} 和 {{node_id.field}}">
+                    <TextArea value={prettyJson(config.input ?? {})} onChange={(event) => updateSelectedJSON('input', event.target.value)} />
+                  </Field>
+                </>
+              )}
+              {selected.data.nodeType === 'switch' && (
+                <Field label="Conditions JSON">
+                  <TextArea value={prettyJson(config.conditions ?? [])} onChange={(event) => updateSelectedJSON('conditions', event.target.value)} />
+                </Field>
+              )}
+              {selected.data.nodeType === 'json_output' && (
+                <>
+                  <Field label="Value 模板"><TextArea value={String(config.value ?? '')} onChange={(event) => updateSelectedConfig({ value: event.target.value })} /></Field>
+                  <Field label="Schema JSON"><TextArea value={prettyJson(config.schema ?? { type: 'object' })} onChange={(event) => updateSelectedJSON('schema', event.target.value)} /></Field>
+                </>
+              )}
+              {selected.data.nodeType === 'guardrail' && (
+                <>
+                  <Field label="Source 模板"><TextArea value={String(config.source ?? '')} onChange={(event) => updateSelectedConfig({ source: event.target.value })} /></Field>
+                  <Field label="最大长度"><TextInput type="number" min={0} value={Number(config.max_length ?? 4000)} onChange={(event) => updateSelectedConfig({ max_length: Number(event.target.value) })} /></Field>
+                  <Field label="敏感词">
+                    <TextInput value={Array.isArray(config.banned_terms) ? config.banned_terms.join(',') : ''} onChange={(event) => updateSelectedConfig({ banned_terms: event.target.value.split(',').map((item) => item.trim()).filter(Boolean) })} />
+                  </Field>
+                  <Field label="输出要求">
+                    <Select value={config.require_json ? 'json' : config.require_citation ? 'citation' : 'none'} onChange={(event) => updateSelectedConfig({ require_json: event.target.value === 'json', require_citation: event.target.value === 'citation' })}>
+                      <option value="none">无</option>
+                      <option value="citation">需要引用</option>
+                      <option value="json">需要 JSON</option>
+                    </Select>
+                  </Field>
+                </>
               )}
               {selected.data.nodeType === 'begin' && (
                 <EmptyState icon={<Workflow size={22} />} title="Begin 会透传运行输入" description="调试台默认使用 query 字段，后续节点可通过 {{sys.query}} 引用。" />
@@ -542,6 +660,18 @@ export function CanvasPage() {
                   </div>
                 ))}
                 {runOutput ? <pre className="code-box">{prettyJson(runOutput)}</pre> : null}
+                {memoryLogs.length > 0 ? (
+                  <div className="card">
+                    <div className="card-title"><h3>Memory Writes</h3><StatusBadge tone="info">{memoryLogs.length}</StatusBadge></div>
+                    <pre className="code-box">{prettyJson(memoryLogs)}</pre>
+                  </div>
+                ) : null}
+                {toolInvocations.length > 0 ? (
+                  <div className="card">
+                    <div className="card-title"><h3>Tool Invocations</h3><StatusBadge tone="info">{toolInvocations.length}</StatusBadge></div>
+                    <pre className="code-box">{prettyJson(toolInvocations)}</pre>
+                  </div>
+                ) : null}
               </div>
             </Panel>
           )}

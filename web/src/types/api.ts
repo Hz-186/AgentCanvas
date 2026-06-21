@@ -115,6 +115,37 @@ export interface AuditLog {
   created_at: string;
 }
 
+// —— Memory / Tool ——
+export interface Memory {
+  id: number;
+  owner_id: number;
+  conversation_id: number | null;
+  memory_type: string;
+  title: string;
+  content: string;
+  importance: number;
+  source: string;
+  metadata_json?: unknown;
+  last_used_at: string | null;
+  expires_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ToolDefinition {
+  id: number;
+  owner_id: number;
+  name: string;
+  tool_type: string;
+  description: string;
+  config_json: Record<string, unknown>;
+  input_schema_json?: Record<string, unknown>;
+  output_schema_json?: Record<string, unknown>;
+  status: number;
+  created_at: string;
+  updated_at: string;
+}
+
 // —— 知识库 ——
 export interface KnowledgeBase {
   id: number;
@@ -123,6 +154,13 @@ export interface KnowledgeBase {
   description: string;
   retrieval_backend: string;
   retrieval_mode: string;
+  embedding_provider_id: number | null;
+  embedding_model: string;
+  embedding_dimensions: number;
+  hybrid_weight: number;
+  rerank_enabled: boolean;
+  rerank_provider_id: number | null;
+  rerank_model: string;
   chunk_method: string;
   chunk_size: number;
   chunk_overlap: number;
@@ -206,6 +244,9 @@ export interface RetrievalResult {
   document_id: number;
   kb_id: number;
   score: number;
+  keyword_score: number;
+  vector_score: number;
+  final_score: number;
   content: string;
   highlight: string;
   document_name: string;
@@ -366,6 +407,35 @@ export interface NodeLog {
   latency_ms: number;
   started_at: string;
   finished_at: string | null;
+  created_at: string;
+}
+
+export interface MemoryWriteLog {
+  id: number;
+  owner_id: number;
+  memory_id: number;
+  run_id: number;
+  source_message_id: number;
+  action: string;
+  before_json?: unknown;
+  after_json?: unknown;
+  reason: string;
+  created_at: string;
+}
+
+export interface ToolInvocation {
+  id: number;
+  owner_id: number;
+  run_id: number;
+  node_id: string;
+  tool_id: number;
+  tool_name: string;
+  tool_type: string;
+  input_json?: unknown;
+  output_json?: unknown;
+  status: string;
+  error_message: string;
+  latency_ms: number;
   created_at: string;
 }
 

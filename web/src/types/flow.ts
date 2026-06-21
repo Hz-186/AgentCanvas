@@ -5,7 +5,13 @@ export type NodeType =
   | 'knowledge_retrieval'
   | 'prompt'
   | 'llm'
-  | 'message';
+  | 'message'
+  | 'memory_read'
+  | 'memory_write'
+  | 'http_tool'
+  | 'switch'
+  | 'json_output'
+  | 'guardrail';
 
 export interface BeginConfig {
   input_schema?: Record<string, string>;
@@ -34,12 +40,56 @@ export interface MessageConfig {
   with_citation?: boolean;
 }
 
+export interface MemoryReadConfig {
+  memory_types: string[];
+  limit?: number;
+}
+
+export interface MemoryWriteConfig {
+  memory_id?: number;
+  memory_type: string;
+  title?: string;
+  content: string;
+  importance?: number;
+  reason?: string;
+  source?: string;
+}
+
+export interface HTTPToolConfig {
+  tool_id: number;
+  input: Record<string, unknown>;
+}
+
+export interface SwitchConfig {
+  conditions: Array<{ expr: string; target: string }>;
+}
+
+export interface JSONOutputConfig {
+  value: string;
+  schema?: Record<string, unknown>;
+}
+
+export interface GuardrailConfig {
+  source: string;
+  max_length?: number;
+  banned_terms?: string[];
+  require_citation?: boolean;
+  require_json?: boolean;
+  schema?: Record<string, unknown>;
+}
+
 export type NodeConfig =
   | BeginConfig
   | RetrievalConfig
   | PromptConfig
   | LLMConfig
   | MessageConfig
+  | MemoryReadConfig
+  | MemoryWriteConfig
+  | HTTPToolConfig
+  | SwitchConfig
+  | JSONOutputConfig
+  | GuardrailConfig
   | Record<string, unknown>;
 
 export interface DSLNode {

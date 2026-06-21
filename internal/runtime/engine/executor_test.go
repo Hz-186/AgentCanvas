@@ -85,6 +85,40 @@ func TestExecutorRunsFullPhase4Flow(t *testing.T) {
 	}
 }
 
+func TestExecutorRunsSelectedSwitchBranchOnly(t *testing.T) {
+	executor := engine.NewExecutor([]engine.Node{runtimenode.BeginNode{}, runtimenode.SwitchNode{}, runtimenode.PromptNode{}, runtimenode.MessageNode{}})
+	dsl := &flow.DSL{
+		SchemaVersion: flow.SchemaVersionV1,
+		FlowID:        "flow_switch",
+		Nodes: []flow.Node{
+			{ID: "begin_1", Type: "begin", Config: json.RawMessage(`{"input_schema":{"count":"number"}}`)},
+			{ID: "switch_1", Type: "switch", Config: json.RawMessage(`{"conditions":[{"expr":"{{sys.count}} > 0","target":"prompt_yes"},{"expr":"default","target":"prompt_no"}]}`)},
+			{ID: "prompt_yes", Type: "prompt", Config: json.RawMessage(`{"template":"yes"}`)},
+			{ID: "message_yes", Type: "message", Config: json.RawMessage(`{"content":"{{prompt_yes.prompt}}"}`)},
+			{ID: "prompt_no", Type: "prompt", Config: json.RawMessage(`{"template":"no"}`)},
+			{ID: "message_no", Type: "message", Config: json.RawMessage(`{"content":"{{prompt_no.prompt}}"}`)},
+		},
+		Edges: []flow.Edge{
+			{From: "begin_1", To: "switch_1"},
+			{From: "switch_1", To: "prompt_yes"},
+			{From: "prompt_yes", To: "message_yes"},
+			{From: "switch_1", To: "prompt_no"},
+			{From: "prompt_no", To: "message_no"},
+		},
+	}
+	rc := &engine.RunContext{OwnerID: 1, AgentID: 2, FlowVersionID: 3, RunID: 4, Input: map[string]any{"count": 1}}
+	output, err := executor.Execute(context.Background(), rc, dsl)
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if output["content"] != "yes" {
+		t.Fatalf("content = %v", output["content"])
+	}
+	if rc.ExecutedNodes["prompt_no"] || rc.ExecutedNodes["message_no"] {
+		t.Fatalf("unselected branch executed: %+v", rc.ExecutedNodes)
+	}
+}
+
 type collectingEmitter struct {
 	events []runtimeevent.Event
 }

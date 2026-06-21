@@ -112,6 +112,25 @@ func (h *KnowledgeHandler) Delete(c *gin.Context) {
 	response.OK(c, gin.H{"success": true})
 }
 
+func (h *KnowledgeHandler) Reindex(c *gin.Context) {
+	ownerID, ok := currentUserID(c)
+	if !ok {
+		response.Error(c, http.StatusUnauthorized, agenterrors.CodeUnauthorized, agenterrors.ErrUnauthorized.Error())
+		return
+	}
+	id, err := parseInt64Param(c, "id")
+	if err != nil {
+		writeAppError(c, agenterrors.ErrInvalidInput)
+		return
+	}
+	resp, err := h.service.ReindexKnowledgeBase(c.Request.Context(), ownerID, id, knowledgeClientInfo(c))
+	if err != nil {
+		writeAppError(c, err)
+		return
+	}
+	response.OK(c, resp)
+}
+
 func (h *KnowledgeHandler) Search(c *gin.Context) {
 	ownerID, ok := currentUserID(c)
 	if !ok {

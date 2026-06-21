@@ -22,6 +22,10 @@ import type {
   RunAgentRequest,
   RunEvent,
   NodeLog,
+  Memory,
+  MemoryWriteLog,
+  ToolDefinition,
+  ToolInvocation,
   UpdateAgentRequest,
   UpdateProviderRequest,
   UploadDocumentResponse,
@@ -48,19 +52,49 @@ export const agentApi = {
   getRun: (id: number) => api.get<Run>(`/runs/${id}`),
   listRunEvents: (id: number) => api.get<RunEvent[]>(`/runs/${id}/events`),
   listNodeLogs: (id: number) => api.get<NodeLog[]>(`/runs/${id}/node-logs`),
+  listMemoryWriteLogs: (id: number) => api.get<MemoryWriteLog[]>(`/runs/${id}/memory-write-logs`),
+  listToolInvocations: (id: number) => api.get<ToolInvocation[]>(`/runs/${id}/tool-invocations`),
   cancelRun: (id: number) => api.post<Run>(`/runs/${id}/cancel`),
 };
 
 export const knowledgeApi = {
   list: () => api.get<KnowledgeBase[]>('/knowledge-bases'),
   get: (id: number) => api.get<KnowledgeBase>(`/knowledge-bases/${id}`),
-  create: (body: { name: string; description?: string; chunk_size?: number; chunk_overlap?: number }) =>
+  create: (body: {
+    name: string;
+    description?: string;
+    retrieval_mode?: string;
+    embedding_provider_id?: number;
+    embedding_model?: string;
+    embedding_dimensions?: number;
+    hybrid_weight?: number;
+    rerank_enabled?: boolean;
+    rerank_provider_id?: number;
+    rerank_model?: string;
+    chunk_size?: number;
+    chunk_overlap?: number;
+  }) =>
     api.post<KnowledgeBase>('/knowledge-bases', body),
   update: (
     id: number,
-    body: { name?: string; description?: string; chunk_size?: number; chunk_overlap?: number; status?: number },
+    body: {
+      name?: string;
+      description?: string;
+      retrieval_mode?: string;
+      embedding_provider_id?: number;
+      embedding_model?: string;
+      embedding_dimensions?: number;
+      hybrid_weight?: number;
+      rerank_enabled?: boolean;
+      rerank_provider_id?: number;
+      rerank_model?: string;
+      chunk_size?: number;
+      chunk_overlap?: number;
+      status?: number;
+    },
   ) => api.patch<KnowledgeBase>(`/knowledge-bases/${id}`, body),
   remove: (id: number) => api.delete<{ success: boolean }>(`/knowledge-bases/${id}`),
+  reindex: (id: number) => api.post<{ job_count: number }>(`/knowledge-bases/${id}/reindex`),
   listDocuments: (id: number) => api.get<AgentDocument[]>(`/knowledge-bases/${id}/documents`),
   uploadDocument: (kbId: number, file: File, name?: string) => {
     const form = new FormData();
@@ -104,6 +138,19 @@ export const settingsApi = {
   },
   audits: {
     list: (limit = 30, offset = 0) => api.get<AuditLog[]>('/audit-logs', { limit, offset }),
+  },
+  memories: {
+    list: () => api.get<Memory[]>('/memories'),
+    create: (body: { memory_type: string; title?: string; content: string; importance?: number; source?: string }) =>
+      api.post<Memory>('/memories', body),
+    remove: (id: number) => api.delete<{ success: boolean }>(`/memories/${id}`),
+  },
+  tools: {
+    list: () => api.get<ToolDefinition[]>('/tool-definitions'),
+    create: (body: { name: string; tool_type?: string; description?: string; config_json: Record<string, unknown> }) =>
+      api.post<ToolDefinition>('/tool-definitions', body),
+    remove: (id: number) => api.delete<{ success: boolean }>(`/tool-definitions/${id}`),
+    test: (id: number, input: Record<string, unknown>) => api.post<Record<string, unknown>>(`/tool-definitions/${id}/test`, { input }),
   },
 };
 
