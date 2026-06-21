@@ -1,258 +1,133 @@
 # AgentCanvas
 
-AgentCanvas 是一个用 Go + React 编写的单人版 Agent Flow + RAG 知识库项目。
+AgentCanvas 是一个用 Go + React 构建的单人版 Agent Flow + RAG 知识库项目。当前已完成到 Phase 7，具备登录认证、模型 Provider 管理、txt/md 知识库、异步切片索引、RAG Chat、Agent Flow 画布、SSE 调试、Memory / HTTP Tool / Guardrail，以及 Keyword / Vector / Hybrid 检索与可选 Rerank。
 
-当前项目已经完成 Phase 7：向量检索、Hybrid Search 与 Rerank。系统已经具备单人应用的平台壳子、模型配置能力、txt/md 文档上传、异步解析切片、ES BM25 / dense_vector 检索、Hybrid Search、可选 LLM Rerank、基于知识库上下文调用 OpenAI-compatible LLM 的普通问答能力、通过 JSON DSL 创建发布并运行 Agent Flow 的后端闭环，以及浏览器中的可视化工作台、React Flow 画布和 SSE 调试台。
+## 当前状态
 
-## 当前阶段
+已完成目标：
 
-Phase 7：向量检索、Hybrid Search 与 Rerank。
+- 平台基础：配置加载、日志、健康检查、MySQL、Redis、MinIO、Elasticsearch、数据库迁移和本地 Docker Compose。
+- 账号与安全：注册登录、JWT access token、refresh session、GitHub OAuth、API Token、审计日志、Provider API Key 加密存储。
+- 知识库：知识库 CRUD，txt/md 上传，MinIO 文件存储，worker 异步解析、fixed-token 切片、MySQL chunk 持久化和 Elasticsearch 索引。
+- RAG Chat：普通问答、流式问答、conversation / message / reference 持久化、model usage 记录。
+- Agent Flow：Agent CRUD、Flow Version 保存 / 校验 / 发布、DSL v1 DAG 校验、运行记录、事件、节点日志和 SSE 调试。
+- 前端工作台：登录注册、设置、知识库、RAG Chat、Agent 列表、React Flow 画布、节点配置、保存发布和运行调试。
+- Phase 6/7：Memory、HTTP Tool、Switch、JSON Output、Guardrail、tool 调用日志、memory 写入日志、向量索引、Keyword / Vector / Hybrid 检索、BM25 + kNN 分数融合、Chat Completions Rerank、知识库重建索引。
 
-已经包含：
-
-- Go API 服务入口
-- 配置文件加载
-- 基础日志
-- MySQL 客户端
-- Redis 客户端
-- MinIO 客户端
-- Elasticsearch 客户端
-- 健康检查接口
-- Docker Compose 本地依赖
-- 数据库 migration 目录
-- 用户注册和邮箱密码登录
-- JWT access token 与 refresh token session
-- GitHub OAuth 登录
-- 当前用户信息接口
-- API Token 创建、列表和撤销
-- Provider 配置管理
-- Provider API Key 加密存储与脱敏展示
-- Provider 连通性测试
-- 审计日志记录与查询
-- 知识库创建、列表、详情、更新和删除
-- txt/md 文档上传到 MinIO
-- MySQL ingestion job 异步任务表
-- ingestion job 失败重试与最大尝试次数控制
-- Worker 轮询处理文档解析、切片和索引
-- 基于估算 token 预算的 fixed-token 切片
-- document chunks 保存到 MySQL
-- chunks 同步写入 Elasticsearch
-- 知识库关键词搜索和高亮返回
-- 上传失败、重复处理和删除路径的状态一致性处理
-- retrieval logs 检索日志记录
-- 普通 RAG Chat 同步问答接口
-- POST + text/event-stream 流式 RAG Chat 接口
-- conversation、message、reference 持久化
-- model usage 日志记录
-- OpenAI-compatible /chat/completions 客户端
-- DeepSeek、Qwen、openai_compatible 复用 OpenAI-compatible 协议
-- Agent 创建、列表、详情、更新和删除
-- Flow Version 保存、校验和发布
-- Flow DSL v1 解析与 DAG 校验
-- Agent Runtime 顺序执行 Begin、Retrieval、Prompt、LLM、Message 节点
-- Agent Run 创建、状态记录和输出持久化
-- run events 与 node logs 记录和查询
-- POST + text/event-stream 流式 Agent Run 接口
-- React 18 + TypeScript + Vite 前端工程
-- 前端浅色 / 深色主题和 macOS 风格工作台布局
-- 登录、注册和 GitHub OAuth 前端页面
-- 设置页 Provider 管理、API Token 管理和审计日志查看
-- 知识库列表、创建、文档上传、chunk 查看和检索测试
-- RAG Chat 页面，支持流式问答和引用展示
-- Agent 工作区，支持创建、打开和删除 Agent
-- React Flow 可视化画布，支持 Begin、Knowledge Retrieval、Prompt、LLM、Message 五类节点
-- 画布节点拖拽、连线、配置、DSL 双向序列化、保存、发布和校验
-- Agent 调试台，支持 POST + text/event-stream 运行并展示事件时间线
-- Go embed 托管 Vite 构建产物，支持 SPA history fallback
-- Memory、HTTP Tool、Switch、JSON Output、Guardrail
-- Tool 调用日志和 Memory 写入日志
-- 知识库级 Embedding Provider / Model / Dimensions 配置
-- Elasticsearch dense_vector chunk 索引
-- Keyword、Vector、Hybrid 三种检索模式
-- 应用层 BM25 + kNN 分数融合
-- 可选 Chat Completions Rerank，失败时降级返回原排序
-- 知识库重建索引接口与前端入口
-- RAG Chat 默认跟随知识库 retrieval_mode
-- Agent Retrieval 节点支持 keyword / vector / hybrid 模式
-
-还没有包含：
+暂未包含：
 
 - PDF / docx / xlsx 解析
 - 多人协作和多租户工作区
 
-## 目录说明
+## 技术栈
+
+- 后端：Go 1.22、Gin、GORM
+- 前端：React 18、TypeScript、Vite、React Flow
+- 存储与中间件：MySQL、Redis、MinIO、Elasticsearch
+- LLM 协议：OpenAI-compatible Chat Completions / Embeddings
+
+## 目录结构
 
 ```text
-cmd/                  程序入口
-configs/              配置文件
-deployments/          Docker Compose 等部署相关文件
-internal/bootstrap/   应用初始化和依赖组装
-internal/application/  应用用例层
-internal/domain/       领域实体和仓储接口
-internal/interface/   HTTP 接口层
-internal/infrastructure/ MySQL、Redis、MinIO、Elasticsearch 等外部依赖
-internal/pkg/         项目内部通用工具
-migrations/           数据库迁移 SQL
-scripts/              本地开发脚本
-web/                  React + Vite 前端工作台
+cmd/                    API、worker、migration 入口
+configs/                本地配置模板
+deployments/            Docker Compose 配置
+internal/application/   应用用例层
+internal/domain/        领域实体和仓储接口
+internal/infrastructure/MySQL、Redis、MinIO、Elasticsearch、LLM 客户端
+internal/interface/     HTTP 路由、handler、middleware、SSE
+internal/runtime/       Agent Flow 执行引擎和节点
+migrations/             数据库迁移 SQL
+scripts/                本地脚本
+web/                    React + Vite 前端
 ```
 
-## 配置文件
+## 本地启动
 
-仓库提供本地配置模板：
-
-```text
-configs/config.local.yaml.example
-```
-
-首次启动前可以复制一份本地配置：
+复制配置模板：
 
 ```bash
 cp configs/config.local.yaml.example configs/config.local.yaml
 ```
 
-`config.local.yaml` 是本地配置文件，不应该提交到 GitHub。它可以放本机数据库、Redis、MinIO、Elasticsearch 等真实连接信息。
-
-服务启动时的配置读取顺序：
-
-```text
-1. 如果设置了 AGENTCANVAS_CONFIG_PATH，读取这个路径
-2. 否则读取 configs/config.local.yaml
-```
-
-## 本地依赖
-
-本地开发依赖通过 Docker Compose 启动：
-
-- MySQL 8.4
-- Redis 7.2
-- MinIO
-- Elasticsearch 8.15.3
-- Kibana 8.15.3
-
-启动依赖：
+启动本地依赖：
 
 ```bash
 make docker-up
 ```
 
-或者直接执行：
+运行数据库迁移：
 
 ```bash
-docker compose -f deployments/docker-compose.yml up -d
+make migrate
 ```
 
-停止依赖：
-
-```bash
-make docker-down
-```
-
-## 启动完整应用
+启动 API 与内嵌前端：
 
 ```bash
 make run
 ```
 
-`make run` 会先执行 `make build-web`，再启动 Go API。启动成功后可以直接访问：
-
-```text
-http://localhost:8080
-```
-
-如只启动后端 API，可以执行：
-
-```bash
-go run ./cmd/api
-```
-
-默认监听地址：
-
-```text
-http://localhost:8080
-```
-
-## 前端开发
-
-前端工程位于：
-
-```text
-web/
-```
-
-常用命令：
-
-```bash
-npm --prefix web run dev
-npm --prefix web run typecheck
-npm --prefix web run test
-npm --prefix web run build
-```
-
-Vite 开发服务会通过代理访问后端 `/api`。
-
-## 启动 Worker
-
-Phase 2 的文档解析、切片和 ES 索引由独立 worker 执行：
+启动文档处理 worker：
 
 ```bash
 make worker
 ```
 
-或者：
+访问地址：
+
+```text
+http://localhost:8080
+```
+
+前端独立开发：
 
 ```bash
-go run ./cmd/worker
+npm --prefix web run dev
 ```
 
-## 健康检查
-
-基础健康检查：
+## 常用命令
 
 ```bash
-curl http://localhost:8080/api/v1/health
+make docker-up          # 启动 MySQL / Redis / MinIO / Elasticsearch / Kibana
+make docker-down        # 停止本地依赖
+make run                # 构建前端并启动 Go API
+make worker             # 启动文档解析与索引 worker
+make test               # 运行 Go 测试
+npm --prefix web run typecheck
+npm --prefix web run test
+npm --prefix web run build
 ```
 
-检查 MySQL：
+## 配置说明
+
+默认读取：
+
+```text
+configs/config.local.yaml
+```
+
+也可以通过环境变量指定：
 
 ```bash
-curl http://localhost:8080/api/v1/health/mysql
+export AGENTCANVAS_CONFIG_PATH=/path/to/config.yaml
 ```
 
-检查 Redis：
+`configs/config.local.yaml` 用于存放本机数据库、Redis、MinIO、Elasticsearch、OAuth、加密密钥等真实配置，不应提交到版本库。
 
-```bash
-curl http://localhost:8080/api/v1/health/redis
+## 主要 API
+
+健康检查：
+
+```text
+GET /api/v1/health
+GET /api/v1/health/mysql
+GET /api/v1/health/redis
+GET /api/v1/health/minio
+GET /api/v1/health/es
 ```
 
-检查 MinIO：
-
-```bash
-curl http://localhost:8080/api/v1/health/minio
-```
-
-检查 Elasticsearch：
-
-```bash
-curl http://localhost:8080/api/v1/health/es
-```
-
-正常情况下会返回类似：
-
-```json
-{
-  "code": 0,
-  "message": "OK",
-  "data": {
-    "component": "mysql",
-    "status": "healthy"
-  }
-}
-```
-
-## Phase 1 API
-
-认证接口：
+认证与平台：
 
 ```text
 POST /api/v1/auth/register
@@ -260,38 +135,22 @@ POST /api/v1/auth/login
 POST /api/v1/auth/refresh
 POST /api/v1/auth/logout
 GET  /api/v1/auth/me
-```
+GET  /api/v1/auth/github/redirect
+GET  /api/v1/auth/github/callback
 
-GitHub OAuth：
-
-```text
-GET /api/v1/auth/github/redirect
-GET /api/v1/auth/github/callback
-```
-
-Provider 管理：
-
-```text
 GET    /api/v1/model-providers
 POST   /api/v1/model-providers
-GET    /api/v1/model-providers/:id
 PATCH  /api/v1/model-providers/:id
 DELETE /api/v1/model-providers/:id
 POST   /api/v1/model-providers/:id/test
-```
 
-API Token 与审计日志：
-
-```text
 GET    /api/v1/api-tokens
 POST   /api/v1/api-tokens
 DELETE /api/v1/api-tokens/:id
 GET    /api/v1/audit-logs
 ```
 
-## Phase 2 API
-
-Knowledge Base：
+知识库与检索：
 
 ```text
 POST   /api/v1/knowledge-bases
@@ -300,69 +159,28 @@ GET    /api/v1/knowledge-bases/:id
 PATCH  /api/v1/knowledge-bases/:id
 DELETE /api/v1/knowledge-bases/:id
 POST   /api/v1/knowledge-bases/:id/search
-```
+POST   /api/v1/knowledge-bases/:id/reindex
 
-Document：
-
-```text
 POST   /api/v1/knowledge-bases/:id/documents
 GET    /api/v1/knowledge-bases/:id/documents
 GET    /api/v1/documents/:id
 DELETE /api/v1/documents/:id
 GET    /api/v1/documents/:id/chunks
-```
-
-Ingestion Job：
-
-```text
 GET    /api/v1/ingestion-jobs/:id
 ```
-
-## Phase 3 API
 
 RAG Chat：
 
 ```text
 POST /api/v1/rag/chat
 POST /api/v1/rag/chat/stream
-```
-
-请求体：
-
-```json
-{
-  "provider_id": 1,
-  "kb_ids": [1],
-  "question": "请总结这份文档",
-  "conversation_id": 0,
-  "model": "",
-  "top_k": 8
-}
-```
-
-流式事件：
-
-```text
-conversation
-user_message
-retrieval
-delta
-done
-error
-```
-
-Conversation：
-
-```text
-GET    /api/v1/conversations
-GET    /api/v1/conversations/:id
-GET    /api/v1/conversations/:id/messages
+GET  /api/v1/conversations
+GET  /api/v1/conversations/:id
+GET  /api/v1/conversations/:id/messages
 DELETE /api/v1/conversations/:id
 ```
 
-## Phase 4 API
-
-Agent：
+Agent、Memory 和 Tool：
 
 ```text
 POST   /api/v1/agents
@@ -370,119 +188,47 @@ GET    /api/v1/agents
 GET    /api/v1/agents/:id
 PATCH  /api/v1/agents/:id
 DELETE /api/v1/agents/:id
-```
 
-Flow Version：
-
-```text
 POST /api/v1/agents/:id/flow-versions
 GET  /api/v1/agents/:id/flow-versions
 GET  /api/v1/flow-versions/:id
 POST /api/v1/flow-versions/:id/publish
 POST /api/v1/flow-versions/:id/validate
-```
 
-Agent Run：
-
-```text
 POST /api/v1/agents/:id/runs
 POST /api/v1/agents/:id/runs/stream
 GET  /api/v1/runs/:id
 GET  /api/v1/runs/:id/events
 GET  /api/v1/runs/:id/node-logs
+GET  /api/v1/runs/:id/memory-write-logs
+GET  /api/v1/runs/:id/tool-invocations
 POST /api/v1/runs/:id/cancel
+
+GET    /api/v1/memories
+POST   /api/v1/memories
+PATCH  /api/v1/memories/:id
+DELETE /api/v1/memories/:id
+
+GET    /api/v1/tool-definitions
+POST   /api/v1/tool-definitions
+PATCH  /api/v1/tool-definitions/:id
+DELETE /api/v1/tool-definitions/:id
+POST   /api/v1/tool-definitions/:id/test
 ```
 
-流式 Agent Run 事件：
+## 向量检索
 
-```text
-workflow_started
-node_started
-retrieval_started
-retrieval_finished
-llm_started
-llm_delta
-llm_finished
-message_written
-node_finished
-workflow_finished
-workflow_failed
-node_failed
-done
-error
-```
+知识库支持 `keyword`、`vector` 和 `hybrid` 三种检索模式。启用 `vector` 或 `hybrid` 前，需要在设置页创建支持 OpenAI-compatible `/v1/embeddings` 的 Provider，并配置 embedding model / dimensions。修改 embedding 配置后，可以通过前端或 `POST /api/v1/knowledge-bases/:id/reindex` 重建索引。
 
-## Phase 5 前端页面
+Hybrid Search 会融合 BM25 与 kNN 分数；配置 Rerank Provider 后，会使用 Chat Completions 做可选重排。Rerank 失败时会降级返回原排序。
 
-Phase 5 提供一个由 Go embed 托管的单页应用：
+## 验证
 
-```text
-/login
-/register
-/app/chat
-/app/knowledge
-/app/agents
-/app/agents/:id/canvas
-/app/settings
-```
-
-其中 Agent 画布会把 React Flow 节点序列化为 Flow DSL v1，再调用 Phase 4 API 保存、发布和运行。
-
-## 常用命令
+本次整理前已确认以下命令通过：
 
 ```bash
-make docker-up      # 启动本地依赖
-make docker-down    # 停止本地依赖
-make run            # 启动 API
-make worker         # 启动文档处理 Worker
-make dev            # 启动依赖并运行 API
-make build-web      # 构建 Vite 前端产物
-make tidy           # 整理 Go 依赖
-make test           # 运行测试/编译检查
-make migrate        # 运行 migration 命令入口
+go test ./...
+npm --prefix web run typecheck
+npm --prefix web run test
+npm --prefix web run build
 ```
-
-## MinIO
-
-MinIO API 地址：
-
-```text
-http://localhost:9000
-```
-
-MinIO 控制台：
-
-```text
-http://localhost:9001
-```
-
-默认账号和密码：
-
-```text
-minioadmin / minioadmin
-```
-
-## Kibana
-
-Kibana 地址：
-
-```text
-http://localhost:5601
-```
-
-## Phase 7 向量检索配置
-
-Phase 7 的向量能力按知识库配置。进入「知识库」页面，选择一个知识库后可以设置：
-
-- 默认检索模式：`keyword`、`vector` 或 `hybrid`
-- Embedding Provider、Embedding 模型和 Embedding 维度
-- Hybrid 权重，默认 `0.5`
-- 可选 Rerank Provider 与 Rerank 模型
-
-启用 `vector` 或 `hybrid` 前，需要先在「设置」中创建支持 OpenAI-compatible `/v1/embeddings` 的 Provider，并填写默认 Embedding 模型或在知识库中单独填写模型。修改 embedding 配置后，点击「重建索引」会为已有文档重新创建 ingestion job，worker 会重新解析、切片并写入 `embedding_vector`。
-
-## 当前状态说明
-
-当前阶段已经完成基础工程骨架、Phase 1 平台能力、Phase 2 的 txt/md 知识库最小闭环、Phase 3 普通 RAG Chat、Phase 4 Agent Flow DSL 与 Runtime、Phase 5 前端画布与 Agent 调试、Phase 6 Memory / Tool / Guardrail 能力，以及 Phase 7 向量检索、Hybrid Search 与 Rerank。用户可以在浏览器中登录、配置 Provider、管理知识库、进行 RAG Chat、创建 Agent、进入画布拖拽节点、保存并发布 Flow Version，再通过 SSE 调试台观察节点运行过程。
-
-下一阶段可继续补充 PDF / docx / xlsx 解析、更多检索质量评估、多人协作和多租户工作区。
