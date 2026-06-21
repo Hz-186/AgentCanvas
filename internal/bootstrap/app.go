@@ -12,6 +12,7 @@ import (
 	knowledgeusecase "agentcanvas/internal/application/knowledge_usecase"
 	memoryusecase "agentcanvas/internal/application/memory_usecase"
 	providerusecase "agentcanvas/internal/application/provider_usecase"
+	retrievalusecase "agentcanvas/internal/application/retrieval_usecase"
 	toolusecase "agentcanvas/internal/application/tool_usecase"
 	cryptoinfra "agentcanvas/internal/infrastructure/crypto"
 	esinfra "agentcanvas/internal/infrastructure/elasticsearch"
@@ -95,13 +96,18 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 	githubClient := oauthinfra.NewGitHubClient(cfg.OAuth.GitHub.ClientID, cfg.OAuth.GitHub.ClientSecret, cfg.OAuth.GitHub.RedirectURL, cfg.OAuth.GitHub.Scopes)
 
 	authService := authusecase.NewService(userRepo, oauthRepo, sessionRepo, apiTokenRepo, auditRepo, passwordHasher, jwtService, tokenHasher, redisClient, githubClient, cfg.Security.RefreshTokenTTL())
+	chatClient := llm.NewOpenAICompatibleChatClient()
+	embeddingClient := llm.NewOpenAICompatibleEmbeddingClient()
+	reranker := llm.NewChatReranker(chatClient)
+	retrievalService := retrievalusecase.NewService(knowledgeRepo, providerRepo, esStore, embeddingClient, reranker, secretBox)
+
 	providerService := providerusecase.NewService(providerRepo, auditRepo, secretBox, llm.NewHTTPProviderTester())
 	auditService := auditusecase.NewService(auditRepo)
 	memoryService := memoryusecase.NewService(memoryRepo)
 	toolService := toolusecase.NewService(toolDefinitionRepo)
-	knowledgeService := knowledgeusecase.NewService(knowledgeRepo, documentRepo, chunkRepo, ingestionJobRepo, retrievalLogRepo, auditRepo, fileStorage, esStore, esStore)
-	chatService := chatusecase.NewService(providerRepo, knowledgeRepo, conversationRepo, messageRepo, usageRepo, esStore, llm.NewOpenAICompatibleChatClient(), secretBox)
-	agentService := agentusecase.NewService(agentRepo, flowVersionRepo, runRepo, runEventRepo, nodeLogRepo, memoryRepo, memoryWriteLogRepo, toolDefinitionRepo, toolInvocationRepo, providerRepo, messageRepo, esStore, llm.NewOpenAICompatibleChatClient(), secretBox)
+	knowledgeService := knowledgeusecase.NewService(knowledgeRepo, documentRepo, chunkRepo, ingestionJobRepo, retrievalLogRepo, auditRepo, fileStorage, retrievalService, esStore)
+	chatService := chatusecase.NewService(providerRepo, knowledgeRepo, conversationRepo, messageRepo, usageRepo, retrievalService, chatClient, secretBox)
+	agentService := agentusecase.NewService(agentRepo, flowVersionRepo, runRepo, runEventRepo, nodeLogRepo, memoryRepo, memoryWriteLogRepo, toolDefinitionRepo, toolInvocationRepo, providerRepo, messageRepo, retrievalService, chatClient, secretBox)
 
 	healthHandler := handler.NewHealthHandler(db, redisClient, minioClient, esClient, cfg.MinIO.Bucket)
 	authHandler := handler.NewAuthHandler(authService)

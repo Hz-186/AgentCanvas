@@ -95,6 +95,7 @@ func NewRouter(deps RouterDeps) *gin.Engine {
 			protected.GET("/knowledge-bases/:id", deps.KnowledgeHandler.Get)
 			protected.PATCH("/knowledge-bases/:id", deps.KnowledgeHandler.Update)
 			protected.DELETE("/knowledge-bases/:id", deps.KnowledgeHandler.Delete)
+			protected.POST("/knowledge-bases/:id/reindex", deps.KnowledgeHandler.Reindex)
 			protected.POST("/knowledge-bases/:id/documents", deps.KnowledgeHandler.UploadDocument)
 			protected.GET("/knowledge-bases/:id/documents", deps.KnowledgeHandler.ListDocuments)
 			protected.POST("/knowledge-bases/:id/search", deps.KnowledgeHandler.Search)

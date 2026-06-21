@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -38,7 +40,7 @@ func (s *Store) EnsureIndex(ctx context.Context) error {
 	}
 	defer res.Body.Close()
 	if res.StatusCode == http.StatusOK {
-		return nil
+		return s.ensureVectorMapping(ctx)
 	}
 	if res.StatusCode != http.StatusNotFound {
 		return responseError("check index", res)
@@ -61,23 +63,29 @@ func (s *Store) EnsureIndex(ctx context.Context) error {
 
 func (s *Store) IndexChunks(ctx context.Context, docs []retrieval.ChunkIndexDocument) error {
 	for _, doc := range docs {
-		body, err := json.Marshal(map[string]any{
-			"owner_id":      doc.OwnerID,
-			"kb_id":         doc.KBID,
-			"document_id":   doc.DocumentID,
-			"chunk_id":      doc.ChunkID,
-			"chunk_index":   doc.ChunkIndex,
-			"document_name": doc.DocumentName,
-			"file_type":     doc.FileType,
-			"section_title": doc.SectionTitle,
-			"content":       doc.Content,
-			"content_hash":  doc.ContentHash,
-			"page_no":       doc.PageNo,
-			"token_count":   doc.TokenCount,
-			"metadata":      doc.Metadata,
-			"created_at":    doc.CreatedAt,
-			"updated_at":    doc.UpdatedAt,
-		})
+		payload := map[string]any{
+			"owner_id":             doc.OwnerID,
+			"kb_id":                doc.KBID,
+			"document_id":          doc.DocumentID,
+			"chunk_id":             doc.ChunkID,
+			"chunk_index":          doc.ChunkIndex,
+			"document_name":        doc.DocumentName,
+			"file_type":            doc.FileType,
+			"section_title":        doc.SectionTitle,
+			"content":              doc.Content,
+			"content_hash":         doc.ContentHash,
+			"embedding_model":      doc.EmbeddingModel,
+			"embedding_dimensions": doc.EmbeddingDimensions,
+			"page_no":              doc.PageNo,
+			"token_count":          doc.TokenCount,
+			"metadata":             doc.Metadata,
+			"created_at":           doc.CreatedAt,
+			"updated_at":           doc.UpdatedAt,
+		}
+		if len(doc.EmbeddingVector) > 0 {
+			payload["embedding_vector"] = doc.EmbeddingVector
+		}
+		body, err := json.Marshal(payload)
 		if err != nil {
 			return err
 		}
@@ -121,29 +129,36 @@ func (s *Store) Search(ctx context.Context, req retrieval.RetrievalRequest) (*re
 	if req.TopK <= 0 {
 		req.TopK = 8
 	}
+	if req.CandidateK <= 0 {
+		req.CandidateK = max(req.TopK*4, 20)
+	}
 	if req.Mode == "" {
 		req.Mode = retrieval.ModeKeyword
 	}
-	if req.Mode != retrieval.ModeKeyword {
-		return nil, fmt.Errorf("unsupported retrieval mode: %s", req.Mode)
+	var results []retrieval.RetrievalResult
+	var err error
+	switch req.Mode {
+	case retrieval.ModeKeyword:
+		results, err = s.keywordSearch(ctx, req, req.TopK)
+	case retrieval.ModeVector:
+		results, err = s.vectorSearch(ctx, req, req.TopK)
+	case retrieval.ModeHybrid:
+		results, err = s.hybridSearch(ctx, req)
+	default:
+		err = fmt.Errorf("unsupported retrieval mode: %s", req.Mode)
 	}
+	if err != nil {
+		return nil, err
+	}
+	return &retrieval.RetrievalResponse{Results: results, LatencyMS: int(time.Since(start).Milliseconds())}, nil
+}
 
-	filters := []map[string]any{{"term": map[string]any{"owner_id": req.OwnerID}}}
-	if len(req.KBIDs) > 0 {
-		filters = append(filters, map[string]any{"terms": map[string]any{"kb_id": req.KBIDs}})
-	}
-	for k, v := range req.Filters {
-		if strings.TrimSpace(k) == "" || v == nil {
-			continue
-		}
-		filters = append(filters, map[string]any{"term": map[string]any{k: v}})
-	}
-
+func (s *Store) keywordSearch(ctx context.Context, req retrieval.RetrievalRequest, size int) ([]retrieval.RetrievalResult, error) {
 	body := map[string]any{
-		"size": req.TopK,
+		"size": size,
 		"query": map[string]any{
 			"bool": map[string]any{
-				"filter": filters,
+				"filter": s.filters(req),
 				"must": []map[string]any{
 					{
 						"multi_match": map[string]any{
@@ -155,15 +170,107 @@ func (s *Store) Search(ctx context.Context, req retrieval.RetrievalRequest) (*re
 				},
 			},
 		},
-		"highlight": map[string]any{
+	}
+	if req.EnableHighlight {
+		body["highlight"] = map[string]any{
 			"pre_tags":  []string{"<em>"},
 			"post_tags": []string{"</em>"},
 			"fields": map[string]any{
 				"content": map[string]any{},
 			},
+		}
+	}
+	results, err := s.searchBody(ctx, body)
+	if err != nil {
+		return nil, err
+	}
+	for i := range results {
+		results[i].KeywordScore = results[i].Score
+		results[i].FinalScore = results[i].Score
+	}
+	return results, nil
+}
+
+func (s *Store) vectorSearch(ctx context.Context, req retrieval.RetrievalRequest, size int) ([]retrieval.RetrievalResult, error) {
+	if len(req.QueryVector) == 0 {
+		return nil, fmt.Errorf("query vector is required for %s retrieval", req.Mode)
+	}
+	body := map[string]any{
+		"size": size,
+		"knn": map[string]any{
+			"field":          "embedding_vector",
+			"query_vector":   req.QueryVector,
+			"k":              size,
+			"num_candidates": max(size*4, size),
+			"filter":         s.filters(req),
 		},
 	}
+	results, err := s.searchBody(ctx, body)
+	if err != nil {
+		return nil, err
+	}
+	for i := range results {
+		results[i].VectorScore = results[i].Score
+		results[i].FinalScore = results[i].Score
+	}
+	return results, nil
+}
 
+func (s *Store) hybridSearch(ctx context.Context, req retrieval.RetrievalRequest) ([]retrieval.RetrievalResult, error) {
+	keywordResults, err := s.keywordSearch(ctx, req, req.CandidateK)
+	if err != nil {
+		return nil, err
+	}
+	vectorResults, err := s.vectorSearch(ctx, req, req.CandidateK)
+	if err != nil {
+		return nil, err
+	}
+	weight := req.HybridWeight
+	if weight == 0 {
+		weight = 0.5
+	}
+	if weight < 0 {
+		weight = 0
+	}
+	if weight > 1 {
+		weight = 1
+	}
+	merged := make(map[int64]retrieval.RetrievalResult, len(keywordResults)+len(vectorResults))
+	maxKeyword := maxScore(keywordResults)
+	maxVector := maxScore(vectorResults)
+	for _, item := range keywordResults {
+		item.KeywordScore = item.Score
+		item.FinalScore = normalizeScore(item.Score, maxKeyword) * (1 - weight)
+		item.Score = item.FinalScore
+		merged[item.ChunkID] = item
+	}
+	for _, item := range vectorResults {
+		existing, ok := merged[item.ChunkID]
+		if !ok {
+			existing = item
+		}
+		existing.VectorScore = item.Score
+		existing.FinalScore += normalizeScore(item.Score, maxVector) * weight
+		existing.Score = existing.FinalScore
+		if existing.Highlight == "" {
+			existing.Highlight = item.Highlight
+		}
+		merged[item.ChunkID] = existing
+	}
+	results := make([]retrieval.RetrievalResult, 0, len(merged))
+	for _, item := range merged {
+		results = append(results, item)
+	}
+	sort.SliceStable(results, func(i, j int) bool {
+		return results[i].FinalScore > results[j].FinalScore
+	})
+	if len(results) > req.TopK {
+		results = results[:req.TopK]
+	}
+	return results, nil
+}
+
+func (s *Store) searchBody(ctx context.Context, body map[string]any) ([]retrieval.RetrievalResult, error) {
 	data, err := json.Marshal(body)
 	if err != nil {
 		return nil, err
@@ -180,7 +287,6 @@ func (s *Store) Search(ctx context.Context, req retrieval.RetrievalRequest) (*re
 	if res.IsError() {
 		return nil, responseError("search chunks", res)
 	}
-
 	var parsed searchResponse
 	if err := json.NewDecoder(res.Body).Decode(&parsed); err != nil {
 		return nil, err
@@ -203,11 +309,21 @@ func (s *Store) Search(ctx context.Context, req retrieval.RetrievalRequest) (*re
 			Metadata:     hit.Source.Metadata,
 		})
 	}
+	return results, nil
+}
 
-	return &retrieval.RetrievalResponse{
-		Results:   results,
-		LatencyMS: int(time.Since(start).Milliseconds()),
-	}, nil
+func (s *Store) filters(req retrieval.RetrievalRequest) []map[string]any {
+	filters := []map[string]any{{"term": map[string]any{"owner_id": req.OwnerID}}}
+	if len(req.KBIDs) > 0 {
+		filters = append(filters, map[string]any{"terms": map[string]any{"kb_id": req.KBIDs}})
+	}
+	for k, v := range req.Filters {
+		if strings.TrimSpace(k) == "" || v == nil {
+			continue
+		}
+		filters = append(filters, map[string]any{"term": map[string]any{k: v}})
+	}
+	return filters
 }
 
 func (s *Store) deleteByQuery(ctx context.Context, filters []map[string]any) error {
@@ -238,6 +354,22 @@ func (s *Store) deleteByQuery(ctx context.Context, filters []map[string]any) err
 	return nil
 }
 
+func (s *Store) ensureVectorMapping(ctx context.Context) error {
+	res, err := s.client.Indices.PutMapping(
+		[]string{s.index},
+		strings.NewReader(chunkVectorMapping),
+		s.client.Indices.PutMapping.WithContext(ctx),
+	)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+	if res.IsError() {
+		return responseError("update vector mapping", res)
+	}
+	return nil
+}
+
 func responseError(action string, res *esapi.Response) error {
 	data, _ := io.ReadAll(res.Body)
 	return fmt.Errorf("%s failed: status=%s body=%s", action, res.Status(), strings.TrimSpace(string(data)))
@@ -254,17 +386,41 @@ type searchResponse struct {
 }
 
 type chunkSearchDocument struct {
-	OwnerID      int64          `json:"owner_id"`
-	KBID         int64          `json:"kb_id"`
-	DocumentID   int64          `json:"document_id"`
-	ChunkID      int64          `json:"chunk_id"`
-	ChunkIndex   int            `json:"chunk_index"`
-	DocumentName string         `json:"document_name"`
-	FileType     string         `json:"file_type"`
-	SectionTitle string         `json:"section_title"`
-	Content      string         `json:"content"`
-	ContentHash  string         `json:"content_hash"`
-	PageNo       *int           `json:"page_no"`
-	TokenCount   int            `json:"token_count"`
-	Metadata     map[string]any `json:"metadata"`
+	OwnerID             int64          `json:"owner_id"`
+	KBID                int64          `json:"kb_id"`
+	DocumentID          int64          `json:"document_id"`
+	ChunkID             int64          `json:"chunk_id"`
+	ChunkIndex          int            `json:"chunk_index"`
+	DocumentName        string         `json:"document_name"`
+	FileType            string         `json:"file_type"`
+	SectionTitle        string         `json:"section_title"`
+	Content             string         `json:"content"`
+	ContentHash         string         `json:"content_hash"`
+	EmbeddingModel      string         `json:"embedding_model"`
+	EmbeddingDimensions int            `json:"embedding_dimensions"`
+	PageNo              *int           `json:"page_no"`
+	TokenCount          int            `json:"token_count"`
+	Metadata            map[string]any `json:"metadata"`
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func maxScore(results []retrieval.RetrievalResult) float64 {
+	maxValue := 0.0
+	for _, item := range results {
+		maxValue = math.Max(maxValue, item.Score)
+	}
+	return maxValue
+}
+
+func normalizeScore(score, maxValue float64) float64 {
+	if maxValue <= 0 {
+		return 0
+	}
+	return score / maxValue
 }

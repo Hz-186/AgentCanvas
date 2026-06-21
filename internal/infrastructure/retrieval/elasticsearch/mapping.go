@@ -30,11 +30,30 @@ const chunkIndexMapping = `{
         "analyzer": "default_text_analyzer"
       },
       "content_hash": { "type": "keyword" },
+      "embedding_vector": {
+        "type": "dense_vector",
+        "index": true,
+        "similarity": "cosine"
+      },
+      "embedding_model": { "type": "keyword" },
+      "embedding_dimensions": { "type": "integer" },
       "page_no": { "type": "integer" },
       "token_count": { "type": "integer" },
       "metadata": { "type": "object", "enabled": true },
       "created_at": { "type": "date" },
       "updated_at": { "type": "date" }
     }
+  }
+}`
+
+const chunkVectorMapping = `{
+  "properties": {
+    "embedding_vector": {
+      "type": "dense_vector",
+      "index": true,
+      "similarity": "cosine"
+    },
+    "embedding_model": { "type": "keyword" },
+    "embedding_dimensions": { "type": "integer" }
   }
 }`

@@ -11,7 +11,9 @@ import (
 
 	ingestionusecase "agentcanvas/internal/application/ingestion_usecase"
 	chunkerinfra "agentcanvas/internal/infrastructure/chunker"
+	cryptoinfra "agentcanvas/internal/infrastructure/crypto"
 	esinfra "agentcanvas/internal/infrastructure/elasticsearch"
+	"agentcanvas/internal/infrastructure/llm"
 	minioinfra "agentcanvas/internal/infrastructure/minio"
 	mysqlinfra "agentcanvas/internal/infrastructure/mysql"
 	parserinfra "agentcanvas/internal/infrastructure/parser"
@@ -67,17 +69,26 @@ func main() {
 	documentRepo := mysqlinfra.NewDocumentRepository(db)
 	chunkRepo := mysqlinfra.NewChunkRepository(db)
 	ingestionJobRepo := mysqlinfra.NewIngestionJobRepository(db)
+	providerRepo := mysqlinfra.NewProviderRepository(db)
 	fileStorage := minioinfra.NewFileStorage(minioClient, cfg.MinIO.Bucket)
+	secretBox, err := cryptoinfra.NewSecretBox(cfg.Security.SecretEncryptKey)
+	if err != nil {
+		appLogger.Error("init secret box failed", "error", err)
+		os.Exit(1)
+	}
 
 	service := ingestionusecase.NewService(
 		knowledgeRepo,
 		documentRepo,
 		chunkRepo,
 		ingestionJobRepo,
+		providerRepo,
 		fileStorage,
 		parserinfra.NewTextParser(),
 		chunkerinfra.NewFixedTokenChunker(),
 		esStore,
+		llm.NewOpenAICompatibleEmbeddingClient(),
+		secretBox,
 		cfg.Elasticsearch.ChunkIndex,
 	)
 

@@ -234,7 +234,7 @@ func TestSearchRejectsInvalidRequests(t *testing.T) {
 		{name: "blank query", req: SearchRequest{Query: "   "}},
 		{name: "negative top k", req: SearchRequest{Query: "AgentCanvas", TopK: -1}},
 		{name: "too large top k", req: SearchRequest{Query: "AgentCanvas", TopK: 51}},
-		{name: "unsupported mode", req: SearchRequest{Query: "AgentCanvas", Mode: retrieval.ModeVector}},
+		{name: "unsupported mode", req: SearchRequest{Query: "AgentCanvas", Mode: retrieval.Mode("semantic")}},
 	}
 
 	for _, tc := range cases {

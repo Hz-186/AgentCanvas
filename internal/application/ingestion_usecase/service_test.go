@@ -53,10 +53,13 @@ func TestProcessJobParsesChunksIndexesAndCompletes(t *testing.T) {
 		docs,
 		chunks,
 		jobs,
+		nil,
 		storage,
 		parser.NewTextParser(),
 		chunker.NewFixedTokenChunker(),
 		indexer,
+		nil,
+		nil,
 		"test_chunks",
 	)
 
@@ -146,12 +149,15 @@ func TestProcessJobReplacesExistingChunksIdempotently(t *testing.T) {
 		docs,
 		chunks,
 		&fakeJobRepo{},
+		nil,
 		fakeReadStorage{objects: map[string]string{
 			"raw/guide.md": "Fresh content for a single replacement chunk.",
 		}},
 		parser.NewTextParser(),
 		chunker.NewFixedTokenChunker(),
 		indexer,
+		nil,
+		nil,
 		"test_chunks",
 	)
 
@@ -203,10 +209,13 @@ func TestProcessNextMarksJobAndDocumentFailed(t *testing.T) {
 		docs,
 		&fakeChunkRepo{},
 		jobs,
+		nil,
 		fakeReadStorage{objects: map[string]string{}},
 		parser.NewTextParser(),
 		chunker.NewFixedTokenChunker(),
 		&fakeIndexer{},
+		nil,
+		nil,
 		"test_chunks",
 	)
 
@@ -258,10 +267,13 @@ func TestProcessNextRetriesJobBeforeMaxAttempts(t *testing.T) {
 		docs,
 		&fakeChunkRepo{},
 		jobs,
+		nil,
 		fakeReadStorage{objects: map[string]string{}},
 		parser.NewTextParser(),
 		chunker.NewFixedTokenChunker(),
 		&fakeIndexer{},
+		nil,
+		nil,
 		"test_chunks",
 	)
 
