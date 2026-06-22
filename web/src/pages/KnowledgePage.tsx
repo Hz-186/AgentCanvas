@@ -1,14 +1,17 @@
 import { FormEvent, useEffect, useState } from 'react';
-import { Database, FileText, Plus, RefreshCw, Save, Search, Upload } from 'lucide-react';
+import { ChevronLeft, Database, FileText, Plus, RefreshCw, Save, Search, Upload } from 'lucide-react';
+import { useNavigate, useParams } from 'react-router-dom';
 import { knowledgeApi, settingsApi } from '../api/resources';
 import { Button, EmptyState, Field, Modal, Panel, Select, StatusBadge, TextArea, TextInput, Toast } from '../components/ui';
 import type { AgentDocument, DocumentChunk, KnowledgeBase, ModelProvider, RetrievalResult } from '../types/api';
-import { formatBytes, formatDate } from '../utils/format';
+import { formatBytes, formatDate, friendlyErrorMessage } from '../utils/format';
 
 export function KnowledgePage() {
+  const navigate = useNavigate();
+  const { id } = useParams();
+  const routeId = id ? Number(id) : 0;
   const [items, setItems] = useState<KnowledgeBase[]>([]);
   const [providers, setProviders] = useState<ModelProvider[]>([]);
-  const [selectedId, setSelectedId] = useState<number>(0);
   const [documents, setDocuments] = useState<AgentDocument[]>([]);
   const [chunks, setChunks] = useState<DocumentChunk[]>([]);
   const [searchResults, setSearchResults] = useState<RetrievalResult[]>([]);
@@ -32,24 +35,23 @@ export function KnowledgePage() {
     const [list, providerList] = await Promise.all([knowledgeApi.list(), settingsApi.providers.list()]);
     setItems(list);
     setProviders(providerList);
-    setSelectedId((current) => current || list[0]?.id || 0);
   }
 
   useEffect(() => {
-    void load().catch((err) => setError(err instanceof Error ? err.message : '加载知识库失败'));
+    void load().catch((err) => setError(friendlyErrorMessage(err, '加载知识库失败')));
   }, []);
 
   useEffect(() => {
-    if (!selectedId) {
+    if (!routeId) {
       setDocuments([]);
       setSearchResults([]);
       return;
     }
-    void knowledgeApi.listDocuments(selectedId).then(setDocuments).catch((err) => setError(err instanceof Error ? err.message : '加载文档失败'));
-  }, [selectedId]);
+    void knowledgeApi.listDocuments(routeId).then(setDocuments).catch((err) => setError(friendlyErrorMessage(err, '加载文档失败')));
+  }, [routeId]);
 
   useEffect(() => {
-    const selected = items.find((item) => item.id === selectedId);
+    const selected = items.find((item) => item.id === routeId);
     if (!selected) return;
     setRetrievalMode(selected.retrieval_mode || 'keyword');
     setSearchMode(selected.retrieval_mode || 'keyword');
@@ -61,7 +63,7 @@ export function KnowledgePage() {
     setRerankProviderId(selected.rerank_provider_id ? String(selected.rerank_provider_id) : '');
     setRerankModel(selected.rerank_model || '');
     setSearchResults([]);
-  }, [items, selectedId]);
+  }, [items, routeId]);
 
   async function createKB(event: FormEvent) {
     event.preventDefault();
@@ -71,14 +73,14 @@ export function KnowledgePage() {
     setDescription('');
     setMessage('知识库已创建');
     await load();
-    setSelectedId(kb.id);
+    navigate(`/app/knowledge/${kb.id}`);
   }
 
   async function upload(file: File | undefined) {
-    if (!file || !selectedId) return;
-    await knowledgeApi.uploadDocument(selectedId, file);
+    if (!file || !routeId) return;
+    await knowledgeApi.uploadDocument(routeId, file);
     setMessage('文档已上传，等待 ingestion');
-    setDocuments(await knowledgeApi.listDocuments(selectedId));
+    setDocuments(await knowledgeApi.listDocuments(routeId));
   }
 
   async function showChunks(documentId: number) {
@@ -87,7 +89,7 @@ export function KnowledgePage() {
 
   async function saveRetrievalSettings(event: FormEvent) {
     event.preventDefault();
-    if (!selectedId) return;
+    if (!routeId) return;
     const body: Parameters<typeof knowledgeApi.update>[1] = {
       retrieval_mode: retrievalMode,
       embedding_model: embeddingModel,
@@ -98,68 +100,84 @@ export function KnowledgePage() {
     };
     if (embeddingProviderId) body.embedding_provider_id = Number(embeddingProviderId);
     if (rerankProviderId) body.rerank_provider_id = Number(rerankProviderId);
-    const updated = await knowledgeApi.update(selectedId, body);
+    const updated = await knowledgeApi.update(routeId, body);
     setItems((current) => current.map((item) => (item.id === updated.id ? updated : item)));
     setMessage('检索设置已保存');
   }
 
   async function reindex() {
-    if (!selectedId) return;
-    const resp = await knowledgeApi.reindex(selectedId);
+    if (!routeId) return;
+    const resp = await knowledgeApi.reindex(routeId);
     setMessage(`已创建 ${resp.job_count} 个重建任务`);
-    setDocuments(await knowledgeApi.listDocuments(selectedId));
+    setDocuments(await knowledgeApi.listDocuments(routeId));
   }
 
   async function testSearch(event: FormEvent) {
     event.preventDefault();
-    if (!selectedId || !searchQuery.trim()) return;
-    const resp = await knowledgeApi.search(selectedId, { query: searchQuery, top_k: 5, mode: searchMode });
+    if (!routeId || !searchQuery.trim()) return;
+    const resp = await knowledgeApi.search(routeId, { query: searchQuery, top_k: 5, mode: searchMode });
     setSearchResults(resp.results);
     setMessage(`检索完成 · ${resp.latency_ms}ms`);
   }
 
-  const selected = items.find((item) => item.id === selectedId);
+  const selected = items.find((item) => item.id === routeId);
+  const isDetail = Boolean(routeId);
 
   return (
     <div className="page">
       <div className="page-head">
         <div>
           <h1>知识库</h1>
-          <p>上传 Markdown 或文本文件，检索结果可直接被 Agent Flow 与 RAG Chat 使用。</p>
+          <p>{isDetail ? '管理文档、切分与检索策略。' : '为 Agent 和 RAG 对话准备可检索的内容集合。'}</p>
         </div>
-        <Button tone="primary" onClick={() => setCreateOpen(true)}>
-          <Plus size={17} />
-          新建知识库
-        </Button>
+        {isDetail ? (
+          <Button onClick={() => navigate('/app/knowledge')}>
+            <ChevronLeft size={17} />
+            返回列表
+          </Button>
+        ) : (
+          <Button tone="primary" onClick={() => setCreateOpen(true)}>
+            <Plus size={17} />
+            新建知识库
+          </Button>
+        )}
       </div>
       {error ? <p className="error-text">{error}</p> : null}
 
-      {items.length === 0 ? (
+      {!isDetail && items.length === 0 ? (
         <EmptyState icon={<Database size={24} />} title="还没有知识库" description="先创建一个知识库，再上传 txt 或 md 文档。" action={<Button tone="primary" onClick={() => setCreateOpen(true)}>新建知识库</Button>} />
-      ) : (
-        <div className="split-layout">
-          <Panel title="知识库列表" eyebrow="Knowledge">
-            <div className="stack">
-              {items.map((kb) => (
-                <button className="card" key={kb.id} type="button" onClick={() => setSelectedId(kb.id)} style={{ borderColor: kb.id === selectedId ? 'var(--accent)' : undefined }}>
-                  <div className="card-title">
-                    <h3 className="truncate">{kb.name}</h3>
-                    <StatusBadge tone="good">Active</StatusBadge>
-                  </div>
-                  <p className="muted clamp-2">{kb.description || '暂无描述'}</p>
-                  <div className="meta-row">
-                    <span>{kb.document_count} documents</span>
-                    <span>{kb.chunk_count} chunks</span>
-                  </div>
-                </button>
-              ))}
-            </div>
-          </Panel>
+      ) : null}
 
+      {!isDetail && items.length > 0 ? (
+        <div className="grid">
+          {items.map((kb) => (
+            <article className="card" key={kb.id}>
+              <div className="card-title">
+                <h3 className="truncate">{kb.name}</h3>
+                <StatusBadge tone="good">Active</StatusBadge>
+              </div>
+              <p className="muted clamp-2">{kb.description || '暂无描述'}</p>
+              <div className="meta-row">
+                <span>{kb.document_count} documents</span>
+                <span>{kb.chunk_count} chunks</span>
+                <span>更新 {formatDate(kb.updated_at)}</span>
+              </div>
+              <div className="row-wrap">
+                <Button tone="primary" onClick={() => navigate(`/app/knowledge/${kb.id}`)}>
+                  打开知识库
+                </Button>
+              </div>
+            </article>
+          ))}
+        </div>
+      ) : null}
+
+      {isDetail ? (
+        <div className="knowledge-layout">
           <div className="stack">
             <Panel
               title={selected?.name ?? '知识库详情'}
-              eyebrow="Documents"
+              eyebrow="文档"
               action={
                 <label className="btn btn-secondary">
                   <Upload size={16} />
@@ -178,7 +196,7 @@ export function KnowledgePage() {
                         <th>文档</th>
                         <th>状态</th>
                         <th>大小</th>
-                        <th>Chunks</th>
+                        <th>片段数</th>
                         <th>创建时间</th>
                       </tr>
                     </thead>
@@ -200,7 +218,7 @@ export function KnowledgePage() {
 
             <Panel
               title="检索设置"
-              eyebrow="Phase 7"
+              eyebrow="策略"
               action={
                 <Button type="button" onClick={() => void reindex()}>
                   <RefreshCw size={16} />
@@ -261,7 +279,7 @@ export function KnowledgePage() {
               </form>
             </Panel>
 
-            <Panel title="检索测试" eyebrow="Search">
+            <Panel title="检索测试" eyebrow="测试">
               <form className="form-stack" onSubmit={(event) => void testSearch(event)}>
                 <div className="dense-grid">
                   <Field label="查询">
@@ -302,7 +320,7 @@ export function KnowledgePage() {
             </Panel>
 
             {chunks.length > 0 ? (
-              <Panel title="文档 Chunks" eyebrow="Chunks">
+              <Panel title="文档片段" eyebrow="切分结果">
                 {chunks.map((chunk) => (
                   <pre className="code-box" key={chunk.id}>{chunk.content}</pre>
                 ))}
@@ -310,7 +328,7 @@ export function KnowledgePage() {
             ) : null}
           </div>
         </div>
-      )}
+      ) : null}
 
       <Modal
         open={createOpen}

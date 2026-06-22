@@ -3,9 +3,118 @@ import { BrainCircuit, Globe2, KeyRound, Plus, ShieldCheck, Trash2, Zap } from '
 import { settingsApi } from '../api/resources';
 import { Button, Field, IconButton, Modal, Panel, Select, StatusBadge, TextArea, TextInput, Toast } from '../components/ui';
 import type { ApiToken, AuditLog, Memory, ModelProvider, ProviderType, ToolDefinition } from '../types/api';
-import { formatDate, parseJsonObject } from '../utils/format';
+import { formatDate, friendlyErrorMessage, parseJsonObject } from '../utils/format';
 
 const providerTypes: ProviderType[] = ['openai_compatible', 'deepseek', 'qwen', 'ollama', 'azure_openai', 'local'];
+
+export function MemoryPage() {
+  const [memories, setMemories] = useState<Memory[]>([]);
+  const [memoryOpen, setMemoryOpen] = useState(false);
+  const [memoryType, setMemoryType] = useState('profile_memory');
+  const [memoryTitle, setMemoryTitle] = useState('');
+  const [memoryContent, setMemoryContent] = useState('');
+  const [message, setMessage] = useState('');
+  const [error, setError] = useState('');
+
+  async function load() {
+    try {
+      setMemories(await settingsApi.memories.list());
+      setError('');
+    } catch (err) {
+      setError(friendlyErrorMessage(err, '加载记忆失败'));
+    }
+  }
+
+  useEffect(() => {
+    void load();
+  }, []);
+
+  async function createMemory(event: FormEvent) {
+    event.preventDefault();
+    await settingsApi.memories.create({ memory_type: memoryType, title: memoryTitle, content: memoryContent, importance: 0.5, source: 'manual' });
+    setMemoryOpen(false);
+    setMemoryTitle('');
+    setMemoryContent('');
+    setMessage('记忆已创建');
+    await load();
+  }
+
+  async function removeMemory(id: number) {
+    await settingsApi.memories.remove(id);
+    setMessage('记忆已删除');
+    await load();
+  }
+
+  return (
+    <div className="page">
+      <div className="page-head">
+        <div>
+          <h1>记忆</h1>
+          <p>管理可被 Agent 读取和写入的长期记忆。</p>
+        </div>
+        <Button tone="primary" onClick={() => setMemoryOpen(true)}>
+          <Plus size={17} />
+          新增记忆
+        </Button>
+      </div>
+      {error ? <p className="error-text">{error}</p> : null}
+
+      {memories.length === 0 ? (
+        <div className="empty">
+          <div className="empty-icon"><BrainCircuit size={24} /></div>
+          <h3>还没有记忆</h3>
+          <p>新增一条记忆后，Agent 就可以在流程中读取它。</p>
+          <Button tone="primary" onClick={() => setMemoryOpen(true)}>新增记忆</Button>
+        </div>
+      ) : (
+        <div className="grid">
+          {memories.map((memory) => (
+            <article className="card" key={memory.id}>
+              <div className="card-title">
+                <h3 className="truncate">{memory.title || memory.memory_type}</h3>
+                <StatusBadge tone="info">{memory.memory_type}</StatusBadge>
+              </div>
+              <p className="muted clamp-2">{memory.content}</p>
+              <div className="meta-row">
+                <span>重要度 {memory.importance.toFixed(1)}</span>
+                <span>更新 {formatDate(memory.updated_at)}</span>
+              </div>
+              <div className="row-wrap">
+                <IconButton label="删除记忆" onClick={() => void removeMemory(memory.id)}><Trash2 size={16} /></IconButton>
+              </div>
+            </article>
+          ))}
+        </div>
+      )}
+
+      <Modal
+        open={memoryOpen}
+        title="新增记忆"
+        onClose={() => setMemoryOpen(false)}
+        footer={
+          <>
+            <Button type="button" onClick={() => setMemoryOpen(false)}>取消</Button>
+            <Button form="create-memory-page-form" tone="primary">保存</Button>
+          </>
+        }
+      >
+        <form id="create-memory-page-form" className="form-stack" onSubmit={(event) => void createMemory(event)}>
+          <Field label="类型">
+            <Select value={memoryType} onChange={(event) => setMemoryType(event.target.value)}>
+              <option value="profile_memory">profile_memory</option>
+              <option value="summary_memory">summary_memory</option>
+              <option value="episodic_memory">episodic_memory</option>
+              <option value="task_memory">task_memory</option>
+            </Select>
+          </Field>
+          <Field label="标题"><TextInput value={memoryTitle} onChange={(event) => setMemoryTitle(event.target.value)} /></Field>
+          <Field label="内容"><TextArea value={memoryContent} onChange={(event) => setMemoryContent(event.target.value)} required /></Field>
+        </form>
+      </Modal>
+      <Toast message={message} tone="good" />
+    </div>
+  );
+}
 
 export function SettingsPage() {
   const [providers, setProviders] = useState<ModelProvider[]>([]);
@@ -35,22 +144,25 @@ export function SettingsPage() {
   const [error, setError] = useState('');
 
   async function load() {
-    const [providerResp, tokenResp, auditResp, memoryResp, toolResp] = await Promise.all([
+    const [providerResp, tokenResp, auditResp, memoryResp, toolResp] = await Promise.allSettled([
       settingsApi.providers.list(),
       settingsApi.tokens.list(),
       settingsApi.audits.list(),
       settingsApi.memories.list(),
       settingsApi.tools.list(),
     ]);
-    setProviders(providerResp);
-    setTokens(tokenResp);
-    setAudits(auditResp);
-    setMemories(memoryResp);
-    setTools(toolResp);
+    if (providerResp.status === 'fulfilled') setProviders(providerResp.value);
+    if (tokenResp.status === 'fulfilled') setTokens(tokenResp.value);
+    if (auditResp.status === 'fulfilled') setAudits(auditResp.value);
+    if (memoryResp.status === 'fulfilled') setMemories(memoryResp.value);
+    if (toolResp.status === 'fulfilled') setTools(toolResp.value);
+
+    const failed = [providerResp, tokenResp, auditResp, memoryResp, toolResp].find((item) => item.status === 'rejected');
+    setError(failed && failed.status === 'rejected' ? friendlyErrorMessage(failed.reason, '部分设置暂时不可用') : '');
   }
 
   useEffect(() => {
-    void load().catch((err) => setError(err instanceof Error ? err.message : '加载设置失败'));
+    void load().catch((err) => setError(friendlyErrorMessage(err, '加载设置失败')));
   }, []);
 
   async function createProvider(event: FormEvent) {
@@ -135,13 +247,13 @@ export function SettingsPage() {
       <div className="page-head">
         <div>
           <h1>设置</h1>
-          <p>管理模型 Provider、API Token 和审计日志。</p>
+          <p>管理模型 Provider、API Token、Memory、HTTP Tool 和审计日志。</p>
         </div>
       </div>
       {error ? <p className="error-text">{error}</p> : null}
 
       <div className="dense-grid">
-        <Panel title="Model Providers" eyebrow="LLM" action={<Button tone="primary" onClick={() => setProviderOpen(true)}><Plus size={16} />新增</Button>}>
+        <Panel title="模型服务" eyebrow="模型" action={<Button tone="primary" onClick={() => setProviderOpen(true)}><Plus size={16} />新增</Button>}>
           <div className="stack">
             {providers.map((provider) => (
               <article className="card" key={provider.id}>
@@ -159,7 +271,7 @@ export function SettingsPage() {
           </div>
         </Panel>
 
-        <Panel title="API Tokens" eyebrow="Access" action={<Button tone="primary" onClick={() => setTokenOpen(true)}><KeyRound size={16} />创建</Button>}>
+        <Panel title="访问令牌" eyebrow="权限" action={<Button tone="primary" onClick={() => setTokenOpen(true)}><KeyRound size={16} />创建</Button>}>
           <div className="stack">
             {tokens.map((token) => (
               <article className="card" key={token.id}>
@@ -177,7 +289,7 @@ export function SettingsPage() {
       </div>
 
       <div className="dense-grid">
-        <Panel title="Memories" eyebrow="Phase 6" action={<Button tone="primary" onClick={() => setMemoryOpen(true)}><BrainCircuit size={16} />新增</Button>}>
+        <Panel title="长期记忆" eyebrow="记忆" action={<Button tone="primary" onClick={() => setMemoryOpen(true)}><BrainCircuit size={16} />新增</Button>}>
           <div className="stack">
             {memories.map((memory) => (
               <article className="card" key={memory.id}>
@@ -195,7 +307,7 @@ export function SettingsPage() {
           </div>
         </Panel>
 
-        <Panel title="HTTP Tools" eyebrow="Phase 6" action={<Button tone="primary" onClick={() => setToolOpen(true)}><Globe2 size={16} />新增</Button>}>
+        <Panel title="HTTP 工具" eyebrow="工具" action={<Button tone="primary" onClick={() => setToolOpen(true)}><Globe2 size={16} />新增</Button>}>
           <div className="stack">
             {tools.map((tool) => (
               <article className="card" key={tool.id}>
@@ -211,7 +323,7 @@ export function SettingsPage() {
         </Panel>
       </div>
 
-      <Panel title="审计日志" eyebrow="Audit">
+      <Panel title="审计日志" eyebrow="记录">
         <div className="table-wrap">
           <table className="table">
             <thead>

@@ -1,9 +1,10 @@
 import { FormEvent, useEffect, useState } from 'react';
-import { MessageSquareText, Send } from 'lucide-react';
+import { ChevronLeft, MessageSquareText, Plus, Send } from 'lucide-react';
+import { useNavigate, useParams } from 'react-router-dom';
 import { chatApi, conversationApi, knowledgeApi, settingsApi } from '../api/resources';
 import { Button, EmptyState, Field, Panel, Select, StatusBadge, TextArea } from '../components/ui';
 import type { Conversation, KnowledgeBase, Message, MessageReference, ModelProvider } from '../types/api';
-import { formatDate } from '../utils/format';
+import { formatDate, friendlyErrorMessage } from '../utils/format';
 
 interface ChatLine {
   role: 'user' | 'assistant';
@@ -11,6 +12,11 @@ interface ChatLine {
 }
 
 export function ChatPage() {
+  const navigate = useNavigate();
+  const { conversationId: routeConversationId } = useParams();
+  const isDetail = Boolean(routeConversationId);
+  const isNewConversation = routeConversationId === 'new';
+  const routeId = routeConversationId && !isNewConversation ? Number(routeConversationId) : undefined;
   const [providers, setProviders] = useState<ModelProvider[]>([]);
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([]);
   const [conversations, setConversations] = useState<Conversation[]>([]);
@@ -37,8 +43,25 @@ export function ChatPage() {
   }
 
   useEffect(() => {
-    void load().catch((err) => setError(err instanceof Error ? err.message : '加载聊天配置失败'));
+    void load().catch((err) => setError(friendlyErrorMessage(err, '加载聊天配置失败')));
   }, []);
+
+  useEffect(() => {
+    if (!isDetail) {
+      setConversationId(undefined);
+      setLines([]);
+      setReferences([]);
+      return;
+    }
+    if (isNewConversation) {
+      setConversationId(undefined);
+      setLines([]);
+      setReferences([]);
+      return;
+    }
+    if (!routeId || Number.isNaN(routeId)) return;
+    void openConversation(routeId);
+  }, [isDetail, isNewConversation, routeId]);
 
   async function openConversation(id: number) {
     setConversationId(id);
@@ -62,10 +85,17 @@ export function ChatPage() {
       { provider_id: providerId, kb_ids: [kbId], question: currentQuestion, conversation_id: conversationId, top_k: 8 },
       {
         onMessage: (msg) => {
-          const data = JSON.parse(msg.data) as unknown;
+          const data = (() => {
+            try {
+              return JSON.parse(msg.data) as unknown;
+            } catch {
+              return msg.data;
+            }
+          })();
           if (msg.event === 'conversation') {
             const conv = data as Conversation;
             setConversationId(conv.id);
+            if (isNewConversation) navigate(`/app/chat/${conv.id}`, { replace: true });
             void load();
             return;
           }
@@ -82,12 +112,12 @@ export function ChatPage() {
           if (msg.event === 'done') setStreaming(false);
           if (msg.event === 'error') {
             const payload = data as { message?: string };
-            setError(payload.message ?? '流式请求失败');
+            setError(friendlyErrorMessage(payload.message ?? data, '流式请求失败'));
             setStreaming(false);
           }
         },
         onError: (err) => {
-          setError(err.message);
+          setError(friendlyErrorMessage(err, '流式请求失败'));
           setStreaming(false);
         },
       },
@@ -100,13 +130,47 @@ export function ChatPage() {
       <div className="page-head">
         <div>
           <h1>RAG Chat</h1>
-          <p>选择 Provider 和知识库，用真实检索结果驱动流式回答。</p>
+          <p>{isDetail ? '在当前会话中检索知识库并流式回答。' : '选择一个会话继续，或创建新的知识库对话。'}</p>
         </div>
-        {streaming ? <StatusBadge tone="info">Streaming</StatusBadge> : <StatusBadge>Ready</StatusBadge>}
+        {isDetail ? (
+          <Button onClick={() => navigate('/app/chat')}>
+            <ChevronLeft size={17} />
+            返回列表
+          </Button>
+        ) : (
+          <Button tone="primary" onClick={() => navigate('/app/chat/new')}>
+            <Plus size={17} />
+            新建对话
+          </Button>
+        )}
       </div>
 
+      {!isDetail ? (
+        conversations.length === 0 ? (
+          <EmptyState icon={<MessageSquareText size={24} />} title="还没有对话" description="创建一个新对话后，就可以选择知识库开始提问。" action={<Button tone="primary" onClick={() => navigate('/app/chat/new')}>新建对话</Button>} />
+        ) : (
+          <div className="grid">
+            {conversations.map((conv) => (
+              <article className="card" key={conv.id}>
+                <div className="card-title">
+                  <h3 className="truncate">{conv.title}</h3>
+                  <StatusBadge tone="info">{conv.source || 'RAG'}</StatusBadge>
+                </div>
+                <p className="muted">最近更新 {formatDate(conv.last_message_at ?? conv.updated_at ?? conv.created_at)}</p>
+                <div className="row-wrap">
+                  <Button tone="primary" onClick={() => navigate(`/app/chat/${conv.id}`)}>
+                    打开对话
+                  </Button>
+                </div>
+              </article>
+            ))}
+          </div>
+        )
+      ) : null}
+
+      {isDetail ? (
       <div className="chat-layout">
-        <Panel title="会话与上下文" eyebrow="Conversations">
+        <Panel title="对话设置" eyebrow="上下文">
           <div className="form-stack">
             <Field label="Provider">
               <Select value={providerId} onChange={(event) => setProviderId(Number(event.target.value))}>
@@ -121,17 +185,9 @@ export function ChatPage() {
               </Select>
             </Field>
           </div>
-          <div className="stack">
-            {conversations.map((conv) => (
-              <button className="card" type="button" key={conv.id} onClick={() => void openConversation(conv.id)} style={{ borderColor: conv.id === conversationId ? 'var(--accent)' : undefined }}>
-                <h3 className="truncate">{conv.title}</h3>
-                <p className="muted">{formatDate(conv.last_message_at ?? conv.created_at)}</p>
-              </button>
-            ))}
-          </div>
         </Panel>
 
-        <Panel title="对话" eyebrow="Streaming Chat">
+        <Panel title={isNewConversation ? '新对话' : conversations.find((conv) => conv.id === conversationId)?.title ?? '对话'} eyebrow={streaming ? '生成中' : '就绪'}>
           <div className="message-list">
             {lines.length === 0 ? (
               <EmptyState icon={<MessageSquareText size={24} />} title="开始一次知识库对话" description="回答会随 SSE 增量显示，引用会在下方保留。" />
@@ -141,7 +197,7 @@ export function ChatPage() {
           </div>
           {references.length > 0 ? (
             <div className="stack">
-              <p className="eyebrow">References</p>
+              <p className="eyebrow">引用来源</p>
               {references.map((ref) => (
                 <article className="card" key={ref.id || ref.ref_index}>
                   <div className="card-title">
@@ -163,6 +219,7 @@ export function ChatPage() {
           </form>
         </Panel>
       </div>
+      ) : null}
     </div>
   );
 }
