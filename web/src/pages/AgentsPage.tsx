@@ -4,7 +4,7 @@ import { Bot, Plus, Trash2 } from 'lucide-react';
 import { agentApi } from '../api/resources';
 import { Button, EmptyState, Field, IconButton, Modal, StatusBadge, TextArea, TextInput, Toast } from '../components/ui';
 import type { Agent } from '../types/api';
-import { formatDate } from '../utils/format';
+import { formatDate, friendlyErrorMessage } from '../utils/format';
 
 export function AgentsPage() {
   const navigate = useNavigate();
@@ -22,7 +22,7 @@ export function AgentsPage() {
       setAgents(await agentApi.list());
       setError('');
     } catch (err) {
-      setError(err instanceof Error ? err.message : '加载 Agent 失败');
+      setError(friendlyErrorMessage(err, '加载 Agent 失败'));
     } finally {
       setLoading(false);
     }

@@ -37,7 +37,7 @@ import { Button, EmptyState, Field, Panel, Segmented, Select, StatusBadge, TextA
 import type { Agent, FlowVersion, KnowledgeBase, MemoryWriteLog, ModelProvider, ToolDefinition, ToolInvocation } from '../types/api';
 import type { DSLEdge, DSLNode, FlowDSL, NodeConfig, NodeType } from '../types/flow';
 import type { RuntimeEvent } from '../types/events';
-import { parseJsonObject, prettyJson } from '../utils/format';
+import { friendlyErrorMessage, parseJsonObject, prettyJson } from '../utils/format';
 
 interface CanvasNodeData extends Record<string, unknown> {
   label: string;
@@ -92,11 +92,14 @@ function AgentNode({ data, selected }: NodeProps<CanvasNode>) {
 }
 
 const nodeTypes = { agentNode: AgentNode };
-const DEFAULT_PALETTE_WIDTH = 128;
+const DEFAULT_PALETTE_WIDTH = 184;
 const COLLAPSED_PALETTE_WIDTH = 58;
+const MIN_PALETTE_WIDTH = 172;
+const MAX_PALETTE_WIDTH = 240;
 const DEFAULT_PANEL_WIDTH = 360;
 const MIN_PANEL_WIDTH = 300;
 const PANEL_COLLAPSE_THRESHOLD = 280;
+const MAX_PANEL_WIDTH = 460;
 
 function normalizeDSL(raw: unknown): FlowDSL | null {
   if (!raw) return null;
@@ -214,6 +217,8 @@ export function CanvasPage() {
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const canvasBodyRef = useRef<HTMLDivElement | null>(null);
+  const resizeFrameRef = useRef<number | null>(null);
+  const resizeClientXRef = useRef(0);
 
   const selected = useMemo(() => nodes.find((node) => node.id === selectedId) ?? null, [nodes, selectedId]);
   const dsl = useMemo(() => toDSL(agentId, nodes, edges), [agentId, nodes, edges]);
@@ -244,7 +249,7 @@ export function CanvasPage() {
         setSelectedId('begin');
       }
     }
-    if (agentId > 0) void load().catch((err) => setError(err instanceof Error ? err.message : '加载画布失败'));
+    if (agentId > 0) void load().catch((err) => setError(friendlyErrorMessage(err, '加载画布失败')));
   }, [agentId]);
 
   const onNodesChange = useCallback((changes: NodeChange<CanvasNode>[]) => setNodes((current) => applyNodeChanges(changes, current)), []);
@@ -258,29 +263,42 @@ export function CanvasPage() {
     const body = canvasBodyRef.current;
     if (!body) return;
     const rect = body.getBoundingClientRect();
+    const startsFromClosedPanel = side === 'panel' && !sidePanelOpen;
 
-    function onMove(event: PointerEvent) {
+    function applyResize(clientX: number) {
       if (side === 'palette') {
-        const next = event.clientX - rect.left;
-        if (next < 88) {
-          setPaletteWidth(COLLAPSED_PALETTE_WIDTH);
-        } else {
-          setPaletteWidth(Math.min(220, Math.max(112, next)));
-        }
+        const next = clientX - rect.left;
+        const width = Math.min(MAX_PALETTE_WIDTH, Math.max(COLLAPSED_PALETTE_WIDTH, next));
+        setPaletteWidth((current) => (current === width ? current : width));
         return;
       }
 
-      const next = rect.right - event.clientX;
+      const next = startsFromClosedPanel ? MIN_PANEL_WIDTH + (startX - clientX) : rect.right - clientX;
       if (next < PANEL_COLLAPSE_THRESHOLD) {
         setSidePanelOpen(false);
-        setConfigWidth(DEFAULT_PANEL_WIDTH);
+        setConfigWidth(MIN_PANEL_WIDTH);
       } else {
         setSidePanelOpen(true);
-        setConfigWidth(Math.min(460, Math.max(MIN_PANEL_WIDTH, next)));
+        const width = Math.min(MAX_PANEL_WIDTH, Math.max(MIN_PANEL_WIDTH, next));
+        setConfigWidth((current) => (current === width ? current : width));
       }
     }
 
+    function onMove(event: PointerEvent) {
+      resizeClientXRef.current = event.clientX;
+      if (resizeFrameRef.current !== null) return;
+      resizeFrameRef.current = window.requestAnimationFrame(() => {
+        resizeFrameRef.current = null;
+        applyResize(resizeClientXRef.current);
+      });
+    }
+
     function onUp() {
+      if (resizeFrameRef.current !== null) {
+        window.cancelAnimationFrame(resizeFrameRef.current);
+        resizeFrameRef.current = null;
+      }
+      applyResize(resizeClientXRef.current);
       window.removeEventListener('pointermove', onMove);
       window.removeEventListener('pointerup', onUp);
       document.body.classList.remove('is-resizing-panels');
@@ -289,8 +307,9 @@ export function CanvasPage() {
     document.body.classList.add('is-resizing-panels');
     window.addEventListener('pointermove', onMove);
     window.addEventListener('pointerup', onUp);
-    onMove({ clientX: startX } as PointerEvent);
-  }, []);
+    resizeClientXRef.current = startX;
+    applyResize(startX);
+  }, [sidePanelOpen]);
 
   function connectByShiftClick(node: CanvasNode) {
     if (!pendingConnectId) {
@@ -410,16 +429,16 @@ export function CanvasPage() {
             return;
           }
           if (msg.event === 'error') {
-            setError(msg.data);
+            setError(friendlyErrorMessage(msg.data, '调试运行失败'));
             return;
           }
           const data = JSON.parse(msg.data) as RuntimeEvent;
           setEvents((current) => [...current, data]);
         },
-        onError: (err) => setError(err.message),
+        onError: (err) => setError(friendlyErrorMessage(err, '调试运行失败')),
       });
     } catch (err) {
-      setError(err instanceof Error ? err.message : '调试失败');
+      setError(friendlyErrorMessage(err, '调试失败'));
     }
   }
 
@@ -447,7 +466,7 @@ export function CanvasPage() {
 
       <div
         ref={canvasBodyRef}
-        className={`canvas-body ${sidePanelOpen ? 'side-panel-open' : 'side-panel-closed'} ${paletteWidth <= COLLAPSED_PALETTE_WIDTH ? 'palette-collapsed' : ''}`}
+        className={`canvas-body ${sidePanelOpen ? 'side-panel-open' : 'side-panel-closed'} ${paletteWidth < MIN_PALETTE_WIDTH ? 'palette-collapsed' : ''}`}
         style={{
           '--palette-width': `${paletteWidth}px`,
           '--config-width': `${configWidth}px`,
@@ -640,7 +659,7 @@ export function CanvasPage() {
           ) : null}
 
           {mode === 'debug' && (
-            <Panel title="调试台" eyebrow="SSE Runtime">
+            <Panel title="调试台" eyebrow="运行事件">
               <Field label="运行输入 JSON">
                 <TextArea value={runInput} onChange={(event) => setRunInput(event.target.value)} />
               </Field>
@@ -662,13 +681,13 @@ export function CanvasPage() {
                 {runOutput ? <pre className="code-box">{prettyJson(runOutput)}</pre> : null}
                 {memoryLogs.length > 0 ? (
                   <div className="card">
-                    <div className="card-title"><h3>Memory Writes</h3><StatusBadge tone="info">{memoryLogs.length}</StatusBadge></div>
+                    <div className="card-title"><h3>记忆写入</h3><StatusBadge tone="info">{memoryLogs.length}</StatusBadge></div>
                     <pre className="code-box">{prettyJson(memoryLogs)}</pre>
                   </div>
                 ) : null}
                 {toolInvocations.length > 0 ? (
                   <div className="card">
-                    <div className="card-title"><h3>Tool Invocations</h3><StatusBadge tone="info">{toolInvocations.length}</StatusBadge></div>
+                    <div className="card-title"><h3>工具调用</h3><StatusBadge tone="info">{toolInvocations.length}</StatusBadge></div>
                     <pre className="code-box">{prettyJson(toolInvocations)}</pre>
                   </div>
                 ) : null}
@@ -677,7 +696,7 @@ export function CanvasPage() {
           )}
 
           {mode === 'dsl' && (
-            <Panel title="Flow DSL" eyebrow="schema v1">
+            <Panel title="流程结构" eyebrow="定义">
               <pre className="code-box">{prettyJson(dsl)}</pre>
             </Panel>
           )}

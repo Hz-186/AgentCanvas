@@ -7,6 +7,7 @@ import {
   LogOut,
   MessageSquareText,
   Moon,
+  Network,
   Settings,
   Sparkles,
   Sun,
@@ -27,7 +28,7 @@ import { AgentsPage } from './pages/AgentsPage';
 import { CanvasPage } from './pages/CanvasPage';
 import { ChatPage } from './pages/ChatPage';
 import { KnowledgePage } from './pages/KnowledgePage';
-import { SettingsPage } from './pages/SettingsPage';
+import { MemoryPage, SettingsPage } from './pages/SettingsPage';
 import { useAuthStore } from './stores/authStore';
 
 function RequireAuth() {
@@ -47,14 +48,28 @@ const nav = [
   { to: '/app/agents', label: '智能体', icon: Bot },
   { to: '/app/knowledge', label: '知识库', icon: Database },
   { to: '/app/chat', label: 'RAG 对话', icon: MessageSquareText },
+  { to: '/app/memory', label: '记忆', icon: Network },
   { to: '/app/settings', label: '设置', icon: Settings },
 ];
+
+const SIDEBAR_ICON_WIDTH = 66;
+const SIDEBAR_MIN_WIDTH = 184;
+const SIDEBAR_MAX_WIDTH = 320;
+const SIDEBAR_COLLAPSE_THRESHOLD = 118;
+const INSPECTOR_MIN_WIDTH = 300;
+const INSPECTOR_MAX_WIDTH = 460;
+const INSPECTOR_COLLAPSE_THRESHOLD = 288;
 
 function storedPanelWidth(key: string, fallback: number) {
   const raw = localStorage.getItem(key);
   if (raw === null) return fallback;
   const value = Number(raw);
   return Number.isFinite(value) ? value : fallback;
+}
+
+function normalizeSidebarWidth(value: number) {
+  if (value === 0 || value <= SIDEBAR_COLLAPSE_THRESHOLD) return SIDEBAR_ICON_WIDTH;
+  return Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_ICON_WIDTH, value));
 }
 
 function AppShell() {
@@ -65,11 +80,13 @@ function AppShell() {
   const isCanvas = location.pathname.includes('/canvas');
   const [theme, setTheme] = useState(() => localStorage.getItem('agentcanvas-theme') ?? document.documentElement.dataset.theme ?? 'light');
   const [inspectorOpen, setInspectorOpen] = useState(() => !location.pathname.includes('/canvas'));
-  const [sidebarWidth, setSidebarWidth] = useState(() => storedPanelWidth('agentcanvas-sidebar-width', 232));
+  const [sidebarWidth, setSidebarWidth] = useState(() => normalizeSidebarWidth(storedPanelWidth('agentcanvas-sidebar-width', 232)));
   const [inspectorWidth, setInspectorWidth] = useState(() => storedPanelWidth('agentcanvas-inspector-width', 320));
   const workspaceRef = useRef<HTMLDivElement | null>(null);
+  const resizeFrameRef = useRef<number | null>(null);
+  const resizeClientXRef = useRef(0);
   const sidebarCollapsed = sidebarWidth === 0;
-  const sidebarCompact = sidebarWidth > 0 && sidebarWidth < 168;
+  const sidebarCompact = sidebarWidth > 0 && sidebarWidth < SIDEBAR_MIN_WIDTH;
   const inspectorCompact = inspectorWidth < 340;
 
   const pageTitle = useMemo(() => {
@@ -98,24 +115,42 @@ function AppShell() {
     const workspace = workspaceRef.current;
     if (!workspace) return;
     const rect = workspace.getBoundingClientRect();
+    const startsFromClosedInspector = target === 'inspector' && !inspectorOpen;
 
-    function onMove(event: PointerEvent) {
+    function applyResize(clientX: number) {
       if (target === 'sidebar') {
-        const next = event.clientX - rect.left;
-        setSidebarWidth(next < 96 ? 0 : Math.min(320, Math.max(76, next)));
+        const next = clientX - rect.left;
+        const width = Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_ICON_WIDTH, next));
+        setSidebarWidth((current) => (current === width ? current : width));
         return;
       }
 
-      const next = rect.right - event.clientX;
-      if (next < 288) {
+      const next = startsFromClosedInspector ? INSPECTOR_MIN_WIDTH + (startX - clientX) : rect.right - clientX;
+      if (next < INSPECTOR_COLLAPSE_THRESHOLD) {
         setInspectorOpen(false);
+        setInspectorWidth(INSPECTOR_MIN_WIDTH);
         return;
       }
       setInspectorOpen(true);
-      setInspectorWidth(Math.min(460, Math.max(300, next)));
+      const width = Math.min(INSPECTOR_MAX_WIDTH, Math.max(INSPECTOR_MIN_WIDTH, next));
+      setInspectorWidth((current) => (current === width ? current : width));
+    }
+
+    function onMove(event: PointerEvent) {
+      resizeClientXRef.current = event.clientX;
+      if (resizeFrameRef.current !== null) return;
+      resizeFrameRef.current = window.requestAnimationFrame(() => {
+        resizeFrameRef.current = null;
+        applyResize(resizeClientXRef.current);
+      });
     }
 
     function onUp() {
+      if (resizeFrameRef.current !== null) {
+        window.cancelAnimationFrame(resizeFrameRef.current);
+        resizeFrameRef.current = null;
+      }
+      applyResize(resizeClientXRef.current);
       window.removeEventListener('pointermove', onMove);
       window.removeEventListener('pointerup', onUp);
       document.body.classList.remove('is-resizing-workspace');
@@ -124,11 +159,12 @@ function AppShell() {
     document.body.classList.add('is-resizing-workspace');
     window.addEventListener('pointermove', onMove);
     window.addEventListener('pointerup', onUp);
-    onMove({ clientX: startX } as PointerEvent);
-  }, []);
+    resizeClientXRef.current = startX;
+    applyResize(startX);
+  }, [inspectorOpen]);
 
   const openInspectorFromRail = useCallback(() => {
-    setInspectorWidth((width) => Math.min(460, Math.max(300, width || 320)));
+    setInspectorWidth((width) => Math.min(INSPECTOR_MAX_WIDTH, Math.max(INSPECTOR_MIN_WIDTH, width || 320)));
     setInspectorOpen(true);
   }, []);
 
@@ -260,7 +296,10 @@ function Boot() {
           <Route path="agents" element={<AgentsPage />} />
           <Route path="agents/:id/canvas" element={<CanvasPage />} />
           <Route path="knowledge" element={<KnowledgePage />} />
+          <Route path="knowledge/:id" element={<KnowledgePage />} />
           <Route path="chat" element={<ChatPage />} />
+          <Route path="chat/:conversationId" element={<ChatPage />} />
+          <Route path="memory" element={<MemoryPage />} />
           <Route path="settings" element={<SettingsPage />} />
         </Route>
       </Route>
