@@ -100,7 +100,7 @@ func (h *DialogHandler) ownerAndID(c *gin.Context) (int64, int64, bool) {
 		response.Error(c, http.StatusUnauthorized, agenterrors.CodeUnauthorized, agenterrors.ErrUnauthorized.Error())
 		return 0, 0, false
 	}
-	id, err := parseInt64Param(c, "id")
+	id, err := parseInt64Param(c, "dialog_id")
 	if err != nil || id <= 0 {
 		writeAppError(c, agenterrors.ErrInvalidInput)
 		return 0, 0, false
