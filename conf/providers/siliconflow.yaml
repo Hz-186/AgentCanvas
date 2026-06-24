@@ -1,0 +1,30 @@
+# SiliconFlow 模型供应商预置配置
+# 新增供应商时,只需在 conf/providers/ 目录下添加一个同结构的 .yaml 文件即可,无需改动代码。
+key: siliconflow
+name: SiliconFlow
+provider_type: openai_compatible
+base_url: https://api.siliconflow.cn/v1
+doc_url: https://docs.siliconflow.cn
+rank: 100
+models:
+  - name: Qwen/Qwen2.5-7B-Instruct
+    model_type: chat
+    max_tokens: 32768
+  - name: Qwen/Qwen2.5-72B-Instruct
+    model_type: chat
+    max_tokens: 32768
+  - name: deepseek-ai/DeepSeek-V3
+    model_type: chat
+    max_tokens: 65536
+  - name: deepseek-ai/DeepSeek-R1
+    model_type: chat
+    max_tokens: 65536
+  - name: BAAI/bge-m3
+    model_type: embedding
+    max_tokens: 8192
+  - name: BAAI/bge-large-zh-v1.5
+    model_type: embedding
+    max_tokens: 512
+  - name: netease-youdao/bce-embedding-base_v1
+    model_type: embedding
+    max_tokens: 512
