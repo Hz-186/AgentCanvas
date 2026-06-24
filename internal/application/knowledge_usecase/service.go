@@ -191,6 +191,9 @@ func (s *Service) UpdateKnowledgeBase(ctx context.Context, ownerID, id int64, re
 	if err != nil {
 		return nil, err
 	}
+	oldMode := kb.RetrievalMode
+	oldModel := kb.EmbeddingModel
+	oldProvider := int64PtrValue(kb.EmbeddingProviderID)
 	if req.Name != nil {
 		name := strings.TrimSpace(*req.Name)
 		if name == "" {
@@ -252,6 +255,16 @@ func (s *Service) UpdateKnowledgeBase(ctx context.Context, ownerID, id int64, re
 	}
 	if req.Status != nil {
 		kb.Status = *req.Status
+	}
+	// embedding 相关配置(检索模式 / provider / model)变化时,重置已缓存的向量维度,
+	// 使下一次重建索引能按新模型重新推断维度,避免维度校验死锁。
+	if req.EmbeddingDimensions == nil {
+		embeddingChanged := kb.RetrievalMode != oldMode ||
+			kb.EmbeddingModel != oldModel ||
+			int64PtrValue(kb.EmbeddingProviderID) != oldProvider
+		if embeddingChanged {
+			kb.EmbeddingDimensions = 0
+		}
 	}
 	if err := s.kbs.Update(ctx, kb); err != nil {
 		return nil, err
@@ -341,6 +354,7 @@ func (s *Service) UploadDocument(ctx context.Context, ownerID, kbID int64, req U
 		MimeType:         req.ContentType,
 		FileSize:         req.FileHeader.Size,
 		ParserStatus:     knowledge.DocumentStatusPending,
+		Enabled:          true,
 	}
 	if err := s.documents.Create(ctx, doc); err != nil {
 		return nil, err
@@ -423,6 +437,32 @@ func (s *Service) DeleteDocument(ctx context.Context, ownerID, id int64, client 
 	}
 	_ = s.audit(ctx, ownerID, ownerID, "document.delete", "document", strconv.FormatInt(id, 10), map[string]any{"kb_id": doc.KBID}, client)
 	return nil
+}
+
+func (s *Service) SetDocumentEnabled(ctx context.Context, ownerID, id int64, enabled bool, client ClientInfo) (*knowledge.Document, error) {
+	doc, err := s.GetDocument(ctx, ownerID, id)
+	if err != nil {
+		return nil, err
+	}
+	if doc.Enabled == enabled {
+		return doc, nil
+	}
+	if err := s.documents.SetEnabled(ctx, ownerID, id, enabled); err != nil {
+		return nil, err
+	}
+	// 同步更新 ES 中该文档所有 chunk 的 enabled 标记;禁用后检索不再命中,启用后恢复命中。
+	if err := s.indexer.SetDocumentEnabled(ctx, ownerID, id, enabled); err != nil {
+		// MySQL 已更新,ES 同步失败时回滚 MySQL 以保持一致。
+		_ = s.documents.SetEnabled(ctx, ownerID, id, doc.Enabled)
+		return nil, err
+	}
+	doc.Enabled = enabled
+	action := "document.disable"
+	if enabled {
+		action = "document.enable"
+	}
+	_ = s.audit(ctx, ownerID, ownerID, action, "document", strconv.FormatInt(id, 10), map[string]any{"kb_id": doc.KBID}, client)
+	return doc, nil
 }
 
 func (s *Service) ListChunks(ctx context.Context, ownerID, documentID int64) ([]knowledge.DocumentChunk, error) {
@@ -550,4 +590,11 @@ func mapNotFound(err error) error {
 		return agenterrors.ErrNotFound
 	}
 	return err
+}
+
+func int64PtrValue(v *int64) int64 {
+	if v == nil {
+		return 0
+	}
+	return *v
 }

@@ -10,6 +10,8 @@ import (
 	"gorm.io/gorm/clause"
 )
 
+const staleIngestionJobLockAfter = 10 * time.Minute
+
 type IngestionJobRepository struct {
 	db *gorm.DB
 }
@@ -40,8 +42,13 @@ func (r *IngestionJobRepository) ClaimNext(ctx context.Context, workerID string)
 	var claimed *knowledge.IngestionJob
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var job knowledge.IngestionJob
+		staleBefore := time.Now().UTC().Add(-staleIngestionJobLockAfter)
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE", Options: "SKIP LOCKED"}).
-			Where("status = ? AND (max_attempts <= 0 OR attempt_count < max_attempts)", knowledge.IngestionJobStatusPending).
+			Where("(status = ? OR (status = ? AND locked_at IS NOT NULL AND locked_at < ?)) AND (max_attempts <= 0 OR attempt_count < max_attempts)",
+				knowledge.IngestionJobStatusPending,
+				knowledge.IngestionJobStatusProcessing,
+				staleBefore,
+			).
 			Order("priority DESC, created_at ASC").
 			First(&job).Error; err != nil {
 			return err

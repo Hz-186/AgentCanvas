@@ -74,6 +74,7 @@ func (s *Store) IndexChunks(ctx context.Context, docs []retrieval.ChunkIndexDocu
 			"section_title":        doc.SectionTitle,
 			"content":              doc.Content,
 			"content_hash":         doc.ContentHash,
+			"enabled":              doc.Enabled,
 			"embedding_model":      doc.EmbeddingModel,
 			"embedding_dimensions": doc.EmbeddingDimensions,
 			"page_no":              doc.PageNo,
@@ -115,6 +116,42 @@ func (s *Store) DeleteByDocument(ctx context.Context, ownerID, documentID int64)
 		{"term": map[string]any{"owner_id": ownerID}},
 		{"term": map[string]any{"document_id": documentID}},
 	})
+}
+
+func (s *Store) SetDocumentEnabled(ctx context.Context, ownerID, documentID int64, enabled bool) error {
+	body, err := json.Marshal(map[string]any{
+		"query": map[string]any{
+			"bool": map[string]any{
+				"filter": []map[string]any{
+					{"term": map[string]any{"owner_id": ownerID}},
+					{"term": map[string]any{"document_id": documentID}},
+				},
+			},
+		},
+		"script": map[string]any{
+			"source": "ctx._source.enabled = params.enabled",
+			"lang":   "painless",
+			"params": map[string]any{"enabled": enabled},
+		},
+	})
+	if err != nil {
+		return err
+	}
+	res, err := s.client.UpdateByQuery(
+		[]string{s.index},
+		s.client.UpdateByQuery.WithContext(ctx),
+		s.client.UpdateByQuery.WithBody(bytes.NewReader(body)),
+		s.client.UpdateByQuery.WithRefresh(true),
+		s.client.UpdateByQuery.WithConflicts("proceed"),
+	)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+	if res.IsError() {
+		return responseError("update document enabled", res)
+	}
+	return nil
 }
 
 func (s *Store) DeleteByKnowledgeBase(ctx context.Context, ownerID, kbID int64) error {
@@ -323,6 +360,12 @@ func (s *Store) filters(req retrieval.RetrievalRequest) []map[string]any {
 		}
 		filters = append(filters, map[string]any{"term": map[string]any{k: v}})
 	}
+	// 排除被显式禁用的文档；旧文档(无 enabled 字段)与 enabled=true 均保留，保证向后兼容。
+	filters = append(filters, map[string]any{
+		"bool": map[string]any{
+			"must_not": map[string]any{"term": map[string]any{"enabled": false}},
+		},
+	})
 	return filters
 }
 

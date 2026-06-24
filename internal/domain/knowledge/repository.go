@@ -16,6 +16,7 @@ type DocumentRepository interface {
 	ListByKnowledgeBase(ctx context.Context, ownerID, kbID int64) ([]Document, error)
 	FindByID(ctx context.Context, ownerID, id int64) (*Document, error)
 	Update(ctx context.Context, doc *Document) error
+	SetEnabled(ctx context.Context, ownerID, id int64, enabled bool) error
 	SoftDelete(ctx context.Context, ownerID, id int64) error
 	SoftDeleteByKnowledgeBase(ctx context.Context, ownerID, kbID int64) error
 }

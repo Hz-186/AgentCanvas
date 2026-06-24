@@ -209,6 +209,7 @@ export interface AgentDocument {
   content_hash: string;
   parser_status: ParserStatus;
   parser_error?: string;
+  enabled: boolean;
   chunk_count: number;
   token_count: number;
   indexed_at: string | null;

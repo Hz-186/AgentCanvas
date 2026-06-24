@@ -53,7 +53,7 @@ func (s *Service) Search(ctx context.Context, req retrieval.RetrievalRequest) (*
 		return nil, err
 	}
 	if len(req.QueryVector) == 0 {
-		vector, err := s.embedQuery(ctx, req.OwnerID, kb, req.Query)
+		vector, err := s.embedQuery(ctx, req.OwnerID, kb, req.Query, req.Mode)
 		if err != nil {
 			return nil, err
 		}
@@ -97,9 +97,9 @@ func (s *Service) primaryKnowledgeBase(ctx context.Context, ownerID int64, kbIDs
 	return kb, nil
 }
 
-func (s *Service) embedQuery(ctx context.Context, ownerID int64, kb *knowledge.KnowledgeBase, query string) ([]float32, error) {
+func (s *Service) embedQuery(ctx context.Context, ownerID int64, kb *knowledge.KnowledgeBase, query string, mode retrieval.Mode) ([]float32, error) {
 	if s.embedder == nil || kb.EmbeddingProviderID == nil {
-		return nil, fmt.Errorf("embedding provider is required for %s retrieval", kb.RetrievalMode)
+		return nil, fmt.Errorf("embedding provider is required for %s retrieval", mode)
 	}
 	provider, err := s.providers.FindByID(ctx, ownerID, *kb.EmbeddingProviderID)
 	if err != nil {

@@ -1264,6 +1264,69 @@ body.is-resizing-workspace .workspace {
   box-shadow: var(--shadow-sm);
 }
 
+.switch {
+  position: relative;
+  width: 38px;
+  height: 22px;
+  border-radius: 999px;
+  background: var(--control-bg);
+  border: 1px solid var(--border);
+  transition: background var(--dur-base) var(--ease-out), border-color var(--dur-base) var(--ease-out);
+  flex-shrink: 0;
+}
+
+.switch-knob {
+  position: absolute;
+  top: 50%;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-sm);
+  transform: translateY(-50%);
+  transition: left var(--dur-base) var(--ease-out), background var(--dur-base) var(--ease-out);
+}
+
+.switch-on {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.switch-on .switch-knob {
+  left: calc(100% - 18px);
+  background: var(--accent-contrast);
+}
+
+.switch:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.table .col-switch {
+  width: 56px;
+  text-align: center;
+}
+
+.table .col-actions {
+  width: 52px;
+  text-align: right;
+}
+
+.table tr.row-disabled td {
+  opacity: 0.5;
+}
+
+.table tr.row-disabled .col-switch,
+.table tr.row-disabled .col-actions {
+  opacity: 1;
+}
+
+.icon-btn-danger:hover {
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+
 .canvas-page {
   height: 100%;
   padding: 0;
