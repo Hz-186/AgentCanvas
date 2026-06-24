@@ -9,6 +9,7 @@ import type {
   ChatRequest,
   ChatResponse,
   Conversation,
+  Dialog,
   CreateAgentRequest,
   CreateFlowVersionRequest,
   CreateProviderRequest,
@@ -108,18 +109,38 @@ export const knowledgeApi = {
 };
 
 export const chatApi = {
-  chat: (body: ChatRequest) => api.post<ChatResponse>('/rag/chat', body),
+  chat: (dialogId: number, body: ChatRequest) => api.post<ChatResponse>(`/dialogs/${dialogId}/rag/chat`, body),
   stream: (
+    dialogId: number,
     body: ChatRequest,
     handlers: { onMessage: (msg: SSEMessage) => void; onError?: (err: Error) => void; signal?: AbortSignal },
-  ) => streamPost('/rag/chat/stream', { body, ...handlers }),
+  ) => streamPost(`/dialogs/${dialogId}/rag/chat/stream`, { body, ...handlers }),
+};
+
+export const dialogApi = {
+  list: () => api.get<Dialog[]>('/dialogs'),
+  get: (id: number) => api.get<Dialog>(`/dialogs/${id}`),
+  create: (body: {
+    name: string;
+    description?: string;
+    provider_id?: number;
+    model?: string;
+    system_prompt?: string;
+    prologue?: string;
+    kb_ids?: number[];
+    top_k?: number;
+    retrieval_mode?: string;
+    history_round_limit?: number;
+  }) => api.post<Dialog>('/dialogs', body),
+  update: (id: number, body: Partial<Dialog>) => api.patch<Dialog>(`/dialogs/${id}`, body),
+  remove: (id: number) => api.delete<{ success: boolean }>(`/dialogs/${id}`),
 };
 
 export const conversationApi = {
-  list: () => api.get<Conversation[]>('/conversations'),
-  get: (id: number) => api.get<Conversation>(`/conversations/${id}`),
-  listMessages: (id: number) => api.get<Message[]>(`/conversations/${id}/messages`),
-  remove: (id: number) => api.delete<{ success: boolean }>(`/conversations/${id}`),
+  list: (dialogId: number) => api.get<Conversation[]>(`/dialogs/${dialogId}/conversations`),
+  get: (dialogId: number, id: number) => api.get<Conversation>(`/dialogs/${dialogId}/conversations/${id}`),
+  listMessages: (dialogId: number, id: number) => api.get<Message[]>(`/dialogs/${dialogId}/conversations/${id}/messages`),
+  remove: (dialogId: number, id: number) => api.delete<{ success: boolean }>(`/dialogs/${dialogId}/conversations/${id}`),
 };
 
 export const settingsApi = {
