@@ -323,8 +323,9 @@ func TestSetDocumentEnabledIsNoopWhenUnchanged(t *testing.T) {
 
 func TestUpdateKnowledgeBaseResetsDimensionsWhenEmbeddingChanges(t *testing.T) {
 	ctx := context.Background()
+	providerID := int64(5)
 	kbs := &fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{
-		10: {ID: 10, OwnerID: 1, RetrievalMode: "keyword", EmbeddingDimensions: 1024, ChunkSize: 800, ChunkOverlap: 100},
+		10: {ID: 10, OwnerID: 1, RetrievalMode: "keyword", EmbeddingProviderID: &providerID, EmbeddingDimensions: 1024, ChunkSize: 800, ChunkOverlap: 100},
 	}}
 	service := NewService(kbs, &fakeDocumentRepo{}, &fakeChunkRepo{}, &fakeJobRepo{}, &fakeRetrievalLogRepo{}, nil, &fakeWriteStorage{}, &fakeRetriever{}, &fakeIndexer{})
 
@@ -340,8 +341,9 @@ func TestUpdateKnowledgeBaseResetsDimensionsWhenEmbeddingChanges(t *testing.T) {
 
 func TestUpdateKnowledgeBaseKeepsDimensionsWhenEmbeddingUnchanged(t *testing.T) {
 	ctx := context.Background()
+	providerID := int64(5)
 	kbs := &fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{
-		10: {ID: 10, OwnerID: 1, RetrievalMode: "vector", EmbeddingDimensions: 1024, ChunkSize: 800, ChunkOverlap: 100},
+		10: {ID: 10, OwnerID: 1, RetrievalMode: "vector", EmbeddingProviderID: &providerID, EmbeddingDimensions: 1024, ChunkSize: 800, ChunkOverlap: 100},
 	}}
 	service := NewService(kbs, &fakeDocumentRepo{}, &fakeChunkRepo{}, &fakeJobRepo{}, &fakeRetrievalLogRepo{}, nil, &fakeWriteStorage{}, &fakeRetriever{}, &fakeIndexer{})
 
@@ -352,6 +354,19 @@ func TestUpdateKnowledgeBaseKeepsDimensionsWhenEmbeddingUnchanged(t *testing.T) 
 	}
 	if kb.EmbeddingDimensions != 1024 {
 		t.Fatalf("EmbeddingDimensions = %d, want 1024 preserved", kb.EmbeddingDimensions)
+	}
+}
+
+func TestUpdateKnowledgeBaseRejectsVectorWithoutProvider(t *testing.T) {
+	ctx := context.Background()
+	kbs := &fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{
+		10: {ID: 10, OwnerID: 1, RetrievalMode: "keyword", ChunkSize: 800, ChunkOverlap: 100},
+	}}
+	service := NewService(kbs, &fakeDocumentRepo{}, &fakeChunkRepo{}, &fakeJobRepo{}, &fakeRetrievalLogRepo{}, nil, &fakeWriteStorage{}, &fakeRetriever{}, &fakeIndexer{})
+
+	mode := "vector"
+	if _, err := service.UpdateKnowledgeBase(ctx, 1, 10, UpdateKnowledgeBaseRequest{RetrievalMode: &mode}, ClientInfo{}); err == nil {
+		t.Fatal("UpdateKnowledgeBase() error = nil, want invalid input for vector without provider")
 	}
 }
 

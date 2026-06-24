@@ -193,6 +193,10 @@ export function KnowledgePage() {
   async function saveRetrievalSettings(event: FormEvent) {
     event.preventDefault();
     if (!routeId) return;
+    if (retrievalMode !== 'keyword' && !embeddingProviderId) {
+      setError('向量 / 混合检索需要先选择 Embedding Provider 才能保存');
+      return;
+    }
     const body: Parameters<typeof knowledgeApi.update>[1] = {
       retrieval_mode: retrievalMode,
       embedding_model: embeddingModel,
@@ -204,6 +208,7 @@ export function KnowledgePage() {
     if (embeddingProviderId) body.embedding_provider_id = Number(embeddingProviderId);
     if (rerankProviderId) body.rerank_provider_id = Number(rerankProviderId);
     try {
+      setError('');
       const updated = await knowledgeApi.update(routeId, body);
       setItems((current) => current.map((item) => (item.id === updated.id ? updated : item)));
       setMessage(
@@ -218,7 +223,13 @@ export function KnowledgePage() {
 
   async function reindex() {
     if (!routeId) return;
+    const kb = items.find((item) => item.id === routeId);
+    if (kb && kb.retrieval_mode !== 'keyword' && !kb.embedding_provider_id) {
+      setError('向量 / 混合检索需要先在「检索设置」中配置 Embedding Provider 并保存，再重建索引');
+      return;
+    }
     try {
+      setError('');
       const resp = await knowledgeApi.reindex(routeId);
       setMessage(`已创建 ${resp.job_count} 个重建任务`);
       setDocuments(await knowledgeApi.listDocuments(routeId));
@@ -230,6 +241,11 @@ export function KnowledgePage() {
   async function testSearch(event: FormEvent) {
     event.preventDefault();
     if (!routeId || !searchQuery.trim()) return;
+    const kb = items.find((item) => item.id === routeId);
+    if (searchMode !== 'keyword' && !kb?.embedding_provider_id) {
+      setError('向量 / 混合检索需要先在「检索设置」中配置 Embedding Provider');
+      return;
+    }
     const completedDocs = documents.filter((doc) => doc.parser_status === 'completed');
     if (completedDocs.length === 0 || completedDocs.every((doc) => doc.chunk_count === 0)) {
       setError('当前知识库还没有完成索引的文档，请等待文档处理完成后再检索。');
@@ -268,8 +284,6 @@ export function KnowledgePage() {
           </Button>
         )}
       </div>
-      {error ? <p className="error-text">{error}</p> : null}
-
       {!isDetail && items.length === 0 ? (
         <EmptyState icon={<Database size={24} />} title="还没有知识库" description="先创建一个知识库，再上传 txt 或 md 文档。" action={<Button tone="primary" onClick={() => setCreateOpen(true)}>新建知识库</Button>} />
       ) : null}
@@ -394,8 +408,15 @@ export function KnowledgePage() {
                     <TextInput value={embeddingModel} onChange={(event) => setEmbeddingModel(event.target.value)} placeholder="留空使用 Provider 默认值" />
                   </Field>
                 </div>
-                <Field label="Embedding 维度">
-                  <TextInput type="number" min={0} value={embeddingDimensions} onChange={(event) => setEmbeddingDimensions(Number(event.target.value))} />
+                <Field label="Embedding 维度" hint="直接输入数字；留空或非法输入按 0 处理（0 表示由模型自动推断）">
+                  <TextInput
+                    inputMode="numeric"
+                    value={embeddingDimensions ? String(embeddingDimensions) : ''}
+                    onChange={(event) => {
+                      const parsed = parseInt(event.target.value, 10);
+                      setEmbeddingDimensions(Number.isNaN(parsed) || parsed < 0 ? 0 : parsed);
+                    }}
+                  />
                 </Field>
                 <div className="dense-grid">
                   <Field label="Rerank">
@@ -532,7 +553,8 @@ export function KnowledgePage() {
       >
         <p>确定删除文档「{docToDelete?.name}」吗？该操作会同时移除其切片与索引，且不可恢复。</p>
       </Modal>
-      <Toast message={message} tone="good" />
+      <Toast message={message} tone="good" onClose={() => setMessage('')} />
+      <Toast message={error} tone="bad" duration={4800} onClose={() => setError('')} />
     </div>
   );
 }

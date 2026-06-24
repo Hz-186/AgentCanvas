@@ -148,6 +148,9 @@ func (s *Service) CreateKnowledgeBase(ctx context.Context, ownerID int64, req Cr
 	if hybridWeight < 0 || hybridWeight > 1 || req.EmbeddingDimensions < 0 {
 		return nil, agenterrors.ErrInvalidInput
 	}
+	if requiresEmbedding(retrievalMode) && req.EmbeddingProviderID == nil {
+		return nil, agenterrors.ErrInvalidInput
+	}
 
 	kb := &knowledge.KnowledgeBase{
 		OwnerID:             ownerID,
@@ -265,6 +268,9 @@ func (s *Service) UpdateKnowledgeBase(ctx context.Context, ownerID, id int64, re
 		if embeddingChanged {
 			kb.EmbeddingDimensions = 0
 		}
+	}
+	if requiresEmbedding(kb.RetrievalMode) && kb.EmbeddingProviderID == nil {
+		return nil, agenterrors.ErrInvalidInput
 	}
 	if err := s.kbs.Update(ctx, kb); err != nil {
 		return nil, err
@@ -521,6 +527,10 @@ func validRetrievalMode(mode string) bool {
 	default:
 		return false
 	}
+}
+
+func requiresEmbedding(mode string) bool {
+	return mode == knowledge.RetrievalModeVector || mode == knowledge.RetrievalModeHybrid
 }
 
 func (s *Service) GetIngestionJob(ctx context.Context, ownerID, id int64) (*knowledge.IngestionJob, error) {
