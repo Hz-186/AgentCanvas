@@ -172,12 +172,18 @@ GET    /api/v1/ingestion-jobs/:id
 RAG Chat：
 
 ```text
-POST /api/v1/rag/chat
-POST /api/v1/rag/chat/stream
-GET  /api/v1/conversations
-GET  /api/v1/conversations/:id
-GET  /api/v1/conversations/:id/messages
-DELETE /api/v1/conversations/:id
+POST   /api/v1/dialogs
+GET    /api/v1/dialogs
+GET    /api/v1/dialogs/:id
+PATCH  /api/v1/dialogs/:id
+DELETE /api/v1/dialogs/:id
+
+POST   /api/v1/dialogs/:dialog_id/rag/chat
+POST   /api/v1/dialogs/:dialog_id/rag/chat/stream
+GET    /api/v1/dialogs/:dialog_id/conversations
+GET    /api/v1/dialogs/:dialog_id/conversations/:id
+GET    /api/v1/dialogs/:dialog_id/conversations/:id/messages
+DELETE /api/v1/dialogs/:dialog_id/conversations/:id
 ```
 
 Agent、Memory 和 Tool：
