@@ -5,7 +5,7 @@ import "encoding/json"
 const SchemaVersionV1 = "v1"
 
 type DSL struct {
-	SchemaVersion string `json:"schema_version"`
+	SchemaVersion string `json:"schema_version"` // 固定 "v1"
 	FlowID        string `json:"flow_id"`
 	Nodes         []Node `json:"nodes"`
 	Edges         []Edge `json:"edges"`

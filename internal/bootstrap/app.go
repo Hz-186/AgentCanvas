@@ -15,6 +15,7 @@ import (
 	providerusecase "agentcanvas/internal/application/provider_usecase"
 	retrievalusecase "agentcanvas/internal/application/retrieval_usecase"
 	toolusecase "agentcanvas/internal/application/tool_usecase"
+	cataloginfra "agentcanvas/internal/infrastructure/catalog"
 	cryptoinfra "agentcanvas/internal/infrastructure/crypto"
 	esinfra "agentcanvas/internal/infrastructure/elasticsearch"
 	"agentcanvas/internal/infrastructure/llm"
@@ -66,6 +67,11 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 		return nil, fmt.Errorf("init secret box: %w", err)
 	}
 
+	providerCatalog, err := cataloginfra.NewLoader()
+	if err != nil {
+		return nil, fmt.Errorf("load provider catalog: %w", err)
+	}
+
 	userRepo := mysqlinfra.NewUserRepository(db)
 	oauthRepo := mysqlinfra.NewOAuthRepository(db)
 	sessionRepo := mysqlinfra.NewSessionRepository(db)
@@ -115,7 +121,7 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 	healthHandler := handler.NewHealthHandler(db, redisClient, minioClient, esClient, cfg.MinIO.Bucket)
 	authHandler := handler.NewAuthHandler(authService)
 	oauthHandler := handler.NewOAuthHandler(authService)
-	providerHandler := handler.NewProviderHandler(providerService)
+	providerHandler := handler.NewProviderHandler(providerService, providerCatalog)
 	auditHandler := handler.NewAuditHandler(auditService)
 	memoryHandler := handler.NewMemoryHandler(memoryService)
 	toolHandler := handler.NewToolHandler(toolService)

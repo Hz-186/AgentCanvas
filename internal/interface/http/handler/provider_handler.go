@@ -2,6 +2,7 @@ package handler
 
 import (
 	providerusecase "agentcanvas/internal/application/provider_usecase"
+	"agentcanvas/internal/domain/provider"
 	"agentcanvas/internal/pkg/response"
 	"net/http"
 
@@ -10,10 +11,16 @@ import (
 
 type ProviderHandler struct {
 	service *providerusecase.Service
+	catalog provider.CatalogRepository
 }
 
-func NewProviderHandler(service *providerusecase.Service) *ProviderHandler {
-	return &ProviderHandler{service: service}
+func NewProviderHandler(service *providerusecase.Service, catalog provider.CatalogRepository) *ProviderHandler {
+	return &ProviderHandler{service: service, catalog: catalog}
+}
+
+// ListCatalog 返回内置的模型供应商目录(只读),供前端渲染成可选列表。
+func (h *ProviderHandler) ListCatalog(c *gin.Context) {
+	response.OK(c, h.catalog.List())
 }
 
 func (h *ProviderHandler) List(c *gin.Context) {

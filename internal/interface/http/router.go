@@ -65,6 +65,7 @@ func NewRouter(deps RouterDeps) *gin.Engine {
 		{
 			protected.GET("/auth/me", deps.AuthHandler.Me)
 
+			protected.GET("/provider-catalog", deps.ProviderHandler.ListCatalog)
 			protected.GET("/model-providers", deps.ProviderHandler.List)
 			protected.POST("/model-providers", deps.ProviderHandler.Create)
 			protected.GET("/model-providers/:id", deps.ProviderHandler.Get)
@@ -152,6 +153,10 @@ func registerWebUI(r *gin.Engine) {
 	}
 	files := http.FS(dist)
 	fileServer := http.FileServer(files)
+	index, err := fs.ReadFile(dist, "index.html")
+	if err != nil {
+		return
+	}
 
 	r.GET("/", gin.WrapH(fileServer))
 	r.GET("/assets/*filepath", gin.WrapH(fileServer))
@@ -160,6 +165,6 @@ func registerWebUI(r *gin.Engine) {
 			c.JSON(http.StatusNotFound, gin.H{"code": 404, "message": "not found", "data": nil})
 			return
 		}
-		c.FileFromFS("index.html", files)
+		c.Data(http.StatusOK, "text/html; charset=utf-8", index)
 	})
 }
