@@ -34,20 +34,28 @@ export function AgentsPage() {
 
   async function createAgent(event: FormEvent) {
     event.preventDefault();
-    const agent = await agentApi.create({ name, description });
-    setOpen(false);
-    setName('');
-    setDescription('');
-    setMessage('Agent 已创建');
-    await load();
-    navigate(`/app/agents/${agent.id}/canvas`);
+    try {
+      const agent = await agentApi.create({ name, description });
+      setOpen(false);
+      setName('');
+      setDescription('');
+      setMessage('Agent 已创建');
+      await load();
+      navigate(`/app/agents/${agent.id}/canvas`);
+    } catch (err) {
+      setError(friendlyErrorMessage(err, '创建 Agent 失败'));
+    }
   }
 
   async function removeAgent(id: number) {
     if (!window.confirm('确认删除这个 Agent？')) return;
-    await agentApi.remove(id);
-    setMessage('Agent 已删除');
-    await load();
+    try {
+      await agentApi.remove(id);
+      setMessage('Agent 已删除');
+      await load();
+    } catch (err) {
+      setError(friendlyErrorMessage(err, '删除 Agent 失败'));
+    }
   }
 
   return (

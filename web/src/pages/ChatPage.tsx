@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useState } from 'react';
+import { FormEvent, useEffect, useRef, useState } from 'react';
 import { ChevronLeft, MessageSquareText, Plus, Send } from 'lucide-react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { chatApi, conversationApi, dialogApi, knowledgeApi, settingsApi } from '../api/resources';
@@ -32,6 +32,10 @@ export function ChatPage() {
   const [references, setReferences] = useState<MessageReference[]>([]);
   const [streaming, setStreaming] = useState(false);
   const [error, setError] = useState('');
+  // 进行中的 SSE 流控制器：组件卸载或重新发起时取消，避免内存泄漏与“卸载后 setState”。
+  const askAbortRef = useRef<AbortController | null>(null);
+  // 正在流式输出的会话 id：路由 effect 据此跳过对当前流会话的重载，避免覆盖正在生成的内容。
+  const streamingConversationRef = useRef<number | undefined>(undefined);
 
   async function loadBase() {
     const [providerResp, kbResp, dialogResp] = await Promise.all([
@@ -54,7 +58,15 @@ export function ChatPage() {
     void loadBase().catch((err) => setError(friendlyErrorMessage(err, '加载聊天配置失败')));
   }, []);
 
+  // 组件卸载时取消进行中的流，避免内存泄漏。
+  useEffect(() => () => askAbortRef.current?.abort(), []);
+
   useEffect(() => {
+    // 当前路由会话正是流式输出中的会话：保留正在生成的内容，不重置、不重载。
+    if (streamingConversationRef.current && streamingConversationRef.current === routeConversationIdNum) {
+      return;
+    }
+    let cancelled = false;
     setConversationId(undefined);
     setLines([]);
     setReferences([]);
@@ -62,15 +74,22 @@ export function ChatPage() {
       setConversations([]);
       return;
     }
-    void loadConversations(dialogId).catch((err) => setError(friendlyErrorMessage(err, '加载会话列表失败')));
-    if (!isDetail || isNewConversation) return;
-    if (!routeConversationIdNum || Number.isNaN(routeConversationIdNum)) return;
-    void openConversation(dialogId, routeConversationIdNum);
+    loadConversations(dialogId).catch((err) => {
+      if (!cancelled) setError(friendlyErrorMessage(err, '加载会话列表失败'));
+    });
+    if (!isDetail || isNewConversation) return () => { cancelled = true; };
+    if (!routeConversationIdNum || Number.isNaN(routeConversationIdNum)) return () => { cancelled = true; };
+    void openConversation(dialogId, routeConversationIdNum, () => cancelled);
+    return () => {
+      cancelled = true;
+    };
   }, [dialogId, isDetail, isDialogScoped, isNewConversation, routeConversationIdNum]);
 
-  async function openConversation(currentDialogId: number, id: number) {
+  async function openConversation(currentDialogId: number, id: number, isCancelled: () => boolean = () => false) {
     setConversationId(id);
     const messages = await conversationApi.listMessages(currentDialogId, id);
+    // 切换会话时旧请求可能晚返回，确认仍是当前会话再写入，避免串台。
+    if (isCancelled()) return;
     setLines(messages.map((msg: Message) => ({ role: msg.role === 'user' ? 'user' : 'assistant', content: msg.content })));
   }
 
@@ -98,55 +117,69 @@ export function ChatPage() {
       setError('请选择 Dialog、Provider、知识库并输入问题');
       return;
     }
+    if (streaming) return;
     const currentQuestion = question.trim();
+    // 取消可能仍在进行的上一次流，避免并发写入同一消息列表。
+    askAbortRef.current?.abort();
+    const controller = new AbortController();
+    askAbortRef.current = controller;
+    streamingConversationRef.current = conversationId;
     setLines((current) => [...current, { role: 'user', content: currentQuestion }, { role: 'assistant', content: '' }]);
     setQuestion('');
     setReferences([]);
     setStreaming(true);
     setError('');
-    await chatApi.stream(
-      dialogId,
-      { provider_id: providerId, kb_ids: [kbId], question: currentQuestion, conversation_id: conversationId, top_k: 8 },
-      {
-        onMessage: (msg) => {
-          const data = (() => {
-            try {
-              return JSON.parse(msg.data) as unknown;
-            } catch {
-              return msg.data;
+    try {
+      await chatApi.stream(
+        dialogId,
+        { provider_id: providerId, kb_ids: [kbId], question: currentQuestion, conversation_id: conversationId, top_k: 8 },
+        {
+          signal: controller.signal,
+          onMessage: (msg) => {
+            if (controller.signal.aborted) return;
+            const data = (() => {
+              try {
+                return JSON.parse(msg.data) as unknown;
+              } catch {
+                return msg.data;
+              }
+            })();
+            if (msg.event === 'conversation') {
+              const conv = data as Conversation;
+              setConversationId(conv.id);
+              streamingConversationRef.current = conv.id;
+              if (isNewConversation) navigate(`/app/dialogs/${dialogId}/chat/${conv.id}`, { replace: true });
+              void loadConversations(dialogId).catch(() => undefined);
+              return;
             }
-          })();
-          if (msg.event === 'conversation') {
-            const conv = data as Conversation;
-            setConversationId(conv.id);
-            if (isNewConversation) navigate(`/app/dialogs/${dialogId}/chat/${conv.id}`, { replace: true });
-            void loadConversations(dialogId);
-            return;
-          }
-          if (msg.event === 'retrieval') {
-            const payload = data as { references: MessageReference[] };
-            setReferences(payload.references ?? []);
-            return;
-          }
-          if (msg.event === 'delta') {
-            const payload = data as { content: string };
-            setLines((current) => current.map((line, index) => index === current.length - 1 ? { ...line, content: line.content + payload.content } : line));
-            return;
-          }
-          if (msg.event === 'done') setStreaming(false);
-          if (msg.event === 'error') {
-            const payload = data as { message?: string };
-            setError(friendlyErrorMessage(payload.message ?? data, '流式请求失败'));
-            setStreaming(false);
-          }
+            if (msg.event === 'retrieval') {
+              const payload = data as { references: MessageReference[] };
+              setReferences(payload.references ?? []);
+              return;
+            }
+            if (msg.event === 'delta') {
+              const payload = data as { content: string };
+              setLines((current) => current.map((line, index) => index === current.length - 1 ? { ...line, content: line.content + payload.content } : line));
+              return;
+            }
+            if (msg.event === 'error') {
+              const payload = data as { message?: string };
+              setError(friendlyErrorMessage(payload.message ?? data, '流式请求失败'));
+            }
+          },
+          onError: (err) => {
+            if (controller.signal.aborted) return;
+            setError(friendlyErrorMessage(err, '流式请求失败'));
+          },
         },
-        onError: (err) => {
-          setError(friendlyErrorMessage(err, '流式请求失败'));
-          setStreaming(false);
-        },
-      },
-    );
-    setStreaming(false);
+      );
+    } finally {
+      if (askAbortRef.current === controller) {
+        askAbortRef.current = null;
+        streamingConversationRef.current = undefined;
+        if (!controller.signal.aborted) setStreaming(false);
+      }
+    }
   }
 
   const currentDialog = dialogs.find((item) => item.id === dialogId);
