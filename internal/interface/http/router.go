@@ -109,9 +109,9 @@ func NewRouter(deps RouterDeps) *gin.Engine {
 
 			protected.POST("/dialogs", deps.DialogHandler.Create)
 			protected.GET("/dialogs", deps.DialogHandler.List)
-			protected.GET("/dialogs/:id", deps.DialogHandler.Get)
-			protected.PATCH("/dialogs/:id", deps.DialogHandler.Update)
-			protected.DELETE("/dialogs/:id", deps.DialogHandler.Delete)
+			protected.GET("/dialogs/:dialog_id", deps.DialogHandler.Get)
+			protected.PATCH("/dialogs/:dialog_id", deps.DialogHandler.Update)
+			protected.DELETE("/dialogs/:dialog_id", deps.DialogHandler.Delete)
 			protected.POST("/dialogs/:dialog_id/rag/chat", deps.ChatHandler.Chat)
 			protected.POST("/dialogs/:dialog_id/rag/chat/stream", deps.ChatHandler.StreamChat)
 			protected.GET("/dialogs/:dialog_id/conversations", deps.ChatHandler.ListConversations)
