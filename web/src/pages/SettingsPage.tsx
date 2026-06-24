@@ -1,16 +1,49 @@
-import { FormEvent, useEffect, useState } from 'react';
+import { FormEvent, useEffect, useMemo, useState } from 'react';
 import { BrainCircuit, Globe2, KeyRound, Plus, ShieldCheck, Trash2, Zap } from 'lucide-react';
 import { settingsApi } from '../api/resources';
-import { Button, Field, IconButton, Modal, Panel, Select, StatusBadge, TextArea, TextInput, Toast } from '../components/ui';
-import type { ApiToken, AuditLog, Memory, ModelProvider, ProviderType, ToolDefinition } from '../types/api';
+import { Button, EmptyState, Field, IconButton, Modal, Panel, Select, StatusBadge, TextArea, TextInput, Toast } from '../components/ui';
+import type { ApiToken, AuditLog, Memory, ModelProvider, ProviderCatalog, ProviderType, ToolDefinition } from '../types/api';
 import { formatDate, friendlyErrorMessage, parseJsonObject } from '../utils/format';
 
 const providerTypes: ProviderType[] = ['openai_compatible', 'deepseek', 'qwen', 'ollama', 'azure_openai', 'local'];
+const CUSTOM_PROVIDER = '__custom__';
+const memoryTypeOptions = [
+  { value: 'profile_memory', label: '个人画像（偏好与设定）' },
+  { value: 'summary_memory', label: '摘要记忆（压缩上下文）' },
+  { value: 'episodic_memory', label: '事件记忆（具体经历）' },
+  { value: 'task_memory', label: '任务记忆（目标与待办）' },
+];
+
+function memoryTypeLabel(value: string) {
+  return memoryTypeOptions.find((option) => option.value === value)?.label ?? value;
+}
+
+function providerTestStatusLabel(status: string) {
+  if (status === 'ok') return 'Success';
+  if (status === 'failed') return 'Fail';
+  return status || 'untested';
+}
+
+function providerTestStatusTone(status: string) {
+  if (status === 'ok') return 'good';
+  if (status === 'failed') return 'bad';
+  return 'neutral';
+}
+
+function maskSecret(value: string) {
+  const token = value.trim();
+  if (token.length <= 10) return `${token.slice(0, 4)}********`;
+  return `${token.slice(0, 8)}********${token.slice(-6)}`;
+}
+
+function maskTokenPrefix(prefix: string) {
+  return `${prefix}********`;
+}
 
 export function MemoryPage() {
   const [memories, setMemories] = useState<Memory[]>([]);
   const [memoryOpen, setMemoryOpen] = useState(false);
-  const [memoryType, setMemoryType] = useState('profile_memory');
+  const [memoryType, setMemoryType] = useState(memoryTypeOptions[0].value);
   const [memoryTitle, setMemoryTitle] = useState('');
   const [memoryContent, setMemoryContent] = useState('');
   const [message, setMessage] = useState('');
@@ -80,7 +113,7 @@ export function MemoryPage() {
             <article className="card" key={memory.id}>
               <div className="card-title">
                 <h3 className="truncate">{memory.title || memory.memory_type}</h3>
-                <StatusBadge tone="info">{memory.memory_type}</StatusBadge>
+                <StatusBadge tone="info">{memoryTypeLabel(memory.memory_type)}</StatusBadge>
               </div>
               <p className="muted clamp-2">{memory.content}</p>
               <div className="meta-row">
@@ -109,10 +142,7 @@ export function MemoryPage() {
         <form id="create-memory-page-form" className="form-stack" onSubmit={(event) => void createMemory(event)}>
           <Field label="类型">
             <Select value={memoryType} onChange={(event) => setMemoryType(event.target.value)}>
-              <option value="profile_memory">profile_memory</option>
-              <option value="summary_memory">summary_memory</option>
-              <option value="episodic_memory">episodic_memory</option>
-              <option value="task_memory">task_memory</option>
+              {memoryTypeOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
             </Select>
           </Field>
           <Field label="标题"><TextInput value={memoryTitle} onChange={(event) => setMemoryTitle(event.target.value)} /></Field>
@@ -126,6 +156,7 @@ export function MemoryPage() {
 
 export function SettingsPage() {
   const [providers, setProviders] = useState<ModelProvider[]>([]);
+  const [catalog, setCatalog] = useState<ProviderCatalog[]>([]);
   const [tokens, setTokens] = useState<ApiToken[]>([]);
   const [audits, setAudits] = useState<AuditLog[]>([]);
   const [memories, setMemories] = useState<Memory[]>([]);
@@ -134,6 +165,7 @@ export function SettingsPage() {
   const [tokenOpen, setTokenOpen] = useState(false);
   const [memoryOpen, setMemoryOpen] = useState(false);
   const [toolOpen, setToolOpen] = useState(false);
+  const [catalogKey, setCatalogKey] = useState(CUSTOM_PROVIDER);
   const [providerName, setProviderName] = useState('');
   const [providerType, setProviderType] = useState<ProviderType>('openai_compatible');
   const [baseUrl, setBaseUrl] = useState('');
@@ -141,7 +173,7 @@ export function SettingsPage() {
   const [chatModel, setChatModel] = useState('');
   const [embeddingModel, setEmbeddingModel] = useState('');
   const [tokenName, setTokenName] = useState('');
-  const [memoryType, setMemoryType] = useState('profile_memory');
+  const [memoryType, setMemoryType] = useState(memoryTypeOptions[0].value);
   const [memoryTitle, setMemoryTitle] = useState('');
   const [memoryContent, setMemoryContent] = useState('');
   const [toolName, setToolName] = useState('');
@@ -152,26 +184,60 @@ export function SettingsPage() {
   const [error, setError] = useState('');
 
   async function load() {
-    const [providerResp, tokenResp, auditResp, memoryResp, toolResp] = await Promise.allSettled([
+    const [providerResp, catalogResp, tokenResp, auditResp, memoryResp, toolResp] = await Promise.allSettled([
       settingsApi.providers.list(),
+      settingsApi.providers.catalog(),
       settingsApi.tokens.list(),
       settingsApi.audits.list(),
       settingsApi.memories.list(),
       settingsApi.tools.list(),
     ]);
     if (providerResp.status === 'fulfilled') setProviders(providerResp.value);
-    if (tokenResp.status === 'fulfilled') setTokens(tokenResp.value);
+    if (catalogResp.status === 'fulfilled') setCatalog(catalogResp.value);
+    if (tokenResp.status === 'fulfilled') setTokens(tokenResp.value.filter((token) => !token.revoked_at));
     if (auditResp.status === 'fulfilled') setAudits(auditResp.value);
     if (memoryResp.status === 'fulfilled') setMemories(memoryResp.value);
     if (toolResp.status === 'fulfilled') setTools(toolResp.value);
 
-    const failed = [providerResp, tokenResp, auditResp, memoryResp, toolResp].find((item) => item.status === 'rejected');
+    const failed = [providerResp, catalogResp, tokenResp, auditResp, memoryResp, toolResp].find((item) => item.status === 'rejected');
     setError(failed && failed.status === 'rejected' ? friendlyErrorMessage(failed.reason, '部分设置暂时不可用') : '');
   }
 
   useEffect(() => {
     void load().catch((err) => setError(friendlyErrorMessage(err, '加载设置失败')));
   }, []);
+
+  const selectedCatalog = useMemo(
+    () => catalog.find((item) => item.key === catalogKey),
+    [catalog, catalogKey],
+  );
+  const isCustom = catalogKey === CUSTOM_PROVIDER;
+  const chatModels = selectedCatalog?.models.filter((m) => m.model_type === 'chat') ?? [];
+  const embeddingModels = selectedCatalog?.models.filter((m) => m.model_type === 'embedding') ?? [];
+
+  function openProviderModal() {
+    selectCatalog(catalog[0]?.key ?? CUSTOM_PROVIDER);
+    setProviderOpen(true);
+  }
+
+  function selectCatalog(key: string) {
+    setCatalogKey(key);
+    if (key === CUSTOM_PROVIDER) {
+      setProviderName('');
+      setProviderType('openai_compatible');
+      setBaseUrl('');
+      setChatModel('');
+      setEmbeddingModel('');
+      return;
+    }
+    const item = catalog.find((c) => c.key === key);
+    if (!item) return;
+    setProviderName(item.name);
+    setProviderType(item.provider_type);
+    setBaseUrl(item.base_url);
+    setChatModel(item.models.find((m) => m.model_type === 'chat')?.name ?? '');
+    setEmbeddingModel(item.models.find((m) => m.model_type === 'embedding')?.name ?? '');
+  }
 
   async function createProvider(event: FormEvent) {
     event.preventDefault();
@@ -185,8 +251,6 @@ export function SettingsPage() {
         default_embedding_model: embeddingModel,
       });
       setProviderOpen(false);
-      setProviderName('');
-      setApiKey('');
       setMessage('Provider 已创建');
       await load();
     } catch (err) {
@@ -197,7 +261,7 @@ export function SettingsPage() {
   async function testProvider(id: number) {
     try {
       await settingsApi.providers.test(id);
-      setMessage('Provider 连通性测试已完成');
+      setMessage('');
       await load();
     } catch (err) {
       setError(friendlyErrorMessage(err, 'Provider 连通性测试失败'));
@@ -219,9 +283,10 @@ export function SettingsPage() {
     event.preventDefault();
     try {
       const created = await settingsApi.tokens.create({ name: tokenName, scopes: ['*'] });
-      setCreatedToken(created.token);
+      setCreatedToken(maskSecret(created.token));
       setTokenName('');
-      setMessage('API Token 已创建，请立即保存');
+      setTokenOpen(false);
+      setMessage('API Token 已创建');
       await load();
     } catch (err) {
       setError(friendlyErrorMessage(err, '创建 API Token 失败'));
@@ -231,6 +296,8 @@ export function SettingsPage() {
   async function removeToken(id: number) {
     try {
       await settingsApi.tokens.remove(id);
+      setTokens((current) => current.filter((token) => token.id !== id));
+      setCreatedToken('');
       setMessage('API Token 已撤销');
       await load();
     } catch (err) {
@@ -251,6 +318,8 @@ export function SettingsPage() {
       setError(friendlyErrorMessage(err, '创建 Memory 失败'));
     }
   }
+
+  const visibleTokens = tokens.filter((token) => !token.revoked_at);
 
   async function removeMemory(id: number) {
     try {
@@ -304,13 +373,15 @@ export function SettingsPage() {
       {error ? <p className="error-text">{error}</p> : null}
 
       <div className="dense-grid">
-        <Panel title="模型服务" eyebrow="模型" action={<Button tone="primary" onClick={() => setProviderOpen(true)}><Plus size={16} />新增</Button>}>
+        <Panel title="模型服务" eyebrow="模型" action={<Button tone="primary" onClick={openProviderModal}><Plus size={16} />新增</Button>}>
           <div className="stack">
-            {providers.map((provider) => (
+            {providers.length === 0 ? (
+              <EmptyState title="还没有模型服务" description="新增一个 Provider 后，Agent 就可以调用模型。" />
+            ) : providers.map((provider) => (
               <article className="card" key={provider.id}>
                 <div className="card-title">
                   <h3 className="truncate">{provider.name}</h3>
-                  <StatusBadge tone={provider.last_test_status === 'ok' ? 'good' : provider.last_test_status === 'failed' ? 'bad' : 'neutral'}>{provider.last_test_status || 'untested'}</StatusBadge>
+                  <StatusBadge tone={providerTestStatusTone(provider.last_test_status)}>{providerTestStatusLabel(provider.last_test_status)}</StatusBadge>
                 </div>
                 <p className="muted truncate">{provider.provider_type} · {provider.default_chat_model || '未设置默认模型'}</p>
                 <div className="row-wrap">
@@ -324,13 +395,15 @@ export function SettingsPage() {
 
         <Panel title="访问令牌" eyebrow="权限" action={<Button tone="primary" onClick={() => setTokenOpen(true)}><KeyRound size={16} />创建</Button>}>
           <div className="stack">
-            {tokens.map((token) => (
+            {visibleTokens.length === 0 ? (
+              <EmptyState title="还没有访问令牌" description="创建令牌后，可用于外部服务访问当前 API。" />
+            ) : visibleTokens.map((token) => (
               <article className="card" key={token.id}>
                 <div className="card-title">
                   <h3 className="truncate">{token.name}</h3>
-                  <StatusBadge tone={token.revoked_at ? 'bad' : 'good'}>{token.revoked_at ? 'Revoked' : 'Active'}</StatusBadge>
+                  <StatusBadge tone="good">有效</StatusBadge>
                 </div>
-                <p className="muted">{token.token_prefix} · {formatDate(token.created_at)}</p>
+                <p className="muted">{maskTokenPrefix(token.token_prefix)} · {formatDate(token.created_at)}</p>
                 <IconButton label="撤销 Token" onClick={() => void removeToken(token.id)}><Trash2 size={16} /></IconButton>
               </article>
             ))}
@@ -342,11 +415,13 @@ export function SettingsPage() {
       <div className="dense-grid">
         <Panel title="长期记忆" eyebrow="记忆" action={<Button tone="primary" onClick={() => setMemoryOpen(true)}><BrainCircuit size={16} />新增</Button>}>
           <div className="stack">
-            {memories.map((memory) => (
+            {memories.length === 0 ? (
+              <EmptyState title="还没有记忆" description="新增一条记忆后，Agent 就可以在流程中读取它。" />
+            ) : memories.map((memory) => (
               <article className="card" key={memory.id}>
                 <div className="card-title">
                   <h3 className="truncate">{memory.title || memory.memory_type}</h3>
-                  <StatusBadge tone="info">{memory.memory_type}</StatusBadge>
+                  <StatusBadge tone="info">{memoryTypeLabel(memory.memory_type)}</StatusBadge>
                 </div>
                 <p className="muted clamp-2">{memory.content}</p>
                 <div className="row-wrap">
@@ -360,7 +435,9 @@ export function SettingsPage() {
 
         <Panel title="HTTP 工具" eyebrow="工具" action={<Button tone="primary" onClick={() => setToolOpen(true)}><Globe2 size={16} />新增</Button>}>
           <div className="stack">
-            {tools.map((tool) => (
+            {tools.length === 0 ? (
+              <EmptyState title="还没有 HTTP 工具" description="新增工具后，Agent 可以在流程中调用外部接口。" />
+            ) : tools.map((tool) => (
               <article className="card" key={tool.id}>
                 <div className="card-title">
                   <h3 className="truncate">{tool.name}</h3>
@@ -411,16 +488,54 @@ export function SettingsPage() {
         }
       >
         <form id="create-provider-form" className="form-stack" onSubmit={(event) => void createProvider(event)}>
-          <Field label="名称"><TextInput value={providerName} onChange={(event) => setProviderName(event.target.value)} required /></Field>
-          <Field label="类型">
-            <Select value={providerType} onChange={(event) => setProviderType(event.target.value as ProviderType)}>
-              {providerTypes.map((type) => <option key={type} value={type}>{type}</option>)}
+          <Field label="供应商" hint="请选择一个供应商模板，或选择自定义手动填写。">
+            <Select value={catalogKey} onChange={(event) => selectCatalog(event.target.value)}>
+              {catalog.map((item) => (
+                <option key={item.key} value={item.key}>{item.name}</option>
+              ))}
+              <option value={CUSTOM_PROVIDER}>自定义</option>
             </Select>
           </Field>
-          <Field label="Base URL"><TextInput value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} /></Field>
+          {selectedCatalog?.doc_url ? (
+            <p className="muted">
+              文档：<a href={selectedCatalog.doc_url} target="_blank" rel="noreferrer">{selectedCatalog.doc_url}</a>
+            </p>
+          ) : null}
+          <Field label="名称"><TextInput value={providerName} onChange={(event) => setProviderName(event.target.value)} required /></Field>
+          {isCustom ? (
+            <>
+              <Field label="类型">
+                <Select value={providerType} onChange={(event) => setProviderType(event.target.value as ProviderType)}>
+                  {providerTypes.map((type) => <option key={type} value={type}>{type}</option>)}
+                </Select>
+              </Field>
+              <Field label="Base URL"><TextInput value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} /></Field>
+            </>
+          ) : (
+            <Field label="Base URL"><TextInput value={baseUrl} readOnly /></Field>
+          )}
           <Field label="API Key"><TextInput type="password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} /></Field>
-          <Field label="默认 Chat 模型"><TextInput value={chatModel} onChange={(event) => setChatModel(event.target.value)} /></Field>
-          <Field label="默认 Embedding 模型"><TextInput value={embeddingModel} onChange={(event) => setEmbeddingModel(event.target.value)} /></Field>
+          {isCustom ? (
+            <>
+              <Field label="默认 Chat 模型"><TextInput value={chatModel} onChange={(event) => setChatModel(event.target.value)} /></Field>
+              <Field label="默认 Embedding 模型"><TextInput value={embeddingModel} onChange={(event) => setEmbeddingModel(event.target.value)} /></Field>
+            </>
+          ) : (
+            <>
+              <Field label="默认 Chat 模型">
+                <Select value={chatModel} onChange={(event) => setChatModel(event.target.value)}>
+                  <option value="">不设置</option>
+                  {chatModels.map((m) => <option key={m.name} value={m.name}>{m.name}</option>)}
+                </Select>
+              </Field>
+              <Field label="默认 Embedding 模型">
+                <Select value={embeddingModel} onChange={(event) => setEmbeddingModel(event.target.value)}>
+                  <option value="">不设置</option>
+                  {embeddingModels.map((m) => <option key={m.name} value={m.name}>{m.name}</option>)}
+                </Select>
+              </Field>
+            </>
+          )}
         </form>
       </Modal>
 
@@ -455,10 +570,7 @@ export function SettingsPage() {
         <form id="create-memory-form" className="form-stack" onSubmit={(event) => void createMemory(event)}>
           <Field label="类型">
             <Select value={memoryType} onChange={(event) => setMemoryType(event.target.value)}>
-              <option value="profile_memory">profile_memory</option>
-              <option value="summary_memory">summary_memory</option>
-              <option value="episodic_memory">episodic_memory</option>
-              <option value="task_memory">task_memory</option>
+              {memoryTypeOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
             </Select>
           </Field>
           <Field label="标题"><TextInput value={memoryTitle} onChange={(event) => setMemoryTitle(event.target.value)} /></Field>

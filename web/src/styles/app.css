@@ -1155,9 +1155,17 @@ body.is-resizing-workspace .workspace {
 }
 
 .status-neutral { background: var(--control-bg); color: var(--text-secondary); }
-.status-good { background: rgba(48, 164, 108, 0.14); color: var(--success); }
+.status-good {
+  background: color-mix(in srgb, var(--success) 11%, transparent);
+  color: color-mix(in srgb, var(--success) 76%, var(--text-secondary));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--success) 16%, transparent);
+}
 .status-warn { background: rgba(227, 160, 8, 0.14); color: var(--warning); }
-.status-bad { background: var(--danger-soft); color: var(--danger); }
+.status-bad {
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+  color: color-mix(in srgb, var(--danger) 74%, var(--text-secondary));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--danger) 15%, transparent);
+}
 .status-info { background: var(--accent-soft); color: var(--accent); }
 
 .toast {

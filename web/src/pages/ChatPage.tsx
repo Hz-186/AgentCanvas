@@ -2,7 +2,7 @@ import { FormEvent, useEffect, useRef, useState } from 'react';
 import { ChevronLeft, MessageSquareText, Plus, Send } from 'lucide-react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { chatApi, conversationApi, dialogApi, knowledgeApi, settingsApi } from '../api/resources';
-import { Button, EmptyState, Field, Panel, Select, StatusBadge, TextArea, TextInput } from '../components/ui';
+import { Button, EmptyState, Field, Modal, Panel, Select, StatusBadge, TextArea, TextInput } from '../components/ui';
 import type { Conversation, Dialog, KnowledgeBase, Message, MessageReference, ModelProvider } from '../types/api';
 import { formatDate, friendlyErrorMessage } from '../utils/format';
 
@@ -26,6 +26,7 @@ export function ChatPage() {
   const [providerId, setProviderId] = useState(0);
   const [kbId, setKbId] = useState(0);
   const [conversationId, setConversationId] = useState<number | undefined>();
+  const [dialogOpen, setDialogOpen] = useState(false);
   const [dialogName, setDialogName] = useState('');
   const [question, setQuestion] = useState('');
   const [lines, setLines] = useState<ChatLine[]>([]);
@@ -104,6 +105,7 @@ export function ChatPage() {
     try {
       const item = await dialogApi.create({ name });
       setDialogName('');
+      setDialogOpen(false);
       setDialogs((current) => [item, ...current]);
       navigate(`/app/dialogs/${item.id}/chat`);
     } catch (err) {
@@ -188,7 +190,7 @@ export function ChatPage() {
     <div className="page">
       <div className="page-head">
         <div>
-          <h1>RAG Chat</h1>
+          <h1>RAG 对话</h1>
           <p>{currentDialog ? `当前 Dialog：${currentDialog.name}` : '先选择一个 Dialog，再查看它下面的会话。'}</p>
         </div>
         {isDialogScoped ? (
@@ -203,25 +205,20 @@ export function ChatPage() {
             新建会话
           </Button>
         ) : null}
+        {!isDialogScoped ? (
+          <Button tone="primary" onClick={() => setDialogOpen(true)}>
+            <Plus size={17} />
+            新增 Dialog
+          </Button>
+        ) : null}
       </div>
 
       {error ? <p className="error-text">{error}</p> : null}
 
       {!isDialogScoped ? (
         <div className="stack">
-          <Panel title="创建 Dialog" eyebrow="分组入口">
-            <form className="form-stack" onSubmit={(event) => void createDialog(event)}>
-              <Field label="Dialog 名称">
-                <TextInput value={dialogName} onChange={(event) => setDialogName(event.target.value)} placeholder="例如：知识库问答" />
-              </Field>
-              <Button tone="primary">
-                <Plus size={16} />
-                创建并进入
-              </Button>
-            </form>
-          </Panel>
           {dialogs.length === 0 ? (
-            <EmptyState icon={<MessageSquareText size={24} />} title="还没有 Dialog" description="创建一个 Dialog 后，它下面的 conversations 会按分组展示。" />
+            <EmptyState icon={<MessageSquareText size={24} />} title="还没有 Dialog" description="新增一个 Dialog 后，它下面的会话会按分组展示。" action={<Button tone="primary" onClick={() => setDialogOpen(true)}>新增 Dialog</Button>} />
           ) : (
             <div className="grid">
               {dialogs.map((item) => (
@@ -313,6 +310,24 @@ export function ChatPage() {
           </Panel>
         </div>
       ) : null}
+
+      <Modal
+        open={dialogOpen}
+        title="新增 Dialog"
+        onClose={() => setDialogOpen(false)}
+        footer={
+          <>
+            <Button type="button" onClick={() => setDialogOpen(false)}>取消</Button>
+            <Button form="create-dialog-form" tone="primary">创建并进入</Button>
+          </>
+        }
+      >
+        <form id="create-dialog-form" className="form-stack" onSubmit={(event) => void createDialog(event)}>
+          <Field label="Dialog 名称">
+            <TextInput value={dialogName} onChange={(event) => setDialogName(event.target.value)} placeholder="例如：知识库问答" required />
+          </Field>
+        </form>
+      </Modal>
     </div>
   );
 }

@@ -77,6 +77,23 @@ export interface UpdateProviderRequest {
   status?: number;
 }
 
+// —— Provider Catalog (内置供应商目录) ——
+export interface CatalogModel {
+  name: string;
+  model_type: string;
+  max_tokens?: number;
+}
+
+export interface ProviderCatalog {
+  key: string;
+  name: string;
+  provider_type: ProviderType;
+  base_url: string;
+  doc_url?: string;
+  rank: number;
+  models: CatalogModel[];
+}
+
 // —— API Token ——
 export interface ApiToken {
   id: number;

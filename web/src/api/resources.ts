@@ -18,6 +18,7 @@ import type {
   KnowledgeBase,
   Message,
   ModelProvider,
+  ProviderCatalog,
   RetrievalResponse,
   Run,
   RunAgentRequest,
@@ -145,6 +146,7 @@ export const conversationApi = {
 
 export const settingsApi = {
   providers: {
+    catalog: () => api.get<ProviderCatalog[]>('/provider-catalog'),
     list: () => api.get<ModelProvider[]>('/model-providers'),
     create: (body: CreateProviderRequest) => api.post<ModelProvider>('/model-providers', body),
     update: (id: number, body: UpdateProviderRequest) => api.patch<ModelProvider>(`/model-providers/${id}`, body),
