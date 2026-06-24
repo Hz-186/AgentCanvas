@@ -47,7 +47,7 @@ function PublicOnly({ children }: { children: React.ReactNode }) {
 const nav = [
   { to: '/app/agents', label: '智能体', icon: Bot },
   { to: '/app/knowledge', label: '知识库', icon: Database },
-  { to: '/app/chat', label: 'RAG 对话', icon: MessageSquareText },
+  { to: '/app/dialogs', label: 'RAG 对话', icon: MessageSquareText },
   { to: '/app/memory', label: '记忆', icon: Network },
   { to: '/app/settings', label: '设置', icon: Settings },
 ];
@@ -297,8 +297,11 @@ function Boot() {
           <Route path="agents/:id/canvas" element={<CanvasPage />} />
           <Route path="knowledge" element={<KnowledgePage />} />
           <Route path="knowledge/:id" element={<KnowledgePage />} />
-          <Route path="chat" element={<ChatPage />} />
-          <Route path="chat/:conversationId" element={<ChatPage />} />
+          <Route path="chat" element={<Navigate to="/app/dialogs" replace />} />
+          <Route path="chat/:conversationId" element={<Navigate to="/app/dialogs" replace />} />
+          <Route path="dialogs" element={<ChatPage />} />
+          <Route path="dialogs/:dialogId/chat" element={<ChatPage />} />
+          <Route path="dialogs/:dialogId/chat/:conversationId" element={<ChatPage />} />
           <Route path="memory" element={<MemoryPage />} />
           <Route path="settings" element={<SettingsPage />} />
         </Route>

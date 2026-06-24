@@ -31,18 +31,26 @@ export function MemoryPage() {
 
   async function createMemory(event: FormEvent) {
     event.preventDefault();
-    await settingsApi.memories.create({ memory_type: memoryType, title: memoryTitle, content: memoryContent, importance: 0.5, source: 'manual' });
-    setMemoryOpen(false);
-    setMemoryTitle('');
-    setMemoryContent('');
-    setMessage('记忆已创建');
-    await load();
+    try {
+      await settingsApi.memories.create({ memory_type: memoryType, title: memoryTitle, content: memoryContent, importance: 0.5, source: 'manual' });
+      setMemoryOpen(false);
+      setMemoryTitle('');
+      setMemoryContent('');
+      setMessage('记忆已创建');
+      await load();
+    } catch (err) {
+      setError(friendlyErrorMessage(err, '创建记忆失败'));
+    }
   }
 
   async function removeMemory(id: number) {
-    await settingsApi.memories.remove(id);
-    setMessage('记忆已删除');
-    await load();
+    try {
+      await settingsApi.memories.remove(id);
+      setMessage('记忆已删除');
+      await load();
+    } catch (err) {
+      setError(friendlyErrorMessage(err, '删除记忆失败'));
+    }
   }
 
   return (
@@ -167,79 +175,122 @@ export function SettingsPage() {
 
   async function createProvider(event: FormEvent) {
     event.preventDefault();
-    await settingsApi.providers.create({
-      name: providerName,
-      provider_type: providerType,
-      base_url: baseUrl,
-      api_key: apiKey,
-      default_chat_model: chatModel,
-      default_embedding_model: embeddingModel,
-    });
-    setProviderOpen(false);
-    setProviderName('');
-    setApiKey('');
-    setMessage('Provider 已创建');
-    await load();
+    try {
+      await settingsApi.providers.create({
+        name: providerName,
+        provider_type: providerType,
+        base_url: baseUrl,
+        api_key: apiKey,
+        default_chat_model: chatModel,
+        default_embedding_model: embeddingModel,
+      });
+      setProviderOpen(false);
+      setProviderName('');
+      setApiKey('');
+      setMessage('Provider 已创建');
+      await load();
+    } catch (err) {
+      setError(friendlyErrorMessage(err, '创建 Provider 失败'));
+    }
   }
 
   async function testProvider(id: number) {
-    await settingsApi.providers.test(id);
-    setMessage('Provider 连通性测试已完成');
-    await load();
+    try {
+      await settingsApi.providers.test(id);
+      setMessage('Provider 连通性测试已完成');
+      await load();
+    } catch (err) {
+      setError(friendlyErrorMessage(err, 'Provider 连通性测试失败'));
+    }
   }
 
   async function removeProvider(id: number) {
     if (!window.confirm('确认删除这个 Provider？')) return;
-    await settingsApi.providers.remove(id);
-    setMessage('Provider 已删除');
-    await load();
+    try {
+      await settingsApi.providers.remove(id);
+      setMessage('Provider 已删除');
+      await load();
+    } catch (err) {
+      setError(friendlyErrorMessage(err, '删除 Provider 失败'));
+    }
   }
 
   async function createToken(event: FormEvent) {
     event.preventDefault();
-    const created = await settingsApi.tokens.create({ name: tokenName, scopes: ['*'] });
-    setCreatedToken(created.token);
-    setTokenName('');
-    setMessage('API Token 已创建，请立即保存');
-    await load();
+    try {
+      const created = await settingsApi.tokens.create({ name: tokenName, scopes: ['*'] });
+      setCreatedToken(created.token);
+      setTokenName('');
+      setMessage('API Token 已创建，请立即保存');
+      await load();
+    } catch (err) {
+      setError(friendlyErrorMessage(err, '创建 API Token 失败'));
+    }
   }
 
   async function removeToken(id: number) {
-    await settingsApi.tokens.remove(id);
-    setMessage('API Token 已撤销');
-    await load();
+    try {
+      await settingsApi.tokens.remove(id);
+      setMessage('API Token 已撤销');
+      await load();
+    } catch (err) {
+      setError(friendlyErrorMessage(err, '撤销 API Token 失败'));
+    }
   }
 
   async function createMemory(event: FormEvent) {
     event.preventDefault();
-    await settingsApi.memories.create({ memory_type: memoryType, title: memoryTitle, content: memoryContent, importance: 0.5, source: 'manual' });
-    setMemoryOpen(false);
-    setMemoryTitle('');
-    setMemoryContent('');
-    setMessage('Memory 已创建');
-    await load();
+    try {
+      await settingsApi.memories.create({ memory_type: memoryType, title: memoryTitle, content: memoryContent, importance: 0.5, source: 'manual' });
+      setMemoryOpen(false);
+      setMemoryTitle('');
+      setMemoryContent('');
+      setMessage('Memory 已创建');
+      await load();
+    } catch (err) {
+      setError(friendlyErrorMessage(err, '创建 Memory 失败'));
+    }
   }
 
   async function removeMemory(id: number) {
-    await settingsApi.memories.remove(id);
-    setMessage('Memory 已删除');
-    await load();
+    try {
+      await settingsApi.memories.remove(id);
+      setMessage('Memory 已删除');
+      await load();
+    } catch (err) {
+      setError(friendlyErrorMessage(err, '删除 Memory 失败'));
+    }
   }
 
   async function createTool(event: FormEvent) {
     event.preventDefault();
-    await settingsApi.tools.create({ name: toolName, tool_type: 'http', description: toolDescription, config_json: parseJsonObject(toolConfig) });
-    setToolOpen(false);
-    setToolName('');
-    setToolDescription('');
-    setMessage('HTTP Tool 已创建');
-    await load();
+    let config: Record<string, unknown>;
+    try {
+      config = parseJsonObject(toolConfig);
+    } catch (err) {
+      setError(friendlyErrorMessage(err, 'HTTP Tool 配置需要是合法 JSON 对象'));
+      return;
+    }
+    try {
+      await settingsApi.tools.create({ name: toolName, tool_type: 'http', description: toolDescription, config_json: config });
+      setToolOpen(false);
+      setToolName('');
+      setToolDescription('');
+      setMessage('HTTP Tool 已创建');
+      await load();
+    } catch (err) {
+      setError(friendlyErrorMessage(err, '创建 HTTP Tool 失败'));
+    }
   }
 
   async function removeTool(id: number) {
-    await settingsApi.tools.remove(id);
-    setMessage('HTTP Tool 已删除');
-    await load();
+    try {
+      await settingsApi.tools.remove(id);
+      setMessage('HTTP Tool 已删除');
+      await load();
+    } catch (err) {
+      setError(friendlyErrorMessage(err, '删除 HTTP Tool 失败'));
+    }
   }
 
   return (

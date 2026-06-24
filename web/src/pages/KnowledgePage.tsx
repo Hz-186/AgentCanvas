@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useState } from 'react';
+import { FormEvent, useEffect, useRef, useState } from 'react';
 import { ChevronLeft, Database, FileText, Plus, RefreshCw, Save, Search, Upload } from 'lucide-react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { knowledgeApi, settingsApi } from '../api/resources';
@@ -30,6 +30,9 @@ export function KnowledgePage() {
   const [searchMode, setSearchMode] = useState('keyword');
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
+  // 记录已为哪个知识库填充过表单：保证 items 异步加载完成后填充一次，
+  // 之后 items 因其它原因刷新时不再覆盖用户正在编辑的输入。
+  const filledFormForRef = useRef<number>(0);
 
   async function load() {
     const [list, providerList] = await Promise.all([knowledgeApi.list(), settingsApi.providers.list()]);
@@ -47,12 +50,29 @@ export function KnowledgePage() {
       setSearchResults([]);
       return;
     }
-    void knowledgeApi.listDocuments(routeId).then(setDocuments).catch((err) => setError(friendlyErrorMessage(err, '加载文档失败')));
+    let cancelled = false;
+    knowledgeApi.listDocuments(routeId)
+      .then((docs) => {
+        if (!cancelled) setDocuments(docs);
+      })
+      .catch((err) => {
+        if (!cancelled) setError(friendlyErrorMessage(err, '加载文档失败'));
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [routeId]);
 
   useEffect(() => {
+    if (!routeId) {
+      filledFormForRef.current = 0;
+      return;
+    }
+    // 仅当切换到新知识库、且其数据已加载时才填充表单一次，避免覆盖用户正在编辑的输入。
+    if (filledFormForRef.current === routeId) return;
     const selected = items.find((item) => item.id === routeId);
     if (!selected) return;
+    filledFormForRef.current = routeId;
     setRetrievalMode(selected.retrieval_mode || 'keyword');
     setSearchMode(selected.retrieval_mode || 'keyword');
     setEmbeddingProviderId(selected.embedding_provider_id ? String(selected.embedding_provider_id) : '');
@@ -67,24 +87,36 @@ export function KnowledgePage() {
 
   async function createKB(event: FormEvent) {
     event.preventDefault();
-    const kb = await knowledgeApi.create({ name, description, chunk_size: 800, chunk_overlap: 100 });
-    setCreateOpen(false);
-    setName('');
-    setDescription('');
-    setMessage('知识库已创建');
-    await load();
-    navigate(`/app/knowledge/${kb.id}`);
+    try {
+      const kb = await knowledgeApi.create({ name, description, chunk_size: 800, chunk_overlap: 100 });
+      setCreateOpen(false);
+      setName('');
+      setDescription('');
+      setMessage('知识库已创建');
+      await load();
+      navigate(`/app/knowledge/${kb.id}`);
+    } catch (err) {
+      setError(friendlyErrorMessage(err, '创建知识库失败'));
+    }
   }
 
   async function upload(file: File | undefined) {
     if (!file || !routeId) return;
-    await knowledgeApi.uploadDocument(routeId, file);
-    setMessage('文档已上传，等待 ingestion');
-    setDocuments(await knowledgeApi.listDocuments(routeId));
+    try {
+      await knowledgeApi.uploadDocument(routeId, file);
+      setMessage('文档已上传，等待 ingestion');
+      setDocuments(await knowledgeApi.listDocuments(routeId));
+    } catch (err) {
+      setError(friendlyErrorMessage(err, '上传文档失败'));
+    }
   }
 
   async function showChunks(documentId: number) {
-    setChunks(await knowledgeApi.listChunks(documentId));
+    try {
+      setChunks(await knowledgeApi.listChunks(documentId));
+    } catch (err) {
+      setError(friendlyErrorMessage(err, '加载文档片段失败'));
+    }
   }
 
   async function saveRetrievalSettings(event: FormEvent) {
@@ -100,24 +132,36 @@ export function KnowledgePage() {
     };
     if (embeddingProviderId) body.embedding_provider_id = Number(embeddingProviderId);
     if (rerankProviderId) body.rerank_provider_id = Number(rerankProviderId);
-    const updated = await knowledgeApi.update(routeId, body);
-    setItems((current) => current.map((item) => (item.id === updated.id ? updated : item)));
-    setMessage('检索设置已保存');
+    try {
+      const updated = await knowledgeApi.update(routeId, body);
+      setItems((current) => current.map((item) => (item.id === updated.id ? updated : item)));
+      setMessage('检索设置已保存');
+    } catch (err) {
+      setError(friendlyErrorMessage(err, '保存检索设置失败'));
+    }
   }
 
   async function reindex() {
     if (!routeId) return;
-    const resp = await knowledgeApi.reindex(routeId);
-    setMessage(`已创建 ${resp.job_count} 个重建任务`);
-    setDocuments(await knowledgeApi.listDocuments(routeId));
+    try {
+      const resp = await knowledgeApi.reindex(routeId);
+      setMessage(`已创建 ${resp.job_count} 个重建任务`);
+      setDocuments(await knowledgeApi.listDocuments(routeId));
+    } catch (err) {
+      setError(friendlyErrorMessage(err, '重建索引失败'));
+    }
   }
 
   async function testSearch(event: FormEvent) {
     event.preventDefault();
     if (!routeId || !searchQuery.trim()) return;
-    const resp = await knowledgeApi.search(routeId, { query: searchQuery, top_k: 5, mode: searchMode });
-    setSearchResults(resp.results);
-    setMessage(`检索完成 · ${resp.latency_ms}ms`);
+    try {
+      const resp = await knowledgeApi.search(routeId, { query: searchQuery, top_k: 5, mode: searchMode });
+      setSearchResults(resp.results);
+      setMessage(`检索完成 · ${resp.latency_ms}ms`);
+    } catch (err) {
+      setError(friendlyErrorMessage(err, '检索测试失败'));
+    }
   }
 
   const selected = items.find((item) => item.id === routeId);

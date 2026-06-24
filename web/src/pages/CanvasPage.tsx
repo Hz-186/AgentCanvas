@@ -219,11 +219,14 @@ export function CanvasPage() {
   const canvasBodyRef = useRef<HTMLDivElement | null>(null);
   const resizeFrameRef = useRef<number | null>(null);
   const resizeClientXRef = useRef(0);
+  // 进行中的调试运行控制器：组件卸载或重新运行时取消，避免“卸载后 setState”。
+  const runAbortRef = useRef<AbortController | null>(null);
 
   const selected = useMemo(() => nodes.find((node) => node.id === selectedId) ?? null, [nodes, selectedId]);
   const dsl = useMemo(() => toDSL(agentId, nodes, edges), [agentId, nodes, edges]);
 
   useEffect(() => {
+    let cancelled = false;
     async function load() {
       const [agentResp, providersResp, kbResp, toolResp] = await Promise.all([
         agentApi.get(agentId),
@@ -231,12 +234,15 @@ export function CanvasPage() {
         knowledgeApi.list(),
         settingsApi.tools.list(),
       ]);
+      // 快速切换 agent 时旧请求可能晚返回，确认仍是当前 agent 再写入。
+      if (cancelled) return;
       setAgent(agentResp);
       setProviders(providersResp);
       setKnowledgeBases(kbResp);
       setTools(toolResp);
       if (agentResp.current_version_id) {
         const flow = await agentApi.getFlowVersion(agentResp.current_version_id);
+        if (cancelled) return;
         setVersion(flow);
         const parsed = normalizeDSL(flow.dsl_json);
         const canvas = parsed ? fromDSL(parsed) : { nodes: defaultNodes(), edges: [] };
@@ -249,8 +255,18 @@ export function CanvasPage() {
         setSelectedId('begin');
       }
     }
-    if (agentId > 0) void load().catch((err) => setError(friendlyErrorMessage(err, '加载画布失败')));
+    if (agentId > 0) {
+      void load().catch((err) => {
+        if (!cancelled) setError(friendlyErrorMessage(err, '加载画布失败'));
+      });
+    }
+    return () => {
+      cancelled = true;
+    };
   }, [agentId]);
+
+  // 组件卸载时取消进行中的调试流。
+  useEffect(() => () => runAbortRef.current?.abort(), []);
 
   const onNodesChange = useCallback((changes: NodeChange<CanvasNode>[]) => setNodes((current) => applyNodeChanges(changes, current)), []);
   const onEdgesChange = useCallback((changes: EdgeChange[]) => setEdges((current) => applyEdgeChanges(changes, current)), []);
@@ -391,31 +407,58 @@ export function CanvasPage() {
       setError(localError);
       return null;
     }
-    const saved = await agentApi.createFlowVersion(agentId, { dsl_json: dsl, description: 'Saved from visual canvas' });
-    setVersion(saved);
-    setMessage(`已保存 Flow v${saved.version_no}`);
-    setError('');
-    return saved;
+    try {
+      const saved = await agentApi.createFlowVersion(agentId, { dsl_json: dsl, description: 'Saved from visual canvas' });
+      setVersion(saved);
+      setMessage(`已保存 Flow v${saved.version_no}`);
+      setError('');
+      return saved;
+    } catch (err) {
+      setError(friendlyErrorMessage(err, '保存 Flow 失败'));
+      return null;
+    }
   }
 
   async function publishFlow() {
-    const target = version ?? await saveFlow();
-    if (!target) return;
-    const published = await agentApi.publishFlowVersion(target.id);
-    setVersion(published);
-    setMessage(`已发布 v${published.version_no}`);
+    try {
+      const target = version ?? await saveFlow();
+      if (!target) return;
+      const published = await agentApi.publishFlowVersion(target.id);
+      setVersion(published);
+      setMessage(`已发布 v${published.version_no}`);
+      setError('');
+    } catch (err) {
+      setError(friendlyErrorMessage(err, '发布 Flow 失败'));
+    }
   }
 
   async function runDebug() {
+    if (runAbortRef.current) return;
+    let input: Record<string, unknown>;
     try {
-      const input = parseJsonObject(runInput);
-      setEvents([]);
-      setRunOutput(null);
-      setMemoryLogs([]);
-      setToolInvocations([]);
-      setError('');
-      await agentApi.streamRun(agentId, { flow_version_id: version?.id ?? 0, input }, {
+      input = parseJsonObject(runInput);
+    } catch (err) {
+      setError(friendlyErrorMessage(err, '运行输入需要是合法 JSON 对象'));
+      return;
+    }
+    // 未保存草稿时先保存，确保用当前画布内容运行，而不是传 flow_version_id=0。
+    let target = version;
+    if (!target) {
+      target = await saveFlow();
+      if (!target) return;
+    }
+    const controller = new AbortController();
+    runAbortRef.current = controller;
+    setEvents([]);
+    setRunOutput(null);
+    setMemoryLogs([]);
+    setToolInvocations([]);
+    setError('');
+    try {
+      await agentApi.streamRun(agentId, { flow_version_id: target.id, input }, {
+        signal: controller.signal,
         onMessage: (msg) => {
+          if (controller.signal.aborted) return;
           if (msg.event === 'done') {
             const done = JSON.parse(msg.data) as { run: { id: number }; output: Record<string, unknown> };
             setRunOutput(done.output);
@@ -423,9 +466,10 @@ export function CanvasPage() {
               agentApi.listMemoryWriteLogs(done.run.id),
               agentApi.listToolInvocations(done.run.id),
             ]).then(([memoryResp, toolResp]) => {
+              if (controller.signal.aborted) return;
               setMemoryLogs(memoryResp);
               setToolInvocations(toolResp);
-            });
+            }).catch(() => undefined);
             return;
           }
           if (msg.event === 'error') {
@@ -435,10 +479,15 @@ export function CanvasPage() {
           const data = JSON.parse(msg.data) as RuntimeEvent;
           setEvents((current) => [...current, data]);
         },
-        onError: (err) => setError(friendlyErrorMessage(err, '调试运行失败')),
+        onError: (err) => {
+          if (controller.signal.aborted) return;
+          setError(friendlyErrorMessage(err, '调试运行失败'));
+        },
       });
     } catch (err) {
-      setError(friendlyErrorMessage(err, '调试失败'));
+      if (!controller.signal.aborted) setError(friendlyErrorMessage(err, '调试失败'));
+    } finally {
+      if (runAbortRef.current === controller) runAbortRef.current = null;
     }
   }
 

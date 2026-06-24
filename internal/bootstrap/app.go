@@ -9,6 +9,7 @@ import (
 	auditusecase "agentcanvas/internal/application/audit_usecase"
 	authusecase "agentcanvas/internal/application/auth_usecase"
 	chatusecase "agentcanvas/internal/application/chat_usecase"
+	dialogusecase "agentcanvas/internal/application/dialog_usecase"
 	knowledgeusecase "agentcanvas/internal/application/knowledge_usecase"
 	memoryusecase "agentcanvas/internal/application/memory_usecase"
 	providerusecase "agentcanvas/internal/application/provider_usecase"
@@ -76,6 +77,7 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 	chunkRepo := mysqlinfra.NewChunkRepository(db)
 	ingestionJobRepo := mysqlinfra.NewIngestionJobRepository(db)
 	retrievalLogRepo := mysqlinfra.NewRetrievalLogRepository(db)
+	dialogRepo := mysqlinfra.NewDialogRepository(db)
 	conversationRepo := mysqlinfra.NewConversationRepository(db)
 	messageRepo := mysqlinfra.NewMessageRepository(db)
 	usageRepo := mysqlinfra.NewUsageRepository(db)
@@ -106,7 +108,8 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 	memoryService := memoryusecase.NewService(memoryRepo)
 	toolService := toolusecase.NewService(toolDefinitionRepo)
 	knowledgeService := knowledgeusecase.NewService(knowledgeRepo, documentRepo, chunkRepo, ingestionJobRepo, retrievalLogRepo, auditRepo, fileStorage, retrievalService, esStore)
-	chatService := chatusecase.NewService(providerRepo, knowledgeRepo, conversationRepo, messageRepo, usageRepo, retrievalService, chatClient, secretBox)
+	dialogService := dialogusecase.NewService(dialogRepo)
+	chatService := chatusecase.NewService(providerRepo, dialogRepo, knowledgeRepo, conversationRepo, messageRepo, usageRepo, retrievalService, chatClient, secretBox)
 	agentService := agentusecase.NewService(agentRepo, flowVersionRepo, runRepo, runEventRepo, nodeLogRepo, memoryRepo, memoryWriteLogRepo, toolDefinitionRepo, toolInvocationRepo, providerRepo, messageRepo, retrievalService, chatClient, secretBox)
 
 	healthHandler := handler.NewHealthHandler(db, redisClient, minioClient, esClient, cfg.MinIO.Bucket)
@@ -118,6 +121,7 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 	toolHandler := handler.NewToolHandler(toolService)
 	knowledgeHandler := handler.NewKnowledgeHandler(knowledgeService)
 	documentHandler := handler.NewDocumentHandler(knowledgeService)
+	dialogHandler := handler.NewDialogHandler(dialogService)
 	chatHandler := handler.NewChatHandler(chatService)
 	agentHandler := handler.NewAgentHandler(agentService)
 
@@ -132,6 +136,7 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 		AuditHandler:     auditHandler,
 		KnowledgeHandler: knowledgeHandler,
 		DocumentHandler:  documentHandler,
+		DialogHandler:    dialogHandler,
 		ChatHandler:      chatHandler,
 		AgentHandler:     agentHandler,
 		AuthService:      authService,

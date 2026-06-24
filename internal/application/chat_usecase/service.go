@@ -8,6 +8,7 @@ import (
 	"unicode/utf8"
 
 	"agentcanvas/internal/domain/conversation"
+	"agentcanvas/internal/domain/dialog"
 	"agentcanvas/internal/domain/knowledge"
 	providerdomain "agentcanvas/internal/domain/provider"
 	"agentcanvas/internal/domain/retrieval"
@@ -26,6 +27,7 @@ const (
 
 type Service struct {
 	providers     providerdomain.Repository
+	dialogs       dialog.Repository
 	kbs           knowledge.KnowledgeBaseRepository
 	conversations conversation.Repository
 	messages      conversation.MessageRepository
@@ -62,6 +64,7 @@ type StreamEvent struct {
 
 func NewService(
 	providers providerdomain.Repository,
+	dialogs dialog.Repository,
 	kbs knowledge.KnowledgeBaseRepository,
 	conversations conversation.Repository,
 	messages conversation.MessageRepository,
@@ -72,6 +75,7 @@ func NewService(
 ) *Service {
 	return &Service{
 		providers:     providers,
+		dialogs:       dialogs,
 		kbs:           kbs,
 		conversations: conversations,
 		messages:      messages,
@@ -84,8 +88,8 @@ func NewService(
 	}
 }
 
-func (s *Service) Chat(ctx context.Context, ownerID int64, req ChatRequest) (*ChatResponse, error) {
-	prepared, err := s.prepare(ctx, ownerID, req)
+func (s *Service) Chat(ctx context.Context, ownerID, dialogID int64, req ChatRequest) (*ChatResponse, error) {
+	prepared, err := s.prepare(ctx, ownerID, dialogID, req)
 	if err != nil {
 		return nil, err
 	}
@@ -111,8 +115,8 @@ func (s *Service) Chat(ctx context.Context, ownerID int64, req ChatRequest) (*Ch
 	}, nil
 }
 
-func (s *Service) StreamChat(ctx context.Context, ownerID int64, req ChatRequest, emit func(StreamEvent) error) error {
-	prepared, err := s.prepare(ctx, ownerID, req)
+func (s *Service) StreamChat(ctx context.Context, ownerID, dialogID int64, req ChatRequest, emit func(StreamEvent) error) error {
+	prepared, err := s.prepare(ctx, ownerID, dialogID, req)
 	if err != nil {
 		return err
 	}
@@ -159,27 +163,36 @@ func (s *Service) StreamChat(ctx context.Context, ownerID int64, req ChatRequest
 	}})
 }
 
-func (s *Service) ListConversations(ctx context.Context, ownerID int64) ([]conversation.Conversation, error) {
-	return s.conversations.ListByOwner(ctx, ownerID)
+func (s *Service) ListConversations(ctx context.Context, ownerID, dialogID int64) ([]conversation.Conversation, error) {
+	if _, err := s.getDialog(ctx, ownerID, dialogID); err != nil {
+		return nil, err
+	}
+	return s.conversations.ListByDialog(ctx, ownerID, dialogID)
 }
 
-func (s *Service) GetConversation(ctx context.Context, ownerID, id int64) (*conversation.Conversation, error) {
+func (s *Service) GetConversation(ctx context.Context, ownerID, dialogID, id int64) (*conversation.Conversation, error) {
+	if _, err := s.getDialog(ctx, ownerID, dialogID); err != nil {
+		return nil, err
+	}
 	item, err := s.conversations.FindByID(ctx, ownerID, id)
 	if err != nil {
 		return nil, mapNotFound(err)
 	}
+	if !conversationInDialog(item, dialogID) {
+		return nil, agenterrors.ErrNotFound
+	}
 	return item, nil
 }
 
-func (s *Service) ListMessages(ctx context.Context, ownerID, conversationID int64) ([]conversation.Message, error) {
-	if _, err := s.GetConversation(ctx, ownerID, conversationID); err != nil {
+func (s *Service) ListMessages(ctx context.Context, ownerID, dialogID, conversationID int64) ([]conversation.Message, error) {
+	if _, err := s.GetConversation(ctx, ownerID, dialogID, conversationID); err != nil {
 		return nil, err
 	}
 	return s.messages.ListByConversation(ctx, ownerID, conversationID)
 }
 
-func (s *Service) DeleteConversation(ctx context.Context, ownerID, id int64) error {
-	if _, err := s.GetConversation(ctx, ownerID, id); err != nil {
+func (s *Service) DeleteConversation(ctx context.Context, ownerID, dialogID, id int64) error {
+	if _, err := s.GetConversation(ctx, ownerID, dialogID, id); err != nil {
 		return err
 	}
 	return s.conversations.SoftDelete(ctx, ownerID, id)
@@ -196,14 +209,17 @@ type preparedChat struct {
 	retrievalLatencyMS int
 }
 
-func (s *Service) prepare(ctx context.Context, ownerID int64, req ChatRequest) (*preparedChat, error) {
+func (s *Service) prepare(ctx context.Context, ownerID, dialogID int64, req ChatRequest) (*preparedChat, error) {
 	question := strings.TrimSpace(req.Question)
 	topK := req.TopK
 	if topK == 0 {
 		topK = defaultTopK
 	}
-	if req.ProviderID <= 0 || len(req.KBIDs) == 0 || question == "" || topK <= 0 || topK > maxTopK {
+	if dialogID <= 0 || req.ProviderID <= 0 || len(req.KBIDs) == 0 || question == "" || topK <= 0 || topK > maxTopK {
 		return nil, agenterrors.ErrInvalidInput
+	}
+	if _, err := s.getDialog(ctx, ownerID, dialogID); err != nil {
+		return nil, err
 	}
 	provider, model, providerConfig, err := s.providerConfig(ctx, ownerID, req.ProviderID, req.Model)
 	if err != nil {
@@ -222,7 +238,7 @@ func (s *Service) prepare(ctx context.Context, ownerID int64, req ChatRequest) (
 			retrievalMode = retrieval.Mode(kb.RetrievalMode)
 		}
 	}
-	conv, err := s.ensureConversation(ctx, ownerID, req.ConversationID, question)
+	conv, err := s.ensureConversation(ctx, ownerID, dialogID, req.ConversationID, question)
 	if err != nil {
 		return nil, err
 	}
@@ -292,11 +308,25 @@ func (s *Service) providerConfig(ctx context.Context, ownerID, providerID int64,
 	return provider, model, llm.ChatProviderConfig{ProviderType: provider.ProviderType, BaseURL: provider.BaseURL, APIKey: apiKey}, nil
 }
 
-func (s *Service) ensureConversation(ctx context.Context, ownerID, conversationID int64, question string) (*conversation.Conversation, error) {
+func (s *Service) getDialog(ctx context.Context, ownerID, dialogID int64) (*dialog.Dialog, error) {
+	if dialogID <= 0 {
+		return nil, agenterrors.ErrInvalidInput
+	}
+	item, err := s.dialogs.FindByID(ctx, ownerID, dialogID)
+	if err != nil {
+		return nil, mapNotFound(err)
+	}
+	return item, nil
+}
+
+func (s *Service) ensureConversation(ctx context.Context, ownerID, dialogID, conversationID int64, question string) (*conversation.Conversation, error) {
 	if conversationID > 0 {
 		item, err := s.conversations.FindByID(ctx, ownerID, conversationID)
 		if err != nil {
 			return nil, mapNotFound(err)
+		}
+		if !conversationInDialog(item, dialogID) {
+			return nil, agenterrors.ErrNotFound
 		}
 		return item, nil
 	}
@@ -304,11 +334,15 @@ func (s *Service) ensureConversation(ctx context.Context, ownerID, conversationI
 	if utf8.RuneCountInString(title) > 40 {
 		title = string([]rune(title)[:40])
 	}
-	item := &conversation.Conversation{OwnerID: ownerID, Title: title, Source: conversation.SourceRAGChat}
+	item := &conversation.Conversation{OwnerID: ownerID, DialogID: &dialogID, Title: title, Source: conversation.SourceRAGChat}
 	if err := s.conversations.Create(ctx, item); err != nil {
 		return nil, err
 	}
 	return item, nil
+}
+
+func conversationInDialog(item *conversation.Conversation, dialogID int64) bool {
+	return item != nil && item.DialogID != nil && *item.DialogID == dialogID
 }
 
 func (s *Service) saveAssistant(ctx context.Context, ownerID, conversationID int64, content string, references []conversation.MessageReference, tokenCount int) (*conversation.Message, []conversation.MessageReference, error) {

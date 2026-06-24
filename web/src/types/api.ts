@@ -263,6 +263,7 @@ export interface RetrievalResponse {
 export interface Conversation {
   id: number;
   owner_id: number;
+  dialog_id?: number | null;
   title: string;
   source: string;
   agent_id?: number | null;
@@ -308,6 +309,24 @@ export interface ChatRequest {
   conversation_id?: number;
   model?: string;
   top_k?: number;
+}
+
+export interface Dialog {
+  id: number;
+  owner_id: number;
+  name: string;
+  description: string;
+  provider_id: number;
+  model: string;
+  system_prompt: string;
+  prologue: string;
+  kb_ids: number[];
+  top_k: number;
+  retrieval_mode: string;
+  history_round_limit: number;
+  status: number;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface ChatResponse {

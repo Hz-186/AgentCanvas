@@ -20,9 +20,8 @@ func NewChatHandler(service *chatusecase.Service) *ChatHandler {
 }
 
 func (h *ChatHandler) Chat(c *gin.Context) {
-	ownerID, ok := currentUserID(c)
+	ownerID, dialogID, ok := h.ownerAndDialog(c)
 	if !ok {
-		response.Error(c, http.StatusUnauthorized, agenterrors.CodeUnauthorized, agenterrors.ErrUnauthorized.Error())
 		return
 	}
 	var req chatusecase.ChatRequest
@@ -30,7 +29,7 @@ func (h *ChatHandler) Chat(c *gin.Context) {
 		writeAppError(c, err)
 		return
 	}
-	resp, err := h.service.Chat(c.Request.Context(), ownerID, req)
+	resp, err := h.service.Chat(c.Request.Context(), ownerID, dialogID, req)
 	if err != nil {
 		writeAppError(c, err)
 		return
@@ -39,9 +38,8 @@ func (h *ChatHandler) Chat(c *gin.Context) {
 }
 
 func (h *ChatHandler) StreamChat(c *gin.Context) {
-	ownerID, ok := currentUserID(c)
+	ownerID, dialogID, ok := h.ownerAndDialog(c)
 	if !ok {
-		response.Error(c, http.StatusUnauthorized, agenterrors.CodeUnauthorized, agenterrors.ErrUnauthorized.Error())
 		return
 	}
 	var req chatusecase.ChatRequest
@@ -50,7 +48,7 @@ func (h *ChatHandler) StreamChat(c *gin.Context) {
 		return
 	}
 	writer := sse.NewWriter(c)
-	err := h.service.StreamChat(c.Request.Context(), ownerID, req, func(event chatusecase.StreamEvent) error {
+	err := h.service.StreamChat(c.Request.Context(), ownerID, dialogID, req, func(event chatusecase.StreamEvent) error {
 		return writer.Event(event.Type, event.Data)
 	})
 	if err != nil {
@@ -59,12 +57,11 @@ func (h *ChatHandler) StreamChat(c *gin.Context) {
 }
 
 func (h *ChatHandler) ListConversations(c *gin.Context) {
-	ownerID, ok := currentUserID(c)
+	ownerID, dialogID, ok := h.ownerAndDialog(c)
 	if !ok {
-		response.Error(c, http.StatusUnauthorized, agenterrors.CodeUnauthorized, agenterrors.ErrUnauthorized.Error())
 		return
 	}
-	items, err := h.service.ListConversations(c.Request.Context(), ownerID)
+	items, err := h.service.ListConversations(c.Request.Context(), ownerID, dialogID)
 	if err != nil {
 		writeAppError(c, err)
 		return
@@ -73,9 +70,8 @@ func (h *ChatHandler) ListConversations(c *gin.Context) {
 }
 
 func (h *ChatHandler) GetConversation(c *gin.Context) {
-	ownerID, ok := currentUserID(c)
+	ownerID, dialogID, ok := h.ownerAndDialog(c)
 	if !ok {
-		response.Error(c, http.StatusUnauthorized, agenterrors.CodeUnauthorized, agenterrors.ErrUnauthorized.Error())
 		return
 	}
 	id, err := parseInt64Param(c, "id")
@@ -83,7 +79,7 @@ func (h *ChatHandler) GetConversation(c *gin.Context) {
 		writeAppError(c, agenterrors.ErrInvalidInput)
 		return
 	}
-	item, err := h.service.GetConversation(c.Request.Context(), ownerID, id)
+	item, err := h.service.GetConversation(c.Request.Context(), ownerID, dialogID, id)
 	if err != nil {
 		writeAppError(c, err)
 		return
@@ -92,9 +88,8 @@ func (h *ChatHandler) GetConversation(c *gin.Context) {
 }
 
 func (h *ChatHandler) ListMessages(c *gin.Context) {
-	ownerID, ok := currentUserID(c)
+	ownerID, dialogID, ok := h.ownerAndDialog(c)
 	if !ok {
-		response.Error(c, http.StatusUnauthorized, agenterrors.CodeUnauthorized, agenterrors.ErrUnauthorized.Error())
 		return
 	}
 	id, err := parseInt64Param(c, "id")
@@ -102,7 +97,7 @@ func (h *ChatHandler) ListMessages(c *gin.Context) {
 		writeAppError(c, agenterrors.ErrInvalidInput)
 		return
 	}
-	items, err := h.service.ListMessages(c.Request.Context(), ownerID, id)
+	items, err := h.service.ListMessages(c.Request.Context(), ownerID, dialogID, id)
 	if err != nil {
 		writeAppError(c, err)
 		return
@@ -111,9 +106,8 @@ func (h *ChatHandler) ListMessages(c *gin.Context) {
 }
 
 func (h *ChatHandler) DeleteConversation(c *gin.Context) {
-	ownerID, ok := currentUserID(c)
+	ownerID, dialogID, ok := h.ownerAndDialog(c)
 	if !ok {
-		response.Error(c, http.StatusUnauthorized, agenterrors.CodeUnauthorized, agenterrors.ErrUnauthorized.Error())
 		return
 	}
 	id, err := parseInt64Param(c, "id")
@@ -121,9 +115,23 @@ func (h *ChatHandler) DeleteConversation(c *gin.Context) {
 		writeAppError(c, agenterrors.ErrInvalidInput)
 		return
 	}
-	if err := h.service.DeleteConversation(c.Request.Context(), ownerID, id); err != nil {
+	if err := h.service.DeleteConversation(c.Request.Context(), ownerID, dialogID, id); err != nil {
 		writeAppError(c, err)
 		return
 	}
 	response.OK(c, gin.H{"success": true})
+}
+
+func (h *ChatHandler) ownerAndDialog(c *gin.Context) (int64, int64, bool) {
+	ownerID, ok := currentUserID(c)
+	if !ok {
+		response.Error(c, http.StatusUnauthorized, agenterrors.CodeUnauthorized, agenterrors.ErrUnauthorized.Error())
+		return 0, 0, false
+	}
+	dialogID, err := parseInt64Param(c, "dialog_id")
+	if err != nil || dialogID <= 0 {
+		writeAppError(c, agenterrors.ErrInvalidInput)
+		return 0, 0, false
+	}
+	return ownerID, dialogID, true
 }

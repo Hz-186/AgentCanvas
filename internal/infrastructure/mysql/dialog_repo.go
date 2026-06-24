@@ -23,6 +23,9 @@ func (r *DialogRepository) Create(ctx context.Context, item *dialog.Dialog) erro
 	now := time.Now().UTC()
 	item.CreatedAt = now
 	item.UpdatedAt = now
+	if item.Status == 0 {
+		item.Status = dialog.StatusActive
+	}
 	normalizeDialog(item)
 	if err := r.db.WithContext(ctx).Create(item).Error; err != nil {
 		return err
@@ -73,9 +76,6 @@ func (r *DialogRepository) SoftDelete(ctx context.Context, ownerID, id int64) er
 }
 
 func normalizeDialog(item *dialog.Dialog) {
-	if item.Status == 0 {
-		item.Status = dialog.StatusActive
-	}
 	if item.TopK <= 0 {
 		item.TopK = 8
 	}
@@ -87,6 +87,9 @@ func normalizeDialog(item *dialog.Dialog) {
 	}
 	if item.Prologue == "" {
 		item.Prologue = "你好，我可以帮你什么？"
+	}
+	if item.KBIDs == nil {
+		item.KBIDs = []int64{}
 	}
 	raw, _ := json.Marshal(item.KBIDs)
 	item.KBIDsJSON = string(raw)
@@ -101,6 +104,9 @@ func hydrateDialog(item *dialog.Dialog) {
 		return
 	}
 	if err := json.Unmarshal([]byte(item.KBIDsJSON), &item.KBIDs); err != nil {
+		item.KBIDs = []int64{}
+	}
+	if item.KBIDs == nil {
 		item.KBIDs = []int64{}
 	}
 }

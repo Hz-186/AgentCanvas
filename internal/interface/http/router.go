@@ -27,6 +27,7 @@ type RouterDeps struct {
 	AuditHandler     *handler.AuditHandler
 	KnowledgeHandler *handler.KnowledgeHandler
 	DocumentHandler  *handler.DocumentHandler
+	DialogHandler    *handler.DialogHandler
 	ChatHandler      *handler.ChatHandler
 	AgentHandler     *handler.AgentHandler
 	AuthService      *authusecase.Service
@@ -106,12 +107,17 @@ func NewRouter(deps RouterDeps) *gin.Engine {
 
 			protected.GET("/ingestion-jobs/:id", deps.KnowledgeHandler.GetIngestionJob)
 
-			protected.POST("/rag/chat", deps.ChatHandler.Chat)
-			protected.POST("/rag/chat/stream", deps.ChatHandler.StreamChat)
-			protected.GET("/conversations", deps.ChatHandler.ListConversations)
-			protected.GET("/conversations/:id", deps.ChatHandler.GetConversation)
-			protected.GET("/conversations/:id/messages", deps.ChatHandler.ListMessages)
-			protected.DELETE("/conversations/:id", deps.ChatHandler.DeleteConversation)
+			protected.POST("/dialogs", deps.DialogHandler.Create)
+			protected.GET("/dialogs", deps.DialogHandler.List)
+			protected.GET("/dialogs/:id", deps.DialogHandler.Get)
+			protected.PATCH("/dialogs/:id", deps.DialogHandler.Update)
+			protected.DELETE("/dialogs/:id", deps.DialogHandler.Delete)
+			protected.POST("/dialogs/:dialog_id/rag/chat", deps.ChatHandler.Chat)
+			protected.POST("/dialogs/:dialog_id/rag/chat/stream", deps.ChatHandler.StreamChat)
+			protected.GET("/dialogs/:dialog_id/conversations", deps.ChatHandler.ListConversations)
+			protected.GET("/dialogs/:dialog_id/conversations/:id", deps.ChatHandler.GetConversation)
+			protected.GET("/dialogs/:dialog_id/conversations/:id/messages", deps.ChatHandler.ListMessages)
+			protected.DELETE("/dialogs/:dialog_id/conversations/:id", deps.ChatHandler.DeleteConversation)
 
 			protected.POST("/agents", deps.AgentHandler.Create)
 			protected.GET("/agents", deps.AgentHandler.List)
