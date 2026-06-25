@@ -40,8 +40,11 @@ export function parseJsonObject(input: string): Record<string, unknown> {
 
 export function friendlyErrorMessage(error: unknown, fallback = '操作没有完成，请稍后再试'): string {
   const raw = error instanceof Error ? error.message : String(error || fallback);
-  if (/Table 'agentcanvas\.[^']+' doesn't exist/i.test(raw)) {
+  if (/Table 'agentcanvas\.[^']+' doesn't exist|Unknown column/i.test(raw)) {
     return '当前功能还没有完成数据表初始化，请先运行数据库迁移后刷新页面。';
+  }
+  if (/Invalid JSON text/i.test(raw)) {
+    return '服务端写入了非法 JSON，请检查后端字段默认值后重试。';
   }
   if (/SQLSTATE|Error\s+\d+\s+\([A-Z0-9]+\)|agentcanvas\./i.test(raw)) {
     return '服务端数据暂时没有准备好，请检查后端服务和数据库状态后重试。';

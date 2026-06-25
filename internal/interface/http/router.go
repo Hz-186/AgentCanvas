@@ -103,6 +103,7 @@ func NewRouter(deps RouterDeps) *gin.Engine {
 			protected.POST("/knowledge-bases/:id/search", deps.KnowledgeHandler.Search)
 
 			protected.GET("/documents/:id", deps.DocumentHandler.Get)
+			protected.PATCH("/documents/:id", deps.DocumentHandler.SetEnabled)
 			protected.DELETE("/documents/:id", deps.DocumentHandler.Delete)
 			protected.GET("/documents/:id/chunks", deps.DocumentHandler.ListChunks)
 

@@ -1,15 +1,21 @@
-.PHONY: dev run worker build-web docker-up docker-down tidy test migrate
+.PHONY: dev run worker build-web typecheck-web test-web docker-up docker-down tidy test migrate
 
 dev:
 	./scripts/dev.sh
 
-run: build-web
+run: migrate build-web
 	go run ./cmd/api
 
 build-web:
 	npm --prefix web run build
 
-worker:
+typecheck-web:
+	npm --prefix web run typecheck
+
+test-web:
+	npm --prefix web test -- --run
+
+worker: migrate
 	go run ./cmd/worker
 
 docker-up:

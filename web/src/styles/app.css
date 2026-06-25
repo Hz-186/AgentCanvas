@@ -1177,6 +1177,33 @@ body.is-resizing-workspace .workspace {
   padding: 12px 14px;
   border-radius: var(--radius-md);
   color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  box-shadow: 0 14px 36px rgba(15, 23, 42, 0.2);
+  animation: toast-in 180ms var(--ease-out) both;
+}
+
+.toast-good {
+  border-left-color: var(--accent);
+}
+
+.toast-info {
+  border-left-color: var(--accent);
+}
+
+.toast-bad {
+  border-left-color: var(--danger);
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .modal-layer,
@@ -1262,6 +1289,69 @@ body.is-resizing-workspace .workspace {
   background: var(--bg-elevated);
   color: var(--text-primary);
   box-shadow: var(--shadow-sm);
+}
+
+.switch {
+  position: relative;
+  width: 38px;
+  height: 22px;
+  border-radius: 999px;
+  background: var(--control-bg);
+  border: 1px solid var(--border);
+  transition: background var(--dur-base) var(--ease-out), border-color var(--dur-base) var(--ease-out);
+  flex-shrink: 0;
+}
+
+.switch-knob {
+  position: absolute;
+  top: 50%;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-sm);
+  transform: translateY(-50%);
+  transition: left var(--dur-base) var(--ease-out), background var(--dur-base) var(--ease-out);
+}
+
+.switch-on {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.switch-on .switch-knob {
+  left: calc(100% - 18px);
+  background: var(--accent-contrast);
+}
+
+.switch:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.table .col-switch {
+  width: 56px;
+  text-align: center;
+}
+
+.table .col-actions {
+  width: 52px;
+  text-align: right;
+}
+
+.table tr.row-disabled td {
+  opacity: 0.5;
+}
+
+.table tr.row-disabled .col-switch,
+.table tr.row-disabled .col-actions {
+  opacity: 1;
+}
+
+.icon-btn-danger:hover {
+  color: var(--danger);
+  background: var(--danger-soft);
 }
 
 .canvas-page {
@@ -1607,6 +1697,117 @@ body.is-resizing-panels .canvas-body {
   grid-template-columns: minmax(0, 1fr) auto;
   gap: var(--space-2);
   align-items: end;
+}
+
+.chat-page-scoped {
+  padding: var(--space-4);
+}
+
+.chat-shell {
+  min-height: min(760px, calc(100vh - 150px));
+  display: grid;
+  grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
+  gap: var(--space-4);
+}
+
+.chat-sidebar {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border-radius: var(--radius-lg);
+}
+
+.chat-sidebar-head {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.chat-sidebar-head h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.chat-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  align-self: start;
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+}
+
+.chat-back:hover {
+  color: var(--text-primary);
+}
+
+.chat-conversation-list {
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.chat-conversation-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: var(--radius-md);
+  text-align: left;
+  color: var(--text-secondary);
+  transition: background var(--dur-base) var(--ease-out), color var(--dur-base) var(--ease-out);
+}
+
+.chat-conversation-item:hover {
+  background: var(--control-bg-hover);
+  color: var(--text-primary);
+}
+
+.chat-conversation-item.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.chat-conversation-time {
+  font-size: 0.72rem;
+  opacity: 0.72;
+}
+
+.chat-empty-hint {
+  padding: 8px 10px;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+}
+
+.chat-main {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border-radius: var(--radius-lg);
+}
+
+.chat-settings-bar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: var(--space-3);
+}
+
+@media (max-width: 760px) {
+  .chat-shell {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .chat-settings-bar {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .min-w-0 {

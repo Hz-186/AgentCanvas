@@ -101,6 +101,48 @@ func TestSearchFallsBackWhenRerankFails(t *testing.T) {
 	}
 }
 
+func TestSearchKeywordDoesNotRequireEmbeddingProvider(t *testing.T) {
+	raw := &fakeRawRetriever{response: &retrieval.RetrievalResponse{}}
+	service := NewService(
+		&fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{
+			10: {ID: 10, OwnerID: 1, RetrievalMode: knowledge.RetrievalModeKeyword},
+		}},
+		&fakeProviderRepo{},
+		raw,
+		nil,
+		nil,
+		mustSecretBox(t),
+	)
+
+	if _, err := service.Search(context.Background(), retrieval.RetrievalRequest{OwnerID: 1, KBIDs: []int64{10}, Query: "agent", Mode: retrieval.ModeKeyword}); err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if raw.request.Mode != retrieval.ModeKeyword {
+		t.Fatalf("mode = %q, want keyword", raw.request.Mode)
+	}
+}
+
+func TestSearchEmbeddingProviderErrorUsesRequestedMode(t *testing.T) {
+	service := NewService(
+		&fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{
+			10: {ID: 10, OwnerID: 1, RetrievalMode: knowledge.RetrievalModeKeyword},
+		}},
+		&fakeProviderRepo{},
+		&fakeRawRetriever{},
+		nil,
+		nil,
+		mustSecretBox(t),
+	)
+
+	_, err := service.Search(context.Background(), retrieval.RetrievalRequest{OwnerID: 1, KBIDs: []int64{10}, Query: "agent", Mode: retrieval.ModeVector})
+	if err == nil {
+		t.Fatal("Search() error = nil, want embedding provider error")
+	}
+	if got := err.Error(); got != "embedding provider is required for vector retrieval" {
+		t.Fatalf("error = %q", got)
+	}
+}
+
 type fakeKBRepo struct {
 	items map[int64]*knowledge.KnowledgeBase
 }

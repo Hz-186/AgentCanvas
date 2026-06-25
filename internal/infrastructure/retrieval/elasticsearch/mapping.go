@@ -30,6 +30,7 @@ const chunkIndexMapping = `{
         "analyzer": "default_text_analyzer"
       },
       "content_hash": { "type": "keyword" },
+      "enabled": { "type": "boolean" },
       "embedding_vector": {
         "type": "dense_vector",
         "index": true,
@@ -48,6 +49,7 @@ const chunkIndexMapping = `{
 
 const chunkVectorMapping = `{
   "properties": {
+    "enabled": { "type": "boolean" },
     "embedding_vector": {
       "type": "dense_vector",
       "index": true,

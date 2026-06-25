@@ -1,16 +1,25 @@
 package mysql
 
 import (
-	"agentcanvas/internal/pkg/config"
 	"context"
+	"log"
+	"os"
 	"time"
+
+	"agentcanvas/internal/pkg/config"
 
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
+	gormlogger "gorm.io/gorm/logger"
 )
 
 func New(cfg config.MySQLConfig) (*gorm.DB, error) {
-	db, err := gorm.Open(mysql.Open(cfg.DSN), &gorm.Config{})
+	db, err := gorm.Open(mysql.Open(cfg.DSN), &gorm.Config{
+		Logger: gormlogger.New(log.New(os.Stdout, "\r\n", log.LstdFlags), gormlogger.Config{
+			LogLevel:                  gormlogger.Warn,
+			IgnoreRecordNotFoundError: true,
+		}),
+	})
 	if err != nil {
 		return nil, err
 	}

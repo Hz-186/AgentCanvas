@@ -41,6 +41,7 @@ func TestProcessJobParsesChunksIndexesAndCompletes(t *testing.T) {
 				FileType:         "md",
 				ObjectKey:        "raw/guide.md",
 				ParserStatus:     knowledge.DocumentStatusPending,
+				Enabled:          true,
 			},
 		},
 	}
@@ -97,6 +98,11 @@ func TestProcessJobParsesChunksIndexesAndCompletes(t *testing.T) {
 	}
 	if indexer.indexed[0].DocumentName != "Guide" {
 		t.Fatalf("indexed document name = %q, want Guide", indexer.indexed[0].DocumentName)
+	}
+	for _, indexed := range indexer.indexed {
+		if !indexed.Enabled {
+			t.Fatal("indexed chunk should carry enabled=true from an enabled document")
+		}
 	}
 	for _, chunk := range chunks.byDocument[20] {
 		if chunk.ESIndex != "test_chunks" {
@@ -363,6 +369,65 @@ func TestProcessJobIndexesEmbeddingVectors(t *testing.T) {
 	}
 }
 
+func TestProcessJobKeywordDoesNotRequireEmbeddingProvider(t *testing.T) {
+	ctx := context.Background()
+	providerID := int64(90)
+	kbs := &fakeKBRepo{
+		items: map[int64]*knowledge.KnowledgeBase{
+			10: {
+				ID:                  10,
+				OwnerID:             1,
+				RetrievalMode:       knowledge.RetrievalModeKeyword,
+				EmbeddingProviderID: &providerID,
+				EmbeddingModel:      "text-embedding",
+				EmbeddingDimensions: 20,
+				ChunkSize:           20,
+				ChunkOverlap:        0,
+			},
+		},
+	}
+	docs := &fakeDocumentRepo{items: map[int64]*knowledge.Document{
+		20: {
+			ID:               20,
+			OwnerID:          1,
+			KBID:             10,
+			Name:             "Guide",
+			OriginalFilename: "guide.md",
+			FileType:         "md",
+			ObjectKey:        "raw/guide.md",
+			ParserStatus:     knowledge.DocumentStatusPending,
+		},
+	}}
+	indexer := &fakeIndexer{}
+	service := NewService(
+		kbs,
+		docs,
+		&fakeChunkRepo{},
+		&fakeJobRepo{},
+		nil,
+		fakeReadStorage{objects: map[string]string{"raw/guide.md": "Keyword retrieval should index text without embeddings."}},
+		parser.NewTextParser(),
+		chunker.NewFixedTokenChunker(),
+		indexer,
+		nil,
+		nil,
+		"test_chunks",
+	)
+
+	if err := service.ProcessJob(ctx, &knowledge.IngestionJob{ID: 30, OwnerID: 1, KBID: 10, DocumentID: 20}); err != nil {
+		t.Fatalf("ProcessJob() error = %v", err)
+	}
+	if docs.items[20].ParserStatus != knowledge.DocumentStatusCompleted {
+		t.Fatalf("ParserStatus = %q, want completed", docs.items[20].ParserStatus)
+	}
+	if len(indexer.indexed) == 0 {
+		t.Fatal("indexed chunks = 0, want keyword chunks indexed")
+	}
+	if indexer.indexed[0].EmbeddingDimensions != 0 || len(indexer.indexed[0].EmbeddingVector) != 0 {
+		t.Fatalf("keyword index should not include embeddings: %#v", indexer.indexed[0])
+	}
+}
+
 type fakeReadStorage struct {
 	objects map[string]string
 }
@@ -400,6 +465,10 @@ func (i *fakeIndexer) DeleteByDocument(_ context.Context, _ int64, documentID in
 }
 
 func (i *fakeIndexer) DeleteByKnowledgeBase(context.Context, int64, int64) error {
+	return nil
+}
+
+func (i *fakeIndexer) SetDocumentEnabled(context.Context, int64, int64, bool) error {
 	return nil
 }
 
@@ -462,6 +531,13 @@ func (r *fakeDocumentRepo) FindByID(_ context.Context, ownerID, id int64) (*know
 
 func (r *fakeDocumentRepo) Update(_ context.Context, doc *knowledge.Document) error {
 	r.items[doc.ID] = doc
+	return nil
+}
+
+func (r *fakeDocumentRepo) SetEnabled(_ context.Context, _ int64, id int64, enabled bool) error {
+	if doc, ok := r.items[id]; ok {
+		doc.Enabled = enabled
+	}
 	return nil
 }
 
