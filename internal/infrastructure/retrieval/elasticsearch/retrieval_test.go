@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"agentcanvas/internal/domain/retrieval"
@@ -96,6 +97,52 @@ func TestVectorSearchRequiresQueryVector(t *testing.T) {
 	store := &Store{}
 	if _, err := store.Search(context.Background(), retrieval.RetrievalRequest{Mode: retrieval.ModeVector, TopK: 3}); err == nil {
 		t.Fatal("Search() error = nil, want query vector error")
+	}
+}
+
+func TestSearchExcludesDisabledDocuments(t *testing.T) {
+	var captured map[string]any
+	store := newTestStore(t, func(w http.ResponseWriter, r *http.Request) {
+		data, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(data, &captured)
+		writeSearchHits(w, nil)
+	})
+
+	if _, err := store.Search(context.Background(), retrieval.RetrievalRequest{
+		OwnerID: 1,
+		KBIDs:   []int64{10},
+		Query:   "agent canvas",
+		TopK:    3,
+		Mode:    retrieval.ModeKeyword,
+	}); err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	raw, _ := json.Marshal(captured)
+	if !strings.Contains(string(raw), "must_not") || !strings.Contains(string(raw), "enabled") {
+		t.Fatalf("search body should exclude disabled documents: %s", raw)
+	}
+}
+
+func TestSetDocumentEnabledIssuesUpdateByQuery(t *testing.T) {
+	var path string
+	var captured map[string]any
+	store := newTestStore(t, func(w http.ResponseWriter, r *http.Request) {
+		path = r.URL.Path
+		data, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(data, &captured)
+		w.Header().Set("X-Elastic-Product", "Elasticsearch")
+		_ = json.NewEncoder(w).Encode(map[string]any{"updated": 1})
+	})
+
+	if err := store.SetDocumentEnabled(context.Background(), 1, 20, false); err != nil {
+		t.Fatalf("SetDocumentEnabled() error = %v", err)
+	}
+	if !strings.Contains(path, "_update_by_query") {
+		t.Fatalf("request path = %q, want _update_by_query", path)
+	}
+	raw, _ := json.Marshal(captured)
+	if !strings.Contains(string(raw), "ctx._source.enabled") {
+		t.Fatalf("update body should set enabled via painless script: %s", raw)
 	}
 }
 

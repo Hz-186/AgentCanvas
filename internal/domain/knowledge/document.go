@@ -24,6 +24,7 @@ type Document struct {
 	ContentHash      string     `json:"content_hash" gorm:"column:content_hash"`
 	ParserStatus     string     `json:"parser_status" gorm:"column:parser_status"`
 	ParserError      string     `json:"parser_error,omitempty" gorm:"column:parser_error"`
+	Enabled          bool       `json:"enabled" gorm:"column:enabled"`
 	ChunkCount       int        `json:"chunk_count" gorm:"column:chunk_count"`
 	TokenCount       int        `json:"token_count" gorm:"column:token_count"`
 	IndexedAt        *time.Time `json:"indexed_at" gorm:"column:indexed_at"`

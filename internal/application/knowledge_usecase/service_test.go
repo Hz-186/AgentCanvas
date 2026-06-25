@@ -262,6 +262,114 @@ func TestSearchRejectsInvalidRequests(t *testing.T) {
 	}
 }
 
+func TestSetDocumentEnabledTogglesAndSyncsIndex(t *testing.T) {
+	ctx := context.Background()
+	documents := &fakeDocumentRepo{items: map[int64]*knowledge.Document{
+		20: {ID: 20, OwnerID: 1, KBID: 10, Enabled: true},
+	}}
+	indexer := &fakeIndexer{}
+	service := NewService(
+		&fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{10: {ID: 10, OwnerID: 1}}},
+		documents,
+		&fakeChunkRepo{},
+		&fakeJobRepo{},
+		&fakeRetrievalLogRepo{},
+		nil,
+		&fakeWriteStorage{},
+		&fakeRetriever{},
+		indexer,
+	)
+
+	doc, err := service.SetDocumentEnabled(ctx, 1, 20, false, ClientInfo{})
+	if err != nil {
+		t.Fatalf("SetDocumentEnabled() error = %v", err)
+	}
+	if doc.Enabled {
+		t.Fatal("returned document should be disabled")
+	}
+	if documents.items[20].Enabled {
+		t.Fatal("repository document should be disabled")
+	}
+	if len(indexer.enabledCalls) != 1 || indexer.enabledCalls[0].documentID != 20 || indexer.enabledCalls[0].enabled {
+		t.Fatalf("index sync calls = %#v", indexer.enabledCalls)
+	}
+}
+
+func TestSetDocumentEnabledIsNoopWhenUnchanged(t *testing.T) {
+	ctx := context.Background()
+	documents := &fakeDocumentRepo{items: map[int64]*knowledge.Document{
+		20: {ID: 20, OwnerID: 1, KBID: 10, Enabled: true},
+	}}
+	indexer := &fakeIndexer{}
+	service := NewService(
+		&fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{10: {ID: 10, OwnerID: 1}}},
+		documents,
+		&fakeChunkRepo{},
+		&fakeJobRepo{},
+		&fakeRetrievalLogRepo{},
+		nil,
+		&fakeWriteStorage{},
+		&fakeRetriever{},
+		indexer,
+	)
+
+	if _, err := service.SetDocumentEnabled(ctx, 1, 20, true, ClientInfo{}); err != nil {
+		t.Fatalf("SetDocumentEnabled() error = %v", err)
+	}
+	if len(indexer.enabledCalls) != 0 {
+		t.Fatalf("index should not be touched when state is unchanged: %#v", indexer.enabledCalls)
+	}
+}
+
+func TestUpdateKnowledgeBaseResetsDimensionsWhenEmbeddingChanges(t *testing.T) {
+	ctx := context.Background()
+	providerID := int64(5)
+	kbs := &fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{
+		10: {ID: 10, OwnerID: 1, RetrievalMode: "keyword", EmbeddingProviderID: &providerID, EmbeddingDimensions: 1024, ChunkSize: 800, ChunkOverlap: 100},
+	}}
+	service := NewService(kbs, &fakeDocumentRepo{}, &fakeChunkRepo{}, &fakeJobRepo{}, &fakeRetrievalLogRepo{}, nil, &fakeWriteStorage{}, &fakeRetriever{}, &fakeIndexer{})
+
+	mode := "vector"
+	kb, err := service.UpdateKnowledgeBase(ctx, 1, 10, UpdateKnowledgeBaseRequest{RetrievalMode: &mode}, ClientInfo{})
+	if err != nil {
+		t.Fatalf("UpdateKnowledgeBase() error = %v", err)
+	}
+	if kb.EmbeddingDimensions != 0 {
+		t.Fatalf("EmbeddingDimensions = %d, want 0 after embedding config change", kb.EmbeddingDimensions)
+	}
+}
+
+func TestUpdateKnowledgeBaseKeepsDimensionsWhenEmbeddingUnchanged(t *testing.T) {
+	ctx := context.Background()
+	providerID := int64(5)
+	kbs := &fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{
+		10: {ID: 10, OwnerID: 1, RetrievalMode: "vector", EmbeddingProviderID: &providerID, EmbeddingDimensions: 1024, ChunkSize: 800, ChunkOverlap: 100},
+	}}
+	service := NewService(kbs, &fakeDocumentRepo{}, &fakeChunkRepo{}, &fakeJobRepo{}, &fakeRetrievalLogRepo{}, nil, &fakeWriteStorage{}, &fakeRetriever{}, &fakeIndexer{})
+
+	desc := "updated description"
+	kb, err := service.UpdateKnowledgeBase(ctx, 1, 10, UpdateKnowledgeBaseRequest{Description: &desc}, ClientInfo{})
+	if err != nil {
+		t.Fatalf("UpdateKnowledgeBase() error = %v", err)
+	}
+	if kb.EmbeddingDimensions != 1024 {
+		t.Fatalf("EmbeddingDimensions = %d, want 1024 preserved", kb.EmbeddingDimensions)
+	}
+}
+
+func TestUpdateKnowledgeBaseRejectsVectorWithoutProvider(t *testing.T) {
+	ctx := context.Background()
+	kbs := &fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{
+		10: {ID: 10, OwnerID: 1, RetrievalMode: "keyword", ChunkSize: 800, ChunkOverlap: 100},
+	}}
+	service := NewService(kbs, &fakeDocumentRepo{}, &fakeChunkRepo{}, &fakeJobRepo{}, &fakeRetrievalLogRepo{}, nil, &fakeWriteStorage{}, &fakeRetriever{}, &fakeIndexer{})
+
+	mode := "vector"
+	if _, err := service.UpdateKnowledgeBase(ctx, 1, 10, UpdateKnowledgeBaseRequest{RetrievalMode: &mode}, ClientInfo{}); err == nil {
+		t.Fatal("UpdateKnowledgeBase() error = nil, want invalid input for vector without provider")
+	}
+}
+
 func mustMultipartFileHeader(t *testing.T, filename, contentType, content string) *multipart.FileHeader {
 	t.Helper()
 
@@ -328,7 +436,14 @@ func (r *fakeRetriever) Search(_ context.Context, req retrieval.RetrievalRequest
 	return &retrieval.RetrievalResponse{}, nil
 }
 
-type fakeIndexer struct{}
+type fakeIndexer struct {
+	enabledCalls []enabledCall
+}
+
+type enabledCall struct {
+	documentID int64
+	enabled    bool
+}
 
 func (i *fakeIndexer) EnsureIndex(context.Context) error {
 	return nil
@@ -343,6 +458,11 @@ func (i *fakeIndexer) DeleteByDocument(context.Context, int64, int64) error {
 }
 
 func (i *fakeIndexer) DeleteByKnowledgeBase(context.Context, int64, int64) error {
+	return nil
+}
+
+func (i *fakeIndexer) SetDocumentEnabled(_ context.Context, _ int64, documentID int64, enabled bool) error {
+	i.enabledCalls = append(i.enabledCalls, enabledCall{documentID: documentID, enabled: enabled})
 	return nil
 }
 
@@ -432,6 +552,15 @@ func (r *fakeDocumentRepo) Update(_ context.Context, doc *knowledge.Document) er
 	}
 	clone := *doc
 	r.items[doc.ID] = &clone
+	return nil
+}
+
+func (r *fakeDocumentRepo) SetEnabled(_ context.Context, ownerID, id int64, enabled bool) error {
+	item, ok := r.items[id]
+	if !ok || item.OwnerID != ownerID {
+		return gorm.ErrRecordNotFound
+	}
+	item.Enabled = enabled
 	return nil
 }
 

@@ -49,6 +49,12 @@ func (r *DocumentRepository) Update(ctx context.Context, doc *knowledge.Document
 	return r.db.WithContext(ctx).Save(doc).Error
 }
 
+func (r *DocumentRepository) SetEnabled(ctx context.Context, ownerID, id int64, enabled bool) error {
+	return r.db.WithContext(ctx).Model(&knowledge.Document{}).
+		Where("id = ? AND owner_id = ? AND deleted_at IS NULL", id, ownerID).
+		Updates(map[string]any{"enabled": enabled, "updated_at": time.Now().UTC()}).Error
+}
+
 func (r *DocumentRepository) SoftDelete(ctx context.Context, ownerID, id int64) error {
 	now := time.Now().UTC()
 	return r.db.WithContext(ctx).Model(&knowledge.Document{}).

@@ -2,7 +2,7 @@ import { FormEvent, useEffect, useRef, useState } from 'react';
 import { ChevronLeft, MessageSquareText, Plus, Send } from 'lucide-react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { chatApi, conversationApi, dialogApi, knowledgeApi, settingsApi } from '../api/resources';
-import { Button, EmptyState, Field, Modal, Panel, Select, StatusBadge, TextArea, TextInput } from '../components/ui';
+import { Button, EmptyState, Field, Modal, Select, StatusBadge, TextArea, TextInput, Toast } from '../components/ui';
 import type { Conversation, Dialog, KnowledgeBase, Message, MessageReference, ModelProvider } from '../types/api';
 import { formatDate, friendlyErrorMessage } from '../utils/format';
 
@@ -73,18 +73,31 @@ export function ChatPage() {
     setReferences([]);
     if (!isDialogScoped || !dialogId) {
       setConversations([]);
-      return;
+      return () => {
+        cancelled = true;
+      };
     }
-    loadConversations(dialogId).catch((err) => {
-      if (!cancelled) setError(friendlyErrorMessage(err, '加载会话列表失败'));
-    });
-    if (!isDetail || isNewConversation) return () => { cancelled = true; };
-    if (!routeConversationIdNum || Number.isNaN(routeConversationIdNum)) return () => { cancelled = true; };
-    void openConversation(dialogId, routeConversationIdNum, () => cancelled);
+    conversationApi
+      .list(dialogId)
+      .then((list) => {
+        if (cancelled) return;
+        setConversations(list);
+        // 进入 Dialog 但未指定会话时，自动打开最近一个会话（ChatGPT 式左列右窗体验）。
+        if (!isDetail && !isNewConversation && list.length > 0) {
+          navigate(`/app/dialogs/${dialogId}/chat/${list[0].id}`, { replace: true });
+          return;
+        }
+        if (isDetail && !isNewConversation && routeConversationIdNum && !Number.isNaN(routeConversationIdNum)) {
+          void openConversation(dialogId, routeConversationIdNum, () => cancelled);
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) setError(friendlyErrorMessage(err, '加载会话列表失败'));
+      });
     return () => {
       cancelled = true;
     };
-  }, [dialogId, isDetail, isDialogScoped, isNewConversation, routeConversationIdNum]);
+  }, [dialogId, isDetail, isDialogScoped, isNewConversation, routeConversationIdNum, navigate]);
 
   async function openConversation(currentDialogId: number, id: number, isCancelled: () => boolean = () => false) {
     setConversationId(id);
@@ -187,33 +200,19 @@ export function ChatPage() {
   const currentDialog = dialogs.find((item) => item.id === dialogId);
 
   return (
-    <div className="page">
-      <div className="page-head">
-        <div>
-          <h1>RAG 对话</h1>
-          <p>{currentDialog ? `当前 Dialog：${currentDialog.name}` : '先选择一个 Dialog，再查看它下面的会话。'}</p>
-        </div>
-        {isDialogScoped ? (
-          <Button onClick={() => navigate(isDetail ? `/app/dialogs/${dialogId}/chat` : '/app/dialogs')}>
-            <ChevronLeft size={17} />
-            {isDetail ? '返回会话列表' : '返回 Dialog'}
-          </Button>
-        ) : null}
-        {isDialogScoped && !isDetail ? (
-          <Button tone="primary" onClick={() => navigate(`/app/dialogs/${dialogId}/chat/new`)}>
-            <Plus size={17} />
-            新建会话
-          </Button>
-        ) : null}
-        {!isDialogScoped ? (
+    <div className={isDialogScoped ? 'page chat-page-scoped' : 'page'}>
+      {!isDialogScoped ? (
+        <div className="page-head">
+          <div>
+            <h1>RAG 对话</h1>
+            <p>选择一个 Dialog 进入，左侧排列会话，右侧即对话窗口。</p>
+          </div>
           <Button tone="primary" onClick={() => setDialogOpen(true)}>
             <Plus size={17} />
             新增 Dialog
           </Button>
-        ) : null}
-      </div>
-
-      {error ? <p className="error-text">{error}</p> : null}
+        </div>
+      ) : null}
 
       {!isDialogScoped ? (
         <div className="stack">
@@ -238,76 +237,98 @@ export function ChatPage() {
         </div>
       ) : null}
 
-      {isDialogScoped && !isDetail ? (
-        conversations.length === 0 ? (
-          <EmptyState icon={<MessageSquareText size={24} />} title="还没有会话" description="创建一个新会话后，它会自动归入当前 Dialog。" action={<Button tone="primary" onClick={() => navigate(`/app/dialogs/${dialogId}/chat/new`)}>新建会话</Button>} />
-        ) : (
-          <div className="grid">
-            {conversations.map((conv) => (
-              <article className="card" key={conv.id}>
-                <div className="card-title">
-                  <h3 className="truncate">{conv.title}</h3>
-                  <StatusBadge tone="info">{conv.source || 'RAG'}</StatusBadge>
-                </div>
-                <p className="muted">最近更新 {formatDate(conv.last_message_at ?? conv.updated_at ?? conv.created_at)}</p>
-                <div className="row-wrap">
-                  <Button tone="primary" onClick={() => navigate(`/app/dialogs/${dialogId}/chat/${conv.id}`)}>打开会话</Button>
-                </div>
-              </article>
-            ))}
-          </div>
-        )
-      ) : null}
-
-      {isDialogScoped && isDetail ? (
-        <div className="chat-layout">
-          <Panel title="对话设置" eyebrow="上下文">
-            <div className="form-stack">
-              <Field label="Provider">
-                <Select value={providerId} onChange={(event) => setProviderId(Number(event.target.value))}>
-                  <option value={0}>选择 Provider</option>
-                  {providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.name}</option>)}
-                </Select>
-              </Field>
-              <Field label="知识库">
-                <Select value={kbId} onChange={(event) => setKbId(Number(event.target.value))}>
-                  <option value={0}>选择知识库</option>
-                  {knowledgeBases.map((kb) => <option key={kb.id} value={kb.id}>{kb.name}</option>)}
-                </Select>
-              </Field>
-            </div>
-          </Panel>
-
-          <Panel title={isNewConversation ? '新会话' : conversations.find((conv) => conv.id === conversationId)?.title ?? '会话'} eyebrow={streaming ? '生成中' : '就绪'}>
-            <div className="message-list">
-              {lines.length === 0 ? (
-                <EmptyState icon={<MessageSquareText size={24} />} title="开始一次知识库对话" description="回答会随 SSE 增量显示，引用会在下方保留。" />
-              ) : (
-                lines.map((line, index) => <div className={`message ${line.role}`} key={`${line.role}-${index}`}>{line.content || '...'}</div>)
-              )}
-            </div>
-            {references.length > 0 ? (
-              <div className="stack">
-                <p className="eyebrow">引用来源</p>
-                {references.map((ref) => (
-                  <article className="card" key={ref.id || ref.ref_index}>
-                    <div className="card-title">
-                      <h3 className="truncate">引用 #{ref.ref_index + 1}</h3>
-                      <StatusBadge tone="info">{ref.score.toFixed(3)}</StatusBadge>
-                    </div>
-                    <p className="muted">{ref.quote_text}</p>
-                  </article>
-                ))}
-              </div>
-            ) : null}
-            <form className="chat-composer" onSubmit={(event) => void ask(event)}>
-              <TextArea value={question} onChange={(event) => setQuestion(event.target.value)} placeholder="输入问题" />
-              <Button tone="primary" disabled={streaming}>
-                <Send size={16} />
-                发送
+      {isDialogScoped ? (
+        <div className="chat-shell">
+          <aside className="chat-sidebar glass">
+            <div className="chat-sidebar-head">
+              <button type="button" className="chat-back" onClick={() => navigate('/app/dialogs')}>
+                <ChevronLeft size={15} />
+                全部 Dialog
+              </button>
+              <h2 className="truncate">{currentDialog?.name ?? '会话'}</h2>
+              <Button tone="primary" onClick={() => navigate(`/app/dialogs/${dialogId}/chat/new`)}>
+                <Plus size={15} />
+                新建会话
               </Button>
-            </form>
-          </Panel>
+            </div>
+            <div className="chat-conversation-list">
+              {isNewConversation ? (
+                <div className="chat-conversation-item active">
+                  <span className="truncate">新会话…</span>
+                </div>
+              ) : null}
+              {conversations.map((conv) => (
+                <button
+                  type="button"
+                  key={conv.id}
+                  className={`chat-conversation-item ${conv.id === conversationId ? 'active' : ''}`}
+                  onClick={() => navigate(`/app/dialogs/${dialogId}/chat/${conv.id}`)}
+                >
+                  <span className="truncate">{conv.title || '未命名会话'}</span>
+                  <span className="chat-conversation-time">{formatDate(conv.last_message_at ?? conv.updated_at ?? conv.created_at)}</span>
+                </button>
+              ))}
+              {conversations.length === 0 && !isNewConversation ? (
+                <p className="chat-empty-hint">还没有会话，点击「新建会话」开始。</p>
+              ) : null}
+            </div>
+          </aside>
+
+          <section className="chat-main surface">
+            {isDetail ? (
+              <>
+                <div className="chat-settings-bar">
+                  <Field label="Provider">
+                    <Select value={providerId} onChange={(event) => setProviderId(Number(event.target.value))}>
+                      <option value={0}>选择 Provider</option>
+                      {providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.name}</option>)}
+                    </Select>
+                  </Field>
+                  <Field label="知识库">
+                    <Select value={kbId} onChange={(event) => setKbId(Number(event.target.value))}>
+                      <option value={0}>选择知识库</option>
+                      {knowledgeBases.map((kb) => <option key={kb.id} value={kb.id}>{kb.name}</option>)}
+                    </Select>
+                  </Field>
+                </div>
+                <div className="message-list">
+                  {lines.length === 0 ? (
+                    <EmptyState icon={<MessageSquareText size={24} />} title="开始一次知识库对话" description="回答会随 SSE 增量显示，引用会在下方保留。" />
+                  ) : (
+                    lines.map((line, index) => <div className={`message ${line.role}`} key={`${line.role}-${index}`}>{line.content || '...'}</div>)
+                  )}
+                  {references.length > 0 ? (
+                    <div className="stack">
+                      <p className="eyebrow">引用来源</p>
+                      {references.map((ref) => (
+                        <article className="card" key={ref.id || ref.ref_index}>
+                          <div className="card-title">
+                            <h3 className="truncate">引用 #{ref.ref_index + 1}</h3>
+                            <StatusBadge tone="info">{ref.score.toFixed(3)}</StatusBadge>
+                          </div>
+                          <p className="muted">{ref.quote_text}</p>
+                        </article>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+                <form className="chat-composer" onSubmit={(event) => void ask(event)}>
+                  <TextArea value={question} onChange={(event) => setQuestion(event.target.value)} placeholder="输入问题" />
+                  <Button tone="primary" disabled={streaming}>
+                    <Send size={16} />
+                    发送
+                  </Button>
+                </form>
+              </>
+            ) : (
+              <EmptyState
+                icon={<MessageSquareText size={24} />}
+                title="选择或新建一个会话"
+                description="从左侧选择一个会话，或点击「新建会话」开始对话。"
+                action={<Button tone="primary" onClick={() => navigate(`/app/dialogs/${dialogId}/chat/new`)}>新建会话</Button>}
+              />
+            )}
+          </section>
         </div>
       ) : null}
 
@@ -328,6 +349,7 @@ export function ChatPage() {
           </Field>
         </form>
       </Modal>
+      <Toast message={error} tone="bad" duration={4800} onClose={() => setError('')} />
     </div>
   );
 }

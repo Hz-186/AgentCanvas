@@ -195,6 +195,7 @@ func (s *Service) ProcessJob(ctx context.Context, job *knowledge.IngestionJob) e
 			SectionTitle:        chunks[i].SectionTitle,
 			Content:             chunks[i].Content,
 			ContentHash:         chunks[i].ContentHash,
+			Enabled:             doc.Enabled,
 			EmbeddingModel:      embeddingModel,
 			EmbeddingDimensions: embeddingDimensions,
 			PageNo:              chunks[i].PageNo,
@@ -231,7 +232,7 @@ func (s *Service) ProcessJob(ctx context.Context, job *knowledge.IngestionJob) e
 }
 
 func (s *Service) embedChunks(ctx context.Context, kb *knowledge.KnowledgeBase, chunks []knowledge.DocumentChunk) ([][]float32, string, int, error) {
-	needsEmbedding := kb.EmbeddingProviderID != nil || kb.RetrievalMode == knowledge.RetrievalModeVector || kb.RetrievalMode == knowledge.RetrievalModeHybrid
+	needsEmbedding := kb.RetrievalMode == knowledge.RetrievalModeVector || kb.RetrievalMode == knowledge.RetrievalModeHybrid
 	if !needsEmbedding {
 		return nil, "", 0, nil
 	}

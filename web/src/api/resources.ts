@@ -15,6 +15,7 @@ import type {
   CreateProviderRequest,
   DocumentChunk,
   FlowVersion,
+  IngestionJob,
   KnowledgeBase,
   Message,
   ModelProvider,
@@ -104,7 +105,11 @@ export const knowledgeApi = {
     if (name) form.set('name', name);
     return api.upload<UploadDocumentResponse>(`/knowledge-bases/${kbId}/documents`, form);
   },
+  getIngestionJob: (id: number) => api.get<IngestionJob>(`/ingestion-jobs/${id}`),
   listChunks: (documentId: number) => api.get<DocumentChunk[]>(`/documents/${documentId}/chunks`),
+  setDocumentEnabled: (documentId: number, enabled: boolean) =>
+    api.patch<AgentDocument>(`/documents/${documentId}`, { enabled }),
+  deleteDocument: (documentId: number) => api.delete<{ success: boolean }>(`/documents/${documentId}`),
   search: (kbId: number, body: { query: string; top_k?: number; mode?: string }) =>
     api.post<RetrievalResponse>(`/knowledge-bases/${kbId}/search`, body),
 };

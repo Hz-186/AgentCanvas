@@ -27,6 +27,7 @@ type ChunkIndexDocument struct {
 	EmbeddingVector     []float32
 	EmbeddingModel      string
 	EmbeddingDimensions int
+	Enabled             bool
 	PageNo              *int
 	TokenCount          int
 	Metadata            map[string]any
@@ -70,6 +71,7 @@ type RetrievalResponse struct {
 type Indexer interface {
 	EnsureIndex(ctx context.Context) error
 	IndexChunks(ctx context.Context, docs []ChunkIndexDocument) error
+	SetDocumentEnabled(ctx context.Context, ownerID, documentID int64, enabled bool) error
 	DeleteByDocument(ctx context.Context, ownerID, documentID int64) error
 	DeleteByKnowledgeBase(ctx context.Context, ownerID, kbID int64) error
 }

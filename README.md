@@ -62,7 +62,13 @@ make docker-up
 make migrate
 ```
 
-启动 API 与内嵌前端：
+启动完整本地开发链路（Docker 依赖、迁移、前端构建、API、文档处理 worker）：
+
+```bash
+make dev
+```
+
+仅启动 API 与内嵌前端：
 
 ```bash
 make run
@@ -91,9 +97,12 @@ npm --prefix web run dev
 ```bash
 make docker-up          # 启动 MySQL / Redis / MinIO / Elasticsearch / Kibana
 make docker-down        # 停止本地依赖
-make run                # 构建前端并启动 Go API
+make dev                # 启动完整本地链路：依赖 / 迁移 / API / worker
+make run                # 运行迁移、构建前端并启动 Go API
 make worker             # 启动文档解析与索引 worker
 make test               # 运行 Go 测试
+make typecheck-web      # 运行前端类型检查
+make test-web           # 运行前端测试
 npm --prefix web run typecheck
 npm --prefix web run test
 npm --prefix web run build

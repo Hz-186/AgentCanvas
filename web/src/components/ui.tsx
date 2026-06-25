@@ -1,4 +1,4 @@
-import { type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode } from 'react';
+import { useEffect, useRef, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { X } from 'lucide-react';
 
@@ -114,9 +114,31 @@ export function StatusBadge({ children, tone = 'neutral' }: { children: ReactNod
   return <span className={`status status-${tone}`}>{children}</span>;
 }
 
-export function Toast({ message, tone = 'info' }: { message: string; tone?: 'info' | 'good' | 'bad' }) {
+export function Toast({
+  message,
+  tone = 'info',
+  onClose,
+  duration = 3200,
+}: {
+  message: string;
+  tone?: 'info' | 'good' | 'bad';
+  onClose?: () => void;
+  duration?: number;
+}) {
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+  useEffect(() => {
+    if (!message) return undefined;
+    const timer = window.setTimeout(() => onCloseRef.current?.(), duration);
+    return () => window.clearTimeout(timer);
+  }, [message, duration]);
   if (!message) return null;
-  return <div className={`toast glass-strong toast-${tone}`}>{message}</div>;
+  return createPortal(
+    <div className={`toast glass-strong toast-${tone}`} role="status" aria-live="polite">
+      {message}
+    </div>,
+    document.body,
+  );
 }
 
 export function Modal({
@@ -200,5 +222,32 @@ export function Segmented<T extends string>({
         </button>
       ))}
     </div>
+  );
+}
+
+export function Switch({
+  checked,
+  onChange,
+  disabled = false,
+  label,
+}: {
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+  disabled?: boolean;
+  label?: string;
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-label={label}
+      title={label}
+      disabled={disabled}
+      className={`switch ${checked ? 'switch-on' : ''}`}
+      onClick={() => onChange(!checked)}
+    >
+      <span className="switch-knob" />
+    </button>
   );
 }

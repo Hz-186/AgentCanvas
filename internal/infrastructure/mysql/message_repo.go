@@ -22,6 +22,7 @@ func (r *MessageRepository) Create(ctx context.Context, message *conversation.Me
 	if message.ContentType == "" {
 		message.ContentType = conversation.ContentTypeText
 	}
+	normalizeMessage(message)
 	return r.db.WithContext(ctx).Create(message).Error
 }
 
@@ -41,6 +42,7 @@ func (r *MessageRepository) CreateReferences(ctx context.Context, refs []convers
 	now := time.Now().UTC()
 	for i := range refs {
 		refs[i].CreatedAt = now
+		normalizeMessageReference(&refs[i])
 	}
 	return r.db.WithContext(ctx).Create(&refs).Error
 }
@@ -52,4 +54,16 @@ func (r *MessageRepository) ListReferencesByMessage(ctx context.Context, ownerID
 		Order("ref_index ASC").
 		Find(&refs).Error
 	return refs, err
+}
+
+func normalizeMessage(message *conversation.Message) {
+	if message.MetadataJSON == "" {
+		message.MetadataJSON = "{}"
+	}
+}
+
+func normalizeMessageReference(ref *conversation.MessageReference) {
+	if ref.MetadataJSON == "" {
+		ref.MetadataJSON = "{}"
+	}
 }
