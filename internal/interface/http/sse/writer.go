@@ -16,7 +16,9 @@ func NewWriter(c *gin.Context) *Writer {
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")
+	c.Header("X-Accel-Buffering", "no")
 	c.Status(http.StatusOK)
+	c.Writer.Flush()
 	return &Writer{c: c}
 }
 

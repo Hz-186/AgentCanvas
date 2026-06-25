@@ -58,8 +58,10 @@ func (r *ChatReranker) Rerank(ctx context.Context, cfg RerankProviderConfig, req
 	}
 	itemsJSON, _ := json.Marshal(items)
 	prompt := "You are a retrieval reranker. Return only a JSON array of chunk_id numbers ordered from most relevant to least relevant.\n\nQuery:\n" + req.Query + "\n\nCandidates:\n" + string(itemsJSON)
+	temperature := 0.0
 	resp, err := r.ChatClient.Chat(ctx, cfg, ChatRequest{
-		Model: model,
+		Model:       model,
+		Temperature: &temperature,
 		Messages: []ChatMessage{
 			{Role: "system", Content: "Return valid JSON only."},
 			{Role: "user", Content: prompt},

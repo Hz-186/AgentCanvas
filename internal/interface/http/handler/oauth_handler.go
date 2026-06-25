@@ -1,6 +1,8 @@
 package handler
 
 import (
+	"net/url"
+
 	authusecase "agentcanvas/internal/application/auth_usecase"
 	"agentcanvas/internal/pkg/response"
 
@@ -16,12 +18,12 @@ func NewOAuthHandler(service *authusecase.Service) *OAuthHandler {
 }
 
 func (h *OAuthHandler) GitHubRedirect(c *gin.Context) {
-	url, err := h.service.BeginGitHubOAuth(c.Request.Context())
+	redirectURL, err := h.service.BeginGitHubOAuth(c.Request.Context())
 	if err != nil {
 		writeAppError(c, err)
 		return
 	}
-	response.OK(c, gin.H{"redirect_url": url})
+	response.OK(c, gin.H{"redirect_url": redirectURL})
 }
 
 func (h *OAuthHandler) GitHubCallback(c *gin.Context) {
@@ -32,8 +34,13 @@ func (h *OAuthHandler) GitHubCallback(c *gin.Context) {
 		clientInfoFromContext(c),
 	)
 	if err != nil {
-		writeAppError(c, err)
+		v := url.Values{}
+		v.Set("error", err.Error())
+		c.Redirect(302, "/login?"+v.Encode())
 		return
 	}
-	response.OK(c, resp)
+	v := url.Values{}
+	v.Set("access_token", resp.Tokens.AccessToken)
+	v.Set("refresh_token", resp.Tokens.RefreshToken)
+	c.Redirect(302, "/login?"+v.Encode())
 }

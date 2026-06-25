@@ -59,3 +59,12 @@ const chunkVectorMapping = `{
     "embedding_dimensions": { "type": "integer" }
   }
 }`
+
+const chunkVectorMappingWithoutVector = `{
+  "properties": {
+    "enabled": { "type": "boolean" },
+    "embedding_model": { "type": "keyword" },
+    "embedding_dimensions": { "type": "integer" }
+  }
+}`
+

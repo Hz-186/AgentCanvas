@@ -170,7 +170,7 @@ func (s *Service) findEquivalentFlowVersion(ctx context.Context, ownerID, agentI
 		if err != nil {
 			return nil, fmt.Errorf("%w: invalid saved dsl_json", agenterrors.ErrInvalidInput)
 		}
-		equal, err := flow.EqualRuntimeDSL(candidateDSL, dsl)
+		equal, err := flow.EqualCanvasDSL(candidateDSL, dsl)
 		if err != nil {
 			return nil, fmt.Errorf("%w: invalid saved dsl_json", agenterrors.ErrInvalidInput)
 		}

@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent, type PointerEvent as ReactPointerEvent } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { ActivitySquare, Github, LockKeyhole, Mail, Moon, Network, Route, Sparkles, Sun, Workflow } from 'lucide-react';
 import { authApi } from '../api/auth';
+import { tokenStorage } from '../api/token';
 import { Button, Field, IconButton, TextInput } from '../components/ui';
 import { useAuthStore } from '../stores/authStore';
 
@@ -157,6 +158,7 @@ function validatePassword(password: string): string {
 }
 
 export function LoginPage() {
+  const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
   const login = useAuthStore((state) => state.login);
   const loading = useAuthStore((state) => state.loading);
@@ -164,6 +166,28 @@ export function LoginPage() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [localError, setLocalError] = useState('');
+
+  useEffect(() => {
+    const accessToken = searchParams.get('access_token');
+    const refreshToken = searchParams.get('refresh_token');
+    const oauthError = searchParams.get('error');
+
+    if (oauthError) {
+      setLocalError(`GitHub 登录失败: ${oauthError}`);
+      setSearchParams({}, { replace: true });
+    } else if (accessToken && refreshToken) {
+      tokenStorage.setTokens({
+        access_token: accessToken,
+        refresh_token: refreshToken,
+        token_type: 'Bearer',
+        expires_at: '',
+      });
+      setSearchParams({}, { replace: true });
+      void useAuthStore.getState().initialize().then(() => {
+        navigate('/app/agents', { replace: true });
+      });
+    }
+  }, [searchParams, setSearchParams, navigate]);
 
   async function onSubmit(event: FormEvent) {
     event.preventDefault();

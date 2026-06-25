@@ -110,3 +110,65 @@ func runtimeConfigJSON(data json.RawMessage) (json.RawMessage, error) {
 	}
 	return json.Marshal(value)
 }
+
+// EqualCanvasDSL 比较两个 DSL 是否完全等价，包含节点位置（_ui）信息。
+// 节点位置变化或增删节点/边均视为版本变更，用于版本保存时的等价判断。
+func EqualCanvasDSL(left, right *DSL) (bool, error) {
+	leftJSON, err := canvasDSLJSON(left)
+	if err != nil {
+		return false, err
+	}
+	rightJSON, err := canvasDSLJSON(right)
+	if err != nil {
+		return false, err
+	}
+	return bytes.Equal(leftJSON, rightJSON), nil
+}
+
+func canvasDSLJSON(dsl *DSL) ([]byte, error) {
+	if dsl == nil {
+		return json.Marshal(runtimeDSL{})
+	}
+	nodes := make([]runtimeNode, 0, len(dsl.Nodes))
+	for _, node := range dsl.Nodes {
+		config, err := canonicalConfigJSON(node.Config)
+		if err != nil {
+			return nil, err
+		}
+		nodes = append(nodes, runtimeNode{ID: node.ID, Type: node.Type, Name: node.Name, Config: config})
+	}
+	sort.Slice(nodes, func(i, j int) bool {
+		if nodes[i].ID != nodes[j].ID {
+			return nodes[i].ID < nodes[j].ID
+		}
+		if nodes[i].Type != nodes[j].Type {
+			return nodes[i].Type < nodes[j].Type
+		}
+		if nodes[i].Name != nodes[j].Name {
+			return nodes[i].Name < nodes[j].Name
+		}
+		return string(nodes[i].Config) < string(nodes[j].Config)
+	})
+	edges := append([]Edge(nil), dsl.Edges...)
+	sort.Slice(edges, func(i, j int) bool {
+		if edges[i].From != edges[j].From {
+			return edges[i].From < edges[j].From
+		}
+		return edges[i].To < edges[j].To
+	})
+	return json.Marshal(runtimeDSL{SchemaVersion: dsl.SchemaVersion, FlowID: dsl.FlowID, Nodes: nodes, Edges: edges})
+}
+
+// canonicalConfigJSON 对 config 做规范化序列化（稳定 key 顺序），但保留 _ui 字段。
+func canonicalConfigJSON(data json.RawMessage) (json.RawMessage, error) {
+	if len(data) == 0 {
+		return json.RawMessage("null"), nil
+	}
+	var value any
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	if err := decoder.Decode(&value); err != nil {
+		return nil, err
+	}
+	return json.Marshal(value)
+}

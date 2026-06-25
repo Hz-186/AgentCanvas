@@ -57,6 +57,32 @@ func TestEqualRuntimeDSLDetectsRuntimeChanges(t *testing.T) {
 	}
 }
 
+func TestEqualCanvasDSLSamePositionIsEqual(t *testing.T) {
+	left := parseTestDSL(t, `{"schema_version":"v1","flow_id":"agent-1","nodes":[{"id":"begin","type":"begin","name":"Begin","config":{"_ui":{"x":120,"y":170},"input_schema":{"query":"string"}}}],"edges":[]}`)
+	// key 顺序不同，但位置和内容完全相同
+	right := parseTestDSL(t, `{"schema_version":"v1","flow_id":"agent-1","nodes":[{"id":"begin","type":"begin","name":"Begin","config":{"input_schema":{"query":"string"},"_ui":{"x":120,"y":170}}}],"edges":[]}`)
+	equal, err := EqualCanvasDSL(left, right)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !equal {
+		t.Fatal("expected identical canvas DSL to be equal")
+	}
+}
+
+func TestEqualCanvasDSLPositionChangeIsNotEqual(t *testing.T) {
+	left := parseTestDSL(t, `{"schema_version":"v1","flow_id":"agent-1","nodes":[{"id":"begin","type":"begin","name":"Begin","config":{"_ui":{"x":120,"y":170},"input_schema":{"query":"string"}}}],"edges":[]}`)
+	// 逻辑完全相同，仅 _ui 位置不同
+	right := parseTestDSL(t, `{"schema_version":"v1","flow_id":"agent-1","nodes":[{"id":"begin","type":"begin","name":"Begin","config":{"_ui":{"x":480,"y":260},"input_schema":{"query":"string"}}}],"edges":[]}`)
+	equal, err := EqualCanvasDSL(left, right)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if equal {
+		t.Fatal("expected position change to make canvas DSL not equal")
+	}
+}
+
 func parseTestDSL(t *testing.T, raw string) *DSL {
 	t.Helper()
 	var data json.RawMessage = []byte(raw)

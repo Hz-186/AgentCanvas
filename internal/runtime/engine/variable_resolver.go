@@ -27,11 +27,20 @@ func ResolveValue(path string, rc *RunContext) (any, bool) {
 	if len(segments) == 0 || rc == nil {
 		return nil, false
 	}
+	if segments[0] == "" {
+		return nil, false
+	}
 	var current any
 	switch segments[0] {
 	case "sys":
+		if rc.Input == nil {
+			return nil, false
+		}
 		current = rc.Input
 	default:
+		if rc.NodeOutputs == nil {
+			return nil, false
+		}
 		output, ok := rc.NodeOutputs[segments[0]]
 		if !ok {
 			return nil, false
@@ -39,6 +48,9 @@ func ResolveValue(path string, rc *RunContext) (any, bool) {
 		current = map[string]any(output)
 	}
 	for _, segment := range segments[1:] {
+		if segment == "" {
+			return nil, false
+		}
 		m, ok := current.(map[string]any)
 		if !ok {
 			return nil, false

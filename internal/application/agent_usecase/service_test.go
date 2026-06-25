@@ -17,8 +17,9 @@ func TestCreateFlowVersionReusesEquivalentLatestVersion(t *testing.T) {
 	}}
 	service := newFlowVersionTestService(versions)
 
+	// 位置和结构完全相同（仅 key 顺序不同），应复用已有版本
 	created, err := service.CreateFlowVersion(context.Background(), 1, 20, CreateFlowVersionRequest{
-		DSLJSON: rawJSON(`{"schema_version":"v1","flow_id":"agent-20","nodes":[{"id":"begin","type":"begin","name":"Begin","config":{"input_schema":{"query":"string"},"_ui":{"x":480,"y":260}}}],"edges":[]}`),
+		DSLJSON: rawJSON(`{"schema_version":"v1","flow_id":"agent-20","nodes":[{"id":"begin","type":"begin","name":"Begin","config":{"input_schema":{"query":"string"},"_ui":{"x":120,"y":170}}}],"edges":[]}`),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -28,6 +29,27 @@ func TestCreateFlowVersionReusesEquivalentLatestVersion(t *testing.T) {
 	}
 	if versions.createCalls != 0 || versions.nextCalls != 0 {
 		t.Fatalf("expected no new version, createCalls=%d nextCalls=%d", versions.createCalls, versions.nextCalls)
+	}
+}
+
+func TestCreateFlowVersionCreatesVersionForPositionChange(t *testing.T) {
+	versions := &fakeFlowVersionRepo{items: []*agent.FlowVersion{
+		{ID: 10, OwnerID: 1, AgentID: 20, VersionNo: 1, DSLJSON: rawJSON(`{"schema_version":"v1","flow_id":"agent-20","nodes":[{"id":"begin","type":"begin","name":"Begin","config":{"_ui":{"x":120,"y":170},"input_schema":{"query":"string"}}}],"edges":[]}`), IsDraft: true},
+	}}
+	service := newFlowVersionTestService(versions)
+
+	// 逻辑不变，仅节点位置改变，应创建新版本
+	created, err := service.CreateFlowVersion(context.Background(), 1, 20, CreateFlowVersionRequest{
+		DSLJSON: rawJSON(`{"schema_version":"v1","flow_id":"agent-20","nodes":[{"id":"begin","type":"begin","name":"Begin","config":{"input_schema":{"query":"string"},"_ui":{"x":480,"y":260}}}],"edges":[]}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.ID == 10 || created.VersionNo != 2 {
+		t.Fatalf("expected new v2 for position change, got %+v", created)
+	}
+	if versions.createCalls != 1 || versions.nextCalls != 1 {
+		t.Fatalf("expected one new version, createCalls=%d nextCalls=%d", versions.createCalls, versions.nextCalls)
 	}
 }
 

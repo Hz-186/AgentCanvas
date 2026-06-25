@@ -52,11 +52,15 @@ type ChatClient interface {
 }
 
 type OpenAICompatibleChatClient struct {
-	Client *http.Client
+	Client       *http.Client
+	StreamClient *http.Client
 }
 
 func NewOpenAICompatibleChatClient() *OpenAICompatibleChatClient {
-	return &OpenAICompatibleChatClient{Client: &http.Client{Timeout: 60 * time.Second}}
+	return &OpenAICompatibleChatClient{
+		Client:       &http.Client{Timeout: 60 * time.Second},
+		StreamClient: &http.Client{Timeout: 0},
+	}
 }
 
 func (c *OpenAICompatibleChatClient) Chat(ctx context.Context, cfg ChatProviderConfig, req ChatRequest) (*ChatResponse, error) {
@@ -103,7 +107,7 @@ func (c *OpenAICompatibleChatClient) StreamChat(ctx context.Context, cfg ChatPro
 		return err
 	}
 	setOpenAIHeaders(httpReq, cfg.APIKey)
-	resp, err := c.httpClient().Do(httpReq)
+	resp, err := c.streamClient().Do(httpReq)
 	if err != nil {
 		return err
 	}
@@ -114,6 +118,8 @@ func (c *OpenAICompatibleChatClient) StreamChat(ctx context.Context, cfg ChatPro
 	}
 
 	scanner := bufio.NewScanner(resp.Body)
+	buf := make([]byte, 0, 1024*1024)
+	scanner.Buffer(buf, 4*1024*1024)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" || strings.HasPrefix(line, ":") {
@@ -175,6 +181,13 @@ func (c *OpenAICompatibleChatClient) doJSON(ctx context.Context, endpoint, apiKe
 func (c *OpenAICompatibleChatClient) httpClient() *http.Client {
 	if c.Client != nil {
 		return c.Client
+	}
+	return http.DefaultClient
+}
+
+func (c *OpenAICompatibleChatClient) streamClient() *http.Client {
+	if c.StreamClient != nil {
+		return c.StreamClient
 	}
 	return http.DefaultClient
 }

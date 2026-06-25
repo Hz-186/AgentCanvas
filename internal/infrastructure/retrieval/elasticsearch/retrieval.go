@@ -398,9 +398,26 @@ func (s *Store) deleteByQuery(ctx context.Context, filters []map[string]any) err
 }
 
 func (s *Store) ensureVectorMapping(ctx context.Context) error {
-	res, err := s.client.Indices.PutMapping(
+	mapping := chunkVectorMapping
+	// 检查当前映射中是否已经存在 embedding_vector
+	res, err := s.client.Indices.GetMapping(
+		s.client.Indices.GetMapping.WithIndex(s.index),
+		s.client.Indices.GetMapping.WithContext(ctx),
+	)
+	if err == nil {
+		defer res.Body.Close()
+		if !res.IsError() {
+			if data, err := io.ReadAll(res.Body); err == nil {
+				if strings.Contains(string(data), `"embedding_vector"`) {
+					mapping = chunkVectorMappingWithoutVector
+				}
+			}
+		}
+	}
+
+	res, err = s.client.Indices.PutMapping(
 		[]string{s.index},
-		strings.NewReader(chunkVectorMapping),
+		strings.NewReader(mapping),
 		s.client.Indices.PutMapping.WithContext(ctx),
 	)
 	if err != nil {
