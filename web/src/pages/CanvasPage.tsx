@@ -46,6 +46,7 @@ interface CanvasNodeData extends Record<string, unknown> {
 }
 
 type CanvasNode = Node<CanvasNodeData>;
+type DebugRunMode = 'stream' | 'complete';
 
 const nodeMeta: Record<NodeType, { label: string; icon: React.ElementType; description: string }> = {
   begin: { label: 'Begin', icon: Sparkles, description: '读取运行输入' },
@@ -92,6 +93,10 @@ function AgentNode({ data, selected }: NodeProps<CanvasNode>) {
 }
 
 const nodeTypes = { agentNode: AgentNode };
+const debugRunModeOptions: Array<{ value: DebugRunMode; label: string }> = [
+  { value: 'stream', label: '流式运行' },
+  { value: 'complete', label: '完整运行' },
+];
 const DEFAULT_PALETTE_WIDTH = 184;
 const COLLAPSED_PALETTE_WIDTH = 58;
 const MIN_PALETTE_WIDTH = 172;
@@ -193,6 +198,12 @@ function nodeTitle(type: NodeType, nodes: CanvasNode[]) {
   return id;
 }
 
+function runOutputText(output: Record<string, unknown>) {
+  const content = output.content;
+  if (typeof content === 'string' && content.trim()) return content;
+  return prettyJson(output);
+}
+
 export function CanvasPage() {
   const { id } = useParams();
   const agentId = Number(id);
@@ -210,6 +221,8 @@ export function CanvasPage() {
   const [sidePanelOpen, setSidePanelOpen] = useState(true);
   const [pendingConnectId, setPendingConnectId] = useState<string>('');
   const [runInput, setRunInput] = useState('{\n  "query": "请总结知识库内容"\n}');
+  const [debugRunMode, setDebugRunMode] = useState<DebugRunMode>('stream');
+  const [runningDebugMode, setRunningDebugMode] = useState<DebugRunMode | null>(null);
   const [events, setEvents] = useState<RuntimeEvent[]>([]);
   const [runOutput, setRunOutput] = useState<Record<string, unknown> | null>(null);
   const [memoryLogs, setMemoryLogs] = useState<MemoryWriteLog[]>([]);
@@ -448,13 +461,29 @@ export function CanvasPage() {
       if (!target) return;
     }
     const controller = new AbortController();
+    const selectedRunMode = debugRunMode;
     runAbortRef.current = controller;
+    setRunningDebugMode(selectedRunMode);
     setEvents([]);
     setRunOutput(null);
     setMemoryLogs([]);
     setToolInvocations([]);
     setError('');
     try {
+      if (selectedRunMode === 'complete') {
+        const resp = await agentApi.run(agentId, { flow_version_id: target.id, input });
+        if (controller.signal.aborted) return;
+        setRunOutput(resp.output);
+        void Promise.all([
+          agentApi.listMemoryWriteLogs(resp.run.id),
+          agentApi.listToolInvocations(resp.run.id),
+        ]).then(([memoryResp, toolResp]) => {
+          if (controller.signal.aborted) return;
+          setMemoryLogs(memoryResp);
+          setToolInvocations(toolResp);
+        }).catch(() => undefined);
+        return;
+      }
       await agentApi.streamRun(agentId, { flow_version_id: target.id, input }, {
         signal: controller.signal,
         onMessage: (msg) => {
@@ -487,7 +516,10 @@ export function CanvasPage() {
     } catch (err) {
       if (!controller.signal.aborted) setError(friendlyErrorMessage(err, '调试失败'));
     } finally {
-      if (runAbortRef.current === controller) runAbortRef.current = null;
+      if (runAbortRef.current === controller) {
+        runAbortRef.current = null;
+        if (!controller.signal.aborted) setRunningDebugMode(null);
+      }
     }
   }
 
@@ -708,17 +740,21 @@ export function CanvasPage() {
           ) : null}
 
           {mode === 'debug' && (
-            <Panel title="调试台" eyebrow="运行事件">
+            <Panel title="调试台" eyebrow={debugRunMode === 'complete' ? '完整结果' : '运行事件'}>
               <Field label="运行输入 JSON">
                 <TextArea value={runInput} onChange={(event) => setRunInput(event.target.value)} />
               </Field>
-              <Button tone="primary" onClick={() => void runDebug()}>
-                <Play size={16} />
-                运行
-              </Button>
+              <div className="debug-run-controls">
+                <Segmented value={debugRunMode} onChange={setDebugRunMode} options={debugRunModeOptions} />
+                <Button tone="primary" disabled={runningDebugMode !== null} onClick={() => void runDebug()}>
+                  <Play size={16} />
+                  {runningDebugMode ? '运行中' : '运行'}
+                </Button>
+              </div>
+              <p className="muted">{debugRunMode === 'complete' ? '完整运行会等待整套流程结束，只显示最终返回结果。' : '流式运行会实时展示每个运行事件和 LLM delta。'}</p>
               {error ? <p className="error-text">{error}</p> : null}
               <div className="stack">
-                {events.map((event, index) => (
+                {debugRunMode === 'stream' ? events.map((event, index) => (
                   <div className="card" key={`${event.type}-${index}`}>
                     <div className="card-title">
                       <h3 className="truncate">{event.type}</h3>
@@ -726,8 +762,16 @@ export function CanvasPage() {
                     </div>
                     <pre className="code-box">{prettyJson(event.payload ?? {})}</pre>
                   </div>
-                ))}
-                {runOutput ? <pre className="code-box">{prettyJson(runOutput)}</pre> : null}
+                )) : null}
+                {runOutput ? (
+                  <div className="card debug-result-card">
+                    <div className="card-title">
+                      <h3>{debugRunMode === 'complete' ? '完整运行结果' : '最终输出'}</h3>
+                      <StatusBadge tone="good">output</StatusBadge>
+                    </div>
+                    <pre className="code-box debug-result-content">{runOutputText(runOutput)}</pre>
+                  </div>
+                ) : null}
                 {memoryLogs.length > 0 ? (
                   <div className="card">
                     <div className="card-title"><h3>记忆写入</h3><StatusBadge tone="info">{memoryLogs.length}</StatusBadge></div>
