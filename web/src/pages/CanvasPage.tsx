@@ -115,6 +115,36 @@ function normalizeDSL(raw: unknown): FlowDSL | null {
   return maybe as FlowDSL;
 }
 
+function stableRuntimeValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stableRuntimeValue);
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, child]) => [key, stableRuntimeValue(child)]),
+  );
+}
+
+function runtimeConfig(config: unknown): unknown {
+  if (!config || typeof config !== 'object' || Array.isArray(config)) return stableRuntimeValue(config ?? {});
+  const rest = { ...(config as Record<string, unknown>) };
+  delete rest._ui;
+  return stableRuntimeValue(rest);
+}
+
+function runtimeDSLKey(raw: unknown): string {
+  const parsed = normalizeDSL(raw);
+  if (!parsed) return '';
+  return JSON.stringify({
+    schema_version: parsed.schema_version,
+    flow_id: parsed.flow_id,
+    nodes: [...parsed.nodes]
+      .map((node) => ({ ...node, config: runtimeConfig(node.config) }))
+      .sort((left, right) => `${left.id}:${left.type}:${left.name}`.localeCompare(`${right.id}:${right.type}:${right.name}`)),
+    edges: [...parsed.edges].sort((left, right) => `${left.from}:${left.to}`.localeCompare(`${right.from}:${right.to}`)),
+  });
+}
+
 function defaultNodes(): CanvasNode[] {
   return [
     {
@@ -237,6 +267,9 @@ export function CanvasPage() {
 
   const selected = useMemo(() => nodes.find((node) => node.id === selectedId) ?? null, [nodes, selectedId]);
   const dsl = useMemo(() => toDSL(agentId, nodes, edges), [agentId, nodes, edges]);
+  const currentRuntimeKey = useMemo(() => runtimeDSLKey(dsl), [dsl]);
+  const savedRuntimeKey = useMemo(() => runtimeDSLKey(version?.dsl_json), [version]);
+  const hasRuntimeChanges = !version || currentRuntimeKey !== savedRuntimeKey;
 
   useEffect(() => {
     let cancelled = false;
@@ -420,6 +453,11 @@ export function CanvasPage() {
       setError(localError);
       return null;
     }
+    if (version && !hasRuntimeChanges) {
+      setMessage(`Flow v${version.version_no} 无实质变化，无需保存`);
+      setError('');
+      return version;
+    }
     try {
       const saved = await agentApi.createFlowVersion(agentId, { dsl_json: dsl, description: 'Saved from visual canvas' });
       setVersion(saved);
@@ -434,7 +472,7 @@ export function CanvasPage() {
 
   async function publishFlow() {
     try {
-      const target = version ?? await saveFlow();
+      const target = hasRuntimeChanges ? await saveFlow() : version;
       if (!target) return;
       const published = await agentApi.publishFlowVersion(target.id);
       setVersion(published);
@@ -456,7 +494,7 @@ export function CanvasPage() {
     }
     // 未保存草稿时先保存，确保用当前画布内容运行，而不是传 flow_version_id=0。
     let target = version;
-    if (!target) {
+    if (!target || hasRuntimeChanges) {
       target = await saveFlow();
       if (!target) return;
     }

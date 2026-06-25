@@ -133,6 +133,11 @@ func (s *Service) CreateFlowVersion(ctx context.Context, ownerID, agentID int64,
 	if err := s.validator.Validate(dsl); err != nil {
 		return nil, err
 	}
+	if existing, err := s.findEquivalentFlowVersion(ctx, ownerID, agentID, dsl); err != nil {
+		return nil, err
+	} else if existing != nil {
+		return existing, nil
+	}
 	versionNo, err := s.versions.NextVersionNo(ctx, ownerID, agentID)
 	if err != nil {
 		return nil, err
@@ -142,6 +147,38 @@ func (s *Service) CreateFlowVersion(ctx context.Context, ownerID, agentID int64,
 		return nil, err
 	}
 	return item, nil
+}
+
+func (s *Service) findEquivalentFlowVersion(ctx context.Context, ownerID, agentID int64, dsl *flow.DSL) (*agent.FlowVersion, error) {
+	candidates := make([]*agent.FlowVersion, 0, 2)
+	latest, err := s.versions.FindLatestByAgent(ctx, ownerID, agentID)
+	if err != nil && err != gorm.ErrRecordNotFound {
+		return nil, err
+	}
+	if latest != nil {
+		candidates = append(candidates, latest)
+	}
+	current, err := s.versions.FindCurrentByAgent(ctx, ownerID, agentID)
+	if err != nil && err != gorm.ErrRecordNotFound {
+		return nil, err
+	}
+	if current != nil && (latest == nil || current.ID != latest.ID) {
+		candidates = append(candidates, current)
+	}
+	for _, candidate := range candidates {
+		candidateDSL, err := flow.ParseDSL(candidate.DSLJSON)
+		if err != nil {
+			return nil, fmt.Errorf("%w: invalid saved dsl_json", agenterrors.ErrInvalidInput)
+		}
+		equal, err := flow.EqualRuntimeDSL(candidateDSL, dsl)
+		if err != nil {
+			return nil, fmt.Errorf("%w: invalid saved dsl_json", agenterrors.ErrInvalidInput)
+		}
+		if equal {
+			return candidate, nil
+		}
+	}
+	return nil, nil
 }
 
 func (s *Service) ListFlowVersions(ctx context.Context, ownerID, agentID int64) ([]agent.FlowVersion, error) {

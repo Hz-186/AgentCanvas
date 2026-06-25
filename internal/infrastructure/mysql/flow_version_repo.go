@@ -46,6 +46,15 @@ func (r *FlowVersionRepository) FindCurrentByAgent(ctx context.Context, ownerID,
 	return &item, nil
 }
 
+func (r *FlowVersionRepository) FindLatestByAgent(ctx context.Context, ownerID, agentID int64) (*agent.FlowVersion, error) {
+	var item agent.FlowVersion
+	err := r.db.WithContext(ctx).Where("owner_id = ? AND agent_id = ?", ownerID, agentID).Order("version_no DESC").First(&item).Error
+	if err != nil {
+		return nil, err
+	}
+	return &item, nil
+}
+
 func (r *FlowVersionRepository) NextVersionNo(ctx context.Context, ownerID, agentID int64) (int, error) {
 	var maxVersion int
 	err := r.db.WithContext(ctx).Model(&agent.FlowVersion{}).Where("owner_id = ? AND agent_id = ?", ownerID, agentID).Select("COALESCE(MAX(version_no), 0)").Scan(&maxVersion).Error

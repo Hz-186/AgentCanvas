@@ -15,6 +15,7 @@ type FlowVersionRepository interface {
 	ListByAgent(ctx context.Context, ownerID, agentID int64) ([]FlowVersion, error)
 	FindByID(ctx context.Context, ownerID, id int64) (*FlowVersion, error)
 	FindCurrentByAgent(ctx context.Context, ownerID, agentID int64) (*FlowVersion, error)
+	FindLatestByAgent(ctx context.Context, ownerID, agentID int64) (*FlowVersion, error)
 	NextVersionNo(ctx context.Context, ownerID, agentID int64) (int, error)
 	Publish(ctx context.Context, ownerID, agentID, versionID int64) error
 }
