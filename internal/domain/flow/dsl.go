@@ -135,7 +135,12 @@ func canvasDSLJSON(dsl *DSL) ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
-		nodes = append(nodes, runtimeNode{ID: node.ID, Type: node.Type, Name: node.Name, Config: config})
+		nodes = append(nodes, runtimeNode{
+			ID:     node.ID,
+			Type:   node.Type,
+			Name:   node.Name,
+			Config: config,
+		})
 	}
 	sort.Slice(nodes, func(i, j int) bool {
 		if nodes[i].ID != nodes[j].ID {
@@ -156,10 +161,15 @@ func canvasDSLJSON(dsl *DSL) ([]byte, error) {
 		}
 		return edges[i].To < edges[j].To
 	})
-	return json.Marshal(runtimeDSL{SchemaVersion: dsl.SchemaVersion, FlowID: dsl.FlowID, Nodes: nodes, Edges: edges})
+	return json.Marshal(runtimeDSL{
+		SchemaVersion: dsl.SchemaVersion,
+		FlowID:        dsl.FlowID,
+		Nodes:         nodes,
+		Edges:         edges,
+	})
 }
 
-// canonicalConfigJSON 对 config 做规范化序列化（稳定 key 顺序），但保留 _ui 字段。
+// canonicalConfigJSON 对 config 做规范化序列化（稳定 key 顺序）
 func canonicalConfigJSON(data json.RawMessage) (json.RawMessage, error) {
 	if len(data) == 0 {
 		return json.RawMessage("null"), nil

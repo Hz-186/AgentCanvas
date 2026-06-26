@@ -232,7 +232,11 @@ func (s *Service) PublishFlowVersion(ctx context.Context, ownerID, id int64) (*a
 	return s.GetFlowVersion(ctx, ownerID, id)
 }
 
-func (s *Service) RunAgent(ctx context.Context, ownerID, agentID int64, req RunAgentRequest) (*agent.Run, engine.NodeOutput, error) {
+func (s *Service) RunAgent(
+	ctx context.Context,
+	ownerID, agentID int64,
+	req RunAgentRequest,
+) (*agent.Run, engine.NodeOutput, error) {
 	item, output, err := s.run(ctx, ownerID, agentID, req, nil)
 	return item, output, err
 }
