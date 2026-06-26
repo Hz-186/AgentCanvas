@@ -80,7 +80,13 @@ func (s *Service) CreateAgent(ctx context.Context, ownerID int64, req CreateAgen
 	if ownerID <= 0 || name == "" {
 		return nil, agenterrors.ErrInvalidInput
 	}
-	item := &agent.Agent{OwnerID: ownerID, Name: name, Description: strings.TrimSpace(req.Description), AvatarURL: strings.TrimSpace(req.AvatarURL), Status: agent.StatusActive}
+	item := &agent.Agent{
+		OwnerID:     ownerID,
+		Name:        name,
+		Description: strings.TrimSpace(req.Description),
+		AvatarURL:   strings.TrimSpace(req.AvatarURL),
+		Status:      agent.StatusActive,
+	}
 	if err := s.agents.Create(ctx, item); err != nil {
 		return nil, err
 	}
@@ -142,7 +148,14 @@ func (s *Service) CreateFlowVersion(ctx context.Context, ownerID, agentID int64,
 	if err != nil {
 		return nil, err
 	}
-	item := &agent.FlowVersion{OwnerID: ownerID, AgentID: agentID, VersionNo: versionNo, DSLJSON: req.DSLJSON, Description: strings.TrimSpace(req.Description), IsDraft: true}
+	item := &agent.FlowVersion{
+		OwnerID:     ownerID,
+		AgentID:     agentID,
+		VersionNo:   versionNo,
+		DSLJSON:     req.DSLJSON,
+		Description: strings.TrimSpace(req.Description),
+		IsDraft:     true,
+	}
 	if err := s.versions.Create(ctx, item); err != nil {
 		return nil, err
 	}
@@ -224,7 +237,12 @@ func (s *Service) RunAgent(ctx context.Context, ownerID, agentID int64, req RunA
 	return item, output, err
 }
 
-func (s *Service) StreamRunAgent(ctx context.Context, ownerID, agentID int64, req RunAgentRequest, emit func(runtimeevent.Event) error) (*agent.Run, engine.NodeOutput, error) {
+func (s *Service) StreamRunAgent(
+	ctx context.Context,
+	ownerID, agentID int64,
+	req RunAgentRequest,
+	emit func(runtimeevent.Event) error,
+) (*agent.Run, engine.NodeOutput, error) {
 	return s.run(ctx, ownerID, agentID, req, emit)
 }
 
@@ -297,14 +315,30 @@ func (s *Service) LoadChatProviderConfig(ctx context.Context, ownerID, providerI
 	if selectedModel == "" {
 		return nil, fmt.Errorf("%w: model is required", agenterrors.ErrInvalidInput)
 	}
-	return &runtimenode.LoadedProvider{ProviderID: provider.ID, Model: selectedModel, Config: llm.ChatProviderConfig{ProviderType: provider.ProviderType, BaseURL: provider.BaseURL, APIKey: apiKey}}, nil
+	return &runtimenode.LoadedProvider{
+		ProviderID: provider.ID,
+		Model:      selectedModel,
+		Config: llm.ChatProviderConfig{
+			ProviderType: provider.ProviderType,
+			BaseURL:      provider.BaseURL,
+			APIKey:       apiKey,
+		},
+	}, nil
 }
 
 func (s *Service) WriteAssistantMessage(ctx context.Context, ownerID int64, conversationID *int64, runID int64, content string, tokenCount int) (int64, error) {
 	if conversationID == nil || *conversationID <= 0 {
 		return 0, nil
 	}
-	message := &conversation.Message{OwnerID: ownerID, ConversationID: *conversationID, Role: conversation.RoleAssistant, Content: content, ContentType: conversation.ContentTypeText, RunID: &runID, TokenCount: tokenCount}
+	message := &conversation.Message{
+		OwnerID:        ownerID,
+		ConversationID: *conversationID,
+		Role:           conversation.RoleAssistant,
+		Content:        content,
+		ContentType:    conversation.ContentTypeText,
+		RunID:          &runID,
+		TokenCount:     tokenCount,
+	}
 	if err := s.messages.Create(ctx, message); err != nil {
 		return 0, err
 	}
@@ -331,11 +365,32 @@ func (s *Service) run(ctx context.Context, ownerID, agentID int64, req RunAgentR
 	}
 	inputJSON, _ := json.Marshal(req.Input)
 	now := time.Now().UTC()
-	run := &agent.Run{OwnerID: ownerID, AgentID: agentID, FlowVersionID: version.ID, ConversationID: req.ConversationID, Status: agent.RunStatusRunning, InputJSON: inputJSON, StartedAt: now}
+	run := &agent.Run{
+		OwnerID:        ownerID,
+		AgentID:        agentID,
+		FlowVersionID:  version.ID,
+		ConversationID: req.ConversationID,
+		Status:         agent.RunStatusRunning,
+		InputJSON:      inputJSON,
+		StartedAt:      now,
+	}
 	if err := s.runs.Create(ctx, run); err != nil {
 		return nil, nil, err
 	}
-	rc := &engine.RunContext{OwnerID: ownerID, AgentID: agentID, FlowVersionID: version.ID, RunID: run.ID, ConversationID: req.ConversationID, Input: req.Input, Events: &eventEmitter{repo: s.events, ownerID: ownerID, runID: run.ID, stream: stream}}
+	rc := &engine.RunContext{
+		OwnerID:        ownerID,
+		AgentID:        agentID,
+		FlowVersionID:  version.ID,
+		RunID:          run.ID,
+		ConversationID: req.ConversationID,
+		Input:          req.Input,
+		Events: &eventEmitter{
+			repo:    s.events,
+			ownerID: ownerID,
+			runID:   run.ID,
+			stream:  stream,
+		},
+	}
 	output, execErr := s.executor.Execute(ctx, rc, dsl)
 	finished := time.Now().UTC()
 	run.FinishedAt = &finished
@@ -379,7 +434,19 @@ func (s *Service) writeNodeLogs(ctx context.Context, ownerID, runID int64, dsl *
 		inputJSON, _ := json.Marshal(rc.NodeInputs[spec.ID])
 		outputJSON, _ := json.Marshal(rc.NodeOutputs[spec.ID])
 		now := time.Now().UTC()
-		log := &agent.NodeLog{OwnerID: ownerID, RunID: runID, NodeID: spec.ID, NodeType: spec.Type, Status: agent.NodeLogStatusSucceeded, InputJSON: inputJSON, OutputJSON: outputJSON, LatencyMS: rc.NodeLatencies[spec.ID], StartedAt: now, FinishedAt: &now, CreatedAt: now}
+		log := &agent.NodeLog{
+			OwnerID:    ownerID,
+			RunID:      runID,
+			NodeID:     spec.ID,
+			NodeType:   spec.Type,
+			Status:     agent.NodeLogStatusSucceeded,
+			InputJSON:  inputJSON,
+			OutputJSON: outputJSON,
+			LatencyMS:  rc.NodeLatencies[spec.ID],
+			StartedAt:  now,
+			FinishedAt: &now,
+			CreatedAt:  now,
+		}
 		if _, ok := rc.NodeOutputs[spec.ID]; !ok {
 			log.Status = agent.NodeLogStatusFailed
 			log.ErrorMessage = rc.NodeErrors[spec.ID]
@@ -406,7 +473,15 @@ func (e *eventEmitter) Emit(ctx context.Context, ev runtimeevent.Event) error {
 		ev.CreatedAt = time.Now().UTC()
 	}
 	payload, _ := json.Marshal(ev.Payload)
-	if err := e.repo.Create(ctx, &agent.RunEvent{OwnerID: e.ownerID, RunID: ev.RunID, EventType: ev.Type, NodeID: ev.NodeID, NodeType: ev.NodeType, PayloadJSON: payload, CreatedAt: ev.CreatedAt}); err != nil {
+	if err := e.repo.Create(ctx, &agent.RunEvent{
+		OwnerID:     e.ownerID,
+		RunID:       ev.RunID,
+		EventType:   ev.Type,
+		NodeID:      ev.NodeID,
+		NodeType:    ev.NodeType,
+		PayloadJSON: payload,
+		CreatedAt:   ev.CreatedAt,
+	}); err != nil {
 		return err
 	}
 	if e.stream != nil {
