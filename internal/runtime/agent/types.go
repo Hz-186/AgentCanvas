@@ -28,8 +28,10 @@ const (
 
 type RunRequest struct {
 	OwnerID            int64
+	AgentID            int64
 	RunID              int64
 	NodeID             string
+	CallDepth          int
 	Provider           llm.ChatProviderConfig
 	Model              string
 	SystemPrompt       string

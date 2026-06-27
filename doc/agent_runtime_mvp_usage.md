@@ -15,6 +15,8 @@
 - `internal/runtime/toolruntime` 统一工具接口。
 - 已有 HTTP Tool 作为 Agent 可调用工具。
 - 配置 `knowledge_ids` 后自动暴露 `search_knowledge` 工具。
+- 配置 `call_agent_ids` 后自动暴露 `call_agent` 工具。
+- `agent_call` 节点可在确定性 Workflow 中调用另一个 Agent。
 - `agent_started / agent_step / agent_finished / agent_failed` 运行事件。
 - Canvas 中新增 `Agent Loop` 节点配置。
 
@@ -37,7 +39,8 @@
 
 6. 在“可用工具”中选择已经创建的 HTTP Tool。
 7. 在“知识库工具”中选择知识库后，Agent 会看到内置 `search_knowledge` 工具。
-8. 根据需要设置：
+8. 在“可调用 Agent”中选择子 Agent 后，Agent 会看到内置 `call_agent` 工具。
+9. 根据需要设置：
    - `max_iterations`：默认 8。
    - `max_tool_calls`：默认 16。
    - `max_execution_time_ms`：默认 120000。
@@ -75,6 +78,8 @@
         "knowledge_ids": [10],
         "knowledge_top_k": 5,
         "knowledge_mode": "keyword",
+        "call_agent_ids": [2, 3],
+        "max_agent_call_depth": 3,
         "max_iterations": 8,
         "max_tool_calls": 16,
         "max_execution_time_ms": 120000,
@@ -104,6 +109,43 @@
   ]
 }
 ```
+
+## 多 Agent 调用
+
+确定性调用可以直接使用 `agent_call` 节点：
+
+```json
+{
+  "id": "call_writer",
+  "type": "agent_call",
+  "name": "Call Writer",
+  "config": {
+    "agent_id": 2,
+    "flow_version_id": 0,
+    "input": {
+      "query": "{{sys.query}}"
+    },
+    "max_depth": 3
+  }
+}
+```
+
+自治调用可以在 `agent_loop` 里配置：
+
+```json
+{
+  "call_agent_ids": [2],
+  "max_agent_call_depth": 3
+}
+```
+
+这样模型会看到 `call_agent` 工具，可把子任务交给允许列表里的 worker Agent。子运行会写入：
+
+- `parent_run_id`
+- `caller_node_id`
+- `call_depth`
+
+这些字段用于追踪 Supervisor-Worker 运行关系，并防止无限递归。
 
 ## 调试观察
 
@@ -136,9 +178,9 @@
 
 - 暂不支持任意带环 Canvas。
 - 暂不支持沙盒代码执行。
-- 暂不支持 `agent_call` 子 Agent 调用。
+- 已支持 `agent_call` 节点和 `call_agent` 工具的初版 Supervisor-Worker 调用。
 - 暂未持久化独立 `agent_run_steps` 表，当前通过 `agent_run_events` 保存 step 事件。
-- 当前 Runtime Tool 已接入已有 HTTP Tool 和知识库检索；Memory / Sandbox / Agent Call 可按同一接口继续扩展。
+- 当前 Runtime Tool 已接入已有 HTTP Tool、知识库检索和子 Agent 调用；Memory / Sandbox 可按同一接口继续扩展。
 
 ## 验收建议
 

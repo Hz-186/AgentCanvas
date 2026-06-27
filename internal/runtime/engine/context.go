@@ -15,6 +15,8 @@ type RunContext struct {
 	AgentID         int64                 `json:"agent_id" tag:"parent agent ID"`
 	FlowVersionID   int64                 `json:"flow_version_id" tag:"DSL version ID"`
 	RunID           int64                 `json:"run_id" tag:"unique run ID"`
+	ParentRunID     *int64                `json:"parent_run_id" tag:"optional parent run ID"`
+	CallDepth       int                   `json:"call_depth" tag:"nested agent call depth"`
 	ConversationID  *int64                `json:"conversation_id" tag:"optional conversation ID"`
 	Input           map[string]any        `json:"input" tag:"original user input"`
 	Variables       map[string]any        `json:"variables" tag:"user-defined global vars"`

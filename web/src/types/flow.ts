@@ -6,6 +6,7 @@ export type NodeType =
   | 'prompt'
   | 'llm'
   | 'agent_loop'
+  | 'agent_call'
   | 'message'
   | 'memory_read'
   | 'memory_write'
@@ -45,6 +46,8 @@ export interface AgentLoopConfig {
   knowledge_ids?: number[];
   knowledge_top_k?: number;
   knowledge_mode?: 'keyword' | 'vector' | 'hybrid';
+  call_agent_ids?: number[];
+  max_agent_call_depth?: number;
   max_iterations?: number;
   max_tool_calls?: number;
   max_execution_time_ms?: number;
@@ -56,6 +59,13 @@ export interface AgentLoopConfig {
 export interface MessageConfig {
   content: string;
   with_citation?: boolean;
+}
+
+export interface AgentCallConfig {
+  agent_id: number;
+  flow_version_id?: number;
+  input?: Record<string, unknown>;
+  max_depth?: number;
 }
 
 export interface MemoryReadConfig {
@@ -102,6 +112,7 @@ export type NodeConfig =
   | PromptConfig
   | LLMConfig
   | AgentLoopConfig
+  | AgentCallConfig
   | MessageConfig
   | MemoryReadConfig
   | MemoryWriteConfig

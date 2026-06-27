@@ -42,6 +42,7 @@ type Deps struct {
 	ToolInvocations tool.InvocationRepository
 	ToolCalling     llm.ToolCallingClient
 	ToolRegistry    toolruntime.Registry
+	AgentCaller     toolruntime.AgentCaller
 }
 
 func DefaultNodes(deps Deps) []engine.Node {
@@ -60,7 +61,8 @@ func DefaultNodes(deps Deps) []engine.Node {
 		RetrievalNode{Retriever: deps.Retriever},
 		PromptNode{},
 		LLMNode{Client: deps.LLM, Providers: deps.Providers, History: deps.MessageHistory},
-		AgentLoopNode{LLM: toolCalling, Providers: deps.Providers, Tools: toolRegistry, Retriever: deps.Retriever},
+		AgentLoopNode{LLM: toolCalling, Providers: deps.Providers, Tools: toolRegistry, Retriever: deps.Retriever, AgentCaller: deps.AgentCaller},
+		AgentCallNode{Caller: deps.AgentCaller},
 		MessageNode{Writer: deps.Messages},
 		MemoryReadNode{Memories: deps.Memories},
 		MemoryWriteNode{Memories: deps.Memories, Logs: deps.MemoryWriteLogs},

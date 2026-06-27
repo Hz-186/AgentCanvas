@@ -148,9 +148,11 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 			result.ToolCalls++
 			toolStarted := r.now()
 			toolResult, toolErr := toolImpl.Execute(ctx, toolruntime.ToolRunContext{
-				OwnerID: req.OwnerID,
-				RunID:   req.RunID,
-				NodeID:  req.NodeID,
+				OwnerID:   req.OwnerID,
+				AgentID:   req.AgentID,
+				RunID:     req.RunID,
+				NodeID:    req.NodeID,
+				CallDepth: req.CallDepth,
 			}, call.Arguments)
 			toolLatencyMS := int(r.now().Sub(toolStarted).Milliseconds())
 			if toolResult == nil {

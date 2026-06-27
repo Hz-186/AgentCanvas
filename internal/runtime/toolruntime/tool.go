@@ -6,9 +6,11 @@ import (
 )
 
 type ToolRunContext struct {
-	OwnerID int64
-	RunID   int64
-	NodeID  string
+	OwnerID   int64
+	AgentID   int64
+	RunID     int64
+	NodeID    string
+	CallDepth int
 }
 
 type ToolResult struct {
@@ -27,6 +29,32 @@ type RuntimeTool interface {
 
 type Registry interface {
 	LoadForAgent(ctx context.Context, ownerID int64, toolIDs []int64) ([]RuntimeTool, error)
+}
+
+type AgentCallRequest struct {
+	OwnerID       int64          `json:"owner_id"`
+	ParentRunID   int64          `json:"parent_run_id"`
+	CallerAgentID int64          `json:"caller_agent_id"`
+	CallerNodeID  string         `json:"caller_node_id"`
+	AgentID       int64          `json:"agent_id"`
+	FlowVersionID int64          `json:"flow_version_id"`
+	Input         map[string]any `json:"input"`
+	CallDepth     int            `json:"call_depth"`
+	MaxDepth      int            `json:"max_depth"`
+}
+
+type AgentCallResult struct {
+	RunID         int64          `json:"run_id"`
+	AgentID       int64          `json:"agent_id"`
+	FlowVersionID int64          `json:"flow_version_id"`
+	Status        string         `json:"status"`
+	Output        map[string]any `json:"output"`
+	Error         string         `json:"error,omitempty"`
+	LatencyMS     int            `json:"latency_ms"`
+}
+
+type AgentCaller interface {
+	CallAgent(ctx context.Context, req AgentCallRequest) (*AgentCallResult, error)
 }
 
 func ResultFromValue(value any) (*ToolResult, error) {

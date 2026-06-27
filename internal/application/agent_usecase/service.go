@@ -19,6 +19,7 @@ import (
 	"agentcanvas/internal/runtime/engine"
 	runtimeevent "agentcanvas/internal/runtime/event"
 	runtimenode "agentcanvas/internal/runtime/node"
+	"agentcanvas/internal/runtime/toolruntime"
 
 	agenterrors "agentcanvas/internal/pkg/errors"
 
@@ -46,9 +47,15 @@ type Service struct {
 
 func NewService(agents agent.Repository, versions agent.FlowVersionRepository, runs agent.RunRepository, events agent.RunEventRepository, nodeLogs agent.NodeLogRepository, memories memory.Repository, memoryLogs memory.WriteLogRepository, tools tool.DefinitionRepository, toolInvocations tool.InvocationRepository, providers providerdomain.Repository, messages conversation.MessageRepository, retriever retrieval.Retriever, llmClient llm.ChatClient, secrets *cryptoinfra.SecretBox) *Service {
 	s := &Service{agents: agents, versions: versions, runs: runs, events: events, nodeLogs: nodeLogs, memories: memories, memoryLogs: memoryLogs, tools: tools, toolInvocations: toolInvocations, providers: providers, messages: messages, retriever: retriever, llm: llmClient, secrets: secrets}
-	s.executor = engine.NewExecutor(runtimenode.DefaultNodes(runtimenode.Deps{Retriever: retriever, LLM: llmClient, Providers: s, Messages: s, MessageHistory: messages, Memories: memories, MemoryWriteLogs: memoryLogs, Tools: tools, ToolInvocations: toolInvocations}))
+	s.executor = engine.NewExecutor(runtimenode.DefaultNodes(runtimenode.Deps{Retriever: retriever, LLM: llmClient, Providers: s, Messages: s, MessageHistory: messages, Memories: memories, MemoryWriteLogs: memoryLogs, Tools: tools, ToolInvocations: toolInvocations, AgentCaller: s}))
 	s.validator = flow.NewValidator(s.executor)
 	return s
+}
+
+type runOptions struct {
+	ParentRunID  *int64
+	CallerNodeID string
+	CallDepth    int
 }
 
 type CreateAgentRequest struct {
@@ -237,7 +244,7 @@ func (s *Service) RunAgent(
 	ownerID, agentID int64,
 	req RunAgentRequest,
 ) (*agent.Run, engine.NodeOutput, error) {
-	item, output, err := s.run(ctx, ownerID, agentID, req, nil)
+	item, output, err := s.run(ctx, ownerID, agentID, req, nil, runOptions{})
 	return item, output, err
 }
 
@@ -247,7 +254,45 @@ func (s *Service) StreamRunAgent(
 	req RunAgentRequest,
 	emit func(runtimeevent.Event) error,
 ) (*agent.Run, engine.NodeOutput, error) {
-	return s.run(ctx, ownerID, agentID, req, emit)
+	return s.run(ctx, ownerID, agentID, req, emit, runOptions{})
+}
+
+func (s *Service) CallAgent(ctx context.Context, req toolruntime.AgentCallRequest) (*toolruntime.AgentCallResult, error) {
+	maxDepth := req.MaxDepth
+	if maxDepth <= 0 {
+		maxDepth = 3
+	}
+	if req.CallDepth >= maxDepth {
+		return nil, fmt.Errorf("%w: max agent call depth exceeded", agenterrors.ErrForbidden)
+	}
+	if req.OwnerID <= 0 || req.AgentID <= 0 || req.Input == nil {
+		return nil, agenterrors.ErrInvalidInput
+	}
+	var parentRunID *int64
+	if req.ParentRunID > 0 {
+		parentRunID = &req.ParentRunID
+	}
+	run, output, err := s.run(ctx, req.OwnerID, req.AgentID, RunAgentRequest{
+		FlowVersionID: req.FlowVersionID,
+		Input:         req.Input,
+	}, nil, runOptions{
+		ParentRunID:  parentRunID,
+		CallerNodeID: req.CallerNodeID,
+		CallDepth:    req.CallDepth + 1,
+	})
+	if run == nil {
+		return nil, err
+	}
+	result := &toolruntime.AgentCallResult{
+		RunID:         run.ID,
+		AgentID:       run.AgentID,
+		FlowVersionID: run.FlowVersionID,
+		Status:        run.Status,
+		Output:        map[string]any(output),
+		Error:         run.ErrorMessage,
+		LatencyMS:     run.LatencyMS,
+	}
+	return result, err
 }
 
 func (s *Service) GetRun(ctx context.Context, ownerID, id int64) (*agent.Run, error) {
@@ -349,7 +394,7 @@ func (s *Service) WriteAssistantMessage(ctx context.Context, ownerID int64, conv
 	return message.ID, nil
 }
 
-func (s *Service) run(ctx context.Context, ownerID, agentID int64, req RunAgentRequest, stream func(runtimeevent.Event) error) (*agent.Run, engine.NodeOutput, error) {
+func (s *Service) run(ctx context.Context, ownerID, agentID int64, req RunAgentRequest, stream func(runtimeevent.Event) error, opts runOptions) (*agent.Run, engine.NodeOutput, error) {
 	if req.Input == nil {
 		return nil, nil, agenterrors.ErrInvalidInput
 	}
@@ -374,6 +419,9 @@ func (s *Service) run(ctx context.Context, ownerID, agentID int64, req RunAgentR
 		AgentID:        agentID,
 		FlowVersionID:  version.ID,
 		ConversationID: req.ConversationID,
+		ParentRunID:    opts.ParentRunID,
+		CallerNodeID:   opts.CallerNodeID,
+		CallDepth:      opts.CallDepth,
 		Status:         agent.RunStatusRunning,
 		InputJSON:      inputJSON,
 		StartedAt:      now,
@@ -386,6 +434,8 @@ func (s *Service) run(ctx context.Context, ownerID, agentID int64, req RunAgentR
 		AgentID:        agentID,
 		FlowVersionID:  version.ID,
 		RunID:          run.ID,
+		ParentRunID:    opts.ParentRunID,
+		CallDepth:      opts.CallDepth,
 		ConversationID: req.ConversationID,
 		Input:          req.Input,
 		Events: &eventEmitter{

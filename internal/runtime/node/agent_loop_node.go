@@ -17,10 +17,11 @@ import (
 )
 
 type AgentLoopNode struct {
-	LLM       llm.ToolCallingClient
-	Providers ProviderConfigLoader
-	Tools     toolruntime.Registry
-	Retriever retrieval.Retriever
+	LLM         llm.ToolCallingClient
+	Providers   ProviderConfigLoader
+	Tools       toolruntime.Registry
+	Retriever   retrieval.Retriever
+	AgentCaller toolruntime.AgentCaller
 }
 
 type agentLoopConfig struct {
@@ -32,6 +33,8 @@ type agentLoopConfig struct {
 	KnowledgeIDs            []int64  `json:"knowledge_ids"`
 	KnowledgeTopK           int      `json:"knowledge_top_k"`
 	KnowledgeMode           string   `json:"knowledge_mode"`
+	CallAgentIDs            []int64  `json:"call_agent_ids"`
+	MaxAgentCallDepth       int      `json:"max_agent_call_depth"`
 	MaxIterations           int      `json:"max_iterations"`
 	MaxToolCalls            int      `json:"max_tool_calls"`
 	MaxExecutionTimeMS      int      `json:"max_execution_time_ms"`
@@ -67,6 +70,9 @@ func (AgentLoopNode) Validate(config json.RawMessage) error {
 	}
 	if cfg.KnowledgeMode != "" && cfg.KnowledgeMode != string(retrieval.ModeKeyword) && cfg.KnowledgeMode != string(retrieval.ModeVector) && cfg.KnowledgeMode != string(retrieval.ModeHybrid) {
 		return fmt.Errorf("%w: unsupported agent_loop knowledge_mode", agenterrors.ErrInvalidInput)
+	}
+	if cfg.MaxAgentCallDepth < 0 || cfg.MaxAgentCallDepth > 5 {
+		return fmt.Errorf("%w: agent_loop max_agent_call_depth must be <= 5", agenterrors.ErrInvalidInput)
 	}
 	return nil
 }
@@ -117,8 +123,10 @@ func (n AgentLoopNode) Run(ctx context.Context, rc *engine.RunContext, input eng
 	}
 	result, err := runner.Run(ctx, runtimeagent.RunRequest{
 		OwnerID:            rc.OwnerID,
+		AgentID:            rc.AgentID,
 		RunID:              rc.RunID,
 		NodeID:             rc.CurrentNodeID,
+		CallDepth:          rc.CallDepth,
 		Provider:           loaded.Config,
 		Model:              loaded.Model,
 		SystemPrompt:       cfg.SystemPrompt,
@@ -178,6 +186,16 @@ func (n AgentLoopNode) loadTools(ctx context.Context, ownerID int64, cfg agentLo
 			KBIDs:     cfg.KnowledgeIDs,
 			DefaultK:  cfg.KnowledgeTopK,
 			Mode:      retrieval.Mode(cfg.KnowledgeMode),
+		})
+	}
+	if len(cfg.CallAgentIDs) > 0 {
+		if n.AgentCaller == nil {
+			return nil, fmt.Errorf("agent_loop agent caller is not configured")
+		}
+		tools = append(tools, toolruntime.AgentCallTool{
+			Caller:          n.AgentCaller,
+			AllowedAgentIDs: cfg.CallAgentIDs,
+			MaxDepth:        cfg.MaxAgentCallDepth,
 		})
 	}
 	if len(cfg.ToolIDs) == 0 {

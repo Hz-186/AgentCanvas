@@ -54,6 +54,7 @@ const nodeMeta: Record<NodeType, { label: string; icon: React.ElementType; descr
   prompt: { label: 'Prompt', icon: MessageSquare, description: '组装提示词' },
   llm: { label: 'LLM', icon: BrainCircuit, description: '调用模型生成内容' },
   agent_loop: { label: 'Agent Loop', icon: Bot, description: '自主选择工具并循环推理' },
+  agent_call: { label: 'Call Agent', icon: Workflow, description: '调用另一个 Agent' },
   message: { label: 'Message', icon: Send, description: '输出或写入会话消息' },
   memory_read: { label: 'Memory Read', icon: BrainCircuit, description: '读取长期记忆' },
   memory_write: { label: 'Memory Write', icon: Save, description: '写入或更新记忆' },
@@ -78,6 +79,8 @@ function defaultConfig(type: NodeType): CanvasNodeData['config'] {
       knowledge_ids: [],
       knowledge_top_k: 5,
       knowledge_mode: 'keyword',
+      call_agent_ids: [],
+      max_agent_call_depth: 3,
       max_iterations: 8,
       max_tool_calls: 16,
       max_execution_time_ms: 120000,
@@ -86,6 +89,7 @@ function defaultConfig(type: NodeType): CanvasNodeData['config'] {
       output_mode: 'final_answer',
     };
   }
+  if (type === 'agent_call') return { agent_id: 0, input: { query: '{{sys.query}}' }, max_depth: 3 };
   if (type === 'message') return { content: '{{llm.content}}', with_citation: true };
   if (type === 'memory_read') return { memory_types: ['profile_memory', 'summary_memory'], limit: 5 };
   if (type === 'memory_write') return { memory_type: 'summary_memory', content: '{{llm.content}}', importance: 0.5, source: 'agent' };
@@ -227,6 +231,7 @@ function validateLocal(nodes: CanvasNode[], edges: Edge[]): string {
     if (node.data.nodeType === 'llm' && Number(config.provider_id ?? 0) <= 0) return 'LLM 节点需要选择 Provider';
     if (node.data.nodeType === 'agent_loop' && Number(config.provider_id ?? 0) <= 0) return 'Agent Loop 节点需要选择 Provider';
     if (node.data.nodeType === 'agent_loop' && !String(config.task_template ?? '').trim()) return 'Agent Loop 节点需要任务模板';
+    if (node.data.nodeType === 'agent_call' && Number(config.agent_id ?? 0) <= 0) return 'Call Agent 节点需要选择 Agent';
     if (node.data.nodeType === 'message' && !String(config.content ?? '').trim()) return 'Message 节点需要内容';
     if (node.data.nodeType === 'memory_write' && (!String(config.memory_type ?? '').trim() || !String(config.content ?? '').trim())) return 'Memory Write 节点需要类型和内容';
     if (node.data.nodeType === 'http_tool' && Number(config.tool_id ?? 0) <= 0) return 'HTTP Tool 节点需要选择 Tool';
@@ -264,6 +269,7 @@ export function CanvasPage() {
   const [edges, setEdges] = useState<Edge[]>([]);
   const [selectedId, setSelectedId] = useState<string>('begin');
   const [providers, setProviders] = useState<ModelProvider[]>([]);
+  const [callableAgents, setCallableAgents] = useState<Agent[]>([]);
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([]);
   const [tools, setTools] = useState<ToolDefinition[]>([]);
   const [mode, setMode] = useState<'config' | 'debug' | 'dsl'>('config');
@@ -295,8 +301,9 @@ export function CanvasPage() {
   useEffect(() => {
     let cancelled = false;
     async function load() {
-      const [agentResp, providersResp, kbResp, toolResp] = await Promise.all([
+      const [agentResp, agentsResp, providersResp, kbResp, toolResp] = await Promise.all([
         agentApi.get(agentId),
+        agentApi.list(),
         settingsApi.providers.list(),
         knowledgeApi.list(),
         settingsApi.tools.list(),
@@ -304,6 +311,7 @@ export function CanvasPage() {
       // 快速切换 agent 时旧请求可能晚返回，确认仍是当前 agent 再写入。
       if (cancelled) return;
       setAgent(agentResp);
+      setCallableAgents(agentsResp.filter((item) => item.id !== agentId));
       setProviders(providersResp);
       setKnowledgeBases(kbResp);
       setTools(toolResp);
@@ -764,6 +772,18 @@ export function CanvasPage() {
                       <option value="hybrid">Hybrid</option>
                     </Select>
                   </Field>
+                  <Field label="可调用 Agent">
+                    <Select
+                      multiple
+                      value={Array.isArray(config.call_agent_ids) ? config.call_agent_ids.map(String) : []}
+                      onChange={(event) => updateSelectedConfig({ call_agent_ids: Array.from(event.target.selectedOptions).map((option) => Number(option.value)) })}
+                    >
+                      {callableAgents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}
+                    </Select>
+                  </Field>
+                  <Field label="Agent 调用深度">
+                    <TextInput type="number" min={1} max={5} value={Number(config.max_agent_call_depth ?? 3)} onChange={(event) => updateSelectedConfig({ max_agent_call_depth: Number(event.target.value) })} />
+                  </Field>
                   <Field label="最大轮次">
                     <TextInput type="number" min={1} max={50} value={Number(config.max_iterations ?? 8)} onChange={(event) => updateSelectedConfig({ max_iterations: Number(event.target.value) })} />
                   </Field>
@@ -781,6 +801,25 @@ export function CanvasPage() {
                       <option value="final_answer">Final Answer</option>
                       <option value="full">Full Trace</option>
                     </Select>
+                  </Field>
+                </>
+              )}
+              {selected.data.nodeType === 'agent_call' && (
+                <>
+                  <Field label="目标 Agent">
+                    <Select value={Number(config.agent_id ?? 0)} onChange={(event) => updateSelectedConfig({ agent_id: Number(event.target.value) })}>
+                      <option value={0}>选择 Agent</option>
+                      {callableAgents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}
+                    </Select>
+                  </Field>
+                  <Field label="Flow Version ID">
+                    <TextInput type="number" min={0} value={Number(config.flow_version_id ?? 0)} onChange={(event) => updateSelectedConfig({ flow_version_id: Number(event.target.value) })} />
+                  </Field>
+                  <Field label="输入 JSON" hint="留空 flow_version_id 会使用目标 Agent 当前发布版本">
+                    <TextArea value={prettyJson(config.input ?? { query: '{{sys.query}}' })} onChange={(event) => updateSelectedJSON('input', event.target.value)} />
+                  </Field>
+                  <Field label="最大调用深度">
+                    <TextInput type="number" min={1} max={5} value={Number(config.max_depth ?? 3)} onChange={(event) => updateSelectedConfig({ max_depth: Number(event.target.value) })} />
                   </Field>
                 </>
               )}
