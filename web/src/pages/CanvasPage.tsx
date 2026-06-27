@@ -53,6 +53,7 @@ const nodeMeta: Record<NodeType, { label: string; icon: React.ElementType; descr
   knowledge_retrieval: { label: 'Retrieval', icon: Database, description: '从知识库检索上下文' },
   prompt: { label: 'Prompt', icon: MessageSquare, description: '组装提示词' },
   llm: { label: 'LLM', icon: BrainCircuit, description: '调用模型生成内容' },
+  agent_loop: { label: 'Agent Loop', icon: Bot, description: '自主选择工具并循环推理' },
   message: { label: 'Message', icon: Send, description: '输出或写入会话消息' },
   memory_read: { label: 'Memory Read', icon: BrainCircuit, description: '读取长期记忆' },
   memory_write: { label: 'Memory Write', icon: Save, description: '写入或更新记忆' },
@@ -67,6 +68,21 @@ function defaultConfig(type: NodeType): CanvasNodeData['config'] {
   if (type === 'knowledge_retrieval') return { kb_ids: [], top_k: 5, mode: 'keyword', query: '{{sys.query}}' };
   if (type === 'prompt') return { template: '请根据以下上下文回答用户问题：\n\n{{retrieval.context}}\n\n问题：{{sys.query}}' };
   if (type === 'llm') return { provider_id: 0, model: '', temperature: 0.7, stream: true };
+  if (type === 'agent_loop') {
+    return {
+      provider_id: 0,
+      model: '',
+      system_prompt: '你是一个严谨的 Agent。必要时调用可用工具，看到工具结果后再继续推理并给出最终答案。',
+      task_template: '{{sys.query}}',
+      tool_ids: [],
+      max_iterations: 8,
+      max_tool_calls: 16,
+      max_execution_time_ms: 120000,
+      temperature: 0.2,
+      return_intermediate_steps: true,
+      output_mode: 'final_answer',
+    };
+  }
   if (type === 'message') return { content: '{{llm.content}}', with_citation: true };
   if (type === 'memory_read') return { memory_types: ['profile_memory', 'summary_memory'], limit: 5 };
   if (type === 'memory_write') return { memory_type: 'summary_memory', content: '{{llm.content}}', importance: 0.5, source: 'agent' };
@@ -206,6 +222,8 @@ function validateLocal(nodes: CanvasNode[], edges: Edge[]): string {
     if (node.data.nodeType === 'knowledge_retrieval' && (!Array.isArray(config.kb_ids) || config.kb_ids.length === 0)) return 'Retrieval 节点需要选择知识库';
     if (node.data.nodeType === 'prompt' && !String(config.template ?? '').trim()) return 'Prompt 节点需要模板';
     if (node.data.nodeType === 'llm' && Number(config.provider_id ?? 0) <= 0) return 'LLM 节点需要选择 Provider';
+    if (node.data.nodeType === 'agent_loop' && Number(config.provider_id ?? 0) <= 0) return 'Agent Loop 节点需要选择 Provider';
+    if (node.data.nodeType === 'agent_loop' && !String(config.task_template ?? '').trim()) return 'Agent Loop 节点需要任务模板';
     if (node.data.nodeType === 'message' && !String(config.content ?? '').trim()) return 'Message 节点需要内容';
     if (node.data.nodeType === 'memory_write' && (!String(config.memory_type ?? '').trim() || !String(config.content ?? '').trim())) return 'Memory Write 节点需要类型和内容';
     if (node.data.nodeType === 'http_tool' && Number(config.tool_id ?? 0) <= 0) return 'HTTP Tool 节点需要选择 Tool';
@@ -695,6 +713,52 @@ export function CanvasPage() {
                   </Field>
                   <Field label="Temperature">
                     <TextInput type="number" min={0} max={2} step={0.1} value={Number(config.temperature ?? 0.7)} onChange={(event) => updateSelectedConfig({ temperature: Number(event.target.value) })} />
+                  </Field>
+                </>
+              )}
+              {selected.data.nodeType === 'agent_loop' && (
+                <>
+                  <Field label="Provider">
+                    <Select value={Number(config.provider_id ?? 0)} onChange={(event) => updateSelectedConfig({ provider_id: Number(event.target.value) })}>
+                      <option value={0}>选择 Provider</option>
+                      {providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.name}</option>)}
+                    </Select>
+                  </Field>
+                  <Field label="模型">
+                    <TextInput value={String(config.model ?? '')} onChange={(event) => updateSelectedConfig({ model: event.target.value })} placeholder="留空使用默认模型" />
+                  </Field>
+                  <Field label="System Prompt">
+                    <TextArea value={String(config.system_prompt ?? '')} onChange={(event) => updateSelectedConfig({ system_prompt: event.target.value })} />
+                  </Field>
+                  <Field label="任务模板" hint="支持 {{sys.query}} 和 {{node_id.field}}">
+                    <TextArea value={String(config.task_template ?? '')} onChange={(event) => updateSelectedConfig({ task_template: event.target.value })} />
+                  </Field>
+                  <Field label="可用工具">
+                    <Select
+                      multiple
+                      value={Array.isArray(config.tool_ids) ? config.tool_ids.map(String) : []}
+                      onChange={(event) => updateSelectedConfig({ tool_ids: Array.from(event.target.selectedOptions).map((option) => Number(option.value)) })}
+                    >
+                      {tools.map((tool) => <option key={tool.id} value={tool.id}>{tool.name}</option>)}
+                    </Select>
+                  </Field>
+                  <Field label="最大轮次">
+                    <TextInput type="number" min={1} max={50} value={Number(config.max_iterations ?? 8)} onChange={(event) => updateSelectedConfig({ max_iterations: Number(event.target.value) })} />
+                  </Field>
+                  <Field label="最大工具调用">
+                    <TextInput type="number" min={1} max={100} value={Number(config.max_tool_calls ?? 16)} onChange={(event) => updateSelectedConfig({ max_tool_calls: Number(event.target.value) })} />
+                  </Field>
+                  <Field label="超时毫秒">
+                    <TextInput type="number" min={1000} max={600000} step={1000} value={Number(config.max_execution_time_ms ?? 120000)} onChange={(event) => updateSelectedConfig({ max_execution_time_ms: Number(event.target.value) })} />
+                  </Field>
+                  <Field label="Temperature">
+                    <TextInput type="number" min={0} max={2} step={0.1} value={Number(config.temperature ?? 0.2)} onChange={(event) => updateSelectedConfig({ temperature: Number(event.target.value) })} />
+                  </Field>
+                  <Field label="输出模式">
+                    <Select value={String(config.output_mode ?? 'final_answer')} onChange={(event) => updateSelectedConfig({ output_mode: event.target.value, return_intermediate_steps: event.target.value === 'full' })}>
+                      <option value="final_answer">Final Answer</option>
+                      <option value="full">Full Trace</option>
+                    </Select>
                   </Field>
                 </>
               )}

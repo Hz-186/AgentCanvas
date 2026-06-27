@@ -5,6 +5,7 @@ export type NodeType =
   | 'knowledge_retrieval'
   | 'prompt'
   | 'llm'
+  | 'agent_loop'
   | 'message'
   | 'memory_read'
   | 'memory_write'
@@ -33,6 +34,20 @@ export interface LLMConfig {
   model?: string;
   temperature?: number;
   stream?: boolean;
+}
+
+export interface AgentLoopConfig {
+  provider_id: number;
+  model?: string;
+  system_prompt?: string;
+  task_template?: string;
+  tool_ids?: number[];
+  max_iterations?: number;
+  max_tool_calls?: number;
+  max_execution_time_ms?: number;
+  temperature?: number;
+  return_intermediate_steps?: boolean;
+  output_mode?: 'final_answer' | 'full';
 }
 
 export interface MessageConfig {
@@ -83,6 +98,7 @@ export type NodeConfig =
   | RetrievalConfig
   | PromptConfig
   | LLMConfig
+  | AgentLoopConfig
   | MessageConfig
   | MemoryReadConfig
   | MemoryWriteConfig
