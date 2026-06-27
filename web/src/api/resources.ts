@@ -2,6 +2,7 @@ import { api, request } from './client';
 import { streamPost, type SSEMessage } from './sse';
 import type {
   Agent,
+  AgentProfile,
   AgentDocument,
   ApiToken,
   ApiTokenCreated,
@@ -31,6 +32,7 @@ import type {
   ToolDefinition,
   ToolInvocation,
   UpdateAgentRequest,
+  UpdateAgentProfileRequest,
   UpdateProviderRequest,
   UploadDocumentResponse,
 } from '../types/api';
@@ -38,6 +40,8 @@ import type {
 export const agentApi = {
   list: () => api.get<Agent[]>('/agents'),
   get: (id: number) => api.get<Agent>(`/agents/${id}`),
+  getProfile: (id: number) => api.get<AgentProfile>(`/agents/${id}/profile`),
+  updateProfile: (id: number, body: UpdateAgentProfileRequest) => api.patch<AgentProfile>(`/agents/${id}/profile`, body),
   create: (body: CreateAgentRequest) => api.post<Agent>('/agents', body),
   update: (id: number, body: UpdateAgentRequest) => api.patch<Agent>(`/agents/${id}`, body),
   remove: (id: number) => api.delete<{ success: boolean }>(`/agents/${id}`),

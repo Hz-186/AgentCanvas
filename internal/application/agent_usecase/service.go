@@ -28,6 +28,7 @@ import (
 
 type Service struct {
 	agents          agent.Repository
+	profiles        agent.ProfileRepository
 	versions        agent.FlowVersionRepository
 	runs            agent.RunRepository
 	events          agent.RunEventRepository
@@ -46,8 +47,8 @@ type Service struct {
 	validator       *flow.Validator
 }
 
-func NewService(agents agent.Repository, versions agent.FlowVersionRepository, runs agent.RunRepository, events agent.RunEventRepository, nodeLogs agent.NodeLogRepository, runSteps agent.RunStepRepository, memories memory.Repository, memoryLogs memory.WriteLogRepository, tools tool.DefinitionRepository, toolInvocations tool.InvocationRepository, providers providerdomain.Repository, messages conversation.MessageRepository, retriever retrieval.Retriever, llmClient llm.ChatClient, secrets *cryptoinfra.SecretBox) *Service {
-	s := &Service{agents: agents, versions: versions, runs: runs, events: events, nodeLogs: nodeLogs, runSteps: runSteps, memories: memories, memoryLogs: memoryLogs, tools: tools, toolInvocations: toolInvocations, providers: providers, messages: messages, retriever: retriever, llm: llmClient, secrets: secrets}
+func NewService(agents agent.Repository, profiles agent.ProfileRepository, versions agent.FlowVersionRepository, runs agent.RunRepository, events agent.RunEventRepository, nodeLogs agent.NodeLogRepository, runSteps agent.RunStepRepository, memories memory.Repository, memoryLogs memory.WriteLogRepository, tools tool.DefinitionRepository, toolInvocations tool.InvocationRepository, providers providerdomain.Repository, messages conversation.MessageRepository, retriever retrieval.Retriever, llmClient llm.ChatClient, secrets *cryptoinfra.SecretBox) *Service {
+	s := &Service{agents: agents, profiles: profiles, versions: versions, runs: runs, events: events, nodeLogs: nodeLogs, runSteps: runSteps, memories: memories, memoryLogs: memoryLogs, tools: tools, toolInvocations: toolInvocations, providers: providers, messages: messages, retriever: retriever, llm: llmClient, secrets: secrets}
 	s.executor = engine.NewExecutor(runtimenode.DefaultNodes(runtimenode.Deps{Retriever: retriever, LLM: llmClient, Providers: s, Messages: s, MessageHistory: messages, Memories: memories, MemoryWriteLogs: memoryLogs, Tools: tools, ToolInvocations: toolInvocations, AgentCaller: s}))
 	s.validator = flow.NewValidator(s.executor)
 	return s
@@ -70,6 +71,21 @@ type UpdateAgentRequest struct {
 	Description string `json:"description"`
 	AvatarURL   string `json:"avatar_url"`
 	Status      *int   `json:"status"`
+}
+
+type UpdateAgentProfileRequest struct {
+	Role               *string `json:"role"`
+	Goal               *string `json:"goal"`
+	Backstory          *string `json:"backstory"`
+	SystemPrompt       *string `json:"system_prompt"`
+	DefaultProviderID  *int64  `json:"default_provider_id"`
+	DefaultModel       *string `json:"default_model"`
+	MaxIterations      *int    `json:"max_iterations"`
+	MaxExecutionTimeMS *int    `json:"max_execution_time_ms"`
+	MemoryEnabled      *bool   `json:"memory_enabled"`
+	PlanningEnabled    *bool   `json:"planning_enabled"`
+	AllowDelegation    *bool   `json:"allow_delegation"`
+	AllowCodeExecution *bool   `json:"allow_code_execution"`
 }
 
 type CreateFlowVersionRequest struct {
@@ -97,6 +113,9 @@ func (s *Service) CreateAgent(ctx context.Context, ownerID int64, req CreateAgen
 	}
 	if err := s.agents.Create(ctx, item); err != nil {
 		return nil, err
+	}
+	if s.profiles != nil {
+		_ = s.profiles.Create(ctx, defaultAgentProfile(ownerID, item.ID, item.Name, item.Description))
 	}
 	return item, nil
 }
@@ -127,6 +146,91 @@ func (s *Service) UpdateAgent(ctx context.Context, ownerID, id int64, req Update
 		return nil, err
 	}
 	return item, nil
+}
+
+func (s *Service) GetAgentProfile(ctx context.Context, ownerID, agentID int64) (*agent.Profile, error) {
+	item, err := s.GetAgent(ctx, ownerID, agentID)
+	if err != nil {
+		return nil, err
+	}
+	if s.profiles == nil {
+		return defaultAgentProfile(ownerID, agentID, item.Name, item.Description), nil
+	}
+	profile, err := s.profiles.FindByAgent(ctx, ownerID, agentID)
+	if err == nil {
+		return profile, nil
+	}
+	if err != gorm.ErrRecordNotFound {
+		return nil, err
+	}
+	profile = defaultAgentProfile(ownerID, agentID, item.Name, item.Description)
+	if err := s.profiles.Create(ctx, profile); err != nil {
+		return nil, err
+	}
+	return profile, nil
+}
+
+func (s *Service) UpdateAgentProfile(ctx context.Context, ownerID, agentID int64, req UpdateAgentProfileRequest) (*agent.Profile, error) {
+	profile, err := s.GetAgentProfile(ctx, ownerID, agentID)
+	if err != nil {
+		return nil, err
+	}
+	if req.Role != nil {
+		profile.Role = strings.TrimSpace(*req.Role)
+	}
+	if req.Goal != nil {
+		profile.Goal = strings.TrimSpace(*req.Goal)
+	}
+	if req.Backstory != nil {
+		profile.Backstory = strings.TrimSpace(*req.Backstory)
+	}
+	if req.SystemPrompt != nil {
+		profile.SystemPrompt = strings.TrimSpace(*req.SystemPrompt)
+	}
+	if req.DefaultProviderID != nil {
+		if *req.DefaultProviderID > 0 {
+			profile.DefaultProviderID = req.DefaultProviderID
+		} else {
+			profile.DefaultProviderID = nil
+		}
+	}
+	if req.DefaultModel != nil {
+		profile.DefaultModel = strings.TrimSpace(*req.DefaultModel)
+	}
+	if req.MaxIterations != nil {
+		if *req.MaxIterations <= 0 || *req.MaxIterations > 50 {
+			return nil, fmt.Errorf("%w: max_iterations must be 1..50", agenterrors.ErrInvalidInput)
+		}
+		profile.MaxIterations = *req.MaxIterations
+	}
+	if req.MaxExecutionTimeMS != nil {
+		if *req.MaxExecutionTimeMS <= 0 || *req.MaxExecutionTimeMS > 600000 {
+			return nil, fmt.Errorf("%w: max_execution_time_ms must be 1..600000", agenterrors.ErrInvalidInput)
+		}
+		profile.MaxExecutionTimeMS = *req.MaxExecutionTimeMS
+	}
+	if req.MemoryEnabled != nil {
+		profile.MemoryEnabled = *req.MemoryEnabled
+	}
+	if req.PlanningEnabled != nil {
+		profile.PlanningEnabled = *req.PlanningEnabled
+	}
+	if req.AllowDelegation != nil {
+		profile.AllowDelegation = *req.AllowDelegation
+	}
+	if req.AllowCodeExecution != nil {
+		profile.AllowCodeExecution = *req.AllowCodeExecution
+	}
+	if strings.TrimSpace(profile.Role) == "" || strings.TrimSpace(profile.Goal) == "" {
+		return nil, fmt.Errorf("%w: role and goal are required", agenterrors.ErrInvalidInput)
+	}
+	if s.profiles == nil {
+		return profile, nil
+	}
+	if err := s.profiles.Update(ctx, profile); err != nil {
+		return nil, err
+	}
+	return profile, nil
 }
 
 func (s *Service) DeleteAgent(ctx context.Context, ownerID, id int64) error {
@@ -591,4 +695,24 @@ func mapNotFound(err error) error {
 		return agenterrors.ErrNotFound
 	}
 	return err
+}
+
+func defaultAgentProfile(ownerID, agentID int64, name, description string) *agent.Profile {
+	role := strings.TrimSpace(name)
+	if role == "" {
+		role = "Assistant"
+	}
+	goal := strings.TrimSpace(description)
+	if goal == "" {
+		goal = "Complete user tasks through the configured workflow and tools."
+	}
+	return &agent.Profile{
+		OwnerID:            ownerID,
+		AgentID:            agentID,
+		Role:               role,
+		Goal:               goal,
+		SystemPrompt:       "You are a helpful, careful AgentCanvas agent. Use available tools when needed and explain final results clearly.",
+		MaxIterations:      10,
+		MaxExecutionTimeMS: 120000,
+	}
 }

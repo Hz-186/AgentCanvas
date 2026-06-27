@@ -34,7 +34,7 @@ import {
 } from 'lucide-react';
 import { agentApi, knowledgeApi, settingsApi } from '../api/resources';
 import { Button, EmptyState, Field, Panel, Segmented, Select, StatusBadge, TextArea, TextInput, Toast } from '../components/ui';
-import type { Agent, FlowVersion, KnowledgeBase, MemoryWriteLog, ModelProvider, RunStep, ToolDefinition, ToolInvocation } from '../types/api';
+import type { Agent, AgentProfile, FlowVersion, KnowledgeBase, MemoryWriteLog, ModelProvider, RunStep, ToolDefinition, ToolInvocation } from '../types/api';
 import type { DSLEdge, DSLNode, FlowDSL, NodeConfig, NodeType } from '../types/flow';
 import type { RuntimeEvent } from '../types/events';
 import { friendlyErrorMessage, parseJsonObject, prettyJson } from '../utils/format';
@@ -268,6 +268,7 @@ export function CanvasPage() {
   const { id } = useParams();
   const agentId = Number(id);
   const [agent, setAgent] = useState<Agent | null>(null);
+  const [profile, setProfile] = useState<AgentProfile | null>(null);
   const [version, setVersion] = useState<FlowVersion | null>(null);
   const [nodes, setNodes] = useState<CanvasNode[]>([]);
   const [edges, setEdges] = useState<Edge[]>([]);
@@ -276,7 +277,7 @@ export function CanvasPage() {
   const [callableAgents, setCallableAgents] = useState<Agent[]>([]);
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([]);
   const [tools, setTools] = useState<ToolDefinition[]>([]);
-  const [mode, setMode] = useState<'config' | 'debug' | 'dsl'>('config');
+  const [mode, setMode] = useState<'config' | 'profile' | 'debug' | 'dsl'>('config');
   const [paletteWidth, setPaletteWidth] = useState(DEFAULT_PALETTE_WIDTH);
   const [configWidth, setConfigWidth] = useState(DEFAULT_PANEL_WIDTH);
   const [sidePanelOpen, setSidePanelOpen] = useState(true);
@@ -306,8 +307,9 @@ export function CanvasPage() {
   useEffect(() => {
     let cancelled = false;
     async function load() {
-      const [agentResp, agentsResp, providersResp, kbResp, toolResp] = await Promise.all([
+      const [agentResp, profileResp, agentsResp, providersResp, kbResp, toolResp] = await Promise.all([
         agentApi.get(agentId),
+        agentApi.getProfile(agentId),
         agentApi.list(),
         settingsApi.providers.list(),
         knowledgeApi.list(),
@@ -316,6 +318,7 @@ export function CanvasPage() {
       // 快速切换 agent 时旧请求可能晚返回，确认仍是当前 agent 再写入。
       if (cancelled) return;
       setAgent(agentResp);
+      setProfile(profileResp);
       setCallableAgents(agentsResp.filter((item) => item.id !== agentId));
       setProviders(providersResp);
       setKnowledgeBases(kbResp);
@@ -517,6 +520,31 @@ export function CanvasPage() {
     }
   }
 
+  async function saveProfile() {
+    if (!profile) return;
+    try {
+      const saved = await agentApi.updateProfile(agentId, {
+        role: profile.role,
+        goal: profile.goal,
+        backstory: profile.backstory,
+        system_prompt: profile.system_prompt,
+        default_provider_id: profile.default_provider_id,
+        default_model: profile.default_model,
+        max_iterations: profile.max_iterations,
+        max_execution_time_ms: profile.max_execution_time_ms,
+        memory_enabled: profile.memory_enabled,
+        planning_enabled: profile.planning_enabled,
+        allow_delegation: profile.allow_delegation,
+        allow_code_execution: profile.allow_code_execution,
+      });
+      setProfile(saved);
+      setMessage('Agent Profile 已保存');
+      setError('');
+    } catch (err) {
+      setError(friendlyErrorMessage(err, '保存 Agent Profile 失败'));
+    }
+  }
+
   async function runDebug() {
     if (runAbortRef.current) return;
     let input: Record<string, unknown>;
@@ -610,7 +638,7 @@ export function CanvasPage() {
           <p className="muted truncate">当前版本：{version ? `v${version.version_no}` : '未保存草稿'}</p>
         </div>
         <div className="canvas-tools">
-          <Segmented value={mode} onChange={setMode} options={[{ value: 'config', label: '配置' }, { value: 'debug', label: '调试' }, { value: 'dsl', label: 'DSL' }]} />
+          <Segmented value={mode} onChange={setMode} options={[{ value: 'config', label: '配置' }, { value: 'profile', label: 'Profile' }, { value: 'debug', label: '调试' }, { value: 'dsl', label: 'DSL' }]} />
           <Button onClick={() => void saveFlow()}>
             <Save size={16} />
             保存
@@ -941,6 +969,55 @@ export function CanvasPage() {
               {selected.data.nodeType === 'begin' && (
                 <EmptyState icon={<Workflow size={22} />} title="Begin 会透传运行输入" description="调试台默认使用 query 字段，后续节点可通过 {{sys.query}} 引用。" />
               )}
+              {error ? <p className="error-text">{error}</p> : null}
+            </Panel>
+          ) : null}
+
+          {mode === 'profile' && profile ? (
+            <Panel title="Agent Profile" eyebrow={agent?.name ?? 'Agent'}>
+              <Field label="Role">
+                <TextInput value={profile.role} onChange={(event) => setProfile({ ...profile, role: event.target.value })} />
+              </Field>
+              <Field label="Goal">
+                <TextArea value={profile.goal} onChange={(event) => setProfile({ ...profile, goal: event.target.value })} />
+              </Field>
+              <Field label="Backstory">
+                <TextArea value={profile.backstory ?? ''} onChange={(event) => setProfile({ ...profile, backstory: event.target.value })} />
+              </Field>
+              <Field label="System Prompt">
+                <TextArea value={profile.system_prompt ?? ''} onChange={(event) => setProfile({ ...profile, system_prompt: event.target.value })} />
+              </Field>
+              <Field label="默认 Provider">
+                <Select value={profile.default_provider_id ?? 0} onChange={(event) => setProfile({ ...profile, default_provider_id: Number(event.target.value) || null })}>
+                  <option value={0}>未设置</option>
+                  {providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.name}</option>)}
+                </Select>
+              </Field>
+              <Field label="默认模型">
+                <TextInput value={profile.default_model ?? ''} onChange={(event) => setProfile({ ...profile, default_model: event.target.value })} />
+              </Field>
+              <Field label="最大轮次">
+                <TextInput type="number" min={1} max={50} value={profile.max_iterations} onChange={(event) => setProfile({ ...profile, max_iterations: Number(event.target.value) })} />
+              </Field>
+              <Field label="超时毫秒">
+                <TextInput type="number" min={1000} max={600000} step={1000} value={profile.max_execution_time_ms} onChange={(event) => setProfile({ ...profile, max_execution_time_ms: Number(event.target.value) })} />
+              </Field>
+              <Field label="Delegation">
+                <Select value={profile.allow_delegation ? 'enabled' : 'disabled'} onChange={(event) => setProfile({ ...profile, allow_delegation: event.target.value === 'enabled' })}>
+                  <option value="disabled">Disabled</option>
+                  <option value="enabled">Enabled</option>
+                </Select>
+              </Field>
+              <Field label="Code Execution">
+                <Select value={profile.allow_code_execution ? 'enabled' : 'disabled'} onChange={(event) => setProfile({ ...profile, allow_code_execution: event.target.value === 'enabled' })}>
+                  <option value="disabled">Disabled</option>
+                  <option value="enabled">Enabled</option>
+                </Select>
+              </Field>
+              <Button tone="primary" onClick={() => void saveProfile()}>
+                <Save size={16} />
+                保存 Profile
+              </Button>
               {error ? <p className="error-text">{error}</p> : null}
             </Panel>
           ) : null}

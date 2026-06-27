@@ -368,6 +368,26 @@ export interface Agent {
   updated_at: string;
 }
 
+export interface AgentProfile {
+  id: number;
+  owner_id: number;
+  agent_id: number;
+  role: string;
+  goal: string;
+  backstory: string;
+  system_prompt: string;
+  default_provider_id: number | null;
+  default_model: string;
+  max_iterations: number;
+  max_execution_time_ms: number;
+  memory_enabled: boolean;
+  planning_enabled: boolean;
+  allow_delegation: boolean;
+  allow_code_execution: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface CreateAgentRequest {
   name: string;
   description?: string;
@@ -380,6 +400,22 @@ export interface UpdateAgentRequest {
   avatar_url?: string;
   status?: number;
 }
+
+export type UpdateAgentProfileRequest = Partial<Pick<
+  AgentProfile,
+  | 'role'
+  | 'goal'
+  | 'backstory'
+  | 'system_prompt'
+  | 'default_provider_id'
+  | 'default_model'
+  | 'max_iterations'
+  | 'max_execution_time_ms'
+  | 'memory_enabled'
+  | 'planning_enabled'
+  | 'allow_delegation'
+  | 'allow_code_execution'
+>>;
 
 export interface FlowVersion {
   id: number;

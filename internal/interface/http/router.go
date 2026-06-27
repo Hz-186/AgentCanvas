@@ -126,6 +126,8 @@ func NewRouter(deps RouterDeps) *gin.Engine {
 			protected.GET("/agents/:id", deps.AgentHandler.Get)
 			protected.PATCH("/agents/:id", deps.AgentHandler.Update)
 			protected.DELETE("/agents/:id", deps.AgentHandler.Delete)
+			protected.GET("/agents/:id/profile", deps.AgentHandler.GetProfile)
+			protected.PATCH("/agents/:id/profile", deps.AgentHandler.UpdateProfile)
 			protected.POST("/agents/:id/flow-versions", deps.AgentHandler.CreateFlowVersion)
 			protected.GET("/agents/:id/flow-versions", deps.AgentHandler.ListFlowVersions)
 			protected.GET("/flow-versions/:id", deps.AgentHandler.GetFlowVersion)

@@ -21,30 +21,32 @@
 - `code_sandbox` 节点可在确定性 Workflow 中执行 Python 代码。
 - `agent_started / agent_step / agent_finished / agent_failed` 运行事件。
 - `agent_run_steps` 持久化表和 `/runs/:id/steps` 查询接口。
+- `agent_profiles` 持久化表和 `/agents/:id/profile` 读写接口。
 - Canvas 中新增 `Agent Loop` 节点配置。
 
 ## Canvas 配置方式
 
 1. 进入 Agent Canvas。
-2. 添加 `Agent Loop` 节点。
-3. 配置 `Provider` 和可选 `model`。
-4. 填写 `System Prompt`，例如：
+2. 在 `Profile` 标签页维护角色、目标、默认模型、委派和代码执行边界。
+3. 添加 `Agent Loop` 节点。
+4. 配置 `Provider` 和可选 `model`。
+5. 填写 `System Prompt`，例如：
 
 ```text
 你是一个严谨的研究型 Agent。必要时调用工具，不要编造事实。看到工具结果后再继续推理并给出最终答案。
 ```
 
-5. 填写任务模板，常用值：
+6. 填写任务模板，常用值：
 
 ```text
 {{sys.query}}
 ```
 
-6. 在“可用工具”中选择已经创建的 HTTP Tool。
-7. 在“知识库工具”中选择知识库后，Agent 会看到内置 `search_knowledge` 工具。
-8. 在“可调用 Agent”中选择子 Agent 后，Agent 会看到内置 `call_agent` 工具。
-9. 开启“代码执行工具”后，Agent 会看到内置 `execute_python` 工具。
-10. 根据需要设置：
+7. 在“可用工具”中选择已经创建的 HTTP Tool。
+8. 在“知识库工具”中选择知识库后，Agent 会看到内置 `search_knowledge` 工具。
+9. 在“可调用 Agent”中选择子 Agent 后，Agent 会看到内置 `call_agent` 工具。
+10. 开启“代码执行工具”后，Agent 会看到内置 `execute_python` 工具。
+11. 根据需要设置：
    - `max_iterations`：默认 8。
    - `max_tool_calls`：默认 16。
    - `max_execution_time_ms`：默认 120000。
@@ -151,6 +153,34 @@
 - `call_depth`
 
 这些字段用于追踪 Supervisor-Worker 运行关系，并防止无限递归。
+
+## Agent Profile
+
+每个 Agent 都可以维护独立 Profile：
+
+```json
+{
+  "role": "Research Agent",
+  "goal": "Find reliable context and summarize it clearly.",
+  "backstory": "Specialized in knowledge retrieval and source-grounded answers.",
+  "system_prompt": "Use tools when needed. Do not fabricate facts.",
+  "default_provider_id": 1,
+  "default_model": "gpt-4o",
+  "max_iterations": 10,
+  "max_execution_time_ms": 120000,
+  "memory_enabled": false,
+  "planning_enabled": false,
+  "allow_delegation": true,
+  "allow_code_execution": false
+}
+```
+
+接口：
+
+- `GET /api/v1/agents/:id/profile`
+- `PATCH /api/v1/agents/:id/profile`
+
+新建 Agent 时会自动生成默认 Profile。当前 Profile 先作为角色、目标和能力边界的持久化配置；后续可进一步让 `agent_loop` 直接继承 Profile 默认值。
 
 ## 代码沙盒
 
