@@ -66,6 +66,29 @@ func TestChatLLMFailureKeepsUserMessageAndWritesFailedUsage(t *testing.T) {
 	}
 }
 
+func TestChatIncludesConversationHistory(t *testing.T) {
+	service, fakes := newTestService(t)
+	dialogID := int64(30)
+	conv := conversation.Conversation{ID: 7, OwnerID: 1, DialogID: &dialogID, Title: "history"}
+	fakes.convs.items = []conversation.Conversation{conv}
+	fakes.messages.items = []conversation.Message{
+		{ID: 1, OwnerID: 1, ConversationID: 7, Role: conversation.RoleUser, Content: "之前的问题"},
+		{ID: 2, OwnerID: 1, ConversationID: 7, Role: conversation.RoleAssistant, Content: "之前的回答"},
+	}
+
+	_, err := service.Chat(context.Background(), 1, dialogID, ChatRequest{ProviderID: 10, KBIDs: []int64{20}, ConversationID: 7, Question: "新的问题"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	messages := fakes.llm.request.Messages
+	if len(messages) < 4 {
+		t.Fatalf("expected system + history + current question, got %+v", messages)
+	}
+	if messages[1].Content != "之前的问题" || messages[2].Content != "之前的回答" || messages[len(messages)-1].Content != "新的问题" {
+		t.Fatalf("conversation history was not preserved: %+v", messages)
+	}
+}
+
 func TestListConversationsRequiresDialogScope(t *testing.T) {
 	service, fakes := newTestService(t)
 	dialogID := int64(30)
@@ -276,13 +299,15 @@ func (r *fakeRetriever) Search(context.Context, retrieval.RetrievalRequest) (*re
 }
 
 type fakeChatClient struct {
-	resp  *llm.ChatResponse
-	err   error
-	calls int
+	resp    *llm.ChatResponse
+	err     error
+	calls   int
+	request llm.ChatRequest
 }
 
-func (c *fakeChatClient) Chat(context.Context, llm.ChatProviderConfig, llm.ChatRequest) (*llm.ChatResponse, error) {
+func (c *fakeChatClient) Chat(_ context.Context, _ llm.ChatProviderConfig, req llm.ChatRequest) (*llm.ChatResponse, error) {
 	c.calls++
+	c.request = req
 	return c.resp, c.err
 }
 func (c *fakeChatClient) StreamChat(context.Context, llm.ChatProviderConfig, llm.ChatRequest, func(llm.StreamEvent) error) error {

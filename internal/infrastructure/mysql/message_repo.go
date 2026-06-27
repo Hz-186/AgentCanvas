@@ -2,6 +2,8 @@ package mysql
 
 import (
 	"context"
+	"encoding/json"
+	"strconv"
 	"time"
 
 	"agentcanvas/internal/domain/conversation"
@@ -23,7 +25,12 @@ func (r *MessageRepository) Create(ctx context.Context, message *conversation.Me
 		message.ContentType = conversation.ContentTypeText
 	}
 	normalizeMessage(message)
-	return r.db.WithContext(ctx).Create(message).Error
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(message).Error; err != nil {
+			return err
+		}
+		return syncConversationMessageJSON(ctx, tx, message.OwnerID, message.ConversationID, message.CreatedAt)
+	})
 }
 
 func (r *MessageRepository) ListByConversation(ctx context.Context, ownerID, conversationID int64) ([]conversation.Message, error) {
@@ -60,6 +67,35 @@ func normalizeMessage(message *conversation.Message) {
 	if message.MetadataJSON == "" {
 		message.MetadataJSON = "{}"
 	}
+}
+
+func syncConversationMessageJSON(ctx context.Context, tx *gorm.DB, ownerID, conversationID int64, lastMessageAt time.Time) error {
+	if conversationID <= 0 {
+		return nil
+	}
+	var messages []conversation.Message
+	if err := tx.WithContext(ctx).
+		Where("owner_id = ? AND conversation_id = ?", ownerID, conversationID).
+		Order("id ASC").
+		Find(&messages).Error; err != nil {
+		return err
+	}
+	items := make([]conversation.MessageItem, 0, len(messages))
+	for _, message := range messages {
+		items = append(items, conversation.MessageItem{
+			ID:        strconv.FormatInt(message.ID, 10),
+			Role:      message.Role,
+			Content:   message.Content,
+			CreatedAt: message.CreatedAt,
+		})
+	}
+	raw, err := json.Marshal(items)
+	if err != nil {
+		return err
+	}
+	return tx.WithContext(ctx).Model(&conversation.Conversation{}).
+		Where("id = ? AND owner_id = ? AND deleted_at IS NULL", conversationID, ownerID).
+		Updates(map[string]any{"message_json": string(raw), "last_message_at": lastMessageAt, "updated_at": time.Now().UTC()}).Error
 }
 
 func normalizeMessageReference(ref *conversation.MessageReference) {

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"agentcanvas/internal/domain/conversation"
 	"agentcanvas/internal/infrastructure/llm"
 	"agentcanvas/internal/runtime/engine"
 	runtimeevent "agentcanvas/internal/runtime/event"
@@ -16,6 +17,7 @@ import (
 type LLMNode struct {
 	Client    llm.ChatClient
 	Providers ProviderConfigLoader
+	History   MessageHistoryReader
 }
 
 type llmConfig struct {
@@ -54,15 +56,36 @@ func (n LLMNode) Run(ctx context.Context, rc *engine.RunContext, input engine.No
 	if strings.TrimSpace(prompt) == "" {
 		prompt, _ = rc.Input["query"].(string)
 	}
-	emitRuntimeEvent(ctx, rc, runtimeevent.Event{Type: runtimeevent.LLMStarted, RunID: rc.RunID, NodeType: n.Type(), Payload: map[string]any{"provider_id": loaded.ProviderID, "model": loaded.Model}})
-	req := llm.ChatRequest{Model: loaded.Model, Temperature: cfg.Temperature, Messages: []llm.ChatMessage{{Role: "user", Content: prompt}}}
+	emitRuntimeEvent(ctx, rc, runtimeevent.Event{
+		Type:     runtimeevent.LLMStarted,
+		RunID:    rc.RunID,
+		NodeType: n.Type(),
+		Payload: map[string]any{
+			"provider_id": loaded.ProviderID,
+			"model":       loaded.Model,
+		},
+	})
+	messages, err := n.buildMessages(ctx, rc, prompt)
+	if err != nil {
+		return nil, err
+	}
+	req := llm.ChatRequest{
+		Model:       loaded.Model,
+		Temperature: cfg.Temperature,
+		Messages:    messages,
+	}
 	content := strings.Builder{}
 	usage := llm.Usage{}
 	if cfg.Stream {
 		err = n.Client.StreamChat(ctx, loaded.Config, req, func(event llm.StreamEvent) error {
 			if event.Delta != "" {
 				content.WriteString(event.Delta)
-				emitRuntimeEvent(ctx, rc, runtimeevent.Event{Type: runtimeevent.LLMDelta, RunID: rc.RunID, NodeType: n.Type(), Payload: map[string]any{"delta": event.Delta}})
+				emitRuntimeEvent(ctx, rc, runtimeevent.Event{
+					Type:     runtimeevent.LLMDelta,
+					RunID:    rc.RunID,
+					NodeType: n.Type(),
+					Payload:  map[string]any{"delta": event.Delta},
+				})
 				return nil
 			}
 			if event.Usage.TotalTokens > 0 || event.Usage.PromptTokens > 0 || event.Usage.CompletionTokens > 0 {
@@ -82,5 +105,41 @@ func (n LLMNode) Run(ctx context.Context, rc *engine.RunContext, input engine.No
 		usage = resp.Usage
 	}
 	emitRuntimeEvent(ctx, rc, runtimeevent.Event{Type: runtimeevent.LLMFinished, RunID: rc.RunID, NodeType: n.Type(), Payload: map[string]any{"total_tokens": usage.TotalTokens}})
-	return engine.NodeOutput{"content": content.String(), "usage": usage, "total_tokens": usage.TotalTokens}, nil
+	return engine.NodeOutput{
+		"content":      content.String(),
+		"usage":        usage,
+		"total_tokens": usage.TotalTokens,
+	}, nil
+}
+
+func (n LLMNode) buildMessages(ctx context.Context, rc *engine.RunContext, prompt string) ([]llm.ChatMessage, error) {
+	messages := make([]llm.ChatMessage, 0, 8)
+	if n.History != nil && rc.ConversationID != nil && *rc.ConversationID > 0 {
+		history, err := n.History.ListByConversation(ctx, rc.OwnerID, *rc.ConversationID)
+		if err != nil {
+			return nil, err
+		}
+		if len(history) > 20 {
+			history = history[len(history)-20:]
+		}
+		for _, item := range history {
+			role := strings.TrimSpace(item.Role)
+			content := strings.TrimSpace(item.Content)
+			if content == "" || !validChatRole(role) {
+				continue
+			}
+			messages = append(messages, llm.ChatMessage{Role: role, Content: content})
+		}
+	}
+	messages = append(messages, llm.ChatMessage{Role: conversation.RoleUser, Content: prompt})
+	return messages, nil
+}
+
+func validChatRole(role string) bool {
+	switch role {
+	case conversation.RoleSystem, conversation.RoleUser, conversation.RoleAssistant, conversation.RoleTool:
+		return true
+	default:
+		return false
+	}
 }

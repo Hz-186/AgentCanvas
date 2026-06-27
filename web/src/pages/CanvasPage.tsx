@@ -65,7 +65,7 @@ const nodeMeta: Record<NodeType, { label: string; icon: React.ElementType; descr
 function defaultConfig(type: NodeType): CanvasNodeData['config'] {
   if (type === 'begin') return { input_schema: { query: 'string' } };
   if (type === 'knowledge_retrieval') return { kb_ids: [], top_k: 5, mode: 'keyword', query: '{{sys.query}}' };
-  if (type === 'prompt') return { template: '请根据以下上下文回答用户问题：\n\n{{retrieve.context}}\n\n问题：{{sys.query}}' };
+  if (type === 'prompt') return { template: '请根据以下上下文回答用户问题：\n\n{{retrieval.context}}\n\n问题：{{sys.query}}' };
   if (type === 'llm') return { provider_id: 0, model: '', temperature: 0.7, stream: true };
   if (type === 'message') return { content: '{{llm.content}}', with_citation: true };
   if (type === 'memory_read') return { memory_types: ['profile_memory', 'summary_memory'], limit: 5 };
@@ -217,7 +217,7 @@ function validateLocal(nodes: CanvasNode[], edges: Edge[]): string {
 }
 
 function nodeTitle(type: NodeType, nodes: CanvasNode[]) {
-  const base = nodeMeta[type].label.toLowerCase();
+  const base = type === 'knowledge_retrieval' ? 'retrieval' : type;
   if (type === 'begin') return 'begin';
   let i = 1;
   let id = base;

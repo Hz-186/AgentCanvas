@@ -46,7 +46,7 @@ type Service struct {
 
 func NewService(agents agent.Repository, versions agent.FlowVersionRepository, runs agent.RunRepository, events agent.RunEventRepository, nodeLogs agent.NodeLogRepository, memories memory.Repository, memoryLogs memory.WriteLogRepository, tools tool.DefinitionRepository, toolInvocations tool.InvocationRepository, providers providerdomain.Repository, messages conversation.MessageRepository, retriever retrieval.Retriever, llmClient llm.ChatClient, secrets *cryptoinfra.SecretBox) *Service {
 	s := &Service{agents: agents, versions: versions, runs: runs, events: events, nodeLogs: nodeLogs, memories: memories, memoryLogs: memoryLogs, tools: tools, toolInvocations: toolInvocations, providers: providers, messages: messages, retriever: retriever, llm: llmClient, secrets: secrets}
-	s.executor = engine.NewExecutor(runtimenode.DefaultNodes(runtimenode.Deps{Retriever: retriever, LLM: llmClient, Providers: s, Messages: s, Memories: memories, MemoryWriteLogs: memoryLogs, Tools: tools, ToolInvocations: toolInvocations}))
+	s.executor = engine.NewExecutor(runtimenode.DefaultNodes(runtimenode.Deps{Retriever: retriever, LLM: llmClient, Providers: s, Messages: s, MessageHistory: messages, Memories: memories, MemoryWriteLogs: memoryLogs, Tools: tools, ToolInvocations: toolInvocations}))
 	s.validator = flow.NewValidator(s.executor)
 	return s
 }

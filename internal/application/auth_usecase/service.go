@@ -9,6 +9,7 @@ import (
 	agenterrors "agentcanvas/internal/pkg/errors"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -113,13 +114,13 @@ func (s *Service) Register(ctx context.Context, req RegisterRequest, client Clie
 
 	if _, err := s.users.FindByEmail(ctx, req.Email); err == nil {
 		return nil, agenterrors.ErrConflict
-	} else if err != nil && err != gorm.ErrRecordNotFound {
+	} else if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, err
 	}
 
 	if _, err := s.users.FindByUsername(ctx, req.Username); err == nil {
 		return nil, agenterrors.ErrConflict
-	} else if err != nil && err != gorm.ErrRecordNotFound {
+	} else if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, err
 	}
 
@@ -241,9 +242,18 @@ func (s *Service) HandleGitHubCallback(ctx context.Context, code, state string, 
 	if err == nil {
 		u, err = s.users.FindByID(ctx, account.UserID)
 		if err != nil {
-			return nil, err
+			if !errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil, err
+			}
+			if delErr := s.oauth.DeleteByProviderUserID(ctx, "github", providerUserID); delErr != nil {
+				return nil, delErr
+			}
+			u, account, err = s.createGitHubUser(ctx, ghUser, providerUserID, token.Scope)
+			if err != nil {
+				return nil, err
+			}
 		}
-	} else if err == gorm.ErrRecordNotFound {
+	} else if errors.Is(err, gorm.ErrRecordNotFound) {
 		u, account, err = s.createGitHubUser(ctx, ghUser, providerUserID, token.Scope)
 		if err != nil {
 			return nil, err
@@ -319,7 +329,7 @@ func (s *Service) createGitHubUser(ctx context.Context, ghUser *oauthinfra.GitHu
 	}
 	if _, err := s.users.FindByUsername(ctx, username); err == nil {
 		username = fmt.Sprintf("%s_%s", username, providerUserID)
-	} else if err != nil && err != gorm.ErrRecordNotFound {
+	} else if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, nil, err
 	}
 	if ghUser.Email != "" {
@@ -338,7 +348,7 @@ func (s *Service) createGitHubUser(ctx context.Context, ghUser *oauthinfra.GitHu
 				return nil, nil, err
 			}
 			return existing, account, nil
-		} else if err != gorm.ErrRecordNotFound {
+		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, nil, err
 		}
 	}

@@ -23,6 +23,7 @@ export function KnowledgePage() {
   const [createRetrievalMode, setCreateRetrievalMode] = useState('keyword');
   const [createEmbeddingProviderId, setCreateEmbeddingProviderId] = useState('');
   const [createEmbeddingModel, setCreateEmbeddingModel] = useState('');
+  const [kbDeletingId, setKbDeletingId] = useState<number | null>(null);
   const [docToDelete, setDocToDelete] = useState<AgentDocument | null>(null);
   const [togglingId, setTogglingId] = useState<number | null>(null);
   const [retrievalMode, setRetrievalMode] = useState('keyword');
@@ -190,6 +191,21 @@ export function KnowledgePage() {
     }
   }
 
+  async function removeKnowledgeBase(kb: KnowledgeBase) {
+    if (!window.confirm(`确认删除知识库「${kb.name}」？相关文档和索引也会被删除。`)) return;
+    setKbDeletingId(kb.id);
+    try {
+      setError('');
+      await knowledgeApi.remove(kb.id);
+      setMessage('知识库已删除');
+      setItems((current) => current.filter((item) => item.id !== kb.id));
+    } catch (err) {
+      setError(friendlyErrorMessage(err, '删除知识库失败'));
+    } finally {
+      setKbDeletingId(null);
+    }
+  }
+
   async function saveRetrievalSettings(event: FormEvent) {
     event.preventDefault();
     if (!routeId) return;
@@ -306,6 +322,9 @@ export function KnowledgePage() {
                 <Button tone="primary" onClick={() => navigate(`/app/knowledge/${kb.id}`)}>
                   打开知识库
                 </Button>
+                <IconButton label="删除知识库" className="icon-btn-danger" disabled={kbDeletingId === kb.id} onClick={() => void removeKnowledgeBase(kb)}>
+                  <Trash2 size={16} />
+                </IconButton>
               </div>
             </article>
           ))}

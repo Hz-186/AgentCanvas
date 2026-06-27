@@ -8,6 +8,7 @@ import (
 type OAuthRepository interface {
 	Create(ctx context.Context, account *OAuthAccount) error
 	FindByProviderUserID(ctx context.Context, provider, providerUserID string) (*OAuthAccount, error)
+	DeleteByProviderUserID(ctx context.Context, provider, providerUserID string) error
 }
 
 type SessionRepository interface {

@@ -21,8 +21,9 @@ import (
 )
 
 const (
-	defaultTopK = 8
-	maxTopK     = 20
+	defaultTopK        = 8
+	maxTopK            = 20
+	maxHistoryMessages = 30
 )
 
 type Service struct {
@@ -268,6 +269,10 @@ func (s *Service) prepare(ctx context.Context, ownerID, dialogID int64, req Chat
 	}
 	packed := s.packer.Pack(ownerID, retrievalResp.Results)
 	prompt := s.prompts.Build(question, packed.Text)
+	history, err := s.messages.ListByConversation(ctx, ownerID, conv.ID)
+	if err != nil {
+		return nil, err
+	}
 	return &preparedChat{
 		provider:           provider,
 		providerConfig:     providerConfig,
@@ -277,13 +282,43 @@ func (s *Service) prepare(ctx context.Context, ownerID, dialogID int64, req Chat
 		packed:             packed,
 		retrievalLatencyMS: retrievalResp.LatencyMS,
 		llmRequest: llm.ChatRequest{
-			Model: model,
-			Messages: []llm.ChatMessage{
-				{Role: conversation.RoleSystem, Content: prompt},
-				{Role: conversation.RoleUser, Content: question},
-			},
+			Model:    model,
+			Messages: buildChatMessages(prompt, history, question),
 		},
 	}, nil
+}
+
+func buildChatMessages(systemPrompt string, history []conversation.Message, fallbackQuestion string) []llm.ChatMessage {
+	if len(history) > maxHistoryMessages {
+		history = history[len(history)-maxHistoryMessages:]
+	}
+	messages := make([]llm.ChatMessage, 0, len(history)+2)
+	messages = append(messages, llm.ChatMessage{Role: conversation.RoleSystem, Content: systemPrompt})
+	hasUserQuestion := false
+	for _, item := range history {
+		role := strings.TrimSpace(item.Role)
+		content := strings.TrimSpace(item.Content)
+		if content == "" || !validChatRole(role) {
+			continue
+		}
+		if role == conversation.RoleUser && content == fallbackQuestion {
+			hasUserQuestion = true
+		}
+		messages = append(messages, llm.ChatMessage{Role: role, Content: content})
+	}
+	if !hasUserQuestion && strings.TrimSpace(fallbackQuestion) != "" {
+		messages = append(messages, llm.ChatMessage{Role: conversation.RoleUser, Content: fallbackQuestion})
+	}
+	return messages
+}
+
+func validChatRole(role string) bool {
+	switch role {
+	case conversation.RoleSystem, conversation.RoleUser, conversation.RoleAssistant, conversation.RoleTool:
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Service) providerConfig(ctx context.Context, ownerID, providerID int64, requestedModel string) (*providerdomain.ModelProvider, string, llm.ChatProviderConfig, error) {

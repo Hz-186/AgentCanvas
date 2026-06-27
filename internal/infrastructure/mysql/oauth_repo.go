@@ -31,3 +31,9 @@ func (r *OAuthRepository) FindByProviderUserID(ctx context.Context, provider, pr
 	}
 	return &account, nil
 }
+
+func (r *OAuthRepository) DeleteByProviderUserID(ctx context.Context, provider, providerUserID string) error {
+	return r.db.WithContext(ctx).
+		Where("provider = ? AND provider_user_id = ?", provider, providerUserID).
+		Delete(&auth.OAuthAccount{}).Error
+}
