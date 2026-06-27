@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"agentcanvas/internal/domain/retrieval"
 	runtimeagent "agentcanvas/internal/runtime/agent"
 	"agentcanvas/internal/runtime/engine"
 	runtimeevent "agentcanvas/internal/runtime/event"
@@ -19,6 +20,7 @@ type AgentLoopNode struct {
 	LLM       llm.ToolCallingClient
 	Providers ProviderConfigLoader
 	Tools     toolruntime.Registry
+	Retriever retrieval.Retriever
 }
 
 type agentLoopConfig struct {
@@ -27,6 +29,9 @@ type agentLoopConfig struct {
 	SystemPrompt            string   `json:"system_prompt"`
 	TaskTemplate            string   `json:"task_template"`
 	ToolIDs                 []int64  `json:"tool_ids"`
+	KnowledgeIDs            []int64  `json:"knowledge_ids"`
+	KnowledgeTopK           int      `json:"knowledge_top_k"`
+	KnowledgeMode           string   `json:"knowledge_mode"`
 	MaxIterations           int      `json:"max_iterations"`
 	MaxToolCalls            int      `json:"max_tool_calls"`
 	MaxExecutionTimeMS      int      `json:"max_execution_time_ms"`
@@ -57,6 +62,12 @@ func (AgentLoopNode) Validate(config json.RawMessage) error {
 	if cfg.OutputMode != "" && cfg.OutputMode != "final_answer" && cfg.OutputMode != "full" {
 		return fmt.Errorf("%w: agent_loop output_mode must be final_answer or full", agenterrors.ErrInvalidInput)
 	}
+	if cfg.KnowledgeTopK < 0 || cfg.KnowledgeTopK > 20 {
+		return fmt.Errorf("%w: agent_loop knowledge_top_k must be <= 20", agenterrors.ErrInvalidInput)
+	}
+	if cfg.KnowledgeMode != "" && cfg.KnowledgeMode != string(retrieval.ModeKeyword) && cfg.KnowledgeMode != string(retrieval.ModeVector) && cfg.KnowledgeMode != string(retrieval.ModeHybrid) {
+		return fmt.Errorf("%w: unsupported agent_loop knowledge_mode", agenterrors.ErrInvalidInput)
+	}
 	return nil
 }
 
@@ -72,7 +83,7 @@ func (n AgentLoopNode) Run(ctx context.Context, rc *engine.RunContext, input eng
 	if err != nil {
 		return nil, err
 	}
-	tools, err := n.loadTools(ctx, rc.OwnerID, cfg.ToolIDs)
+	tools, err := n.loadTools(ctx, rc.OwnerID, cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -156,14 +167,30 @@ func (n AgentLoopNode) Run(ctx context.Context, rc *engine.RunContext, input eng
 	return output, nil
 }
 
-func (n AgentLoopNode) loadTools(ctx context.Context, ownerID int64, toolIDs []int64) ([]toolruntime.RuntimeTool, error) {
-	if len(toolIDs) == 0 {
-		return nil, nil
+func (n AgentLoopNode) loadTools(ctx context.Context, ownerID int64, cfg agentLoopConfig) ([]toolruntime.RuntimeTool, error) {
+	tools := make([]toolruntime.RuntimeTool, 0, len(cfg.ToolIDs)+1)
+	if len(cfg.KnowledgeIDs) > 0 {
+		if n.Retriever == nil {
+			return nil, fmt.Errorf("agent_loop retriever is not configured")
+		}
+		tools = append(tools, toolruntime.KnowledgeSearchTool{
+			Retriever: n.Retriever,
+			KBIDs:     cfg.KnowledgeIDs,
+			DefaultK:  cfg.KnowledgeTopK,
+			Mode:      retrieval.Mode(cfg.KnowledgeMode),
+		})
+	}
+	if len(cfg.ToolIDs) == 0 {
+		return tools, nil
 	}
 	if n.Tools == nil {
 		return nil, fmt.Errorf("agent_loop tool registry is not configured")
 	}
-	return n.Tools.LoadForAgent(ctx, ownerID, toolIDs)
+	loaded, err := n.Tools.LoadForAgent(ctx, ownerID, cfg.ToolIDs)
+	if err != nil {
+		return nil, err
+	}
+	return append(tools, loaded...), nil
 }
 
 func resolveAgentTask(template string, rc *engine.RunContext, input engine.NodeInput) string {

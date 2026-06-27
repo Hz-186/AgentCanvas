@@ -42,6 +42,9 @@ export interface AgentLoopConfig {
   system_prompt?: string;
   task_template?: string;
   tool_ids?: number[];
+  knowledge_ids?: number[];
+  knowledge_top_k?: number;
+  knowledge_mode?: 'keyword' | 'vector' | 'hybrid';
   max_iterations?: number;
   max_tool_calls?: number;
   max_execution_time_ms?: number;

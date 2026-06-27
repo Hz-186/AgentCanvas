@@ -14,6 +14,7 @@
 - `internal/runtime/agent` ReAct Runner。
 - `internal/runtime/toolruntime` 统一工具接口。
 - 已有 HTTP Tool 作为 Agent 可调用工具。
+- 配置 `knowledge_ids` 后自动暴露 `search_knowledge` 工具。
 - `agent_started / agent_step / agent_finished / agent_failed` 运行事件。
 - Canvas 中新增 `Agent Loop` 节点配置。
 
@@ -35,7 +36,8 @@
 ```
 
 6. 在“可用工具”中选择已经创建的 HTTP Tool。
-7. 根据需要设置：
+7. 在“知识库工具”中选择知识库后，Agent 会看到内置 `search_knowledge` 工具。
+8. 根据需要设置：
    - `max_iterations`：默认 8。
    - `max_tool_calls`：默认 16。
    - `max_execution_time_ms`：默认 120000。
@@ -70,6 +72,9 @@
         "system_prompt": "你是一个严谨的 Agent。必要时调用可用工具，看到工具结果后再继续推理并给出最终答案。",
         "task_template": "{{sys.query}}",
         "tool_ids": [1],
+        "knowledge_ids": [10],
+        "knowledge_top_k": 5,
+        "knowledge_mode": "keyword",
         "max_iterations": 8,
         "max_tool_calls": 16,
         "max_execution_time_ms": 120000,
@@ -133,7 +138,7 @@
 - 暂不支持沙盒代码执行。
 - 暂不支持 `agent_call` 子 Agent 调用。
 - 暂未持久化独立 `agent_run_steps` 表，当前通过 `agent_run_events` 保存 step 事件。
-- 当前 Runtime Tool 首先接入已有 HTTP Tool，Retrieval / Memory / Sandbox / Agent Call 可按同一接口继续扩展。
+- 当前 Runtime Tool 已接入已有 HTTP Tool 和知识库检索；Memory / Sandbox / Agent Call 可按同一接口继续扩展。
 
 ## 验收建议
 

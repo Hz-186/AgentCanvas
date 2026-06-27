@@ -75,6 +75,9 @@ function defaultConfig(type: NodeType): CanvasNodeData['config'] {
       system_prompt: '你是一个严谨的 Agent。必要时调用可用工具，看到工具结果后再继续推理并给出最终答案。',
       task_template: '{{sys.query}}',
       tool_ids: [],
+      knowledge_ids: [],
+      knowledge_top_k: 5,
+      knowledge_mode: 'keyword',
       max_iterations: 8,
       max_tool_calls: 16,
       max_execution_time_ms: 120000,
@@ -740,6 +743,25 @@ export function CanvasPage() {
                       onChange={(event) => updateSelectedConfig({ tool_ids: Array.from(event.target.selectedOptions).map((option) => Number(option.value)) })}
                     >
                       {tools.map((tool) => <option key={tool.id} value={tool.id}>{tool.name}</option>)}
+                    </Select>
+                  </Field>
+                  <Field label="知识库工具">
+                    <Select
+                      multiple
+                      value={Array.isArray(config.knowledge_ids) ? config.knowledge_ids.map(String) : []}
+                      onChange={(event) => updateSelectedConfig({ knowledge_ids: Array.from(event.target.selectedOptions).map((option) => Number(option.value)) })}
+                    >
+                      {knowledgeBases.map((kb) => <option key={kb.id} value={kb.id}>{kb.name}</option>)}
+                    </Select>
+                  </Field>
+                  <Field label="知识库 Top K">
+                    <TextInput type="number" min={1} max={20} value={Number(config.knowledge_top_k ?? 5)} onChange={(event) => updateSelectedConfig({ knowledge_top_k: Number(event.target.value) })} />
+                  </Field>
+                  <Field label="知识库模式">
+                    <Select value={String(config.knowledge_mode ?? 'keyword')} onChange={(event) => updateSelectedConfig({ knowledge_mode: event.target.value })}>
+                      <option value="keyword">Keyword</option>
+                      <option value="vector">Vector</option>
+                      <option value="hybrid">Hybrid</option>
                     </Select>
                   </Field>
                   <Field label="最大轮次">
