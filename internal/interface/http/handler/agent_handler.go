@@ -96,6 +96,37 @@ func (h *AgentHandler) Update(c *gin.Context) {
 	response.OK(c, item)
 }
 
+func (h *AgentHandler) GetProfile(c *gin.Context) {
+	ownerID, agentID, ok := h.ownerAndAgentID(c)
+	if !ok {
+		return
+	}
+	item, err := h.service.GetAgentProfile(c.Request.Context(), ownerID, agentID)
+	if err != nil {
+		writeAppError(c, err)
+		return
+	}
+	response.OK(c, item)
+}
+
+func (h *AgentHandler) UpdateProfile(c *gin.Context) {
+	ownerID, agentID, ok := h.ownerAndAgentID(c)
+	if !ok {
+		return
+	}
+	var req agentusecase.UpdateAgentProfileRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		writeAppError(c, err)
+		return
+	}
+	item, err := h.service.UpdateAgentProfile(c.Request.Context(), ownerID, agentID, req)
+	if err != nil {
+		writeAppError(c, err)
+		return
+	}
+	response.OK(c, item)
+}
+
 func (h *AgentHandler) Delete(c *gin.Context) {
 	ownerID, ok := currentUserID(c)
 	if !ok {
@@ -254,6 +285,19 @@ func (h *AgentHandler) ListNodeLogs(c *gin.Context) {
 		return
 	}
 	items, err := h.service.ListNodeLogs(c.Request.Context(), ownerID, id)
+	if err != nil {
+		writeAppError(c, err)
+		return
+	}
+	response.OK(c, items)
+}
+
+func (h *AgentHandler) ListRunSteps(c *gin.Context) {
+	ownerID, id, ok := h.ownerAndID(c, "id")
+	if !ok {
+		return
+	}
+	items, err := h.service.ListRunSteps(c.Request.Context(), ownerID, id)
 	if err != nil {
 		writeAppError(c, err)
 		return

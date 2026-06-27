@@ -34,7 +34,7 @@ import {
 } from 'lucide-react';
 import { agentApi, knowledgeApi, settingsApi } from '../api/resources';
 import { Button, EmptyState, Field, Panel, Segmented, Select, StatusBadge, TextArea, TextInput, Toast } from '../components/ui';
-import type { Agent, FlowVersion, KnowledgeBase, MemoryWriteLog, ModelProvider, ToolDefinition, ToolInvocation } from '../types/api';
+import type { Agent, AgentProfile, FlowVersion, KnowledgeBase, MemoryWriteLog, ModelProvider, RunStep, ToolDefinition, ToolInvocation } from '../types/api';
 import type { DSLEdge, DSLNode, FlowDSL, NodeConfig, NodeType } from '../types/flow';
 import type { RuntimeEvent } from '../types/events';
 import { friendlyErrorMessage, parseJsonObject, prettyJson } from '../utils/format';
@@ -53,6 +53,9 @@ const nodeMeta: Record<NodeType, { label: string; icon: React.ElementType; descr
   knowledge_retrieval: { label: 'Retrieval', icon: Database, description: '从知识库检索上下文' },
   prompt: { label: 'Prompt', icon: MessageSquare, description: '组装提示词' },
   llm: { label: 'LLM', icon: BrainCircuit, description: '调用模型生成内容' },
+  agent_loop: { label: 'Agent Loop', icon: Bot, description: '自主选择工具并循环推理' },
+  agent_call: { label: 'Call Agent', icon: Workflow, description: '调用另一个 Agent' },
+  code_sandbox: { label: 'Code Sandbox', icon: Braces, description: '隔离执行 Python 代码' },
   message: { label: 'Message', icon: Send, description: '输出或写入会话消息' },
   memory_read: { label: 'Memory Read', icon: BrainCircuit, description: '读取长期记忆' },
   memory_write: { label: 'Memory Write', icon: Save, description: '写入或更新记忆' },
@@ -67,6 +70,30 @@ function defaultConfig(type: NodeType): CanvasNodeData['config'] {
   if (type === 'knowledge_retrieval') return { kb_ids: [], top_k: 5, mode: 'keyword', query: '{{sys.query}}' };
   if (type === 'prompt') return { template: '请根据以下上下文回答用户问题：\n\n{{retrieval.context}}\n\n问题：{{sys.query}}' };
   if (type === 'llm') return { provider_id: 0, model: '', temperature: 0.7, stream: true };
+  if (type === 'agent_loop') {
+    return {
+      provider_id: 0,
+      model: '',
+      system_prompt: '你是一个严谨的 Agent。必要时调用可用工具，看到工具结果后再继续推理并给出最终答案。',
+      task_template: '{{sys.query}}',
+      tool_ids: [],
+      knowledge_ids: [],
+      knowledge_top_k: 5,
+      knowledge_mode: 'keyword',
+      call_agent_ids: [],
+      max_agent_call_depth: 3,
+      code_execution_enabled: false,
+      memory_enabled: false,
+      max_iterations: 8,
+      max_tool_calls: 16,
+      max_execution_time_ms: 120000,
+      temperature: 0.2,
+      return_intermediate_steps: true,
+      output_mode: 'final_answer',
+    };
+  }
+  if (type === 'agent_call') return { agent_id: 0, input: { query: '{{sys.query}}' }, max_depth: 3 };
+  if (type === 'code_sandbox') return { language: 'python', code: 'print("hello from sandbox")', timeout_ms: 5000, max_output_bytes: 65536, network_enabled: false, memory_limit_mb: 128 };
   if (type === 'message') return { content: '{{llm.content}}', with_citation: true };
   if (type === 'memory_read') return { memory_types: ['profile_memory', 'summary_memory'], limit: 5 };
   if (type === 'memory_write') return { memory_type: 'summary_memory', content: '{{llm.content}}', importance: 0.5, source: 'agent' };
@@ -206,6 +233,10 @@ function validateLocal(nodes: CanvasNode[], edges: Edge[]): string {
     if (node.data.nodeType === 'knowledge_retrieval' && (!Array.isArray(config.kb_ids) || config.kb_ids.length === 0)) return 'Retrieval 节点需要选择知识库';
     if (node.data.nodeType === 'prompt' && !String(config.template ?? '').trim()) return 'Prompt 节点需要模板';
     if (node.data.nodeType === 'llm' && Number(config.provider_id ?? 0) <= 0) return 'LLM 节点需要选择 Provider';
+    if (node.data.nodeType === 'agent_loop' && Number(config.provider_id ?? 0) <= 0) return 'Agent Loop 节点需要选择 Provider';
+    if (node.data.nodeType === 'agent_loop' && !String(config.task_template ?? '').trim()) return 'Agent Loop 节点需要任务模板';
+    if (node.data.nodeType === 'agent_call' && Number(config.agent_id ?? 0) <= 0) return 'Call Agent 节点需要选择 Agent';
+    if (node.data.nodeType === 'code_sandbox' && !String(config.code ?? '').trim()) return 'Code Sandbox 节点需要代码';
     if (node.data.nodeType === 'message' && !String(config.content ?? '').trim()) return 'Message 节点需要内容';
     if (node.data.nodeType === 'memory_write' && (!String(config.memory_type ?? '').trim() || !String(config.content ?? '').trim())) return 'Memory Write 节点需要类型和内容';
     if (node.data.nodeType === 'http_tool' && Number(config.tool_id ?? 0) <= 0) return 'HTTP Tool 节点需要选择 Tool';
@@ -238,14 +269,16 @@ export function CanvasPage() {
   const { id } = useParams();
   const agentId = Number(id);
   const [agent, setAgent] = useState<Agent | null>(null);
+  const [profile, setProfile] = useState<AgentProfile | null>(null);
   const [version, setVersion] = useState<FlowVersion | null>(null);
   const [nodes, setNodes] = useState<CanvasNode[]>([]);
   const [edges, setEdges] = useState<Edge[]>([]);
   const [selectedId, setSelectedId] = useState<string>('begin');
   const [providers, setProviders] = useState<ModelProvider[]>([]);
+  const [callableAgents, setCallableAgents] = useState<Agent[]>([]);
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([]);
   const [tools, setTools] = useState<ToolDefinition[]>([]);
-  const [mode, setMode] = useState<'config' | 'debug' | 'dsl'>('config');
+  const [mode, setMode] = useState<'config' | 'profile' | 'debug' | 'dsl'>('config');
   const [paletteWidth, setPaletteWidth] = useState(DEFAULT_PALETTE_WIDTH);
   const [configWidth, setConfigWidth] = useState(DEFAULT_PANEL_WIDTH);
   const [sidePanelOpen, setSidePanelOpen] = useState(true);
@@ -255,6 +288,7 @@ export function CanvasPage() {
   const [runningDebugMode, setRunningDebugMode] = useState<DebugRunMode | null>(null);
   const [events, setEvents] = useState<RuntimeEvent[]>([]);
   const [runOutput, setRunOutput] = useState<Record<string, unknown> | null>(null);
+  const [runSteps, setRunSteps] = useState<RunStep[]>([]);
   const [memoryLogs, setMemoryLogs] = useState<MemoryWriteLog[]>([]);
   const [toolInvocations, setToolInvocations] = useState<ToolInvocation[]>([]);
   const [message, setMessage] = useState('');
@@ -274,8 +308,10 @@ export function CanvasPage() {
   useEffect(() => {
     let cancelled = false;
     async function load() {
-      const [agentResp, providersResp, kbResp, toolResp] = await Promise.all([
+      const [agentResp, profileResp, agentsResp, providersResp, kbResp, toolResp] = await Promise.all([
         agentApi.get(agentId),
+        agentApi.getProfile(agentId),
+        agentApi.list(),
         settingsApi.providers.list(),
         knowledgeApi.list(),
         settingsApi.tools.list(),
@@ -283,6 +319,8 @@ export function CanvasPage() {
       // 快速切换 agent 时旧请求可能晚返回，确认仍是当前 agent 再写入。
       if (cancelled) return;
       setAgent(agentResp);
+      setProfile(profileResp);
+      setCallableAgents(agentsResp.filter((item) => item.id !== agentId));
       setProviders(providersResp);
       setKnowledgeBases(kbResp);
       setTools(toolResp);
@@ -483,6 +521,31 @@ export function CanvasPage() {
     }
   }
 
+  async function saveProfile() {
+    if (!profile) return;
+    try {
+      const saved = await agentApi.updateProfile(agentId, {
+        role: profile.role,
+        goal: profile.goal,
+        backstory: profile.backstory,
+        system_prompt: profile.system_prompt,
+        default_provider_id: profile.default_provider_id,
+        default_model: profile.default_model,
+        max_iterations: profile.max_iterations,
+        max_execution_time_ms: profile.max_execution_time_ms,
+        memory_enabled: profile.memory_enabled,
+        planning_enabled: profile.planning_enabled,
+        allow_delegation: profile.allow_delegation,
+        allow_code_execution: profile.allow_code_execution,
+      });
+      setProfile(saved);
+      setMessage('Agent Profile 已保存');
+      setError('');
+    } catch (err) {
+      setError(friendlyErrorMessage(err, '保存 Agent Profile 失败'));
+    }
+  }
+
   async function runDebug() {
     if (runAbortRef.current) return;
     let input: Record<string, unknown>;
@@ -504,6 +567,7 @@ export function CanvasPage() {
     setRunningDebugMode(selectedRunMode);
     setEvents([]);
     setRunOutput(null);
+    setRunSteps([]);
     setMemoryLogs([]);
     setToolInvocations([]);
     setError('');
@@ -513,10 +577,12 @@ export function CanvasPage() {
         if (controller.signal.aborted) return;
         setRunOutput(resp.output);
         void Promise.all([
+          agentApi.listRunSteps(resp.run.id),
           agentApi.listMemoryWriteLogs(resp.run.id),
           agentApi.listToolInvocations(resp.run.id),
-        ]).then(([memoryResp, toolResp]) => {
+        ]).then(([stepResp, memoryResp, toolResp]) => {
           if (controller.signal.aborted) return;
+          setRunSteps(stepResp);
           setMemoryLogs(memoryResp);
           setToolInvocations(toolResp);
         }).catch(() => undefined);
@@ -530,10 +596,12 @@ export function CanvasPage() {
             const done = JSON.parse(msg.data) as { run: { id: number }; output: Record<string, unknown> };
             setRunOutput(done.output);
             void Promise.all([
+              agentApi.listRunSteps(done.run.id),
               agentApi.listMemoryWriteLogs(done.run.id),
               agentApi.listToolInvocations(done.run.id),
-            ]).then(([memoryResp, toolResp]) => {
+            ]).then(([stepResp, memoryResp, toolResp]) => {
               if (controller.signal.aborted) return;
+              setRunSteps(stepResp);
               setMemoryLogs(memoryResp);
               setToolInvocations(toolResp);
             }).catch(() => undefined);
@@ -571,7 +639,7 @@ export function CanvasPage() {
           <p className="muted truncate">当前版本：{version ? `v${version.version_no}` : '未保存草稿'}</p>
         </div>
         <div className="canvas-tools">
-          <Segmented value={mode} onChange={setMode} options={[{ value: 'config', label: '配置' }, { value: 'debug', label: '调试' }, { value: 'dsl', label: 'DSL' }]} />
+          <Segmented value={mode} onChange={setMode} options={[{ value: 'config', label: '配置' }, { value: 'profile', label: 'Profile' }, { value: 'debug', label: '调试' }, { value: 'dsl', label: 'DSL' }]} />
           <Button onClick={() => void saveFlow()}>
             <Save size={16} />
             保存
@@ -698,6 +766,141 @@ export function CanvasPage() {
                   </Field>
                 </>
               )}
+              {selected.data.nodeType === 'agent_loop' && (
+                <>
+                  <Field label="Provider">
+                    <Select value={Number(config.provider_id ?? 0)} onChange={(event) => updateSelectedConfig({ provider_id: Number(event.target.value) })}>
+                      <option value={0}>选择 Provider</option>
+                      {providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.name}</option>)}
+                    </Select>
+                  </Field>
+                  <Field label="模型">
+                    <TextInput value={String(config.model ?? '')} onChange={(event) => updateSelectedConfig({ model: event.target.value })} placeholder="留空使用默认模型" />
+                  </Field>
+                  <Field label="System Prompt">
+                    <TextArea value={String(config.system_prompt ?? '')} onChange={(event) => updateSelectedConfig({ system_prompt: event.target.value })} />
+                  </Field>
+                  <Field label="任务模板" hint="支持 {{sys.query}} 和 {{node_id.field}}">
+                    <TextArea value={String(config.task_template ?? '')} onChange={(event) => updateSelectedConfig({ task_template: event.target.value })} />
+                  </Field>
+                  <Field label="可用工具">
+                    <Select
+                      multiple
+                      value={Array.isArray(config.tool_ids) ? config.tool_ids.map(String) : []}
+                      onChange={(event) => updateSelectedConfig({ tool_ids: Array.from(event.target.selectedOptions).map((option) => Number(option.value)) })}
+                    >
+                      {tools.map((tool) => <option key={tool.id} value={tool.id}>{tool.name}</option>)}
+                    </Select>
+                  </Field>
+                  <Field label="知识库工具">
+                    <Select
+                      multiple
+                      value={Array.isArray(config.knowledge_ids) ? config.knowledge_ids.map(String) : []}
+                      onChange={(event) => updateSelectedConfig({ knowledge_ids: Array.from(event.target.selectedOptions).map((option) => Number(option.value)) })}
+                    >
+                      {knowledgeBases.map((kb) => <option key={kb.id} value={kb.id}>{kb.name}</option>)}
+                    </Select>
+                  </Field>
+                  <Field label="知识库 Top K">
+                    <TextInput type="number" min={1} max={20} value={Number(config.knowledge_top_k ?? 5)} onChange={(event) => updateSelectedConfig({ knowledge_top_k: Number(event.target.value) })} />
+                  </Field>
+                  <Field label="知识库模式">
+                    <Select value={String(config.knowledge_mode ?? 'keyword')} onChange={(event) => updateSelectedConfig({ knowledge_mode: event.target.value })}>
+                      <option value="keyword">Keyword</option>
+                      <option value="vector">Vector</option>
+                      <option value="hybrid">Hybrid</option>
+                    </Select>
+                  </Field>
+                  <Field label="可调用 Agent">
+                    <Select
+                      multiple
+                      value={Array.isArray(config.call_agent_ids) ? config.call_agent_ids.map(String) : []}
+                      onChange={(event) => updateSelectedConfig({ call_agent_ids: Array.from(event.target.selectedOptions).map((option) => Number(option.value)) })}
+                    >
+                      {callableAgents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}
+                    </Select>
+                  </Field>
+                  <Field label="Agent 调用深度">
+                    <TextInput type="number" min={1} max={5} value={Number(config.max_agent_call_depth ?? 3)} onChange={(event) => updateSelectedConfig({ max_agent_call_depth: Number(event.target.value) })} />
+                  </Field>
+                  <Field label="代码执行工具">
+                    <Select value={config.code_execution_enabled ? 'enabled' : 'disabled'} onChange={(event) => updateSelectedConfig({ code_execution_enabled: event.target.value === 'enabled' })}>
+                      <option value="disabled">Disabled</option>
+                      <option value="enabled">Enabled</option>
+                    </Select>
+                  </Field>
+                  <Field label="记忆工具">
+                    <Select value={config.memory_enabled ? 'enabled' : 'disabled'} onChange={(event) => updateSelectedConfig({ memory_enabled: event.target.value === 'enabled' })}>
+                      <option value="disabled">Disabled</option>
+                      <option value="enabled">Enabled</option>
+                    </Select>
+                  </Field>
+                  <Field label="最大轮次">
+                    <TextInput type="number" min={1} max={50} value={Number(config.max_iterations ?? 8)} onChange={(event) => updateSelectedConfig({ max_iterations: Number(event.target.value) })} />
+                  </Field>
+                  <Field label="最大工具调用">
+                    <TextInput type="number" min={1} max={100} value={Number(config.max_tool_calls ?? 16)} onChange={(event) => updateSelectedConfig({ max_tool_calls: Number(event.target.value) })} />
+                  </Field>
+                  <Field label="超时毫秒">
+                    <TextInput type="number" min={1000} max={600000} step={1000} value={Number(config.max_execution_time_ms ?? 120000)} onChange={(event) => updateSelectedConfig({ max_execution_time_ms: Number(event.target.value) })} />
+                  </Field>
+                  <Field label="Temperature">
+                    <TextInput type="number" min={0} max={2} step={0.1} value={Number(config.temperature ?? 0.2)} onChange={(event) => updateSelectedConfig({ temperature: Number(event.target.value) })} />
+                  </Field>
+                  <Field label="输出模式">
+                    <Select value={String(config.output_mode ?? 'final_answer')} onChange={(event) => updateSelectedConfig({ output_mode: event.target.value, return_intermediate_steps: event.target.value === 'full' })}>
+                      <option value="final_answer">Final Answer</option>
+                      <option value="full">Full Trace</option>
+                    </Select>
+                  </Field>
+                </>
+              )}
+              {selected.data.nodeType === 'agent_call' && (
+                <>
+                  <Field label="目标 Agent">
+                    <Select value={Number(config.agent_id ?? 0)} onChange={(event) => updateSelectedConfig({ agent_id: Number(event.target.value) })}>
+                      <option value={0}>选择 Agent</option>
+                      {callableAgents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}
+                    </Select>
+                  </Field>
+                  <Field label="Flow Version ID">
+                    <TextInput type="number" min={0} value={Number(config.flow_version_id ?? 0)} onChange={(event) => updateSelectedConfig({ flow_version_id: Number(event.target.value) })} />
+                  </Field>
+                  <Field label="输入 JSON" hint="留空 flow_version_id 会使用目标 Agent 当前发布版本">
+                    <TextArea value={prettyJson(config.input ?? { query: '{{sys.query}}' })} onChange={(event) => updateSelectedJSON('input', event.target.value)} />
+                  </Field>
+                  <Field label="最大调用深度">
+                    <TextInput type="number" min={1} max={5} value={Number(config.max_depth ?? 3)} onChange={(event) => updateSelectedConfig({ max_depth: Number(event.target.value) })} />
+                  </Field>
+                </>
+              )}
+              {selected.data.nodeType === 'code_sandbox' && (
+                <>
+                  <Field label="语言">
+                    <Select value={String(config.language ?? 'python')} onChange={(event) => updateSelectedConfig({ language: event.target.value })}>
+                      <option value="python">Python</option>
+                    </Select>
+                  </Field>
+                  <Field label="代码">
+                    <TextArea value={String(config.code ?? '')} onChange={(event) => updateSelectedConfig({ code: event.target.value })} />
+                  </Field>
+                  <Field label="超时毫秒">
+                    <TextInput type="number" min={1000} max={30000} step={1000} value={Number(config.timeout_ms ?? 5000)} onChange={(event) => updateSelectedConfig({ timeout_ms: Number(event.target.value) })} />
+                  </Field>
+                  <Field label="最大输出字节">
+                    <TextInput type="number" min={1024} max={1048576} value={Number(config.max_output_bytes ?? 65536)} onChange={(event) => updateSelectedConfig({ max_output_bytes: Number(event.target.value) })} />
+                  </Field>
+                  <Field label="内存 MB">
+                    <TextInput type="number" min={32} max={512} value={Number(config.memory_limit_mb ?? 128)} onChange={(event) => updateSelectedConfig({ memory_limit_mb: Number(event.target.value) })} />
+                  </Field>
+                  <Field label="网络">
+                    <Select value={config.network_enabled ? 'enabled' : 'disabled'} onChange={(event) => updateSelectedConfig({ network_enabled: event.target.value === 'enabled' })}>
+                      <option value="disabled">Disabled</option>
+                      <option value="enabled">Enabled</option>
+                    </Select>
+                  </Field>
+                </>
+              )}
               {selected.data.nodeType === 'message' && (
                 <Field label="输出内容">
                   <TextArea value={String(config.content ?? '')} onChange={(event) => updateSelectedConfig({ content: event.target.value })} />
@@ -777,6 +980,55 @@ export function CanvasPage() {
             </Panel>
           ) : null}
 
+          {mode === 'profile' && profile ? (
+            <Panel title="Agent Profile" eyebrow={agent?.name ?? 'Agent'}>
+              <Field label="Role">
+                <TextInput value={profile.role} onChange={(event) => setProfile({ ...profile, role: event.target.value })} />
+              </Field>
+              <Field label="Goal">
+                <TextArea value={profile.goal} onChange={(event) => setProfile({ ...profile, goal: event.target.value })} />
+              </Field>
+              <Field label="Backstory">
+                <TextArea value={profile.backstory ?? ''} onChange={(event) => setProfile({ ...profile, backstory: event.target.value })} />
+              </Field>
+              <Field label="System Prompt">
+                <TextArea value={profile.system_prompt ?? ''} onChange={(event) => setProfile({ ...profile, system_prompt: event.target.value })} />
+              </Field>
+              <Field label="默认 Provider">
+                <Select value={profile.default_provider_id ?? 0} onChange={(event) => setProfile({ ...profile, default_provider_id: Number(event.target.value) || null })}>
+                  <option value={0}>未设置</option>
+                  {providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.name}</option>)}
+                </Select>
+              </Field>
+              <Field label="默认模型">
+                <TextInput value={profile.default_model ?? ''} onChange={(event) => setProfile({ ...profile, default_model: event.target.value })} />
+              </Field>
+              <Field label="最大轮次">
+                <TextInput type="number" min={1} max={50} value={profile.max_iterations} onChange={(event) => setProfile({ ...profile, max_iterations: Number(event.target.value) })} />
+              </Field>
+              <Field label="超时毫秒">
+                <TextInput type="number" min={1000} max={600000} step={1000} value={profile.max_execution_time_ms} onChange={(event) => setProfile({ ...profile, max_execution_time_ms: Number(event.target.value) })} />
+              </Field>
+              <Field label="Delegation">
+                <Select value={profile.allow_delegation ? 'enabled' : 'disabled'} onChange={(event) => setProfile({ ...profile, allow_delegation: event.target.value === 'enabled' })}>
+                  <option value="disabled">Disabled</option>
+                  <option value="enabled">Enabled</option>
+                </Select>
+              </Field>
+              <Field label="Code Execution">
+                <Select value={profile.allow_code_execution ? 'enabled' : 'disabled'} onChange={(event) => setProfile({ ...profile, allow_code_execution: event.target.value === 'enabled' })}>
+                  <option value="disabled">Disabled</option>
+                  <option value="enabled">Enabled</option>
+                </Select>
+              </Field>
+              <Button tone="primary" onClick={() => void saveProfile()}>
+                <Save size={16} />
+                保存 Profile
+              </Button>
+              {error ? <p className="error-text">{error}</p> : null}
+            </Panel>
+          ) : null}
+
           {mode === 'debug' && (
             <Panel title="调试台" eyebrow={debugRunMode === 'complete' ? '完整结果' : '运行事件'}>
               <Field label="运行输入 JSON">
@@ -808,6 +1060,12 @@ export function CanvasPage() {
                       <StatusBadge tone="good">output</StatusBadge>
                     </div>
                     <pre className="code-box debug-result-content">{runOutputText(runOutput)}</pre>
+                  </div>
+                ) : null}
+                {runSteps.length > 0 ? (
+                  <div className="card">
+                    <div className="card-title"><h3>Agent Steps</h3><StatusBadge tone="info">{runSteps.length}</StatusBadge></div>
+                    <pre className="code-box">{prettyJson(runSteps)}</pre>
                   </div>
                 ) : null}
                 {memoryLogs.length > 0 ? (

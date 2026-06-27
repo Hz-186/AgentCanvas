@@ -7,6 +7,7 @@ import (
 
 	"agentcanvas/internal/domain/agent"
 	"agentcanvas/internal/domain/flow"
+	"agentcanvas/internal/runtime/engine"
 
 	"gorm.io/gorm"
 )
@@ -70,6 +71,74 @@ func TestCreateFlowVersionCreatesVersionForRuntimeChange(t *testing.T) {
 	}
 	if versions.createCalls != 1 || versions.nextCalls != 1 {
 		t.Fatalf("expected one new version, createCalls=%d nextCalls=%d", versions.createCalls, versions.nextCalls)
+	}
+}
+
+func TestRecordAgentStepPersistsRunStep(t *testing.T) {
+	steps := &fakeRunStepRepo{}
+	service := &Service{runSteps: steps}
+	err := service.RecordAgentStep(context.Background(), &engine.RunContext{
+		OwnerID:       1,
+		RunID:         2,
+		CurrentNodeID: "agent_loop",
+	}, engine.AgentStepRecord{
+		StepIndex:  3,
+		StepType:   "tool_call",
+		ToolCallID: "call_1",
+		ToolName:   "search_knowledge",
+		Content:    "content",
+		LatencyMS:  15,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(steps.items) != 1 {
+		t.Fatalf("expected one step, got %d", len(steps.items))
+	}
+	item := steps.items[0]
+	if item.OwnerID != 1 || item.RunID != 2 || item.NodeID != "agent_loop" || item.StepIndex != 3 || item.ToolName != "search_knowledge" {
+		t.Fatalf("unexpected step: %+v", item)
+	}
+}
+
+func TestGetAgentProfileCreatesDefaultProfile(t *testing.T) {
+	profiles := &fakeProfileRepo{}
+	service := &Service{
+		agents:   &fakeAgentRepo{items: map[int64]*agent.Agent{20: {ID: 20, OwnerID: 1, Name: "Researcher", Description: "Find facts", Status: agent.StatusActive}}},
+		profiles: profiles,
+	}
+	profile, err := service.GetAgentProfile(context.Background(), 1, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.Role != "Researcher" || profile.Goal != "Find facts" || profile.MaxIterations != 10 {
+		t.Fatalf("unexpected profile: %+v", profile)
+	}
+	if len(profiles.items) != 1 {
+		t.Fatalf("expected default profile to be created, got %d", len(profiles.items))
+	}
+}
+
+func TestUpdateAgentProfileValidatesLimits(t *testing.T) {
+	profiles := &fakeProfileRepo{items: map[int64]*agent.Profile{
+		20: {ID: 1, OwnerID: 1, AgentID: 20, Role: "Old", Goal: "Old goal", MaxIterations: 10, MaxExecutionTimeMS: 120000},
+	}}
+	service := &Service{
+		agents:   &fakeAgentRepo{items: map[int64]*agent.Agent{20: {ID: 20, OwnerID: 1, Name: "Agent", Status: agent.StatusActive}}},
+		profiles: profiles,
+	}
+	tooMany := 99
+	if _, err := service.UpdateAgentProfile(context.Background(), 1, 20, UpdateAgentProfileRequest{MaxIterations: &tooMany}); err == nil {
+		t.Fatal("expected max_iterations validation error")
+	}
+	role := "Writer"
+	goal := "Draft final answers"
+	updated, err := service.UpdateAgentProfile(context.Background(), 1, 20, UpdateAgentProfileRequest{Role: &role, Goal: &goal})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Role != "Writer" || updated.Goal != "Draft final answers" || profiles.updateCalls != 1 {
+		t.Fatalf("unexpected updated profile: %+v updateCalls=%d", updated, profiles.updateCalls)
 	}
 }
 
@@ -181,3 +250,53 @@ func (r *fakeFlowVersionRepo) NextVersionNo(_ context.Context, ownerID, agentID 
 }
 
 func (r *fakeFlowVersionRepo) Publish(context.Context, int64, int64, int64) error { return nil }
+
+type fakeProfileRepo struct {
+	items       map[int64]*agent.Profile
+	updateCalls int
+}
+
+func (r *fakeProfileRepo) Create(_ context.Context, item *agent.Profile) error {
+	if r.items == nil {
+		r.items = map[int64]*agent.Profile{}
+	}
+	clone := *item
+	if clone.ID == 0 {
+		clone.ID = int64(len(r.items) + 1)
+	}
+	r.items[item.AgentID] = &clone
+	*item = clone
+	return nil
+}
+
+func (r *fakeProfileRepo) FindByAgent(_ context.Context, ownerID, agentID int64) (*agent.Profile, error) {
+	item, ok := r.items[agentID]
+	if !ok || item.OwnerID != ownerID {
+		return nil, gorm.ErrRecordNotFound
+	}
+	clone := *item
+	return &clone, nil
+}
+
+func (r *fakeProfileRepo) Update(_ context.Context, item *agent.Profile) error {
+	r.updateCalls++
+	if r.items == nil {
+		r.items = map[int64]*agent.Profile{}
+	}
+	clone := *item
+	r.items[item.AgentID] = &clone
+	return nil
+}
+
+type fakeRunStepRepo struct {
+	items []agent.RunStep
+}
+
+func (r *fakeRunStepRepo) Create(_ context.Context, item *agent.RunStep) error {
+	r.items = append(r.items, *item)
+	return nil
+}
+
+func (r *fakeRunStepRepo) ListByRun(context.Context, int64, int64) ([]agent.RunStep, error) {
+	return r.items, nil
+}

@@ -10,6 +10,12 @@ type Repository interface {
 	SoftDelete(ctx context.Context, ownerID, id int64) error
 }
 
+type ProfileRepository interface {
+	Create(ctx context.Context, item *Profile) error
+	FindByAgent(ctx context.Context, ownerID, agentID int64) (*Profile, error)
+	Update(ctx context.Context, item *Profile) error
+}
+
 type FlowVersionRepository interface {
 	Create(ctx context.Context, item *FlowVersion) error
 	ListByAgent(ctx context.Context, ownerID, agentID int64) ([]FlowVersion, error)
@@ -35,4 +41,9 @@ type NodeLogRepository interface {
 	Create(ctx context.Context, item *NodeLog) error
 	Update(ctx context.Context, item *NodeLog) error
 	ListByRun(ctx context.Context, ownerID, runID int64) ([]NodeLog, error)
+}
+
+type RunStepRepository interface {
+	Create(ctx context.Context, item *RunStep) error
+	ListByRun(ctx context.Context, ownerID, runID int64) ([]RunStep, error)
 }

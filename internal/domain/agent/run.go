@@ -18,6 +18,9 @@ type Run struct {
 	AgentID        int64           `json:"agent_id" gorm:"column:agent_id"`
 	FlowVersionID  int64           `json:"flow_version_id" gorm:"column:flow_version_id"`
 	ConversationID *int64          `json:"conversation_id" gorm:"column:conversation_id"`
+	ParentRunID    *int64          `json:"parent_run_id" gorm:"column:parent_run_id"`
+	CallerNodeID   string          `json:"caller_node_id" gorm:"column:caller_node_id"`
+	CallDepth      int             `json:"call_depth" gorm:"column:call_depth"`
 	Status         string          `json:"status" gorm:"column:status"`
 	InputJSON      json.RawMessage `json:"input_json" gorm:"column:input_json"`
 	OutputJSON     json.RawMessage `json:"output_json" gorm:"column:output_json"`

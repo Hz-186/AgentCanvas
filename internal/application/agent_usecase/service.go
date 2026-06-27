@@ -19,6 +19,7 @@ import (
 	"agentcanvas/internal/runtime/engine"
 	runtimeevent "agentcanvas/internal/runtime/event"
 	runtimenode "agentcanvas/internal/runtime/node"
+	"agentcanvas/internal/runtime/toolruntime"
 
 	agenterrors "agentcanvas/internal/pkg/errors"
 
@@ -27,10 +28,12 @@ import (
 
 type Service struct {
 	agents          agent.Repository
+	profiles        agent.ProfileRepository
 	versions        agent.FlowVersionRepository
 	runs            agent.RunRepository
 	events          agent.RunEventRepository
 	nodeLogs        agent.NodeLogRepository
+	runSteps        agent.RunStepRepository
 	memories        memory.Repository
 	memoryLogs      memory.WriteLogRepository
 	tools           tool.DefinitionRepository
@@ -44,11 +47,17 @@ type Service struct {
 	validator       *flow.Validator
 }
 
-func NewService(agents agent.Repository, versions agent.FlowVersionRepository, runs agent.RunRepository, events agent.RunEventRepository, nodeLogs agent.NodeLogRepository, memories memory.Repository, memoryLogs memory.WriteLogRepository, tools tool.DefinitionRepository, toolInvocations tool.InvocationRepository, providers providerdomain.Repository, messages conversation.MessageRepository, retriever retrieval.Retriever, llmClient llm.ChatClient, secrets *cryptoinfra.SecretBox) *Service {
-	s := &Service{agents: agents, versions: versions, runs: runs, events: events, nodeLogs: nodeLogs, memories: memories, memoryLogs: memoryLogs, tools: tools, toolInvocations: toolInvocations, providers: providers, messages: messages, retriever: retriever, llm: llmClient, secrets: secrets}
-	s.executor = engine.NewExecutor(runtimenode.DefaultNodes(runtimenode.Deps{Retriever: retriever, LLM: llmClient, Providers: s, Messages: s, MessageHistory: messages, Memories: memories, MemoryWriteLogs: memoryLogs, Tools: tools, ToolInvocations: toolInvocations}))
+func NewService(agents agent.Repository, profiles agent.ProfileRepository, versions agent.FlowVersionRepository, runs agent.RunRepository, events agent.RunEventRepository, nodeLogs agent.NodeLogRepository, runSteps agent.RunStepRepository, memories memory.Repository, memoryLogs memory.WriteLogRepository, tools tool.DefinitionRepository, toolInvocations tool.InvocationRepository, providers providerdomain.Repository, messages conversation.MessageRepository, retriever retrieval.Retriever, llmClient llm.ChatClient, secrets *cryptoinfra.SecretBox) *Service {
+	s := &Service{agents: agents, profiles: profiles, versions: versions, runs: runs, events: events, nodeLogs: nodeLogs, runSteps: runSteps, memories: memories, memoryLogs: memoryLogs, tools: tools, toolInvocations: toolInvocations, providers: providers, messages: messages, retriever: retriever, llm: llmClient, secrets: secrets}
+	s.executor = engine.NewExecutor(runtimenode.DefaultNodes(runtimenode.Deps{Retriever: retriever, LLM: llmClient, Providers: s, Messages: s, MessageHistory: messages, Memories: memories, MemoryWriteLogs: memoryLogs, Tools: tools, ToolInvocations: toolInvocations, AgentCaller: s}))
 	s.validator = flow.NewValidator(s.executor)
 	return s
+}
+
+type runOptions struct {
+	ParentRunID  *int64
+	CallerNodeID string
+	CallDepth    int
 }
 
 type CreateAgentRequest struct {
@@ -62,6 +71,21 @@ type UpdateAgentRequest struct {
 	Description string `json:"description"`
 	AvatarURL   string `json:"avatar_url"`
 	Status      *int   `json:"status"`
+}
+
+type UpdateAgentProfileRequest struct {
+	Role               *string `json:"role"`
+	Goal               *string `json:"goal"`
+	Backstory          *string `json:"backstory"`
+	SystemPrompt       *string `json:"system_prompt"`
+	DefaultProviderID  *int64  `json:"default_provider_id"`
+	DefaultModel       *string `json:"default_model"`
+	MaxIterations      *int    `json:"max_iterations"`
+	MaxExecutionTimeMS *int    `json:"max_execution_time_ms"`
+	MemoryEnabled      *bool   `json:"memory_enabled"`
+	PlanningEnabled    *bool   `json:"planning_enabled"`
+	AllowDelegation    *bool   `json:"allow_delegation"`
+	AllowCodeExecution *bool   `json:"allow_code_execution"`
 }
 
 type CreateFlowVersionRequest struct {
@@ -89,6 +113,9 @@ func (s *Service) CreateAgent(ctx context.Context, ownerID int64, req CreateAgen
 	}
 	if err := s.agents.Create(ctx, item); err != nil {
 		return nil, err
+	}
+	if s.profiles != nil {
+		_ = s.profiles.Create(ctx, defaultAgentProfile(ownerID, item.ID, item.Name, item.Description))
 	}
 	return item, nil
 }
@@ -119,6 +146,91 @@ func (s *Service) UpdateAgent(ctx context.Context, ownerID, id int64, req Update
 		return nil, err
 	}
 	return item, nil
+}
+
+func (s *Service) GetAgentProfile(ctx context.Context, ownerID, agentID int64) (*agent.Profile, error) {
+	item, err := s.GetAgent(ctx, ownerID, agentID)
+	if err != nil {
+		return nil, err
+	}
+	if s.profiles == nil {
+		return defaultAgentProfile(ownerID, agentID, item.Name, item.Description), nil
+	}
+	profile, err := s.profiles.FindByAgent(ctx, ownerID, agentID)
+	if err == nil {
+		return profile, nil
+	}
+	if err != gorm.ErrRecordNotFound {
+		return nil, err
+	}
+	profile = defaultAgentProfile(ownerID, agentID, item.Name, item.Description)
+	if err := s.profiles.Create(ctx, profile); err != nil {
+		return nil, err
+	}
+	return profile, nil
+}
+
+func (s *Service) UpdateAgentProfile(ctx context.Context, ownerID, agentID int64, req UpdateAgentProfileRequest) (*agent.Profile, error) {
+	profile, err := s.GetAgentProfile(ctx, ownerID, agentID)
+	if err != nil {
+		return nil, err
+	}
+	if req.Role != nil {
+		profile.Role = strings.TrimSpace(*req.Role)
+	}
+	if req.Goal != nil {
+		profile.Goal = strings.TrimSpace(*req.Goal)
+	}
+	if req.Backstory != nil {
+		profile.Backstory = strings.TrimSpace(*req.Backstory)
+	}
+	if req.SystemPrompt != nil {
+		profile.SystemPrompt = strings.TrimSpace(*req.SystemPrompt)
+	}
+	if req.DefaultProviderID != nil {
+		if *req.DefaultProviderID > 0 {
+			profile.DefaultProviderID = req.DefaultProviderID
+		} else {
+			profile.DefaultProviderID = nil
+		}
+	}
+	if req.DefaultModel != nil {
+		profile.DefaultModel = strings.TrimSpace(*req.DefaultModel)
+	}
+	if req.MaxIterations != nil {
+		if *req.MaxIterations <= 0 || *req.MaxIterations > 50 {
+			return nil, fmt.Errorf("%w: max_iterations must be 1..50", agenterrors.ErrInvalidInput)
+		}
+		profile.MaxIterations = *req.MaxIterations
+	}
+	if req.MaxExecutionTimeMS != nil {
+		if *req.MaxExecutionTimeMS <= 0 || *req.MaxExecutionTimeMS > 600000 {
+			return nil, fmt.Errorf("%w: max_execution_time_ms must be 1..600000", agenterrors.ErrInvalidInput)
+		}
+		profile.MaxExecutionTimeMS = *req.MaxExecutionTimeMS
+	}
+	if req.MemoryEnabled != nil {
+		profile.MemoryEnabled = *req.MemoryEnabled
+	}
+	if req.PlanningEnabled != nil {
+		profile.PlanningEnabled = *req.PlanningEnabled
+	}
+	if req.AllowDelegation != nil {
+		profile.AllowDelegation = *req.AllowDelegation
+	}
+	if req.AllowCodeExecution != nil {
+		profile.AllowCodeExecution = *req.AllowCodeExecution
+	}
+	if strings.TrimSpace(profile.Role) == "" || strings.TrimSpace(profile.Goal) == "" {
+		return nil, fmt.Errorf("%w: role and goal are required", agenterrors.ErrInvalidInput)
+	}
+	if s.profiles == nil {
+		return profile, nil
+	}
+	if err := s.profiles.Update(ctx, profile); err != nil {
+		return nil, err
+	}
+	return profile, nil
 }
 
 func (s *Service) DeleteAgent(ctx context.Context, ownerID, id int64) error {
@@ -237,7 +349,7 @@ func (s *Service) RunAgent(
 	ownerID, agentID int64,
 	req RunAgentRequest,
 ) (*agent.Run, engine.NodeOutput, error) {
-	item, output, err := s.run(ctx, ownerID, agentID, req, nil)
+	item, output, err := s.run(ctx, ownerID, agentID, req, nil, runOptions{})
 	return item, output, err
 }
 
@@ -247,7 +359,45 @@ func (s *Service) StreamRunAgent(
 	req RunAgentRequest,
 	emit func(runtimeevent.Event) error,
 ) (*agent.Run, engine.NodeOutput, error) {
-	return s.run(ctx, ownerID, agentID, req, emit)
+	return s.run(ctx, ownerID, agentID, req, emit, runOptions{})
+}
+
+func (s *Service) CallAgent(ctx context.Context, req toolruntime.AgentCallRequest) (*toolruntime.AgentCallResult, error) {
+	maxDepth := req.MaxDepth
+	if maxDepth <= 0 {
+		maxDepth = 3
+	}
+	if req.CallDepth >= maxDepth {
+		return nil, fmt.Errorf("%w: max agent call depth exceeded", agenterrors.ErrForbidden)
+	}
+	if req.OwnerID <= 0 || req.AgentID <= 0 || req.Input == nil {
+		return nil, agenterrors.ErrInvalidInput
+	}
+	var parentRunID *int64
+	if req.ParentRunID > 0 {
+		parentRunID = &req.ParentRunID
+	}
+	run, output, err := s.run(ctx, req.OwnerID, req.AgentID, RunAgentRequest{
+		FlowVersionID: req.FlowVersionID,
+		Input:         req.Input,
+	}, nil, runOptions{
+		ParentRunID:  parentRunID,
+		CallerNodeID: req.CallerNodeID,
+		CallDepth:    req.CallDepth + 1,
+	})
+	if run == nil {
+		return nil, err
+	}
+	result := &toolruntime.AgentCallResult{
+		RunID:         run.ID,
+		AgentID:       run.AgentID,
+		FlowVersionID: run.FlowVersionID,
+		Status:        run.Status,
+		Output:        map[string]any(output),
+		Error:         run.ErrorMessage,
+		LatencyMS:     run.LatencyMS,
+	}
+	return result, err
 }
 
 func (s *Service) GetRun(ctx context.Context, ownerID, id int64) (*agent.Run, error) {
@@ -267,6 +417,16 @@ func (s *Service) ListNodeLogs(ctx context.Context, ownerID, runID int64) ([]age
 		return nil, err
 	}
 	return s.nodeLogs.ListByRun(ctx, ownerID, runID)
+}
+
+func (s *Service) ListRunSteps(ctx context.Context, ownerID, runID int64) ([]agent.RunStep, error) {
+	if _, err := s.GetRun(ctx, ownerID, runID); err != nil {
+		return nil, err
+	}
+	if s.runSteps == nil {
+		return []agent.RunStep{}, nil
+	}
+	return s.runSteps.ListByRun(ctx, ownerID, runID)
 }
 
 func (s *Service) ListMemoryWriteLogs(ctx context.Context, ownerID, runID int64) ([]memory.WriteLog, error) {
@@ -349,7 +509,7 @@ func (s *Service) WriteAssistantMessage(ctx context.Context, ownerID int64, conv
 	return message.ID, nil
 }
 
-func (s *Service) run(ctx context.Context, ownerID, agentID int64, req RunAgentRequest, stream func(runtimeevent.Event) error) (*agent.Run, engine.NodeOutput, error) {
+func (s *Service) run(ctx context.Context, ownerID, agentID int64, req RunAgentRequest, stream func(runtimeevent.Event) error, opts runOptions) (*agent.Run, engine.NodeOutput, error) {
 	if req.Input == nil {
 		return nil, nil, agenterrors.ErrInvalidInput
 	}
@@ -374,6 +534,9 @@ func (s *Service) run(ctx context.Context, ownerID, agentID int64, req RunAgentR
 		AgentID:        agentID,
 		FlowVersionID:  version.ID,
 		ConversationID: req.ConversationID,
+		ParentRunID:    opts.ParentRunID,
+		CallerNodeID:   opts.CallerNodeID,
+		CallDepth:      opts.CallDepth,
 		Status:         agent.RunStatusRunning,
 		InputJSON:      inputJSON,
 		StartedAt:      now,
@@ -386,7 +549,10 @@ func (s *Service) run(ctx context.Context, ownerID, agentID int64, req RunAgentR
 		AgentID:        agentID,
 		FlowVersionID:  version.ID,
 		RunID:          run.ID,
+		ParentRunID:    opts.ParentRunID,
+		CallDepth:      opts.CallDepth,
 		ConversationID: req.ConversationID,
+		AgentSteps:     s,
 		Input:          req.Input,
 		Events: &eventEmitter{
 			repo:    s.events,
@@ -413,6 +579,33 @@ func (s *Service) run(ctx context.Context, ownerID, agentID int64, req RunAgentR
 	}
 	_ = s.writeNodeLogs(ctx, ownerID, run.ID, dsl, rc)
 	return run, output, execErr
+}
+
+func (s *Service) RecordAgentStep(ctx context.Context, rc *engine.RunContext, step engine.AgentStepRecord) error {
+	if s.runSteps == nil || rc == nil {
+		return nil
+	}
+	nodeID := step.NodeID
+	if nodeID == "" {
+		nodeID = rc.CurrentNodeID
+	}
+	return s.runSteps.Create(ctx, &agent.RunStep{
+		OwnerID:       rc.OwnerID,
+		RunID:         rc.RunID,
+		NodeID:        nodeID,
+		StepIndex:     step.StepIndex,
+		StepType:      step.StepType,
+		Role:          step.Role,
+		Content:       step.Content,
+		ToolCallID:    step.ToolCallID,
+		ToolName:      step.ToolName,
+		ArgumentsJSON: step.ArgumentsJSON,
+		OutputJSON:    step.OutputJSON,
+		ErrorMessage:  step.ErrorMessage,
+		TokenCount:    step.TokenCount,
+		LatencyMS:     step.LatencyMS,
+		CreatedAt:     time.Now().UTC(),
+	})
 }
 
 func (s *Service) loadRunVersion(ctx context.Context, ownerID, agentID, versionID int64) (*agent.FlowVersion, error) {
@@ -502,4 +695,24 @@ func mapNotFound(err error) error {
 		return agenterrors.ErrNotFound
 	}
 	return err
+}
+
+func defaultAgentProfile(ownerID, agentID int64, name, description string) *agent.Profile {
+	role := strings.TrimSpace(name)
+	if role == "" {
+		role = "Assistant"
+	}
+	goal := strings.TrimSpace(description)
+	if goal == "" {
+		goal = "Complete user tasks through the configured workflow and tools."
+	}
+	return &agent.Profile{
+		OwnerID:            ownerID,
+		AgentID:            agentID,
+		Role:               role,
+		Goal:               goal,
+		SystemPrompt:       "You are a helpful, careful AgentCanvas agent. Use available tools when needed and explain final results clearly.",
+		MaxIterations:      10,
+		MaxExecutionTimeMS: 120000,
+	}
 }

@@ -89,3 +89,61 @@ func TestOpenAICompatibleStreamChat(t *testing.T) {
 		t.Fatalf("unexpected stream: content=%q usage=%+v done=%v", content, usage, done)
 	}
 }
+
+func TestOpenAICompatibleChatWithTools(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req openAIToolChatRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatal(err)
+		}
+		if len(req.Tools) != 1 || req.Tools[0].Function.Name != "search_knowledge" {
+			t.Fatalf("unexpected tools: %+v", req.Tools)
+		}
+		if req.ToolChoice != "auto" {
+			t.Fatalf("unexpected tool choice: %+v", req.ToolChoice)
+		}
+		_ = json.NewEncoder(w).Encode(openAIToolChatResponse{
+			Choices: []struct {
+				Message openAIToolChatMessage `json:"message"`
+			}{{
+				Message: openAIToolChatMessage{
+					Role: "assistant",
+					ToolCalls: []openAIToolCall{{
+						ID:   "call_1",
+						Type: "function",
+						Function: openAIToolFunction{
+							Name:      "search_knowledge",
+							Arguments: `{"query":"agent"}`,
+						},
+					}},
+				},
+			}},
+			Usage: Usage{TotalTokens: 9},
+		})
+	}))
+	defer server.Close()
+
+	client := &OpenAICompatibleChatClient{Client: server.Client()}
+	resp, err := client.ChatWithTools(context.Background(), ChatProviderConfig{ProviderType: "openai_compatible", BaseURL: server.URL}, ToolChatRequest{
+		Model:      "test-model",
+		Messages:   []ChatMessage{{Role: "user", Content: "hello"}},
+		ToolChoice: "auto",
+		Tools: []ToolDefinition{{
+			Type: "function",
+			Function: ToolFunctionDefinition{
+				Name:       "search_knowledge",
+				Parameters: json.RawMessage(`{"type":"object"}`),
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Usage.TotalTokens != 9 || len(resp.Message.ToolCalls) != 1 {
+		t.Fatalf("unexpected tool response: %+v", resp)
+	}
+	call := resp.Message.ToolCalls[0]
+	if call.ID != "call_1" || call.Name != "search_knowledge" || string(call.Arguments) != `{"query":"agent"}` {
+		t.Fatalf("unexpected call: %+v", call)
+	}
+}

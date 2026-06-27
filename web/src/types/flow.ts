@@ -5,6 +5,9 @@ export type NodeType =
   | 'knowledge_retrieval'
   | 'prompt'
   | 'llm'
+  | 'agent_loop'
+  | 'agent_call'
+  | 'code_sandbox'
   | 'message'
   | 'memory_read'
   | 'memory_write'
@@ -35,9 +38,46 @@ export interface LLMConfig {
   stream?: boolean;
 }
 
+export interface AgentLoopConfig {
+  provider_id: number;
+  model?: string;
+  system_prompt?: string;
+  task_template?: string;
+  tool_ids?: number[];
+  knowledge_ids?: number[];
+  knowledge_top_k?: number;
+  knowledge_mode?: 'keyword' | 'vector' | 'hybrid';
+  call_agent_ids?: number[];
+  max_agent_call_depth?: number;
+  code_execution_enabled?: boolean;
+  memory_enabled?: boolean;
+  max_iterations?: number;
+  max_tool_calls?: number;
+  max_execution_time_ms?: number;
+  temperature?: number;
+  return_intermediate_steps?: boolean;
+  output_mode?: 'final_answer' | 'full';
+}
+
 export interface MessageConfig {
   content: string;
   with_citation?: boolean;
+}
+
+export interface AgentCallConfig {
+  agent_id: number;
+  flow_version_id?: number;
+  input?: Record<string, unknown>;
+  max_depth?: number;
+}
+
+export interface CodeSandboxConfig {
+  language?: 'python';
+  code: string;
+  timeout_ms?: number;
+  max_output_bytes?: number;
+  network_enabled?: boolean;
+  memory_limit_mb?: number;
 }
 
 export interface MemoryReadConfig {
@@ -83,6 +123,9 @@ export type NodeConfig =
   | RetrievalConfig
   | PromptConfig
   | LLMConfig
+  | AgentLoopConfig
+  | AgentCallConfig
+  | CodeSandboxConfig
   | MessageConfig
   | MemoryReadConfig
   | MemoryWriteConfig
