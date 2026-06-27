@@ -55,6 +55,7 @@ const nodeMeta: Record<NodeType, { label: string; icon: React.ElementType; descr
   llm: { label: 'LLM', icon: BrainCircuit, description: '调用模型生成内容' },
   agent_loop: { label: 'Agent Loop', icon: Bot, description: '自主选择工具并循环推理' },
   agent_call: { label: 'Call Agent', icon: Workflow, description: '调用另一个 Agent' },
+  code_sandbox: { label: 'Code Sandbox', icon: Braces, description: '隔离执行 Python 代码' },
   message: { label: 'Message', icon: Send, description: '输出或写入会话消息' },
   memory_read: { label: 'Memory Read', icon: BrainCircuit, description: '读取长期记忆' },
   memory_write: { label: 'Memory Write', icon: Save, description: '写入或更新记忆' },
@@ -81,6 +82,7 @@ function defaultConfig(type: NodeType): CanvasNodeData['config'] {
       knowledge_mode: 'keyword',
       call_agent_ids: [],
       max_agent_call_depth: 3,
+      code_execution_enabled: false,
       max_iterations: 8,
       max_tool_calls: 16,
       max_execution_time_ms: 120000,
@@ -90,6 +92,7 @@ function defaultConfig(type: NodeType): CanvasNodeData['config'] {
     };
   }
   if (type === 'agent_call') return { agent_id: 0, input: { query: '{{sys.query}}' }, max_depth: 3 };
+  if (type === 'code_sandbox') return { language: 'python', code: 'print("hello from sandbox")', timeout_ms: 5000, max_output_bytes: 65536, network_enabled: false, memory_limit_mb: 128 };
   if (type === 'message') return { content: '{{llm.content}}', with_citation: true };
   if (type === 'memory_read') return { memory_types: ['profile_memory', 'summary_memory'], limit: 5 };
   if (type === 'memory_write') return { memory_type: 'summary_memory', content: '{{llm.content}}', importance: 0.5, source: 'agent' };
@@ -232,6 +235,7 @@ function validateLocal(nodes: CanvasNode[], edges: Edge[]): string {
     if (node.data.nodeType === 'agent_loop' && Number(config.provider_id ?? 0) <= 0) return 'Agent Loop 节点需要选择 Provider';
     if (node.data.nodeType === 'agent_loop' && !String(config.task_template ?? '').trim()) return 'Agent Loop 节点需要任务模板';
     if (node.data.nodeType === 'agent_call' && Number(config.agent_id ?? 0) <= 0) return 'Call Agent 节点需要选择 Agent';
+    if (node.data.nodeType === 'code_sandbox' && !String(config.code ?? '').trim()) return 'Code Sandbox 节点需要代码';
     if (node.data.nodeType === 'message' && !String(config.content ?? '').trim()) return 'Message 节点需要内容';
     if (node.data.nodeType === 'memory_write' && (!String(config.memory_type ?? '').trim() || !String(config.content ?? '').trim())) return 'Memory Write 节点需要类型和内容';
     if (node.data.nodeType === 'http_tool' && Number(config.tool_id ?? 0) <= 0) return 'HTTP Tool 节点需要选择 Tool';
@@ -784,6 +788,12 @@ export function CanvasPage() {
                   <Field label="Agent 调用深度">
                     <TextInput type="number" min={1} max={5} value={Number(config.max_agent_call_depth ?? 3)} onChange={(event) => updateSelectedConfig({ max_agent_call_depth: Number(event.target.value) })} />
                   </Field>
+                  <Field label="代码执行工具">
+                    <Select value={config.code_execution_enabled ? 'enabled' : 'disabled'} onChange={(event) => updateSelectedConfig({ code_execution_enabled: event.target.value === 'enabled' })}>
+                      <option value="disabled">Disabled</option>
+                      <option value="enabled">Enabled</option>
+                    </Select>
+                  </Field>
                   <Field label="最大轮次">
                     <TextInput type="number" min={1} max={50} value={Number(config.max_iterations ?? 8)} onChange={(event) => updateSelectedConfig({ max_iterations: Number(event.target.value) })} />
                   </Field>
@@ -820,6 +830,33 @@ export function CanvasPage() {
                   </Field>
                   <Field label="最大调用深度">
                     <TextInput type="number" min={1} max={5} value={Number(config.max_depth ?? 3)} onChange={(event) => updateSelectedConfig({ max_depth: Number(event.target.value) })} />
+                  </Field>
+                </>
+              )}
+              {selected.data.nodeType === 'code_sandbox' && (
+                <>
+                  <Field label="语言">
+                    <Select value={String(config.language ?? 'python')} onChange={(event) => updateSelectedConfig({ language: event.target.value })}>
+                      <option value="python">Python</option>
+                    </Select>
+                  </Field>
+                  <Field label="代码">
+                    <TextArea value={String(config.code ?? '')} onChange={(event) => updateSelectedConfig({ code: event.target.value })} />
+                  </Field>
+                  <Field label="超时毫秒">
+                    <TextInput type="number" min={1000} max={30000} step={1000} value={Number(config.timeout_ms ?? 5000)} onChange={(event) => updateSelectedConfig({ timeout_ms: Number(event.target.value) })} />
+                  </Field>
+                  <Field label="最大输出字节">
+                    <TextInput type="number" min={1024} max={1048576} value={Number(config.max_output_bytes ?? 65536)} onChange={(event) => updateSelectedConfig({ max_output_bytes: Number(event.target.value) })} />
+                  </Field>
+                  <Field label="内存 MB">
+                    <TextInput type="number" min={32} max={512} value={Number(config.memory_limit_mb ?? 128)} onChange={(event) => updateSelectedConfig({ memory_limit_mb: Number(event.target.value) })} />
+                  </Field>
+                  <Field label="网络">
+                    <Select value={config.network_enabled ? 'enabled' : 'disabled'} onChange={(event) => updateSelectedConfig({ network_enabled: event.target.value === 'enabled' })}>
+                      <option value="disabled">Disabled</option>
+                      <option value="enabled">Enabled</option>
+                    </Select>
                   </Field>
                 </>
               )}

@@ -9,6 +9,7 @@ import (
 	"agentcanvas/internal/domain/tool"
 	"agentcanvas/internal/infrastructure/llm"
 	"agentcanvas/internal/runtime/engine"
+	"agentcanvas/internal/runtime/sandbox"
 	"agentcanvas/internal/runtime/toolruntime"
 )
 
@@ -43,6 +44,7 @@ type Deps struct {
 	ToolCalling     llm.ToolCallingClient
 	ToolRegistry    toolruntime.Registry
 	AgentCaller     toolruntime.AgentCaller
+	Sandbox         sandbox.Runner
 }
 
 func DefaultNodes(deps Deps) []engine.Node {
@@ -56,13 +58,19 @@ func DefaultNodes(deps Deps) []engine.Node {
 	if toolRegistry == nil && deps.Tools != nil {
 		toolRegistry = toolruntime.BasicRegistry{Tools: deps.Tools, Invocations: deps.ToolInvocations}
 	}
+	sandboxRunner := deps.Sandbox
+	if sandboxRunner == nil {
+		defaultRunner := sandbox.NewDockerRunner()
+		sandboxRunner = defaultRunner
+	}
 	return []engine.Node{
 		BeginNode{},
 		RetrievalNode{Retriever: deps.Retriever},
 		PromptNode{},
 		LLMNode{Client: deps.LLM, Providers: deps.Providers, History: deps.MessageHistory},
-		AgentLoopNode{LLM: toolCalling, Providers: deps.Providers, Tools: toolRegistry, Retriever: deps.Retriever, AgentCaller: deps.AgentCaller},
+		AgentLoopNode{LLM: toolCalling, Providers: deps.Providers, Tools: toolRegistry, Retriever: deps.Retriever, AgentCaller: deps.AgentCaller, Sandbox: sandboxRunner},
 		AgentCallNode{Caller: deps.AgentCaller},
+		CodeSandboxNode{Runner: sandboxRunner},
 		MessageNode{Writer: deps.Messages},
 		MemoryReadNode{Memories: deps.Memories},
 		MemoryWriteNode{Memories: deps.Memories, Logs: deps.MemoryWriteLogs},

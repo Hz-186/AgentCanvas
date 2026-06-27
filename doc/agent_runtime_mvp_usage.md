@@ -16,7 +16,9 @@
 - 已有 HTTP Tool 作为 Agent 可调用工具。
 - 配置 `knowledge_ids` 后自动暴露 `search_knowledge` 工具。
 - 配置 `call_agent_ids` 后自动暴露 `call_agent` 工具。
+- 开启 `code_execution_enabled` 后自动暴露 `execute_python` 工具。
 - `agent_call` 节点可在确定性 Workflow 中调用另一个 Agent。
+- `code_sandbox` 节点可在确定性 Workflow 中执行 Python 代码。
 - `agent_started / agent_step / agent_finished / agent_failed` 运行事件。
 - Canvas 中新增 `Agent Loop` 节点配置。
 
@@ -40,7 +42,8 @@
 6. 在“可用工具”中选择已经创建的 HTTP Tool。
 7. 在“知识库工具”中选择知识库后，Agent 会看到内置 `search_knowledge` 工具。
 8. 在“可调用 Agent”中选择子 Agent 后，Agent 会看到内置 `call_agent` 工具。
-9. 根据需要设置：
+9. 开启“代码执行工具”后，Agent 会看到内置 `execute_python` 工具。
+10. 根据需要设置：
    - `max_iterations`：默认 8。
    - `max_tool_calls`：默认 16。
    - `max_execution_time_ms`：默认 120000。
@@ -80,6 +83,7 @@
         "knowledge_mode": "keyword",
         "call_agent_ids": [2, 3],
         "max_agent_call_depth": 3,
+        "code_execution_enabled": true,
         "max_iterations": 8,
         "max_tool_calls": 16,
         "max_execution_time_ms": 120000,
@@ -147,6 +151,46 @@
 
 这些字段用于追踪 Supervisor-Worker 运行关系，并防止无限递归。
 
+## 代码沙盒
+
+确定性执行可以使用 `code_sandbox` 节点：
+
+```json
+{
+  "id": "calculate",
+  "type": "code_sandbox",
+  "name": "Calculate",
+  "config": {
+    "language": "python",
+    "code": "print(6 * 7)",
+    "timeout_ms": 5000,
+    "max_output_bytes": 65536,
+    "network_enabled": false,
+    "memory_limit_mb": 128
+  }
+}
+```
+
+自治执行可以在 `agent_loop` 中开启：
+
+```json
+{
+  "code_execution_enabled": true
+}
+```
+
+开启后模型会看到 `execute_python` 工具。默认 Docker Runner 使用：
+
+- `--network none`
+- `--memory 128m`
+- `--cpus 1`
+- `--pids-limit 64`
+- 只读挂载临时代码目录
+- 默认超时 5 秒，最大 30 秒
+- 默认输出上限 64 KB
+
+本地运行该能力需要安装 Docker，并确保 `python:3.12-alpine` 镜像可用。
+
 ## 调试观察
 
 流式调试时，事件面板会看到：
@@ -177,10 +221,10 @@
 本 MVP 先完成真正 Agent 的核心闭环，没有推翻现有 Workflow：
 
 - 暂不支持任意带环 Canvas。
-- 暂不支持沙盒代码执行。
+- 已支持 `code_sandbox` 节点和 `execute_python` 工具的 Docker 沙盒初版。
 - 已支持 `agent_call` 节点和 `call_agent` 工具的初版 Supervisor-Worker 调用。
 - 暂未持久化独立 `agent_run_steps` 表，当前通过 `agent_run_events` 保存 step 事件。
-- 当前 Runtime Tool 已接入已有 HTTP Tool、知识库检索和子 Agent 调用；Memory / Sandbox 可按同一接口继续扩展。
+- 当前 Runtime Tool 已接入已有 HTTP Tool、知识库检索、子 Agent 调用和 Python 沙盒执行；Memory 可按同一接口继续扩展。
 
 ## 验收建议
 

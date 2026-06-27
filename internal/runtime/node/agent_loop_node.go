@@ -10,6 +10,7 @@ import (
 	runtimeagent "agentcanvas/internal/runtime/agent"
 	"agentcanvas/internal/runtime/engine"
 	runtimeevent "agentcanvas/internal/runtime/event"
+	"agentcanvas/internal/runtime/sandbox"
 	"agentcanvas/internal/runtime/toolruntime"
 
 	"agentcanvas/internal/infrastructure/llm"
@@ -22,6 +23,7 @@ type AgentLoopNode struct {
 	Tools       toolruntime.Registry
 	Retriever   retrieval.Retriever
 	AgentCaller toolruntime.AgentCaller
+	Sandbox     sandbox.Runner
 }
 
 type agentLoopConfig struct {
@@ -35,6 +37,7 @@ type agentLoopConfig struct {
 	KnowledgeMode           string   `json:"knowledge_mode"`
 	CallAgentIDs            []int64  `json:"call_agent_ids"`
 	MaxAgentCallDepth       int      `json:"max_agent_call_depth"`
+	CodeExecutionEnabled    bool     `json:"code_execution_enabled"`
 	MaxIterations           int      `json:"max_iterations"`
 	MaxToolCalls            int      `json:"max_tool_calls"`
 	MaxExecutionTimeMS      int      `json:"max_execution_time_ms"`
@@ -197,6 +200,12 @@ func (n AgentLoopNode) loadTools(ctx context.Context, ownerID int64, cfg agentLo
 			AllowedAgentIDs: cfg.CallAgentIDs,
 			MaxDepth:        cfg.MaxAgentCallDepth,
 		})
+	}
+	if cfg.CodeExecutionEnabled {
+		if n.Sandbox == nil {
+			return nil, fmt.Errorf("agent_loop sandbox runner is not configured")
+		}
+		tools = append(tools, toolruntime.PythonSandboxTool{Runner: n.Sandbox})
 	}
 	if len(cfg.ToolIDs) == 0 {
 		return tools, nil

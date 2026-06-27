@@ -7,6 +7,7 @@ export type NodeType =
   | 'llm'
   | 'agent_loop'
   | 'agent_call'
+  | 'code_sandbox'
   | 'message'
   | 'memory_read'
   | 'memory_write'
@@ -48,6 +49,7 @@ export interface AgentLoopConfig {
   knowledge_mode?: 'keyword' | 'vector' | 'hybrid';
   call_agent_ids?: number[];
   max_agent_call_depth?: number;
+  code_execution_enabled?: boolean;
   max_iterations?: number;
   max_tool_calls?: number;
   max_execution_time_ms?: number;
@@ -66,6 +68,15 @@ export interface AgentCallConfig {
   flow_version_id?: number;
   input?: Record<string, unknown>;
   max_depth?: number;
+}
+
+export interface CodeSandboxConfig {
+  language?: 'python';
+  code: string;
+  timeout_ms?: number;
+  max_output_bytes?: number;
+  network_enabled?: boolean;
+  memory_limit_mb?: number;
 }
 
 export interface MemoryReadConfig {
@@ -113,6 +124,7 @@ export type NodeConfig =
   | LLMConfig
   | AgentLoopConfig
   | AgentCallConfig
+  | CodeSandboxConfig
   | MessageConfig
   | MemoryReadConfig
   | MemoryWriteConfig
