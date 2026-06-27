@@ -32,6 +32,7 @@ type Service struct {
 	runs            agent.RunRepository
 	events          agent.RunEventRepository
 	nodeLogs        agent.NodeLogRepository
+	runSteps        agent.RunStepRepository
 	memories        memory.Repository
 	memoryLogs      memory.WriteLogRepository
 	tools           tool.DefinitionRepository
@@ -45,8 +46,8 @@ type Service struct {
 	validator       *flow.Validator
 }
 
-func NewService(agents agent.Repository, versions agent.FlowVersionRepository, runs agent.RunRepository, events agent.RunEventRepository, nodeLogs agent.NodeLogRepository, memories memory.Repository, memoryLogs memory.WriteLogRepository, tools tool.DefinitionRepository, toolInvocations tool.InvocationRepository, providers providerdomain.Repository, messages conversation.MessageRepository, retriever retrieval.Retriever, llmClient llm.ChatClient, secrets *cryptoinfra.SecretBox) *Service {
-	s := &Service{agents: agents, versions: versions, runs: runs, events: events, nodeLogs: nodeLogs, memories: memories, memoryLogs: memoryLogs, tools: tools, toolInvocations: toolInvocations, providers: providers, messages: messages, retriever: retriever, llm: llmClient, secrets: secrets}
+func NewService(agents agent.Repository, versions agent.FlowVersionRepository, runs agent.RunRepository, events agent.RunEventRepository, nodeLogs agent.NodeLogRepository, runSteps agent.RunStepRepository, memories memory.Repository, memoryLogs memory.WriteLogRepository, tools tool.DefinitionRepository, toolInvocations tool.InvocationRepository, providers providerdomain.Repository, messages conversation.MessageRepository, retriever retrieval.Retriever, llmClient llm.ChatClient, secrets *cryptoinfra.SecretBox) *Service {
+	s := &Service{agents: agents, versions: versions, runs: runs, events: events, nodeLogs: nodeLogs, runSteps: runSteps, memories: memories, memoryLogs: memoryLogs, tools: tools, toolInvocations: toolInvocations, providers: providers, messages: messages, retriever: retriever, llm: llmClient, secrets: secrets}
 	s.executor = engine.NewExecutor(runtimenode.DefaultNodes(runtimenode.Deps{Retriever: retriever, LLM: llmClient, Providers: s, Messages: s, MessageHistory: messages, Memories: memories, MemoryWriteLogs: memoryLogs, Tools: tools, ToolInvocations: toolInvocations, AgentCaller: s}))
 	s.validator = flow.NewValidator(s.executor)
 	return s
@@ -314,6 +315,16 @@ func (s *Service) ListNodeLogs(ctx context.Context, ownerID, runID int64) ([]age
 	return s.nodeLogs.ListByRun(ctx, ownerID, runID)
 }
 
+func (s *Service) ListRunSteps(ctx context.Context, ownerID, runID int64) ([]agent.RunStep, error) {
+	if _, err := s.GetRun(ctx, ownerID, runID); err != nil {
+		return nil, err
+	}
+	if s.runSteps == nil {
+		return []agent.RunStep{}, nil
+	}
+	return s.runSteps.ListByRun(ctx, ownerID, runID)
+}
+
 func (s *Service) ListMemoryWriteLogs(ctx context.Context, ownerID, runID int64) ([]memory.WriteLog, error) {
 	if _, err := s.GetRun(ctx, ownerID, runID); err != nil {
 		return nil, err
@@ -437,6 +448,7 @@ func (s *Service) run(ctx context.Context, ownerID, agentID int64, req RunAgentR
 		ParentRunID:    opts.ParentRunID,
 		CallDepth:      opts.CallDepth,
 		ConversationID: req.ConversationID,
+		AgentSteps:     s,
 		Input:          req.Input,
 		Events: &eventEmitter{
 			repo:    s.events,
@@ -463,6 +475,33 @@ func (s *Service) run(ctx context.Context, ownerID, agentID int64, req RunAgentR
 	}
 	_ = s.writeNodeLogs(ctx, ownerID, run.ID, dsl, rc)
 	return run, output, execErr
+}
+
+func (s *Service) RecordAgentStep(ctx context.Context, rc *engine.RunContext, step engine.AgentStepRecord) error {
+	if s.runSteps == nil || rc == nil {
+		return nil
+	}
+	nodeID := step.NodeID
+	if nodeID == "" {
+		nodeID = rc.CurrentNodeID
+	}
+	return s.runSteps.Create(ctx, &agent.RunStep{
+		OwnerID:       rc.OwnerID,
+		RunID:         rc.RunID,
+		NodeID:        nodeID,
+		StepIndex:     step.StepIndex,
+		StepType:      step.StepType,
+		Role:          step.Role,
+		Content:       step.Content,
+		ToolCallID:    step.ToolCallID,
+		ToolName:      step.ToolName,
+		ArgumentsJSON: step.ArgumentsJSON,
+		OutputJSON:    step.OutputJSON,
+		ErrorMessage:  step.ErrorMessage,
+		TokenCount:    step.TokenCount,
+		LatencyMS:     step.LatencyMS,
+		CreatedAt:     time.Now().UTC(),
+	})
 }
 
 func (s *Service) loadRunVersion(ctx context.Context, ownerID, agentID, versionID int64) (*agent.FlowVersion, error) {

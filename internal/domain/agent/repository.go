@@ -36,3 +36,8 @@ type NodeLogRepository interface {
 	Update(ctx context.Context, item *NodeLog) error
 	ListByRun(ctx context.Context, ownerID, runID int64) ([]NodeLog, error)
 }
+
+type RunStepRepository interface {
+	Create(ctx context.Context, item *RunStep) error
+	ListByRun(ctx context.Context, ownerID, runID int64) ([]RunStep, error)
+}

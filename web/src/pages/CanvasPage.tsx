@@ -34,7 +34,7 @@ import {
 } from 'lucide-react';
 import { agentApi, knowledgeApi, settingsApi } from '../api/resources';
 import { Button, EmptyState, Field, Panel, Segmented, Select, StatusBadge, TextArea, TextInput, Toast } from '../components/ui';
-import type { Agent, FlowVersion, KnowledgeBase, MemoryWriteLog, ModelProvider, ToolDefinition, ToolInvocation } from '../types/api';
+import type { Agent, FlowVersion, KnowledgeBase, MemoryWriteLog, ModelProvider, RunStep, ToolDefinition, ToolInvocation } from '../types/api';
 import type { DSLEdge, DSLNode, FlowDSL, NodeConfig, NodeType } from '../types/flow';
 import type { RuntimeEvent } from '../types/events';
 import { friendlyErrorMessage, parseJsonObject, prettyJson } from '../utils/format';
@@ -286,6 +286,7 @@ export function CanvasPage() {
   const [runningDebugMode, setRunningDebugMode] = useState<DebugRunMode | null>(null);
   const [events, setEvents] = useState<RuntimeEvent[]>([]);
   const [runOutput, setRunOutput] = useState<Record<string, unknown> | null>(null);
+  const [runSteps, setRunSteps] = useState<RunStep[]>([]);
   const [memoryLogs, setMemoryLogs] = useState<MemoryWriteLog[]>([]);
   const [toolInvocations, setToolInvocations] = useState<ToolInvocation[]>([]);
   const [message, setMessage] = useState('');
@@ -537,6 +538,7 @@ export function CanvasPage() {
     setRunningDebugMode(selectedRunMode);
     setEvents([]);
     setRunOutput(null);
+    setRunSteps([]);
     setMemoryLogs([]);
     setToolInvocations([]);
     setError('');
@@ -546,10 +548,12 @@ export function CanvasPage() {
         if (controller.signal.aborted) return;
         setRunOutput(resp.output);
         void Promise.all([
+          agentApi.listRunSteps(resp.run.id),
           agentApi.listMemoryWriteLogs(resp.run.id),
           agentApi.listToolInvocations(resp.run.id),
-        ]).then(([memoryResp, toolResp]) => {
+        ]).then(([stepResp, memoryResp, toolResp]) => {
           if (controller.signal.aborted) return;
+          setRunSteps(stepResp);
           setMemoryLogs(memoryResp);
           setToolInvocations(toolResp);
         }).catch(() => undefined);
@@ -563,10 +567,12 @@ export function CanvasPage() {
             const done = JSON.parse(msg.data) as { run: { id: number }; output: Record<string, unknown> };
             setRunOutput(done.output);
             void Promise.all([
+              agentApi.listRunSteps(done.run.id),
               agentApi.listMemoryWriteLogs(done.run.id),
               agentApi.listToolInvocations(done.run.id),
-            ]).then(([memoryResp, toolResp]) => {
+            ]).then(([stepResp, memoryResp, toolResp]) => {
               if (controller.signal.aborted) return;
+              setRunSteps(stepResp);
               setMemoryLogs(memoryResp);
               setToolInvocations(toolResp);
             }).catch(() => undefined);
@@ -970,6 +976,12 @@ export function CanvasPage() {
                       <StatusBadge tone="good">output</StatusBadge>
                     </div>
                     <pre className="code-box debug-result-content">{runOutputText(runOutput)}</pre>
+                  </div>
+                ) : null}
+                {runSteps.length > 0 ? (
+                  <div className="card">
+                    <div className="card-title"><h3>Agent Steps</h3><StatusBadge tone="info">{runSteps.length}</StatusBadge></div>
+                    <pre className="code-box">{prettyJson(runSteps)}</pre>
                   </div>
                 ) : null}
                 {memoryLogs.length > 0 ? (

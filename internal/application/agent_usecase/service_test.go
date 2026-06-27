@@ -7,6 +7,7 @@ import (
 
 	"agentcanvas/internal/domain/agent"
 	"agentcanvas/internal/domain/flow"
+	"agentcanvas/internal/runtime/engine"
 
 	"gorm.io/gorm"
 )
@@ -70,6 +71,33 @@ func TestCreateFlowVersionCreatesVersionForRuntimeChange(t *testing.T) {
 	}
 	if versions.createCalls != 1 || versions.nextCalls != 1 {
 		t.Fatalf("expected one new version, createCalls=%d nextCalls=%d", versions.createCalls, versions.nextCalls)
+	}
+}
+
+func TestRecordAgentStepPersistsRunStep(t *testing.T) {
+	steps := &fakeRunStepRepo{}
+	service := &Service{runSteps: steps}
+	err := service.RecordAgentStep(context.Background(), &engine.RunContext{
+		OwnerID:       1,
+		RunID:         2,
+		CurrentNodeID: "agent_loop",
+	}, engine.AgentStepRecord{
+		StepIndex:  3,
+		StepType:   "tool_call",
+		ToolCallID: "call_1",
+		ToolName:   "search_knowledge",
+		Content:    "content",
+		LatencyMS:  15,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(steps.items) != 1 {
+		t.Fatalf("expected one step, got %d", len(steps.items))
+	}
+	item := steps.items[0]
+	if item.OwnerID != 1 || item.RunID != 2 || item.NodeID != "agent_loop" || item.StepIndex != 3 || item.ToolName != "search_knowledge" {
+		t.Fatalf("unexpected step: %+v", item)
 	}
 }
 
@@ -181,3 +209,16 @@ func (r *fakeFlowVersionRepo) NextVersionNo(_ context.Context, ownerID, agentID 
 }
 
 func (r *fakeFlowVersionRepo) Publish(context.Context, int64, int64, int64) error { return nil }
+
+type fakeRunStepRepo struct {
+	items []agent.RunStep
+}
+
+func (r *fakeRunStepRepo) Create(_ context.Context, item *agent.RunStep) error {
+	r.items = append(r.items, *item)
+	return nil
+}
+
+func (r *fakeRunStepRepo) ListByRun(context.Context, int64, int64) ([]agent.RunStep, error) {
+	return r.items, nil
+}

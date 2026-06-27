@@ -136,6 +136,7 @@ func NewRouter(deps RouterDeps) *gin.Engine {
 			protected.GET("/runs/:id", deps.AgentHandler.GetRun)
 			protected.GET("/runs/:id/events", deps.AgentHandler.ListRunEvents)
 			protected.GET("/runs/:id/node-logs", deps.AgentHandler.ListNodeLogs)
+			protected.GET("/runs/:id/steps", deps.AgentHandler.ListRunSteps)
 			protected.GET("/runs/:id/memory-write-logs", deps.AgentHandler.ListMemoryWriteLogs)
 			protected.GET("/runs/:id/tool-invocations", deps.AgentHandler.ListToolInvocations)
 			protected.POST("/runs/:id/cancel", deps.AgentHandler.CancelRun)

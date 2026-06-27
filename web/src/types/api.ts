@@ -407,6 +407,9 @@ export interface Run {
   agent_id: number;
   flow_version_id: number;
   conversation_id: number | null;
+  parent_run_id?: number | null;
+  caller_node_id?: string;
+  call_depth?: number;
   status: RunStatus;
   input_json: string;
   output_json: string;
@@ -444,6 +447,25 @@ export interface NodeLog {
   latency_ms: number;
   started_at: string;
   finished_at: string | null;
+  created_at: string;
+}
+
+export interface RunStep {
+  id: number;
+  owner_id: number;
+  run_id: number;
+  node_id: string;
+  step_index: number;
+  step_type: string;
+  role: string;
+  content: string;
+  tool_call_id: string;
+  tool_name: string;
+  arguments_json?: unknown;
+  output_json?: unknown;
+  error_message: string;
+  token_count: number;
+  latency_ms: number;
   created_at: string;
 }
 

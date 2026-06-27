@@ -20,6 +20,7 @@
 - `agent_call` 节点可在确定性 Workflow 中调用另一个 Agent。
 - `code_sandbox` 节点可在确定性 Workflow 中执行 Python 代码。
 - `agent_started / agent_step / agent_finished / agent_failed` 运行事件。
+- `agent_run_steps` 持久化表和 `/runs/:id/steps` 查询接口。
 - Canvas 中新增 `Agent Loop` 节点配置。
 
 ## Canvas 配置方式
@@ -199,6 +200,7 @@
 - `agent_step`：每一轮 LLM 响应、工具调用、工具结果、最终答案。
 - `tool_invocations`：HTTP Runtime Tool 的持久化调用记录，可在调试结果下方查看。
 - `agent_finished`：Agent 停止原因、轮次、工具调用数和 token 统计。
+- 运行结束后，调试台会拉取 `Agent Steps`，展示持久化后的 step trace。
 
 `agent_loop` 输出字段：
 
@@ -214,7 +216,7 @@
 }
 ```
 
-当开启 `return_intermediate_steps` 或 `output_mode = full` 时，输出会额外包含 `steps`。
+当开启 `return_intermediate_steps` 或 `output_mode = full` 时，输出会额外包含 `steps`。无论是否返回到节点输出，`agent_loop` 的中间步骤都会写入 `agent_run_steps`。
 
 ## 当前边界
 
@@ -223,7 +225,7 @@
 - 暂不支持任意带环 Canvas。
 - 已支持 `code_sandbox` 节点和 `execute_python` 工具的 Docker 沙盒初版。
 - 已支持 `agent_call` 节点和 `call_agent` 工具的初版 Supervisor-Worker 调用。
-- 暂未持久化独立 `agent_run_steps` 表，当前通过 `agent_run_events` 保存 step 事件。
+- 已持久化独立 `agent_run_steps` 表，同时保留 `agent_run_events` 中的实时 step 事件。
 - 当前 Runtime Tool 已接入已有 HTTP Tool、知识库检索、子 Agent 调用和 Python 沙盒执行；Memory 可按同一接口继续扩展。
 
 ## 验收建议

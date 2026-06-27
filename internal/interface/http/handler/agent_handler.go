@@ -261,6 +261,19 @@ func (h *AgentHandler) ListNodeLogs(c *gin.Context) {
 	response.OK(c, items)
 }
 
+func (h *AgentHandler) ListRunSteps(c *gin.Context) {
+	ownerID, id, ok := h.ownerAndID(c, "id")
+	if !ok {
+		return
+	}
+	items, err := h.service.ListRunSteps(c.Request.Context(), ownerID, id)
+	if err != nil {
+		writeAppError(c, err)
+		return
+	}
+	response.OK(c, items)
+}
+
 func (h *AgentHandler) ListMemoryWriteLogs(c *gin.Context) {
 	ownerID, id, ok := h.ownerAndID(c, "id")
 	if !ok {

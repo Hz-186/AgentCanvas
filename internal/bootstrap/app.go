@@ -92,6 +92,7 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 	runRepo := mysqlinfra.NewRunRepository(db)
 	runEventRepo := mysqlinfra.NewRunEventRepository(db)
 	nodeLogRepo := mysqlinfra.NewNodeLogRepository(db)
+	runStepRepo := mysqlinfra.NewRunStepRepository(db)
 	memoryRepo := mysqlinfra.NewMemoryRepository(db)
 	memoryWriteLogRepo := mysqlinfra.NewMemoryWriteLogRepository(db)
 	toolDefinitionRepo := mysqlinfra.NewToolDefinitionRepository(db)
@@ -116,7 +117,7 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 	knowledgeService := knowledgeusecase.NewService(knowledgeRepo, documentRepo, chunkRepo, ingestionJobRepo, retrievalLogRepo, auditRepo, fileStorage, retrievalService, esStore)
 	dialogService := dialogusecase.NewService(dialogRepo)
 	chatService := chatusecase.NewService(providerRepo, dialogRepo, knowledgeRepo, conversationRepo, messageRepo, usageRepo, retrievalService, chatClient, secretBox)
-	agentService := agentusecase.NewService(agentRepo, flowVersionRepo, runRepo, runEventRepo, nodeLogRepo, memoryRepo, memoryWriteLogRepo, toolDefinitionRepo, toolInvocationRepo, providerRepo, messageRepo, retrievalService, chatClient, secretBox)
+	agentService := agentusecase.NewService(agentRepo, flowVersionRepo, runRepo, runEventRepo, nodeLogRepo, runStepRepo, memoryRepo, memoryWriteLogRepo, toolDefinitionRepo, toolInvocationRepo, providerRepo, messageRepo, retrievalService, chatClient, secretBox)
 
 	healthHandler := handler.NewHealthHandler(db, redisClient, minioClient, esClient, cfg.MinIO.Bucket)
 	authHandler := handler.NewAuthHandler(authService)

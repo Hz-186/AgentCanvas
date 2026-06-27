@@ -114,6 +114,9 @@ func (n AgentLoopNode) Run(ctx context.Context, rc *engine.RunContext, input eng
 	runner := runtimeagent.Runner{
 		LLM: n.LLM,
 		OnStep: func(ctx context.Context, step runtimeagent.RunStep) error {
+			if rc.AgentSteps != nil {
+				_ = rc.AgentSteps.RecordAgentStep(ctx, rc, agentStepRecord(step, rc.CurrentNodeID))
+			}
 			emitRuntimeEvent(ctx, rc, runtimeevent.Event{
 				Type:     runtimeevent.AgentStep,
 				RunID:    rc.RunID,
@@ -176,6 +179,22 @@ func (n AgentLoopNode) Run(ctx context.Context, rc *engine.RunContext, input eng
 		output["steps"] = runtimeagent.CompactSteps(result.Steps, 8192)
 	}
 	return output, nil
+}
+
+func agentStepRecord(step runtimeagent.RunStep, nodeID string) engine.AgentStepRecord {
+	return engine.AgentStepRecord{
+		NodeID:        nodeID,
+		StepIndex:     step.Index,
+		StepType:      step.Type,
+		Role:          step.Role,
+		Content:       step.Content,
+		ToolCallID:    step.ToolCallID,
+		ToolName:      step.ToolName,
+		ArgumentsJSON: step.ArgumentsJSON,
+		OutputJSON:    step.OutputJSON,
+		ErrorMessage:  step.Error,
+		LatencyMS:     step.LatencyMS,
+	}
 }
 
 func (n AgentLoopNode) loadTools(ctx context.Context, ownerID int64, cfg agentLoopConfig) ([]toolruntime.RuntimeTool, error) {
