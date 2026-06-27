@@ -19,8 +19,10 @@ type ChatProviderConfig struct {
 }
 
 type ChatMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role       string     `json:"role"`
+	Content    string     `json:"content,omitempty"`
+	ToolCallID string     `json:"tool_call_id,omitempty"`
+	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
 }
 
 type ChatRequest struct {
@@ -40,6 +42,38 @@ type ChatResponse struct {
 	Usage   Usage  `json:"usage"`
 }
 
+type ToolDefinition struct {
+	Type     string                 `json:"type"`
+	Function ToolFunctionDefinition `json:"function"`
+}
+
+type ToolFunctionDefinition struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description,omitempty"`
+	Parameters  json.RawMessage `json:"parameters,omitempty"`
+	Strict      bool            `json:"strict,omitempty"`
+}
+
+type ToolCall struct {
+	ID        string          `json:"id"`
+	Type      string          `json:"type,omitempty"`
+	Name      string          `json:"name"`
+	Arguments json.RawMessage `json:"arguments"`
+}
+
+type ToolChatRequest struct {
+	Model       string           `json:"model"`
+	Messages    []ChatMessage    `json:"messages"`
+	Tools       []ToolDefinition `json:"tools,omitempty"`
+	ToolChoice  any              `json:"tool_choice,omitempty"`
+	Temperature *float64         `json:"temperature,omitempty"`
+}
+
+type ToolChatResponse struct {
+	Message ChatMessage `json:"message"`
+	Usage   Usage       `json:"usage"`
+}
+
 type StreamEvent struct {
 	Delta string
 	Usage Usage
@@ -49,6 +83,10 @@ type StreamEvent struct {
 type ChatClient interface {
 	Chat(ctx context.Context, cfg ChatProviderConfig, req ChatRequest) (*ChatResponse, error)
 	StreamChat(ctx context.Context, cfg ChatProviderConfig, req ChatRequest, onEvent func(StreamEvent) error) error
+}
+
+type ToolCallingClient interface {
+	ChatWithTools(ctx context.Context, cfg ChatProviderConfig, req ToolChatRequest) (*ToolChatResponse, error)
 }
 
 type OpenAICompatibleChatClient struct {
@@ -82,6 +120,31 @@ func (c *OpenAICompatibleChatClient) Chat(ctx context.Context, cfg ChatProviderC
 		content = resp.Choices[0].Message.Content
 	}
 	return &ChatResponse{Content: content, Usage: resp.Usage}, nil
+}
+
+func (c *OpenAICompatibleChatClient) ChatWithTools(ctx context.Context, cfg ChatProviderConfig, req ToolChatRequest) (*ToolChatResponse, error) {
+	endpoint, err := openAIChatEndpoint(cfg)
+	if err != nil {
+		return nil, err
+	}
+	payload := openAIToolChatRequest{
+		Model:       req.Model,
+		Messages:    toOpenAIToolMessages(req.Messages),
+		Tools:       req.Tools,
+		ToolChoice:  req.ToolChoice,
+		Temperature: req.Temperature,
+	}
+	var resp openAIToolChatResponse
+	if err := c.doJSON(ctx, endpoint, cfg.APIKey, payload, &resp); err != nil {
+		return nil, err
+	}
+	if len(resp.Choices) == 0 {
+		return &ToolChatResponse{}, nil
+	}
+	return &ToolChatResponse{
+		Message: fromOpenAIToolMessage(resp.Choices[0].Message),
+		Usage:   resp.Usage,
+	}, nil
 }
 
 func (c *OpenAICompatibleChatClient) StreamChat(ctx context.Context, cfg ChatProviderConfig, req ChatRequest, onEvent func(StreamEvent) error) error {
@@ -248,4 +311,108 @@ type openAIStreamChunk struct {
 		Delta ChatMessage `json:"delta"`
 	} `json:"choices"`
 	Usage Usage `json:"usage"`
+}
+
+type openAIToolChatRequest struct {
+	Model       string                  `json:"model"`
+	Messages    []openAIToolChatMessage `json:"messages"`
+	Tools       []ToolDefinition        `json:"tools,omitempty"`
+	ToolChoice  any                     `json:"tool_choice,omitempty"`
+	Temperature *float64                `json:"temperature,omitempty"`
+}
+
+type openAIToolChatResponse struct {
+	Choices []struct {
+		Message openAIToolChatMessage `json:"message"`
+	} `json:"choices"`
+	Usage Usage `json:"usage"`
+}
+
+type openAIToolChatMessage struct {
+	Role       string           `json:"role"`
+	Content    string           `json:"content,omitempty"`
+	ToolCallID string           `json:"tool_call_id,omitempty"`
+	ToolCalls  []openAIToolCall `json:"tool_calls,omitempty"`
+}
+
+type openAIToolCall struct {
+	ID       string             `json:"id"`
+	Type     string             `json:"type"`
+	Function openAIToolFunction `json:"function"`
+}
+
+type openAIToolFunction struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
+}
+
+func toOpenAIToolMessages(messages []ChatMessage) []openAIToolChatMessage {
+	out := make([]openAIToolChatMessage, 0, len(messages))
+	for _, msg := range messages {
+		out = append(out, openAIToolChatMessage{
+			Role:       msg.Role,
+			Content:    msg.Content,
+			ToolCallID: msg.ToolCallID,
+			ToolCalls:  toOpenAIToolCalls(msg.ToolCalls),
+		})
+	}
+	return out
+}
+
+func toOpenAIToolCalls(calls []ToolCall) []openAIToolCall {
+	if len(calls) == 0 {
+		return nil
+	}
+	out := make([]openAIToolCall, 0, len(calls))
+	for _, call := range calls {
+		typ := call.Type
+		if typ == "" {
+			typ = "function"
+		}
+		out = append(out, openAIToolCall{
+			ID:   call.ID,
+			Type: typ,
+			Function: openAIToolFunction{
+				Name:      call.Name,
+				Arguments: rawJSONToString(call.Arguments),
+			},
+		})
+	}
+	return out
+}
+
+func fromOpenAIToolMessage(msg openAIToolChatMessage) ChatMessage {
+	return ChatMessage{
+		Role:       msg.Role,
+		Content:    msg.Content,
+		ToolCallID: msg.ToolCallID,
+		ToolCalls:  fromOpenAIToolCalls(msg.ToolCalls),
+	}
+}
+
+func fromOpenAIToolCalls(calls []openAIToolCall) []ToolCall {
+	if len(calls) == 0 {
+		return nil
+	}
+	out := make([]ToolCall, 0, len(calls))
+	for _, call := range calls {
+		args := json.RawMessage(strings.TrimSpace(call.Function.Arguments))
+		if len(args) == 0 {
+			args = json.RawMessage(`{}`)
+		}
+		out = append(out, ToolCall{
+			ID:        call.ID,
+			Type:      call.Type,
+			Name:      call.Function.Name,
+			Arguments: args,
+		})
+	}
+	return out
+}
+
+func rawJSONToString(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return "{}"
+	}
+	return string(raw)
 }
