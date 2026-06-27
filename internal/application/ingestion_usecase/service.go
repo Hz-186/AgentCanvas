@@ -35,7 +35,7 @@ type Service struct {
 	providers providerdomain.Repository
 	storage   FileStorage
 	parser    parser.Parser
-	chunker   *chunker.FixedTokenChunker
+	chunkers  *chunker.Registry
 	indexer   retrieval.Indexer
 	embedder  llm.EmbeddingClient
 	secrets   *cryptoinfra.SecretBox
@@ -50,7 +50,7 @@ func NewService(
 	providers providerdomain.Repository,
 	storage FileStorage,
 	parser parser.Parser,
-	chunker *chunker.FixedTokenChunker,
+	chunkers *chunker.Registry,
 	indexer retrieval.Indexer,
 	embedder llm.EmbeddingClient,
 	secrets *cryptoinfra.SecretBox,
@@ -58,6 +58,9 @@ func NewService(
 ) *Service {
 	if indexName == "" {
 		indexName = "agentcanvas_chunks_v1"
+	}
+	if chunkers == nil {
+		chunkers = chunker.NewDefaultRegistry()
 	}
 	return &Service{
 		kbs:       kbs,
@@ -67,7 +70,7 @@ func NewService(
 		providers: providers,
 		storage:   storage,
 		parser:    parser,
-		chunker:   chunker,
+		chunkers:  chunkers,
 		indexer:   indexer,
 		embedder:  embedder,
 		secrets:   secrets,
@@ -122,7 +125,10 @@ func (s *Service) ProcessJob(ctx context.Context, job *knowledge.IngestionJob) e
 		return err
 	}
 
-	parts := s.chunker.Chunk(parsed.Text, kb.ChunkSize, kb.ChunkOverlap)
+	parts, err := s.chunkers.Chunk(ctx, kb.ChunkMethod, *parsed, chunker.Policy{ChunkSize: kb.ChunkSize, Overlap: kb.ChunkOverlap})
+	if err != nil {
+		return err
+	}
 	if len(parts) == 0 {
 		return fmt.Errorf("document has no parseable text")
 	}
@@ -150,8 +156,9 @@ func (s *Service) ProcessJob(ctx context.Context, job *knowledge.IngestionJob) e
 			ContentHash:  hex.EncodeToString(hash[:]),
 			TokenCount:   part.TokenCount,
 			CharCount:    part.CharCount,
+			PageNo:       part.PageNo,
 			SectionTitle: part.SectionTitle,
-			MetadataJSON: "{}",
+			MetadataJSON: chunkMetadataJSON(part.Metadata),
 		})
 	}
 	if err := s.chunks.CreateBatch(ctx, chunks); err != nil {
@@ -229,6 +236,17 @@ func (s *Service) ProcessJob(ctx context.Context, job *knowledge.IngestionJob) e
 		return err
 	}
 	return s.jobs.MarkCompleted(ctx, job.ID)
+}
+
+func chunkMetadataJSON(metadata map[string]any) string {
+	if metadata == nil {
+		return "{}"
+	}
+	data, err := json.Marshal(metadata)
+	if err != nil {
+		return "{}"
+	}
+	return string(data)
 }
 
 func (s *Service) embedChunks(ctx context.Context, kb *knowledge.KnowledgeBase, chunks []knowledge.DocumentChunk) ([][]float32, string, int, error) {

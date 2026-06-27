@@ -42,3 +42,21 @@ func TestTextParserRejectsUnsupportedTypes(t *testing.T) {
 		t.Fatal("Parse() error = nil, want unsupported type error")
 	}
 }
+
+func TestTextParserBuildsBasicBlocks(t *testing.T) {
+	p := NewTextParser()
+
+	got, err := p.Parse(context.Background(), "guide.md", strings.NewReader("# Intro\n\nfirst paragraph\n\nsecond paragraph"))
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if len(got.Blocks) != 3 {
+		t.Fatalf("len(blocks) = %d, want 3", len(got.Blocks))
+	}
+	if got.Blocks[0].Type != "heading" || got.Blocks[0].Metadata["title"] != "Intro" {
+		t.Fatalf("heading block = %#v", got.Blocks[0])
+	}
+	if got.Blocks[1].Type != "paragraph" || got.Blocks[1].Text != "first paragraph" {
+		t.Fatalf("paragraph block = %#v", got.Blocks[1])
+	}
+}

@@ -58,6 +58,7 @@ func NewRouter(deps RouterDeps) *gin.Engine {
 			authGroup.POST("/logout", deps.AuthHandler.Logout)
 			authGroup.GET("/github/redirect", deps.OAuthHandler.GitHubRedirect)
 			authGroup.GET("/github/callback", deps.OAuthHandler.GitHubCallback)
+			authGroup.POST("/oauth/exchange", deps.OAuthHandler.ExchangeCode)
 		}
 
 		protected := v1.Group("")

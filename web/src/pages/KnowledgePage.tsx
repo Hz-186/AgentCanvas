@@ -23,6 +23,7 @@ export function KnowledgePage() {
   const [createRetrievalMode, setCreateRetrievalMode] = useState('keyword');
   const [createEmbeddingProviderId, setCreateEmbeddingProviderId] = useState('');
   const [createEmbeddingModel, setCreateEmbeddingModel] = useState('');
+  const [createChunkMethod, setCreateChunkMethod] = useState('recursive');
   const [kbDeletingId, setKbDeletingId] = useState<number | null>(null);
   const [docToDelete, setDocToDelete] = useState<AgentDocument | null>(null);
   const [togglingId, setTogglingId] = useState<number | null>(null);
@@ -34,6 +35,7 @@ export function KnowledgePage() {
   const [rerankEnabled, setRerankEnabled] = useState(false);
   const [rerankProviderId, setRerankProviderId] = useState('');
   const [rerankModel, setRerankModel] = useState('');
+  const [chunkMethod, setChunkMethod] = useState('recursive');
   const [searchQuery, setSearchQuery] = useState('');
   const [searchMode, setSearchMode] = useState('keyword');
   const [message, setMessage] = useState('');
@@ -108,6 +110,7 @@ export function KnowledgePage() {
     setRerankEnabled(Boolean(selected.rerank_enabled));
     setRerankProviderId(selected.rerank_provider_id ? String(selected.rerank_provider_id) : '');
     setRerankModel(selected.rerank_model || '');
+    setChunkMethod(selected.chunk_method || 'recursive');
     setSearchResults([]);
   }, [items, routeId]);
 
@@ -123,6 +126,7 @@ export function KnowledgePage() {
         name,
         description,
         retrieval_mode: createRetrievalMode,
+        chunk_method: createChunkMethod,
         chunk_size: 800,
         chunk_overlap: 100,
       };
@@ -137,6 +141,7 @@ export function KnowledgePage() {
       setCreateRetrievalMode('keyword');
       setCreateEmbeddingProviderId('');
       setCreateEmbeddingModel('');
+      setCreateChunkMethod('recursive');
       setMessage('知识库已创建');
       await load();
       navigate(`/app/knowledge/${kb.id}`);
@@ -220,6 +225,7 @@ export function KnowledgePage() {
       hybrid_weight: hybridWeight,
       rerank_enabled: rerankEnabled,
       rerank_model: rerankModel,
+      chunk_method: chunkMethod,
     };
     if (embeddingProviderId) body.embedding_provider_id = Number(embeddingProviderId);
     if (rerankProviderId) body.rerank_provider_id = Number(rerankProviderId);
@@ -454,6 +460,12 @@ export function KnowledgePage() {
                 <Field label="Rerank 模型">
                   <TextInput value={rerankModel} onChange={(event) => setRerankModel(event.target.value)} placeholder="留空使用 Provider 默认 Chat 模型" />
                 </Field>
+                <Field label="切分方式" hint="修改后请重建索引，让已上传文档按新策略重新切分">
+                  <Select value={chunkMethod} onChange={(event) => setChunkMethod(event.target.value)}>
+                    <option value="recursive">Recursive（推荐）</option>
+                    <option value="fixed_token">Fixed Token（兼容旧策略）</option>
+                  </Select>
+                </Field>
                 <div className="row-wrap">
                   <Button tone="primary">
                     <Save size={16} />
@@ -553,8 +565,9 @@ export function KnowledgePage() {
             </>
           ) : null}
           <Field label="默认切分">
-            <Select value="fixed" disabled>
-              <option value="fixed">Fixed token · 800 / 100</option>
+            <Select value={createChunkMethod} onChange={(event) => setCreateChunkMethod(event.target.value)}>
+              <option value="recursive">Recursive · 800 / 100（推荐）</option>
+              <option value="fixed_token">Fixed token · 800 / 100（兼容旧策略）</option>
             </Select>
           </Field>
         </form>

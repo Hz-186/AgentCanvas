@@ -5,6 +5,7 @@ import { authApi } from '../api/auth';
 import { tokenStorage } from '../api/token';
 import { Button, Field, IconButton, TextInput } from '../components/ui';
 import { useAuthStore } from '../stores/authStore';
+import { friendlyErrorMessage } from '../utils/format';
 
 const LIQUID_GLASS_POINTER_QUERY = '(hover: hover) and (pointer: fine) and (prefers-reduced-motion: no-preference)';
 
@@ -153,7 +154,7 @@ function validateEmail(email: string): string {
 
 function validatePassword(password: string): string {
   if (!password) return '请输入密码。';
-  if (password.length < 6) return '密码至少需要 6 位。';
+  if (password.length < 8) return '密码至少需要 8 位。';
   return '';
 }
 
@@ -170,11 +171,22 @@ export function LoginPage() {
   useEffect(() => {
     const accessToken = searchParams.get('access_token');
     const refreshToken = searchParams.get('refresh_token');
+    const oauthCode = searchParams.get('oauth_code');
     const oauthError = searchParams.get('error');
 
     if (oauthError) {
       setLocalError(`GitHub 登录失败: ${oauthError}`);
       setSearchParams({}, { replace: true });
+    } else if (oauthCode) {
+      setSearchParams({}, { replace: true });
+      void authApi.exchangeOAuthCode(oauthCode).then((resp) => {
+        tokenStorage.setTokens(resp.tokens);
+        tokenStorage.setUser(resp.user);
+        useAuthStore.setState({ user: resp.user, error: '' });
+        navigate('/app/agents', { replace: true });
+      }).catch((err) => {
+        setLocalError(friendlyErrorMessage(err, 'GitHub 登录失败，请重新尝试。'));
+      });
     } else if (accessToken && refreshToken) {
       tokenStorage.setTokens({
         access_token: accessToken,
@@ -210,7 +222,7 @@ export function LoginPage() {
       const { redirect_url } = await authApi.githubRedirect();
       window.location.href = redirect_url;
     } catch {
-      setLocalError('暂时无法打开 GitHub 登录，请确认后端服务已启动。');
+      setLocalError('暂时无法打开 GitHub 登录，请确认后端 OAuth 配置和后端服务状态。');
     }
   }
 
@@ -290,7 +302,7 @@ export function RegisterPage() {
         <Field label="密码">
           <div className="auth-input-wrap">
             <LockKeyhole size={17} />
-            <TextInput autoComplete="new-password" type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="至少 6 位" />
+            <TextInput autoComplete="new-password" type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="至少 8 位" />
           </div>
         </Field>
         {localError || error ? <p className="auth-error">{localError || error}</p> : null}
