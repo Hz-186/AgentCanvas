@@ -85,7 +85,7 @@ func main() {
 		providerRepo,
 		fileStorage,
 		parserinfra.NewTextParser(),
-		chunkerinfra.NewFixedTokenChunker(),
+		chunkerinfra.NewDefaultRegistry(),
 		esStore,
 		llm.NewOpenAICompatibleEmbeddingClient(),
 		secretBox,
