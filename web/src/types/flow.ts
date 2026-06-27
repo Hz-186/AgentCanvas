@@ -50,6 +50,7 @@ export interface AgentLoopConfig {
   call_agent_ids?: number[];
   max_agent_call_depth?: number;
   code_execution_enabled?: boolean;
+  memory_enabled?: boolean;
   max_iterations?: number;
   max_tool_calls?: number;
   max_execution_time_ms?: number;

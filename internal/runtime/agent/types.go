@@ -32,6 +32,7 @@ type RunRequest struct {
 	RunID              int64
 	NodeID             string
 	CallDepth          int
+	ConversationID     *int64
 	Provider           llm.ChatProviderConfig
 	Model              string
 	SystemPrompt       string

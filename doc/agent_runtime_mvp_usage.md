@@ -17,6 +17,7 @@
 - 配置 `knowledge_ids` 后自动暴露 `search_knowledge` 工具。
 - 配置 `call_agent_ids` 后自动暴露 `call_agent` 工具。
 - 开启 `code_execution_enabled` 后自动暴露 `execute_python` 工具。
+- 开启 `memory_enabled` 后自动暴露 `read_memory` 和 `write_memory` 工具。
 - `agent_call` 节点可在确定性 Workflow 中调用另一个 Agent。
 - `code_sandbox` 节点可在确定性 Workflow 中执行 Python 代码。
 - `agent_started / agent_step / agent_finished / agent_failed` 运行事件。
@@ -87,6 +88,7 @@
         "call_agent_ids": [2, 3],
         "max_agent_call_depth": 3,
         "code_execution_enabled": true,
+        "memory_enabled": true,
         "max_iterations": 8,
         "max_tool_calls": 16,
         "max_execution_time_ms": 120000,
@@ -222,6 +224,23 @@
 
 本地运行该能力需要安装 Docker，并确保 `python:3.12-alpine` 镜像可用。
 
+## 记忆工具
+
+在 `agent_loop` 中开启：
+
+```json
+{
+  "memory_enabled": true
+}
+```
+
+模型会看到两个工具：
+
+- `read_memory`：读取 `profile_memory / summary_memory / episodic_memory / task_memory`。
+- `write_memory`：写入或更新长期记忆，并记录 `memory_write_logs`。
+
+这让 Agent 可以在工具循环中自主读取长期上下文，并在用户给出稳定偏好、长期事实或任务总结时保存记忆。
+
 ## 调试观察
 
 流式调试时，事件面板会看到：
@@ -256,7 +275,7 @@
 - 已支持 `code_sandbox` 节点和 `execute_python` 工具的 Docker 沙盒初版。
 - 已支持 `agent_call` 节点和 `call_agent` 工具的初版 Supervisor-Worker 调用。
 - 已持久化独立 `agent_run_steps` 表，同时保留 `agent_run_events` 中的实时 step 事件。
-- 当前 Runtime Tool 已接入已有 HTTP Tool、知识库检索、子 Agent 调用和 Python 沙盒执行；Memory 可按同一接口继续扩展。
+- 当前 Runtime Tool 已接入已有 HTTP Tool、知识库检索、长期记忆读写、子 Agent 调用和 Python 沙盒执行。
 
 ## 验收建议
 

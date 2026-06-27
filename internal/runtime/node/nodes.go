@@ -68,7 +68,7 @@ func DefaultNodes(deps Deps) []engine.Node {
 		RetrievalNode{Retriever: deps.Retriever},
 		PromptNode{},
 		LLMNode{Client: deps.LLM, Providers: deps.Providers, History: deps.MessageHistory},
-		AgentLoopNode{LLM: toolCalling, Providers: deps.Providers, Tools: toolRegistry, Retriever: deps.Retriever, AgentCaller: deps.AgentCaller, Sandbox: sandboxRunner},
+		AgentLoopNode{LLM: toolCalling, Providers: deps.Providers, Tools: toolRegistry, Retriever: deps.Retriever, Memories: deps.Memories, MemoryLogs: deps.MemoryWriteLogs, AgentCaller: deps.AgentCaller, Sandbox: sandboxRunner},
 		AgentCallNode{Caller: deps.AgentCaller},
 		CodeSandboxNode{Runner: sandboxRunner},
 		MessageNode{Writer: deps.Messages},

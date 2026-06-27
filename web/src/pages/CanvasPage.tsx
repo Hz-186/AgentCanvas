@@ -83,6 +83,7 @@ function defaultConfig(type: NodeType): CanvasNodeData['config'] {
       call_agent_ids: [],
       max_agent_call_depth: 3,
       code_execution_enabled: false,
+      memory_enabled: false,
       max_iterations: 8,
       max_tool_calls: 16,
       max_execution_time_ms: 120000,
@@ -824,6 +825,12 @@ export function CanvasPage() {
                   </Field>
                   <Field label="代码执行工具">
                     <Select value={config.code_execution_enabled ? 'enabled' : 'disabled'} onChange={(event) => updateSelectedConfig({ code_execution_enabled: event.target.value === 'enabled' })}>
+                      <option value="disabled">Disabled</option>
+                      <option value="enabled">Enabled</option>
+                    </Select>
+                  </Field>
+                  <Field label="记忆工具">
+                    <Select value={config.memory_enabled ? 'enabled' : 'disabled'} onChange={(event) => updateSelectedConfig({ memory_enabled: event.target.value === 'enabled' })}>
                       <option value="disabled">Disabled</option>
                       <option value="enabled">Enabled</option>
                     </Select>

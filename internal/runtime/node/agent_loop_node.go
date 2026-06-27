@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"agentcanvas/internal/domain/memory"
 	"agentcanvas/internal/domain/retrieval"
 	runtimeagent "agentcanvas/internal/runtime/agent"
 	"agentcanvas/internal/runtime/engine"
@@ -22,6 +23,8 @@ type AgentLoopNode struct {
 	Providers   ProviderConfigLoader
 	Tools       toolruntime.Registry
 	Retriever   retrieval.Retriever
+	Memories    memory.Repository
+	MemoryLogs  memory.WriteLogRepository
 	AgentCaller toolruntime.AgentCaller
 	Sandbox     sandbox.Runner
 }
@@ -38,6 +41,7 @@ type agentLoopConfig struct {
 	CallAgentIDs            []int64  `json:"call_agent_ids"`
 	MaxAgentCallDepth       int      `json:"max_agent_call_depth"`
 	CodeExecutionEnabled    bool     `json:"code_execution_enabled"`
+	MemoryEnabled           bool     `json:"memory_enabled"`
 	MaxIterations           int      `json:"max_iterations"`
 	MaxToolCalls            int      `json:"max_tool_calls"`
 	MaxExecutionTimeMS      int      `json:"max_execution_time_ms"`
@@ -133,6 +137,7 @@ func (n AgentLoopNode) Run(ctx context.Context, rc *engine.RunContext, input eng
 		RunID:              rc.RunID,
 		NodeID:             rc.CurrentNodeID,
 		CallDepth:          rc.CallDepth,
+		ConversationID:     rc.ConversationID,
 		Provider:           loaded.Config,
 		Model:              loaded.Model,
 		SystemPrompt:       cfg.SystemPrompt,
@@ -225,6 +230,15 @@ func (n AgentLoopNode) loadTools(ctx context.Context, ownerID int64, cfg agentLo
 			return nil, fmt.Errorf("agent_loop sandbox runner is not configured")
 		}
 		tools = append(tools, toolruntime.PythonSandboxTool{Runner: n.Sandbox})
+	}
+	if cfg.MemoryEnabled {
+		if n.Memories == nil {
+			return nil, fmt.Errorf("agent_loop memory repository is not configured")
+		}
+		tools = append(tools,
+			toolruntime.MemoryReadTool{Memories: n.Memories},
+			toolruntime.MemoryWriteTool{Memories: n.Memories, Logs: n.MemoryLogs},
+		)
 	}
 	if len(cfg.ToolIDs) == 0 {
 		return tools, nil

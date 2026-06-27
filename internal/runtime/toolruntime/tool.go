@@ -6,11 +6,12 @@ import (
 )
 
 type ToolRunContext struct {
-	OwnerID   int64
-	AgentID   int64
-	RunID     int64
-	NodeID    string
-	CallDepth int
+	OwnerID        int64
+	AgentID        int64
+	RunID          int64
+	NodeID         string
+	CallDepth      int
+	ConversationID *int64
 }
 
 type ToolResult struct {
