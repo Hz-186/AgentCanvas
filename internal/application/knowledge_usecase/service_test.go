@@ -80,6 +80,29 @@ func TestUploadDocumentStoresFileCreatesDocumentAndJob(t *testing.T) {
 	}
 }
 
+func TestCreateKnowledgeBaseDefaultsToRecursiveChunkMethod(t *testing.T) {
+	ctx := context.Background()
+	kbs := &fakeKBRepo{}
+	service := NewService(kbs, &fakeDocumentRepo{}, &fakeChunkRepo{}, &fakeJobRepo{}, &fakeRetrievalLogRepo{}, nil, &fakeWriteStorage{}, &fakeRetriever{}, &fakeIndexer{})
+
+	kb, err := service.CreateKnowledgeBase(ctx, 1, CreateKnowledgeBaseRequest{Name: "Docs"}, ClientInfo{})
+	if err != nil {
+		t.Fatalf("CreateKnowledgeBase() error = %v", err)
+	}
+	if kb.ChunkMethod != knowledge.ChunkMethodRecursive {
+		t.Fatalf("ChunkMethod = %q, want recursive", kb.ChunkMethod)
+	}
+}
+
+func TestCreateKnowledgeBaseRejectsUnsupportedChunkMethod(t *testing.T) {
+	service := NewService(&fakeKBRepo{}, &fakeDocumentRepo{}, &fakeChunkRepo{}, &fakeJobRepo{}, &fakeRetrievalLogRepo{}, nil, &fakeWriteStorage{}, &fakeRetriever{}, &fakeIndexer{})
+
+	_, err := service.CreateKnowledgeBase(context.Background(), 1, CreateKnowledgeBaseRequest{Name: "Docs", ChunkMethod: "semantic"}, ClientInfo{})
+	if err == nil {
+		t.Fatal("CreateKnowledgeBase() error = nil, want invalid input")
+	}
+}
+
 func TestUploadDocumentRejectsUnsupportedFileType(t *testing.T) {
 	service := NewService(
 		&fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{10: {ID: 10, OwnerID: 1}}},
@@ -367,6 +390,23 @@ func TestUpdateKnowledgeBaseRejectsVectorWithoutProvider(t *testing.T) {
 	mode := "vector"
 	if _, err := service.UpdateKnowledgeBase(ctx, 1, 10, UpdateKnowledgeBaseRequest{RetrievalMode: &mode}, ClientInfo{}); err == nil {
 		t.Fatal("UpdateKnowledgeBase() error = nil, want invalid input for vector without provider")
+	}
+}
+
+func TestUpdateKnowledgeBaseUpdatesChunkMethod(t *testing.T) {
+	ctx := context.Background()
+	kbs := &fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{
+		10: {ID: 10, OwnerID: 1, RetrievalMode: "keyword", ChunkMethod: knowledge.ChunkMethodRecursive, ChunkSize: 800, ChunkOverlap: 100},
+	}}
+	service := NewService(kbs, &fakeDocumentRepo{}, &fakeChunkRepo{}, &fakeJobRepo{}, &fakeRetrievalLogRepo{}, nil, &fakeWriteStorage{}, &fakeRetriever{}, &fakeIndexer{})
+
+	method := knowledge.ChunkMethodFixedToken
+	kb, err := service.UpdateKnowledgeBase(ctx, 1, 10, UpdateKnowledgeBaseRequest{ChunkMethod: &method}, ClientInfo{})
+	if err != nil {
+		t.Fatalf("UpdateKnowledgeBase() error = %v", err)
+	}
+	if kb.ChunkMethod != knowledge.ChunkMethodFixedToken {
+		t.Fatalf("ChunkMethod = %q, want fixed_token", kb.ChunkMethod)
 	}
 }
 

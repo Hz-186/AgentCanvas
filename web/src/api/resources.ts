@@ -74,6 +74,7 @@ export const knowledgeApi = {
     rerank_enabled?: boolean;
     rerank_provider_id?: number;
     rerank_model?: string;
+    chunk_method?: string;
     chunk_size?: number;
     chunk_overlap?: number;
   }) =>
@@ -91,6 +92,7 @@ export const knowledgeApi = {
       rerank_enabled?: boolean;
       rerank_provider_id?: number;
       rerank_model?: string;
+      chunk_method?: string;
       chunk_size?: number;
       chunk_overlap?: number;
       status?: number;

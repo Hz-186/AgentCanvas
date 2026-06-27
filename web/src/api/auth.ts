@@ -19,6 +19,7 @@ export const authApi = {
     api.post<{ success: boolean }>('/auth/logout', { refresh_token }),
   me: () => api.get<User>('/auth/me'),
   githubRedirect: () => request<{ redirect_url: string }>('/auth/github/redirect', { auth: false }),
+  exchangeOAuthCode: (code: string) => request<AuthResponse>('/auth/oauth/exchange', { method: 'POST', body: { code }, auth: false }),
 };
 
 export const tokenApi = {

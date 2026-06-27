@@ -2,6 +2,7 @@ package ingestion_usecase
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"strings"
@@ -25,6 +26,7 @@ func TestProcessJobParsesChunksIndexesAndCompletes(t *testing.T) {
 			10: {
 				ID:           10,
 				OwnerID:      1,
+				ChunkMethod:  knowledge.ChunkMethodRecursive,
 				ChunkSize:    20,
 				ChunkOverlap: 0,
 			},
@@ -60,7 +62,7 @@ func TestProcessJobParsesChunksIndexesAndCompletes(t *testing.T) {
 		nil,
 		storage,
 		parser.NewTextParser(),
-		chunker.NewFixedTokenChunker(),
+		chunker.NewDefaultRegistry(),
 		indexer,
 		nil,
 		nil,
@@ -110,6 +112,13 @@ func TestProcessJobParsesChunksIndexesAndCompletes(t *testing.T) {
 		}
 		if chunk.ESDocID == "" {
 			t.Fatal("ESDocID is empty")
+		}
+		var metadata map[string]any
+		if err := json.Unmarshal([]byte(chunk.MetadataJSON), &metadata); err != nil {
+			t.Fatalf("MetadataJSON = %q: %v", chunk.MetadataJSON, err)
+		}
+		if metadata["chunk_method"] != "recursive" || metadata["tokenizer"] != "estimated" {
+			t.Fatalf("metadata = %#v", metadata)
 		}
 	}
 	if kbs.chunkDelta != doc.ChunkCount {
@@ -163,7 +172,7 @@ func TestProcessJobReplacesExistingChunksIdempotently(t *testing.T) {
 			"raw/guide.md": "Fresh content for a single replacement chunk.",
 		}},
 		parser.NewTextParser(),
-		chunker.NewFixedTokenChunker(),
+		chunker.NewDefaultRegistry(),
 		indexer,
 		nil,
 		nil,
@@ -221,7 +230,7 @@ func TestProcessNextMarksJobAndDocumentFailed(t *testing.T) {
 		nil,
 		fakeReadStorage{objects: map[string]string{}},
 		parser.NewTextParser(),
-		chunker.NewFixedTokenChunker(),
+		chunker.NewDefaultRegistry(),
 		&fakeIndexer{},
 		nil,
 		nil,
@@ -279,7 +288,7 @@ func TestProcessNextRetriesJobBeforeMaxAttempts(t *testing.T) {
 		nil,
 		fakeReadStorage{objects: map[string]string{}},
 		parser.NewTextParser(),
-		chunker.NewFixedTokenChunker(),
+		chunker.NewDefaultRegistry(),
 		&fakeIndexer{},
 		nil,
 		nil,
@@ -347,7 +356,7 @@ func TestProcessJobIndexesEmbeddingVectors(t *testing.T) {
 		}},
 		fakeReadStorage{objects: map[string]string{"raw/guide.md": "Vector enabled retrieval content."}},
 		parser.NewTextParser(),
-		chunker.NewFixedTokenChunker(),
+		chunker.NewDefaultRegistry(),
 		indexer,
 		&fakeEmbedder{vectors: [][]float32{{0.1, 0.2}}},
 		mustSecretBox(t),
@@ -407,7 +416,7 @@ func TestProcessJobKeywordDoesNotRequireEmbeddingProvider(t *testing.T) {
 		nil,
 		fakeReadStorage{objects: map[string]string{"raw/guide.md": "Keyword retrieval should index text without embeddings."}},
 		parser.NewTextParser(),
-		chunker.NewFixedTokenChunker(),
+		chunker.NewDefaultRegistry(),
 		indexer,
 		nil,
 		nil,

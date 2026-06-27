@@ -1,22 +1,34 @@
 package chunker
 
 import (
+	"context"
 	"strings"
 	"unicode/utf8"
+
+	"agentcanvas/internal/infrastructure/parser"
 )
 
-type Chunk struct {
-	Index        int
-	Content      string
-	TokenCount   int
-	CharCount    int
-	SectionTitle string
+type FixedTokenChunker struct {
+	tokenizer Tokenizer
 }
 
-type FixedTokenChunker struct{}
+func NewFixedTokenChunker(tokenizers ...Tokenizer) *FixedTokenChunker {
+	tokenizer := Tokenizer(EstimatedTokenizer{})
+	if len(tokenizers) > 0 && tokenizers[0] != nil {
+		tokenizer = tokenizers[0]
+	}
+	return &FixedTokenChunker{tokenizer: tokenizer}
+}
 
-func NewFixedTokenChunker() *FixedTokenChunker {
-	return &FixedTokenChunker{}
+func (c *FixedTokenChunker) Method() string { return MethodFixedToken }
+
+func (c *FixedTokenChunker) ChunkDocument(ctx context.Context, doc parser.ParsedDocument, policy Policy) ([]Chunk, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
+	return c.Chunk(doc.Text, policy.ChunkSize, policy.Overlap), nil
 }
 
 func (c *FixedTokenChunker) Chunk(text string, chunkSize, overlap int) []Chunk {
@@ -34,25 +46,26 @@ func (c *FixedTokenChunker) Chunk(text string, chunkSize, overlap int) []Chunk {
 		overlap = chunkSize / 4
 	}
 
-	chunks := make([]Chunk, 0, estimateTokens(string(runes))/chunkSize+1)
+	chunks := make([]Chunk, 0, c.countTokens(string(runes))/chunkSize+1)
 	start := 0
 	for start < len(runes) {
-		end := tokenBudgetEnd(runes, start, chunkSize)
+		end := c.tokenBudgetEnd(runes, start, chunkSize)
 
 		content := strings.TrimSpace(string(runes[start:end]))
 		if content != "" {
 			chunks = append(chunks, Chunk{
 				Index:        len(chunks),
 				Content:      content,
-				TokenCount:   estimateTokens(content),
+				TokenCount:   c.countTokens(content),
 				CharCount:    utf8.RuneCountInString(content),
 				SectionTitle: inferSectionTitle(content),
+				Metadata:     map[string]any{"chunk_method": c.Method(), "tokenizer": c.tokenizer.Name()},
 			})
 		}
 		if end == len(runes) {
 			break
 		}
-		nextStart := tokenOverlapStart(runes, start, end, overlap)
+		nextStart := c.tokenOverlapStart(runes, start, end, overlap)
 		if nextStart <= start {
 			nextStart = end
 		}
@@ -62,7 +75,7 @@ func (c *FixedTokenChunker) Chunk(text string, chunkSize, overlap int) []Chunk {
 	return chunks
 }
 
-func tokenBudgetEnd(runes []rune, start, budget int) int {
+func (c *FixedTokenChunker) tokenBudgetEnd(runes []rune, start, budget int) int {
 	end := start
 	lastValidEnd := start
 	for end < len(runes) {
@@ -71,7 +84,7 @@ func tokenBudgetEnd(runes []rune, start, budget int) int {
 			end++
 			continue
 		}
-		if estimateTokens(candidate) > budget {
+		if c.countTokens(candidate) > budget {
 			break
 		}
 		lastValidEnd = end + 1
@@ -83,7 +96,7 @@ func tokenBudgetEnd(runes []rune, start, budget int) int {
 	return lastValidEnd
 }
 
-func tokenOverlapStart(runes []rune, start, end, overlap int) int {
+func (c *FixedTokenChunker) tokenOverlapStart(runes []rune, start, end, overlap int) int {
 	if overlap <= 0 {
 		return end
 	}
@@ -92,35 +105,18 @@ func tokenOverlapStart(runes []rune, start, end, overlap int) int {
 		if candidate == "" {
 			continue
 		}
-		if estimateTokens(candidate) > overlap {
+		if c.countTokens(candidate) > overlap {
 			return i + 1
 		}
 	}
 	return start
 }
 
-func estimateTokens(text string) int {
-	runes := []rune(text)
-	if len(runes) == 0 {
-		return 0
+func (c *FixedTokenChunker) countTokens(text string) int {
+	if c == nil || c.tokenizer == nil {
+		return EstimatedTokenizer{}.Count(text)
 	}
-	ascii := 0
-	nonASCII := 0
-	for _, r := range runes {
-		if r <= 127 {
-			ascii++
-		} else {
-			nonASCII++
-		}
-	}
-	estimate := nonASCII + ascii/4
-	if ascii%4 != 0 {
-		estimate++
-	}
-	if estimate == 0 {
-		return 1
-	}
-	return estimate
+	return c.tokenizer.Count(text)
 }
 
 func inferSectionTitle(content string) string {

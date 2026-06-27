@@ -53,6 +53,7 @@ type CreateKnowledgeBaseRequest struct {
 	RerankEnabled       bool    `json:"rerank_enabled"`
 	RerankProviderID    *int64  `json:"rerank_provider_id"`
 	RerankModel         string  `json:"rerank_model"`
+	ChunkMethod         string  `json:"chunk_method"`
 	ChunkSize           int     `json:"chunk_size"`
 	ChunkOverlap        int     `json:"chunk_overlap"`
 }
@@ -68,6 +69,7 @@ type UpdateKnowledgeBaseRequest struct {
 	RerankEnabled       *bool    `json:"rerank_enabled"`
 	RerankProviderID    *int64   `json:"rerank_provider_id"`
 	RerankModel         *string  `json:"rerank_model"`
+	ChunkMethod         *string  `json:"chunk_method"`
 	ChunkSize           *int     `json:"chunk_size"`
 	ChunkOverlap        *int     `json:"chunk_overlap"`
 	Status              *int     `json:"status"`
@@ -134,6 +136,13 @@ func (s *Service) CreateKnowledgeBase(ctx context.Context, ownerID int64, req Cr
 	if chunkSize <= 0 || chunkOverlap < 0 || chunkOverlap >= chunkSize {
 		return nil, agenterrors.ErrInvalidInput
 	}
+	chunkMethod := strings.TrimSpace(req.ChunkMethod)
+	if chunkMethod == "" {
+		chunkMethod = knowledge.ChunkMethodRecursive
+	}
+	if !validChunkMethod(chunkMethod) {
+		return nil, agenterrors.ErrInvalidInput
+	}
 	retrievalMode := strings.TrimSpace(req.RetrievalMode)
 	if retrievalMode == "" {
 		retrievalMode = knowledge.RetrievalModeKeyword
@@ -165,7 +174,7 @@ func (s *Service) CreateKnowledgeBase(ctx context.Context, ownerID int64, req Cr
 		RerankEnabled:       req.RerankEnabled,
 		RerankProviderID:    req.RerankProviderID,
 		RerankModel:         strings.TrimSpace(req.RerankModel),
-		ChunkMethod:         knowledge.ChunkMethodFixedToken,
+		ChunkMethod:         chunkMethod,
 		ChunkSize:           chunkSize,
 		ChunkOverlap:        chunkOverlap,
 		Status:              knowledge.KnowledgeBaseStatusActive,
@@ -240,6 +249,13 @@ func (s *Service) UpdateKnowledgeBase(ctx context.Context, ownerID, id int64, re
 	}
 	if req.RerankModel != nil {
 		kb.RerankModel = strings.TrimSpace(*req.RerankModel)
+	}
+	if req.ChunkMethod != nil {
+		method := strings.TrimSpace(*req.ChunkMethod)
+		if !validChunkMethod(method) {
+			return nil, agenterrors.ErrInvalidInput
+		}
+		kb.ChunkMethod = method
 	}
 	if req.ChunkSize != nil {
 		if *req.ChunkSize <= 0 {
@@ -531,6 +547,15 @@ func validRetrievalMode(mode string) bool {
 
 func requiresEmbedding(mode string) bool {
 	return mode == knowledge.RetrievalModeVector || mode == knowledge.RetrievalModeHybrid
+}
+
+func validChunkMethod(method string) bool {
+	switch method {
+	case knowledge.ChunkMethodFixedToken, knowledge.ChunkMethodRecursive:
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Service) GetIngestionJob(ctx context.Context, ownerID, id int64) (*knowledge.IngestionJob, error) {

@@ -61,6 +61,13 @@ func (e *Executor) Execute(ctx context.Context, rc *RunContext, dsl *flow.DSL) (
 	var previous NodeOutput
 	currentID := beginID
 	for steps := 0; currentID != ""; steps++ {
+		select {
+		case <-ctx.Done():
+			err := ctx.Err()
+			_ = emit(context.Background(), rc, runtimeevent.Event{Type: runtimeevent.WorkflowFailed, RunID: rc.RunID, Payload: map[string]any{"error": err.Error()}})
+			return nil, err
+		default:
+		}
 		if steps >= len(dsl.Nodes) {
 			err := fmt.Errorf("%w: flow execution exceeded node count", agenterrors.ErrInvalidInput)
 			_ = emit(ctx, rc, runtimeevent.Event{Type: runtimeevent.WorkflowFailed, RunID: rc.RunID, Payload: map[string]any{"error": err.Error()}})

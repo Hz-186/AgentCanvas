@@ -207,6 +207,9 @@ func (s *Service) Me(ctx context.Context, userID int64) (*UserDTO, error) {
 }
 
 func (s *Service) BeginGitHubOAuth(ctx context.Context) (string, error) {
+	if s.redis == nil || s.github == nil {
+		return "", fmt.Errorf("github oauth is not configured")
+	}
 	state, err := cryptoinfra.RandomURLToken(32)
 	if err != nil {
 		return "", err
@@ -218,6 +221,9 @@ func (s *Service) BeginGitHubOAuth(ctx context.Context) (string, error) {
 }
 
 func (s *Service) HandleGitHubCallback(ctx context.Context, code, state string, client ClientInfo) (*AuthResponse, error) {
+	if s.redis == nil || s.github == nil {
+		return nil, fmt.Errorf("github oauth is not configured")
+	}
 	if code == "" || state == "" {
 		return nil, agenterrors.ErrInvalidInput
 	}
@@ -271,6 +277,46 @@ func (s *Service) HandleGitHubCallback(ctx context.Context, code, state string, 
 		return nil, err
 	}
 	return &AuthResponse{User: toUserDTO(u), Tokens: *tokens}, nil
+}
+
+func (s *Service) HandleGitHubCallbackCode(ctx context.Context, code, state string, client ClientInfo) (string, error) {
+	resp, err := s.HandleGitHubCallback(ctx, code, state, client)
+	if err != nil {
+		return "", err
+	}
+	loginCode, err := cryptoinfra.RandomURLToken(32)
+	if err != nil {
+		return "", err
+	}
+	payload, err := json.Marshal(resp)
+	if err != nil {
+		return "", err
+	}
+	if err := s.redis.Set(ctx, "oauth:login_code:"+loginCode, payload, 2*time.Minute).Err(); err != nil {
+		return "", err
+	}
+	return loginCode, nil
+}
+
+func (s *Service) ExchangeOAuthCode(ctx context.Context, code string) (*AuthResponse, error) {
+	if s.redis == nil {
+		return nil, fmt.Errorf("oauth code store is not configured")
+	}
+	code = strings.TrimSpace(code)
+	if code == "" {
+		return nil, agenterrors.ErrInvalidInput
+	}
+	key := "oauth:login_code:" + code
+	data, err := s.redis.Get(ctx, key).Bytes()
+	if err != nil {
+		return nil, agenterrors.ErrUnauthorized
+	}
+	_ = s.redis.Del(ctx, key).Err()
+	var resp AuthResponse
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
 }
 
 func (s *Service) CreateAPIToken(ctx context.Context, ownerID int64, req CreateAPITokenRequest) (*authdomain.APITokenCreated, error) {

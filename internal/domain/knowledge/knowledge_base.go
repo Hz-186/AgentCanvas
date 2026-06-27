@@ -8,6 +8,7 @@ const (
 	RetrievalModeVector           = "vector"
 	RetrievalModeHybrid           = "hybrid"
 	ChunkMethodFixedToken         = "fixed_token"
+	ChunkMethodRecursive          = "recursive"
 )
 
 const (

@@ -3,6 +3,7 @@ package agent_usecase
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -42,12 +43,14 @@ type Service struct {
 	secrets         *cryptoinfra.SecretBox
 	executor        *engine.Executor
 	validator       *flow.Validator
+	runCancels      *runCancelRegistry
 }
 
 func NewService(agents agent.Repository, versions agent.FlowVersionRepository, runs agent.RunRepository, events agent.RunEventRepository, nodeLogs agent.NodeLogRepository, memories memory.Repository, memoryLogs memory.WriteLogRepository, tools tool.DefinitionRepository, toolInvocations tool.InvocationRepository, providers providerdomain.Repository, messages conversation.MessageRepository, retriever retrieval.Retriever, llmClient llm.ChatClient, secrets *cryptoinfra.SecretBox) *Service {
 	s := &Service{agents: agents, versions: versions, runs: runs, events: events, nodeLogs: nodeLogs, memories: memories, memoryLogs: memoryLogs, tools: tools, toolInvocations: toolInvocations, providers: providers, messages: messages, retriever: retriever, llm: llmClient, secrets: secrets}
 	s.executor = engine.NewExecutor(runtimenode.DefaultNodes(runtimenode.Deps{Retriever: retriever, LLM: llmClient, Providers: s, Messages: s, MessageHistory: messages, Memories: memories, MemoryWriteLogs: memoryLogs, Tools: tools, ToolInvocations: toolInvocations}))
 	s.validator = flow.NewValidator(s.executor)
+	s.runCancels = newRunCancelRegistry()
 	return s
 }
 
@@ -289,6 +292,7 @@ func (s *Service) CancelRun(ctx context.Context, ownerID, id int64) (*agent.Run,
 		return nil, err
 	}
 	if item.Status == agent.RunStatusRunning {
+		_ = s.runCancels.Cancel(id)
 		now := time.Now().UTC()
 		item.Status = agent.RunStatusCancelled
 		item.FinishedAt = &now
@@ -381,6 +385,12 @@ func (s *Service) run(ctx context.Context, ownerID, agentID int64, req RunAgentR
 	if err := s.runs.Create(ctx, run); err != nil {
 		return nil, nil, err
 	}
+	execCtx, cancel := context.WithCancel(ctx)
+	s.runCancels.Register(run.ID, cancel)
+	defer func() {
+		cancel()
+		s.runCancels.Unregister(run.ID)
+	}()
 	rc := &engine.RunContext{
 		OwnerID:        ownerID,
 		AgentID:        agentID,
@@ -395,14 +405,17 @@ func (s *Service) run(ctx context.Context, ownerID, agentID int64, req RunAgentR
 			stream:  stream,
 		},
 	}
-	output, execErr := s.executor.Execute(ctx, rc, dsl)
+	output, execErr := s.executor.Execute(execCtx, rc, dsl)
 	finished := time.Now().UTC()
 	run.FinishedAt = &finished
 	run.LatencyMS = int(finished.Sub(run.StartedAt).Milliseconds())
 	if output != nil {
 		run.OutputJSON, _ = json.Marshal(output)
 	}
-	if execErr != nil {
+	if errors.Is(execErr, context.Canceled) || execCtx.Err() == context.Canceled {
+		run.Status = agent.RunStatusCancelled
+		run.ErrorMessage = context.Canceled.Error()
+	} else if execErr != nil {
 		run.Status = agent.RunStatusFailed
 		run.ErrorMessage = execErr.Error()
 	} else {
