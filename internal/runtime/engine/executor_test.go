@@ -7,10 +7,10 @@ import (
 	"strings"
 	"testing"
 
-	"agentcanvas/internal/domain/agent"
 	"agentcanvas/internal/domain/flow"
 	"agentcanvas/internal/domain/retrieval"
 	"agentcanvas/internal/domain/tool"
+	"agentcanvas/internal/domain/workflow"
 	"agentcanvas/internal/infrastructure/llm"
 	agenterrors "agentcanvas/internal/pkg/errors"
 	"agentcanvas/internal/runtime/engine"
@@ -31,7 +31,7 @@ func TestExecutorRunsLinearFlow(t *testing.T) {
 		},
 		Edges: []flow.Edge{{From: "begin_1", To: "prompt_1"}, {From: "prompt_1", To: "message_1"}},
 	}
-	rc := &engine.RunContext{OwnerID: 1, AgentID: 2, FlowVersionID: 3, RunID: 4, Input: map[string]any{"query": "Agent Flow 如何执行？"}}
+	rc := &engine.RunContext{OwnerID: 1, WorkflowID: 2, FlowVersionID: 3, RunID: 4, Input: map[string]any{"query": "Agent Flow 如何执行？"}}
 	output, err := executor.Execute(context.Background(), rc, dsl)
 	if err != nil {
 		t.Fatalf("Execute() error = %v", err)
@@ -67,7 +67,7 @@ func TestExecutorRunsFullPhase4Flow(t *testing.T) {
 			{From: "llm_1", To: "message_1"},
 		},
 	}
-	rc := &engine.RunContext{OwnerID: 1, AgentID: 2, FlowVersionID: 3, RunID: 4, Input: map[string]any{"query": "Agent Flow Runtime 如何执行？"}, Events: events}
+	rc := &engine.RunContext{OwnerID: 1, WorkflowID: 2, FlowVersionID: 3, RunID: 4, Input: map[string]any{"query": "Agent Flow Runtime 如何执行？"}, Events: events}
 
 	output, err := executor.Execute(context.Background(), rc, dsl)
 	if err != nil {
@@ -117,7 +117,7 @@ func TestExecutorRunsAgentLoopNode(t *testing.T) {
 		},
 		Edges: []flow.Edge{{From: "begin_1", To: "agent_loop_1"}, {From: "agent_loop_1", To: "message_1"}},
 	}
-	rc := &engine.RunContext{OwnerID: 1, AgentID: 2, FlowVersionID: 3, RunID: 4, Input: map[string]any{"query": "执行 Agent Loop 节点"}}
+	rc := &engine.RunContext{OwnerID: 1, WorkflowID: 2, FlowVersionID: 3, RunID: 4, Input: map[string]any{"query": "执行 Agent Loop 节点"}}
 
 	output, err := executor.Execute(context.Background(), rc, dsl)
 	if err != nil {
@@ -140,9 +140,9 @@ func TestExecutorRunsAgentLoopNode(t *testing.T) {
 func TestAgentLoopNodeUsesProfileDefaults(t *testing.T) {
 	chat := &fakeChatClient{toolContent: "Profile Agent 已完成"}
 	profileProviderID := int64(9)
-	profiles := fakeProfileLoader{profile: &agent.Profile{
+	profiles := fakeProfileLoader{profile: &workflow.Profile{
 		OwnerID:            1,
-		AgentID:            2,
+		WorkflowID:         2,
 		Role:               "Research Agent",
 		Goal:               "Use profile defaults",
 		SystemPrompt:       "来自 Profile 的系统提示",
@@ -165,7 +165,7 @@ func TestAgentLoopNodeUsesProfileDefaults(t *testing.T) {
 		},
 		Edges: []flow.Edge{{From: "begin_1", To: "agent_loop_1"}},
 	}
-	rc := &engine.RunContext{OwnerID: 1, AgentID: 2, FlowVersionID: 3, RunID: 4, Input: map[string]any{"query": "读取 Profile 默认值"}}
+	rc := &engine.RunContext{OwnerID: 1, WorkflowID: 2, FlowVersionID: 3, RunID: 4, Input: map[string]any{"query": "读取 Profile 默认值"}}
 
 	output, err := executor.Execute(context.Background(), rc, dsl)
 	if err != nil {
@@ -188,24 +188,24 @@ func TestAgentLoopNodeUsesProfileDefaults(t *testing.T) {
 func TestAgentLoopNodeExpandsProfileToolPacks(t *testing.T) {
 	chat := &fakeChatClient{toolContent: "Profile Pack Agent 已完成"}
 	profileProviderID := int64(9)
-	profiles := fakeProfileLoader{profile: &agent.Profile{
-		OwnerID:              1,
-		AgentID:              2,
-		Role:                 "Research Agent",
-		Goal:                 "Use tool pack defaults",
-		SystemPrompt:         "来自 Profile 的系统提示",
-		DefaultProviderID:    &profileProviderID,
-		DefaultModel:         "profile-model",
-		MaxIterations:        6,
-		MaxExecutionTimeMS:   150000,
-		DefaultToolPackIDs:   json.RawMessage(`[70]`),
-		DefaultKnowledgeTopK: 5,
-		DefaultKnowledgeMode: "hybrid",
-		DefaultMCPServerIDs:  json.RawMessage(`[]`),
-		DefaultKnowledgeIDs:  json.RawMessage(`[]`),
-		DefaultCallAgentIDs:  json.RawMessage(`[]`),
-		DefaultToolIDs:       json.RawMessage(`[]`),
-		OutputSchemaJSON:     json.RawMessage(`{}`),
+	profiles := fakeProfileLoader{profile: &workflow.Profile{
+		OwnerID:                1,
+		WorkflowID:             2,
+		Role:                   "Research Agent",
+		Goal:                   "Use tool pack defaults",
+		SystemPrompt:           "来自 Profile 的系统提示",
+		DefaultProviderID:      &profileProviderID,
+		DefaultModel:           "profile-model",
+		MaxIterations:          6,
+		MaxExecutionTimeMS:     150000,
+		DefaultToolPackIDs:     json.RawMessage(`[70]`),
+		DefaultKnowledgeTopK:   5,
+		DefaultKnowledgeMode:   "hybrid",
+		DefaultMCPServerIDs:    json.RawMessage(`[]`),
+		DefaultKnowledgeIDs:    json.RawMessage(`[]`),
+		DefaultCallWorkflowIDs: json.RawMessage(`[]`),
+		DefaultToolIDs:         json.RawMessage(`[]`),
+		OutputSchemaJSON:       json.RawMessage(`{}`),
 	}}
 	registry := &fakeRuntimeToolRegistry{}
 	executor := engine.NewExecutor(runtimenode.DefaultNodes(runtimenode.Deps{
@@ -224,7 +224,7 @@ func TestAgentLoopNodeExpandsProfileToolPacks(t *testing.T) {
 		},
 		Edges: []flow.Edge{{From: "begin_1", To: "agent_loop_1"}},
 	}
-	rc := &engine.RunContext{OwnerID: 1, AgentID: 2, FlowVersionID: 3, RunID: 4, Input: map[string]any{"query": "读取 Tool Pack 默认值"}}
+	rc := &engine.RunContext{OwnerID: 1, WorkflowID: 2, FlowVersionID: 3, RunID: 4, Input: map[string]any{"query": "读取 Tool Pack 默认值"}}
 
 	if _, err := executor.Execute(context.Background(), rc, dsl); err != nil {
 		t.Fatalf("Execute() error = %v", err)
@@ -240,9 +240,9 @@ func TestAgentLoopNodeExpandsProfileToolPacks(t *testing.T) {
 func TestAgentLoopNodeValidatesProfileOutputSchema(t *testing.T) {
 	chat := &fakeChatClient{toolContent: `{"answer":"ok"}`}
 	profileProviderID := int64(9)
-	profiles := fakeProfileLoader{profile: &agent.Profile{
+	profiles := fakeProfileLoader{profile: &workflow.Profile{
 		OwnerID:            1,
-		AgentID:            2,
+		WorkflowID:         2,
 		Role:               "Structured Agent",
 		Goal:               "Return JSON",
 		SystemPrompt:       "返回 JSON",
@@ -262,7 +262,7 @@ func TestAgentLoopNodeValidatesProfileOutputSchema(t *testing.T) {
 		},
 		Edges: []flow.Edge{{From: "begin_1", To: "agent_loop_1"}},
 	}
-	rc := &engine.RunContext{OwnerID: 1, AgentID: 2, FlowVersionID: 3, RunID: 4, Input: map[string]any{"query": "结构化输出"}}
+	rc := &engine.RunContext{OwnerID: 1, WorkflowID: 2, FlowVersionID: 3, RunID: 4, Input: map[string]any{"query": "结构化输出"}}
 
 	output, err := executor.Execute(context.Background(), rc, dsl)
 	if err != nil {
@@ -286,7 +286,7 @@ func TestExecutorRunsLegacyAgentLoopNode(t *testing.T) {
 		},
 		Edges: []flow.Edge{{From: "begin_1", To: "agent_loop_1"}},
 	}
-	rc := &engine.RunContext{OwnerID: 1, AgentID: 2, FlowVersionID: 3, RunID: 4, Input: map[string]any{"query": "旧节点继续运行"}}
+	rc := &engine.RunContext{OwnerID: 1, WorkflowID: 2, FlowVersionID: 3, RunID: 4, Input: map[string]any{"query": "旧节点继续运行"}}
 
 	output, err := executor.Execute(context.Background(), rc, dsl)
 	if err != nil {
@@ -324,7 +324,7 @@ func TestExecutorRunsSelectedSwitchBranchOnly(t *testing.T) {
 			{From: "prompt_no", To: "message_no"},
 		},
 	}
-	rc := &engine.RunContext{OwnerID: 1, AgentID: 2, FlowVersionID: 3, RunID: 4, Input: map[string]any{"count": 1}}
+	rc := &engine.RunContext{OwnerID: 1, WorkflowID: 2, FlowVersionID: 3, RunID: 4, Input: map[string]any{"count": 1}}
 	output, err := executor.Execute(context.Background(), rc, dsl)
 	if err != nil {
 		t.Fatalf("Execute() error = %v", err)
@@ -362,10 +362,10 @@ func (fakeProviderLoader) LoadChatProviderConfig(ctx context.Context, ownerID, p
 }
 
 type fakeProfileLoader struct {
-	profile *agent.Profile
+	profile *workflow.Profile
 }
 
-func (l fakeProfileLoader) GetAgentProfile(ctx context.Context, ownerID, agentID int64) (*agent.Profile, error) {
+func (l fakeProfileLoader) GetWorkflowProfile(ctx context.Context, ownerID, agentID int64) (*workflow.Profile, error) {
 	if l.profile == nil {
 		return nil, agenterrors.ErrNotFound
 	}

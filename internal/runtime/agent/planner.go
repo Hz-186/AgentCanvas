@@ -24,11 +24,11 @@ type Plan struct {
 }
 
 type Planner struct {
-	LLM       llm.ToolCallingClient
-	MaxSteps  int
-	OnStep    StepEmitter
+	LLM        llm.ToolCallingClient
+	MaxSteps   int
+	OnStep     StepEmitter
 	ProviderID int64
-	ModelName string
+	ModelName  string
 }
 
 func (p Planner) maxStepsVal() int {

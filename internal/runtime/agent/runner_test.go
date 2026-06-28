@@ -159,7 +159,7 @@ func TestRunnerCreatesCheckpointWhenContextIsCanceled(t *testing.T) {
 
 	result, err := runner.Run(ctx, RunRequest{
 		OwnerID:       1,
-		AgentID:       2,
+		WorkflowID:    2,
 		RunID:         3,
 		NodeID:        "agent_loop",
 		Model:         "test-model",

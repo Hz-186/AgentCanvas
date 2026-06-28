@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log/slog"
 
-	agentusecase "agentcanvas/internal/application/agent_usecase"
 	auditusecase "agentcanvas/internal/application/audit_usecase"
 	authusecase "agentcanvas/internal/application/auth_usecase"
 	chatusecase "agentcanvas/internal/application/chat_usecase"
@@ -15,6 +14,7 @@ import (
 	providerusecase "agentcanvas/internal/application/provider_usecase"
 	retrievalusecase "agentcanvas/internal/application/retrieval_usecase"
 	toolusecase "agentcanvas/internal/application/tool_usecase"
+	agentusecase "agentcanvas/internal/application/workflow_usecase"
 	cataloginfra "agentcanvas/internal/infrastructure/catalog"
 	cryptoinfra "agentcanvas/internal/infrastructure/crypto"
 	esinfra "agentcanvas/internal/infrastructure/elasticsearch"
@@ -87,16 +87,16 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 	conversationRepo := mysqlinfra.NewConversationRepository(db)
 	messageRepo := mysqlinfra.NewMessageRepository(db)
 	usageRepo := mysqlinfra.NewUsageRepository(db)
-	agentRepo := mysqlinfra.NewAgentRepository(db)
-	agentProfileRepo := mysqlinfra.NewAgentProfileRepository(db)
+	workflowRepo := mysqlinfra.NewWorkflowRepository(db)
+	workflowProfileRepo := mysqlinfra.NewWorkflowProfileRepository(db)
 	flowVersionRepo := mysqlinfra.NewFlowVersionRepository(db)
 	runRepo := mysqlinfra.NewRunRepository(db)
 	runEventRepo := mysqlinfra.NewRunEventRepository(db)
 	nodeLogRepo := mysqlinfra.NewNodeLogRepository(db)
 	runStepRepo := mysqlinfra.NewRunStepRepository(db)
-	agentEvalRepo := mysqlinfra.NewAgentEvalRepository(db)
+	workflowEvalRepo := mysqlinfra.NewWorkflowEvalRepository(db)
 	approvalRepo := mysqlinfra.NewApprovalRepository(db)
-	agentTeamRepo := mysqlinfra.NewAgentTeamRepository(db)
+	workflowTeamRepo := mysqlinfra.NewWorkflowTeamRepository(db)
 	memoryRepo := mysqlinfra.NewMemoryRepository(db)
 	memoryWriteLogRepo := mysqlinfra.NewMemoryWriteLogRepository(db)
 	toolDefinitionRepo := mysqlinfra.NewToolDefinitionRepository(db)
@@ -124,7 +124,7 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 	knowledgeService := knowledgeusecase.NewService(knowledgeRepo, documentRepo, chunkRepo, ingestionJobRepo, retrievalLogRepo, auditRepo, fileStorage, retrievalService, esStore)
 	dialogService := dialogusecase.NewService(dialogRepo)
 	chatService := chatusecase.NewService(providerRepo, dialogRepo, knowledgeRepo, conversationRepo, messageRepo, usageRepo, retrievalService, chatClient, secretBox)
-	agentService := agentusecase.NewService(agentRepo, agentProfileRepo, flowVersionRepo, runRepo, runEventRepo, nodeLogRepo, runStepRepo, agentEvalRepo, approvalRepo, agentTeamRepo, memoryRepo, memoryWriteLogRepo, toolDefinitionRepo, toolPackRepo, mcpRepo, toolInvocationRepo, providerRepo, messageRepo, retrievalService, chatClient, secretBox)
+	workflowService := agentusecase.NewService(workflowRepo, workflowProfileRepo, flowVersionRepo, runRepo, runEventRepo, nodeLogRepo, runStepRepo, workflowEvalRepo, approvalRepo, workflowTeamRepo, memoryRepo, memoryWriteLogRepo, toolDefinitionRepo, toolPackRepo, mcpRepo, toolInvocationRepo, providerRepo, messageRepo, retrievalService, chatClient, secretBox)
 
 	healthHandler := handler.NewHealthHandler(db, redisClient, minioClient, esClient, cfg.MinIO.Bucket)
 	authHandler := handler.NewAuthHandler(authService)
@@ -137,7 +137,7 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 	documentHandler := handler.NewDocumentHandler(knowledgeService)
 	dialogHandler := handler.NewDialogHandler(dialogService)
 	chatHandler := handler.NewChatHandler(chatService)
-	agentHandler := handler.NewAgentHandler(agentService)
+	workflowHandler := handler.NewWorkflowHandler(workflowService)
 
 	router := httpserver.NewRouter(httpserver.RouterDeps{
 		Logger:           log,
@@ -152,7 +152,7 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 		DocumentHandler:  documentHandler,
 		DialogHandler:    dialogHandler,
 		ChatHandler:      chatHandler,
-		AgentHandler:     agentHandler,
+		WorkflowHandler:  workflowHandler,
 		AuthService:      authService,
 		APITokens:        apiTokenRepo,
 	})

@@ -352,7 +352,7 @@ func (h *ToolHandler) ownerAndPackID(c *gin.Context) (int64, int64, bool) {
 		response.Error(c, http.StatusUnauthorized, agenterrors.CodeUnauthorized, agenterrors.ErrUnauthorized.Error())
 		return 0, 0, false
 	}
-	packID, err := parseInt64Param(c, "pack_id")
+	packID, err := parseInt64Param(c, "id")
 	if err != nil {
 		writeAppError(c, agenterrors.ErrInvalidInput)
 		return 0, 0, false

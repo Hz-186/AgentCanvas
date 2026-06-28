@@ -9,8 +9,8 @@ import (
 )
 
 type SupervisorRuntime struct {
-	LLM         llm.ToolCallingClient
-	AgentCaller toolruntime.AgentCaller
+	LLM            llm.ToolCallingClient
+	WorkflowCaller toolruntime.WorkflowCaller
 }
 
 type SupervisorPlan struct {
@@ -18,17 +18,17 @@ type SupervisorPlan struct {
 }
 
 type SupervisorDelegation struct {
-	AgentID   int64  `json:"agent_id"`
-	Task      string `json:"task"`
-	AgentRole string `json:"agent_role,omitempty"`
+	WorkflowID int64  `json:"workflow_id"`
+	Task       string `json:"task"`
+	AgentRole  string `json:"agent_role,omitempty"`
 }
 
 func (s *SupervisorRuntime) BuildSupervisorPrompt(teamMembers []TeamMemberInfo) string {
-	prompt := "You are a supervisor agent. You have the following team members:\n\n"
+	prompt := "You are a supervisor workflow. You have the following team members:\n\n"
 	for _, m := range teamMembers {
-		prompt += fmt.Sprintf("- Agent %d (%s): %s\n", m.AgentID, m.Role, m.Description)
+		prompt += fmt.Sprintf("- Agent %d (%s): %s\n", m.WorkflowID, m.Role, m.Description)
 	}
-	prompt += "\nYou can delegate tasks to team members using the call_agent tool. "
+	prompt += "\nYou can delegate tasks to team members using the call_workflow tool. "
 	prompt += "Always delegate to the most appropriate team member for each task. "
 	prompt += "After receiving results from team members, review and synthesize the final answer. "
 	prompt += "You are responsible for the final response quality.\n"
@@ -36,19 +36,19 @@ func (s *SupervisorRuntime) BuildSupervisorPrompt(teamMembers []TeamMemberInfo) 
 }
 
 type TeamMemberInfo struct {
-	AgentID     int64  `json:"agent_id"`
+	WorkflowID  int64  `json:"workflow_id"`
 	Role        string `json:"role"`
 	Description string `json:"description"`
 }
 
-func CheckCallChain(callChain []int64, targetAgentID int64, maxDepth int, currentDepth int) error {
+func CheckCallChain(callChain []int64, targetWorkflowID int64, maxDepth int, currentDepth int) error {
 	for _, id := range callChain {
-		if id == targetAgentID {
-			return fmt.Errorf("circular delegation detected: agent %d is already in the call chain", targetAgentID)
+		if id == targetWorkflowID {
+			return fmt.Errorf("circular delegation detected: agent %d is already in the call chain", targetWorkflowID)
 		}
 	}
 	if maxDepth > 0 && currentDepth >= maxDepth {
-		return fmt.Errorf("max agent call depth exceeded: current=%d max=%d", currentDepth, maxDepth)
+		return fmt.Errorf("max workflow call depth exceeded: current=%d max=%d", currentDepth, maxDepth)
 	}
 	return nil
 }

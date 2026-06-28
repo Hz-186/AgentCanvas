@@ -183,7 +183,7 @@ export function LoginPage() {
         tokenStorage.setTokens(resp.tokens);
         tokenStorage.setUser(resp.user);
         useAuthStore.setState({ user: resp.user, error: '' });
-        navigate('/app/agents', { replace: true });
+		navigate('/app/workflows', { replace: true });
       }).catch((err) => {
         setLocalError(friendlyErrorMessage(err, 'GitHub 登录失败，请重新尝试。'));
       });
@@ -196,7 +196,7 @@ export function LoginPage() {
       });
       setSearchParams({}, { replace: true });
       void useAuthStore.getState().initialize().then(() => {
-        navigate('/app/agents', { replace: true });
+		navigate('/app/workflows', { replace: true });
       });
     }
   }, [searchParams, setSearchParams, navigate]);
@@ -211,7 +211,7 @@ export function LoginPage() {
     setLocalError('');
     try {
       await login(email, password);
-      navigate('/app/agents');
+		navigate('/app/workflows');
     } catch {
       // 错误文案由 authStore 统一转为中文。
     }
@@ -278,7 +278,7 @@ export function RegisterPage() {
     setLocalError('');
     try {
       await register({ username, email, password });
-      navigate('/app/agents');
+		navigate('/app/workflows');
     } catch {
       // 错误文案由 authStore 统一转为中文。
     }

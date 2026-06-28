@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"agentcanvas/internal/domain/conversation"
-	domainagent "agentcanvas/internal/domain/agent"
+	domainagent "agentcanvas/internal/domain/workflow"
 	"agentcanvas/internal/infrastructure/llm"
 	"agentcanvas/internal/runtime/toolruntime"
 )
@@ -35,14 +35,14 @@ func TestBuildResumeRequestApproved(t *testing.T) {
 		Metadata:        map[string]any{"iteration": 1.0, "tool_calls": 0.0},
 	}
 	req := ResumeRequest{
-		OwnerID:  1,
-		AgentID:  2,
-		RunID:    3,
-		NodeID:   "agent",
-		Model:    "gpt-4",
-		Mode:     "react",
-		Approved: true,
-		Checkpoint: cp,
+		OwnerID:       1,
+		WorkflowID:    2,
+		RunID:         3,
+		NodeID:        "agent",
+		Model:         "gpt-4",
+		Mode:          "react",
+		Approved:      true,
+		Checkpoint:    cp,
 		MaxIterations: 5,
 		MaxToolCalls:  10,
 	}
@@ -68,7 +68,7 @@ func TestBuildResumeRequestRejected(t *testing.T) {
 	}
 	req := ResumeRequest{
 		OwnerID:       1,
-		AgentID:       2,
+		WorkflowID:    2,
 		RunID:         3,
 		NodeID:        "agent",
 		Model:         "gpt-4",
@@ -117,9 +117,9 @@ type fakeResumeTool struct {
 	name string
 }
 
-func (t *fakeResumeTool) Name() string                                                    { return t.name }
-func (t *fakeResumeTool) Description() string                                             { return "resume tool" }
-func (t *fakeResumeTool) Parameters() json.RawMessage                                      { return json.RawMessage(`{}`) }
+func (t *fakeResumeTool) Name() string                { return t.name }
+func (t *fakeResumeTool) Description() string         { return "resume tool" }
+func (t *fakeResumeTool) Parameters() json.RawMessage { return json.RawMessage(`{}`) }
 func (t *fakeResumeTool) Execute(ctx context.Context, rc toolruntime.ToolRunContext, input json.RawMessage) (*toolruntime.ToolResult, error) {
 	return &toolruntime.ToolResult{ContentText: "ok"}, nil
 }
@@ -141,15 +141,15 @@ func TestRunnerResumeExecutesPendingTool(t *testing.T) {
 	_ = toolByName
 
 	result, err := runner.Run(context.Background(), RunRequest{
-		OwnerID:        1,
-		RunID:          5,
-		NodeID:         "agent",
-		Model:          "gpt-4",
-		Task:           "task",
-		MaxIterations:  5,
-		MaxToolCalls:   10,
-		Tools:          tools,
-		ResumeMessages: msgs,
+		OwnerID:         1,
+		RunID:           5,
+		NodeID:          "agent",
+		Model:           "gpt-4",
+		Task:            "task",
+		MaxIterations:   5,
+		MaxToolCalls:    10,
+		Tools:           tools,
+		ResumeMessages:  msgs,
 		ResumeIteration: 1,
 		ResumeToolCalls: 0,
 	})

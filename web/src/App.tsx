@@ -24,7 +24,7 @@ import {
 } from 'react-router-dom';
 import { IconButton } from './components/ui';
 import { LoginPage, RegisterPage } from './pages/AuthPages';
-import { AgentsPage } from './pages/AgentsPage';
+import { WorkflowsPage } from './pages/WorkflowsPage';
 import { CanvasPage } from './pages/CanvasPage';
 import { ChatPage } from './pages/ChatPage';
 import { KnowledgePage } from './pages/KnowledgePage';
@@ -40,12 +40,12 @@ function RequireAuth() {
 
 function PublicOnly({ children }: { children: React.ReactNode }) {
   const user = useAuthStore((state) => state.user);
-  if (user) return <Navigate to="/app/agents" replace />;
+  if (user) return <Navigate to="/app/workflows" replace />;
   return children;
 }
 
 const nav = [
-  { to: '/app/agents', label: '智能体', icon: Bot },
+  { to: '/app/workflows', label: '工作流', icon: Bot },
   { to: '/app/knowledge', label: '知识库', icon: Database },
   { to: '/app/dialogs', label: 'RAG 对话', icon: MessageSquareText },
   { to: '/app/memory', label: '记忆', icon: Network },
@@ -214,7 +214,7 @@ function AppShell() {
             <div className="user-chip">
               <div className="avatar">{user?.username?.slice(0, 1).toUpperCase() ?? 'A'}</div>
               <div className="min-w-0">
-                <strong className="truncate">{user?.username ?? 'Agent Builder'}</strong>
+                <strong className="truncate">{user?.username ?? 'Workflow Builder'}</strong>
                 <p className="truncate muted">{user?.email ?? 'Local session'}</p>
               </div>
             </div>
@@ -287,14 +287,14 @@ function Boot() {
 
   return (
     <Routes>
-      <Route path="/" element={<Navigate to="/app/agents" replace />} />
+      <Route path="/" element={<Navigate to="/app/workflows" replace />} />
       <Route path="/login" element={<PublicOnly><LoginPage /></PublicOnly>} />
       <Route path="/register" element={<PublicOnly><RegisterPage /></PublicOnly>} />
       <Route element={<RequireAuth />}>
         <Route path="/app" element={<AppShell />}>
-          <Route index element={<Navigate to="/app/agents" replace />} />
-          <Route path="agents" element={<AgentsPage />} />
-          <Route path="agents/:id/canvas" element={<CanvasPage />} />
+          <Route index element={<Navigate to="/app/workflows" replace />} />
+          <Route path="workflows" element={<WorkflowsPage />} />
+          <Route path="workflows/:id/canvas" element={<CanvasPage />} />
           <Route path="knowledge" element={<KnowledgePage />} />
           <Route path="knowledge/:id" element={<KnowledgePage />} />
           <Route path="chat" element={<Navigate to="/app/dialogs" replace />} />
@@ -306,7 +306,7 @@ function Boot() {
           <Route path="settings" element={<SettingsPage />} />
         </Route>
       </Route>
-      <Route path="*" element={<Navigate to="/app/agents" replace />} />
+      <Route path="*" element={<Navigate to="/app/workflows" replace />} />
     </Routes>
   );
 }

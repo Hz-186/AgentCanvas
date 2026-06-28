@@ -104,8 +104,8 @@ type fakePlannerLLM struct {
 
 func (c *fakePlannerLLM) ChatWithTools(ctx context.Context, cfg llm.ChatProviderConfig, req llm.ToolChatRequest) (*llm.ToolChatResponse, error) {
 	return &llm.ToolChatResponse{
-		Message:  llm.ChatMessage{Role: conversation.RoleAssistant, Content: c.response},
-		Usage:    llm.Usage{TotalTokens: 10},
+		Message: llm.ChatMessage{Role: conversation.RoleAssistant, Content: c.response},
+		Usage:   llm.Usage{TotalTokens: 10},
 	}, nil
 }
 

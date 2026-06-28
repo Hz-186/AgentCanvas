@@ -3,11 +3,11 @@ package node
 import (
 	"context"
 
-	"agentcanvas/internal/domain/agent"
 	"agentcanvas/internal/domain/conversation"
 	"agentcanvas/internal/domain/memory"
 	"agentcanvas/internal/domain/retrieval"
 	"agentcanvas/internal/domain/tool"
+	"agentcanvas/internal/domain/workflow"
 	"agentcanvas/internal/infrastructure/llm"
 	"agentcanvas/internal/runtime/engine"
 	"agentcanvas/internal/runtime/sandbox"
@@ -33,7 +33,7 @@ type MessageHistoryReader interface {
 }
 
 type AgentProfileLoader interface {
-	GetAgentProfile(ctx context.Context, ownerID, agentID int64) (*agent.Profile, error)
+	GetWorkflowProfile(ctx context.Context, ownerID, workflowID int64) (*workflow.Profile, error)
 }
 
 type Deps struct {
@@ -50,9 +50,9 @@ type Deps struct {
 	ToolInvocations tool.InvocationRepository
 	ToolCalling     llm.ToolCallingClient
 	ToolRegistry    toolruntime.Registry
-	AgentCaller     toolruntime.AgentCaller
+	WorkflowCaller  toolruntime.WorkflowCaller
 	Profiles        AgentProfileLoader
-	Teams           agent.TeamRepository
+	Teams           workflow.TeamRepository
 	Sandbox         sandbox.Runner
 }
 
@@ -72,15 +72,15 @@ func DefaultNodes(deps Deps) []engine.Node {
 		defaultRunner := sandbox.NewDockerRunner()
 		sandboxRunner = defaultRunner
 	}
-	agentNode := AgentNode{LLM: toolCalling, Providers: deps.Providers, Tools: toolRegistry, ToolPacks: deps.ToolPacks, Retriever: deps.Retriever, Memories: deps.Memories, MemoryLogs: deps.MemoryWriteLogs, AgentCaller: deps.AgentCaller, Profiles: deps.Profiles, Sandbox: sandboxRunner, MessageHistory: deps.MessageHistory}
+	agentNode := AgentNode{LLM: toolCalling, Providers: deps.Providers, Tools: toolRegistry, ToolPacks: deps.ToolPacks, Retriever: deps.Retriever, Memories: deps.Memories, MemoryLogs: deps.MemoryWriteLogs, WorkflowCaller: deps.WorkflowCaller, Profiles: deps.Profiles, Sandbox: sandboxRunner, MessageHistory: deps.MessageHistory}
 	return []engine.Node{
 		BeginNode{},
 		RetrievalNode{Retriever: deps.Retriever},
 		PromptNode{},
 		LLMNode{Client: deps.LLM, Providers: deps.Providers, History: deps.MessageHistory},
 		AgentLoopNode{AgentNode: agentNode},
-		AgentCallNode{Caller: deps.AgentCaller},
-		TeamCallNode{Teams: deps.Teams, Caller: deps.AgentCaller},
+		WorkflowCallNode{Caller: deps.WorkflowCaller},
+		TeamCallNode{Teams: deps.Teams, Caller: deps.WorkflowCaller},
 		CodeSandboxNode{Runner: sandboxRunner},
 		MessageNode{Writer: deps.Messages},
 		MemoryReadNode{Memories: deps.Memories},

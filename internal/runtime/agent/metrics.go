@@ -3,7 +3,7 @@ package agent
 import (
 	"encoding/json"
 
-	domainagent "agentcanvas/internal/domain/agent"
+	domainagent "agentcanvas/internal/domain/workflow"
 )
 
 type EvalMetrics struct {
@@ -21,11 +21,11 @@ type EvalMetrics struct {
 }
 
 type evalResultMetrics struct {
-	ToolCalls      int  `json:"tool_calls"`
-	TotalTokens    int  `json:"total_tokens"`
-	ToolSuccess    bool `json:"tool_success"`
+	ToolCalls       int  `json:"tool_calls"`
+	TotalTokens     int  `json:"total_tokens"`
+	ToolSuccess     bool `json:"tool_success"`
 	MaxIterExceeded bool `json:"max_iter_exceeded"`
-	JSONCompliant  bool `json:"json_compliant"`
+	JSONCompliant   bool `json:"json_compliant"`
 	ApprovalCorrect bool `json:"approval_correct"`
 }
 

@@ -40,8 +40,8 @@ func TestCheckCallChainMaxDepthZero(t *testing.T) {
 func TestSupervisorBuildPrompt(t *testing.T) {
 	s := SupervisorRuntime{}
 	members := []TeamMemberInfo{
-		{AgentID: 1, Role: "researcher", Description: "Searches knowledge bases"},
-		{AgentID: 2, Role: "writer", Description: "Writes final answers"},
+		{WorkflowID: 1, Role: "researcher", Description: "Searches knowledge bases"},
+		{WorkflowID: 2, Role: "writer", Description: "Writes final answers"},
 	}
 	prompt := s.BuildSupervisorPrompt(members)
 	if prompt == "" {

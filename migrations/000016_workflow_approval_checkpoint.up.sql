@@ -1,0 +1,40 @@
+CREATE TABLE IF NOT EXISTS approval_requests (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    owner_id BIGINT NOT NULL,
+    workflow_id BIGINT NOT NULL,
+    run_id BIGINT NOT NULL,
+    node_id VARCHAR(128) NOT NULL,
+    tool_call_id VARCHAR(255) NOT NULL,
+    tool_name VARCHAR(255) NOT NULL,
+    risk_level VARCHAR(32) NOT NULL,
+    reason TEXT,
+    request_json JSON NULL,
+    status VARCHAR(32) NOT NULL DEFAULT 'pending',
+    decision_note TEXT,
+    decided_at DATETIME NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_owner_status (owner_id, status),
+    INDEX idx_owner_run (owner_id, run_id),
+    INDEX idx_tool_call (tool_call_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS workflow_checkpoints (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    owner_id BIGINT NOT NULL,
+    workflow_id BIGINT NOT NULL,
+    run_id BIGINT NOT NULL,
+    node_id VARCHAR(128) NOT NULL,
+    status VARCHAR(32) NOT NULL,
+    messages_json JSON NOT NULL,
+    messages_summary TEXT,
+    steps_json JSON NULL,
+    pending_tool_call_json JSON NULL,
+    context_json JSON NULL,
+    tool_registry_hash VARCHAR(128) NOT NULL DEFAULT '',
+    tool_policy_hash VARCHAR(128) NOT NULL DEFAULT '',
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_owner_run (owner_id, run_id),
+    INDEX idx_status (status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

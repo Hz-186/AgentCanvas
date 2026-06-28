@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"agentcanvas/internal/domain/agent"
+	"agentcanvas/internal/domain/workflow"
 	"agentcanvas/internal/runtime/engine"
 	runtimeevent "agentcanvas/internal/runtime/event"
 	"agentcanvas/internal/runtime/toolruntime"
@@ -14,8 +14,8 @@ import (
 )
 
 type TeamCallNode struct {
-	Teams  agent.TeamRepository
-	Caller toolruntime.AgentCaller
+	Teams  workflow.TeamRepository
+	Caller toolruntime.WorkflowCaller
 }
 
 type teamCallConfig struct {
@@ -56,40 +56,40 @@ func (n TeamCallNode) Run(ctx context.Context, rc *engine.RunContext, input engi
 	if err != nil {
 		return nil, err
 	}
-	callInput := resolveAgentCallInput(cfg.Input, rc, input)
+	callInput := resolveWorkflowCallInput(cfg.Input, rc, input)
 	handoff := team.HandoffStrategy == "handoff"
 	callInput["_team"] = map[string]any{
-		"id":                  team.ID,
-		"name":                team.Name,
-		"handoff_strategy":    team.HandoffStrategy,
-		"supervisor_agent_id": team.SupervisorAgentID,
-		"members":             teamMembersForInput(members),
+		"id":                     team.ID,
+		"name":                   team.Name,
+		"handoff_strategy":       team.HandoffStrategy,
+		"supervisor_workflow_id": team.SupervisorWorkflowID,
+		"members":                teamMembersForInput(members),
 	}
 	maxDepth := cfg.MaxDepth
 	if maxDepth <= 0 {
 		maxDepth = team.MaxDepth
 	}
 	emitRuntimeEvent(ctx, rc, runtimeevent.Event{
-		Type:     runtimeevent.AgentCallStarted,
+		Type:     runtimeevent.WorkflowCallStarted,
 		RunID:    rc.RunID,
 		NodeID:   rc.CurrentNodeID,
 		NodeType: n.Type(),
-		Payload:  map[string]any{"team_id": team.ID, "supervisor_agent_id": team.SupervisorAgentID, "handoff_strategy": team.HandoffStrategy, "handoff": handoff},
+		Payload:  map[string]any{"team_id": team.ID, "supervisor_workflow_id": team.SupervisorWorkflowID, "handoff_strategy": team.HandoffStrategy, "handoff": handoff},
 	})
-	result, err := n.Caller.CallAgent(ctx, toolruntime.AgentCallRequest{
-		OwnerID:       rc.OwnerID,
-		ParentRunID:   rc.RunID,
-		CallerAgentID: rc.AgentID,
-		CallerNodeID:  rc.CurrentNodeID,
-		AgentID:       team.SupervisorAgentID,
-		Input:         callInput,
-		CallDepth:     rc.CallDepth,
-		CallChain:     append([]int64(nil), rc.CallChain...),
-		MaxDepth:      maxDepth,
+	result, err := n.Caller.CallWorkflow(ctx, toolruntime.WorkflowCallRequest{
+		OwnerID:           rc.OwnerID,
+		ParentRunID:       rc.RunID,
+		CallerWorkflowID:  rc.WorkflowID,
+		CallerNodeID:      rc.CurrentNodeID,
+		WorkflowID:        team.SupervisorWorkflowID,
+		Input:             callInput,
+		CallDepth:         rc.CallDepth,
+		WorkflowCallChain: append([]int64(nil), rc.WorkflowCallChain...),
+		MaxDepth:          maxDepth,
 	})
 	if err != nil {
 		emitRuntimeEvent(ctx, rc, runtimeevent.Event{
-			Type:     runtimeevent.AgentCallFailed,
+			Type:     runtimeevent.WorkflowCallFailed,
 			RunID:    rc.RunID,
 			NodeID:   rc.CurrentNodeID,
 			NodeType: n.Type(),
@@ -98,31 +98,31 @@ func (n TeamCallNode) Run(ctx context.Context, rc *engine.RunContext, input engi
 		return nil, err
 	}
 	emitRuntimeEvent(ctx, rc, runtimeevent.Event{
-		Type:     runtimeevent.AgentCallFinished,
+		Type:     runtimeevent.WorkflowCallFinished,
 		RunID:    rc.RunID,
 		NodeID:   rc.CurrentNodeID,
 		NodeType: n.Type(),
 		Payload:  map[string]any{"team_id": team.ID, "run_id": result.RunID, "status": result.Status, "handoff_strategy": team.HandoffStrategy, "handoff": handoff},
 	})
 	return engine.NodeOutput{
-		"team_id":             team.ID,
-		"team_name":           team.Name,
-		"handoff_strategy":    team.HandoffStrategy,
-		"handoff":             handoff,
-		"supervisor_agent_id": team.SupervisorAgentID,
-		"run_id":              result.RunID,
-		"agent_id":            result.AgentID,
-		"status":              result.Status,
-		"output":              result.Output,
-		"content":             result.Output["content"],
-		"latency_ms":          result.LatencyMS,
+		"team_id":                team.ID,
+		"team_name":              team.Name,
+		"handoff_strategy":       team.HandoffStrategy,
+		"handoff":                handoff,
+		"supervisor_workflow_id": team.SupervisorWorkflowID,
+		"run_id":                 result.RunID,
+		"workflow_id":            result.WorkflowID,
+		"status":                 result.Status,
+		"output":                 result.Output,
+		"content":                result.Output["content"],
+		"latency_ms":             result.LatencyMS,
 	}, nil
 }
 
-func teamMembersForInput(members []agent.TeamMember) []map[string]any {
+func teamMembersForInput(members []workflow.TeamMember) []map[string]any {
 	out := make([]map[string]any, 0, len(members))
 	for _, member := range members {
-		out = append(out, map[string]any{"agent_id": member.AgentID, "role": member.Role})
+		out = append(out, map[string]any{"workflow_id": member.WorkflowID, "role": member.Role})
 	}
 	return out
 }

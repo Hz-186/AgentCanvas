@@ -6,13 +6,13 @@ import (
 )
 
 type ToolRunContext struct {
-	OwnerID        int64
-	AgentID        int64
-	RunID          int64
-	NodeID         string
-	CallDepth      int
-	CallChain      []int64
-	ConversationID *int64
+	OwnerID           int64
+	WorkflowID        int64
+	RunID             int64
+	NodeID            string
+	CallDepth         int
+	WorkflowCallChain []int64
+	ConversationID    *int64
 }
 
 type ToolResult struct {
@@ -76,22 +76,22 @@ type Registry interface {
 	LoadForAgent(ctx context.Context, ownerID int64, toolIDs []int64) ([]RuntimeTool, error)
 }
 
-type AgentCallRequest struct {
-	OwnerID       int64          `json:"owner_id"`
-	ParentRunID   int64          `json:"parent_run_id"`
-	CallerAgentID int64          `json:"caller_agent_id"`
-	CallerNodeID  string         `json:"caller_node_id"`
-	AgentID       int64          `json:"agent_id"`
-	FlowVersionID int64          `json:"flow_version_id"`
-	Input         map[string]any `json:"input"`
-	CallDepth     int            `json:"call_depth"`
-	CallChain     []int64        `json:"call_chain"`
-	MaxDepth      int            `json:"max_depth"`
+type WorkflowCallRequest struct {
+	OwnerID           int64          `json:"owner_id"`
+	ParentRunID       int64          `json:"parent_run_id"`
+	CallerWorkflowID  int64          `json:"caller_workflow_id"`
+	CallerNodeID      string         `json:"caller_node_id"`
+	WorkflowID        int64          `json:"workflow_id"`
+	FlowVersionID     int64          `json:"flow_version_id"`
+	Input             map[string]any `json:"input"`
+	CallDepth         int            `json:"call_depth"`
+	WorkflowCallChain []int64        `json:"workflow_call_chain"`
+	MaxDepth          int            `json:"max_depth"`
 }
 
-type AgentCallResult struct {
+type WorkflowCallResult struct {
 	RunID         int64          `json:"run_id"`
-	AgentID       int64          `json:"agent_id"`
+	WorkflowID    int64          `json:"workflow_id"`
 	FlowVersionID int64          `json:"flow_version_id"`
 	Status        string         `json:"status"`
 	Output        map[string]any `json:"output"`
@@ -99,8 +99,8 @@ type AgentCallResult struct {
 	LatencyMS     int            `json:"latency_ms"`
 }
 
-type AgentCaller interface {
-	CallAgent(ctx context.Context, req AgentCallRequest) (*AgentCallResult, error)
+type WorkflowCaller interface {
+	CallWorkflow(ctx context.Context, req WorkflowCallRequest) (*WorkflowCallResult, error)
 }
 
 func ResultFromValue(value any) (*ToolResult, error) {

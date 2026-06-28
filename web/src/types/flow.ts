@@ -6,7 +6,7 @@ export type NodeType =
   | 'prompt'
   | 'llm'
   | 'agent_loop'
-  | 'agent_call'
+  | 'workflow_call'
   | 'team_call'
   | 'code_sandbox'
   | 'message'
@@ -50,8 +50,8 @@ export interface AgentLoopConfig {
   knowledge_ids?: number[];
   knowledge_top_k?: number;
   knowledge_mode?: 'keyword' | 'vector' | 'hybrid';
-  call_agent_ids?: number[];
-  max_agent_call_depth?: number;
+  call_workflow_ids?: number[];
+  max_workflow_call_depth?: number;
   code_execution_enabled?: boolean;
   memory_enabled?: boolean;
   max_iterations?: number;
@@ -72,7 +72,7 @@ export interface MessageConfig {
 }
 
 export interface AgentCallConfig {
-  agent_id: number;
+  workflow_id: number;
   flow_version_id?: number;
   input?: Record<string, unknown>;
   max_depth?: number;

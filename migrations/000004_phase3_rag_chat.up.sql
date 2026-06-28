@@ -3,13 +3,13 @@ CREATE TABLE IF NOT EXISTS conversations (
     owner_id BIGINT NOT NULL,
     title VARCHAR(255),
     source VARCHAR(32) NOT NULL DEFAULT 'rag_chat',
-    agent_id BIGINT NULL,
+    workflow_id BIGINT NULL,
     last_message_at DATETIME NULL,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     deleted_at DATETIME NULL,
     INDEX idx_owner_id (owner_id),
-    INDEX idx_agent_id (agent_id),
+    INDEX idx_workflow_id (workflow_id),
     INDEX idx_last_message_at (last_message_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 

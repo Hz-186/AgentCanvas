@@ -657,7 +657,7 @@ export function SettingsPage() {
         <Panel title="Tool Pack" eyebrow="工具包" action={<Button tone="primary" onClick={() => setPackOpen(true)}><Boxes size={16} />新增</Button>}>
           <div className="stack">
             {toolPacks.length === 0 ? (
-              <EmptyState title="还没有 Tool Pack" description="把常用工具组合成工具包，便于后续绑定到 Agent Profile。" />
+              <EmptyState title="还没有 Tool Pack" description="把常用工具组合成工具包，便于后续绑定到 Workflow Profile。" />
             ) : (
               <>
                 <Field label="当前 Pack">

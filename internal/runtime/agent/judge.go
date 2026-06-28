@@ -16,19 +16,19 @@ type LLMJudge struct {
 }
 
 type EvalScore struct {
-	Score        float64            `json:"score"`
-	MaxScore     float64            `json:"max_score"`
-	Passed       bool               `json:"passed"`
-	Criteria     []EvalCriterion    `json:"criteria"`
-	Explanation  string             `json:"explanation"`
-	Metadata     map[string]any     `json:"metadata,omitempty"`
+	Score       float64         `json:"score"`
+	MaxScore    float64         `json:"max_score"`
+	Passed      bool            `json:"passed"`
+	Criteria    []EvalCriterion `json:"criteria"`
+	Explanation string          `json:"explanation"`
+	Metadata    map[string]any  `json:"metadata,omitempty"`
 }
 
 type EvalCriterion struct {
 	Name   string  `json:"name"`
 	Score  float64 `json:"score"`
 	Max    float64 `json:"max"`
-	Result string `json:"result"`
+	Result string  `json:"result"`
 }
 
 func (j *LLMJudge) Score(ctx context.Context, provider llm.ChatProviderConfig, task, expected, actual string, expectedTools []string, actualTools []string, temperature *float64) (*EvalScore, error) {

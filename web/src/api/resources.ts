@@ -1,10 +1,10 @@
 import { api, request } from './client';
 import { streamPost, type SSEMessage } from './sse';
 import type {
-  Agent,
-  AgentProfile,
-  AgentTeam,
-  AgentTeamMember,
+  Workflow,
+  WorkflowProfile,
+  WorkflowTeam,
+  WorkflowTeamMember,
   ApprovalRequest,
   AgentDocument,
   ApiToken,
@@ -18,7 +18,7 @@ import type {
   EvalDataset,
   EvalResult,
   EvalRun,
-  CreateAgentRequest,
+  CreateWorkflowRequest,
   CreateEvalCaseRequest,
   CreateEvalDatasetRequest,
   CreateFlowVersionRequest,
@@ -34,7 +34,7 @@ import type {
   ProviderCatalog,
   RetrievalResponse,
   Run,
-  RunAgentRequest,
+  RunWorkflowRequest,
   RunEvalDatasetRequest,
   RunEvalDatasetResponse,
   RunEvent,
@@ -47,23 +47,23 @@ import type {
   ToolPack,
   ToolPackItem,
   ToolPolicy,
-  UpdateAgentRequest,
-  UpdateAgentProfileRequest,
+  UpdateWorkflowRequest,
+  UpdateWorkflowProfileRequest,
   UpdateProviderRequest,
   UploadDocumentResponse,
 } from '../types/api';
 
-export const agentApi = {
-  list: () => api.get<Agent[]>('/agents'),
-  get: (id: number) => api.get<Agent>(`/agents/${id}`),
-  getProfile: (id: number) => api.get<AgentProfile>(`/agents/${id}/profile`),
-  updateProfile: (id: number, body: UpdateAgentProfileRequest) => api.patch<AgentProfile>(`/agents/${id}/profile`, body),
-  create: (body: CreateAgentRequest) => api.post<Agent>('/agents', body),
-  update: (id: number, body: UpdateAgentRequest) => api.patch<Agent>(`/agents/${id}`, body),
-  remove: (id: number) => api.delete<{ success: boolean }>(`/agents/${id}`),
+export const workflowApi = {
+  list: () => api.get<Workflow[]>('/workflows'),
+  get: (id: number) => api.get<Workflow>(`/workflows/${id}`),
+  getProfile: (id: number) => api.get<WorkflowProfile>(`/workflows/${id}/profile`),
+  updateProfile: (id: number, body: UpdateWorkflowProfileRequest) => api.patch<WorkflowProfile>(`/workflows/${id}/profile`, body),
+  create: (body: CreateWorkflowRequest) => api.post<Workflow>('/workflows', body),
+  update: (id: number, body: UpdateWorkflowRequest) => api.patch<Workflow>(`/workflows/${id}`, body),
+  remove: (id: number) => api.delete<{ success: boolean }>(`/workflows/${id}`),
   createEvalDataset: (agentId: number, body: CreateEvalDatasetRequest) =>
-    api.post<EvalDataset>(`/agents/${agentId}/eval-datasets`, body),
-  listEvalDatasets: (agentId: number) => api.get<EvalDataset[]>(`/agents/${agentId}/eval-datasets`),
+    api.post<EvalDataset>(`/workflows/${agentId}/eval-datasets`, body),
+  listEvalDatasets: (agentId: number) => api.get<EvalDataset[]>(`/workflows/${agentId}/eval-datasets`),
   createEvalCase: (datasetId: number, body: CreateEvalCaseRequest) =>
     api.post<EvalCase>(`/eval-datasets/${datasetId}/cases`, body),
   listEvalCases: (datasetId: number) => api.get<EvalCase[]>(`/eval-datasets/${datasetId}/cases`),
@@ -72,17 +72,17 @@ export const agentApi = {
   listEvalRuns: (datasetId: number) => api.get<EvalRun[]>(`/eval-datasets/${datasetId}/runs`),
   listEvalResults: (evalRunId: number) => api.get<EvalResult[]>(`/eval-runs/${evalRunId}/results`),
   createFlowVersion: (agentId: number, body: CreateFlowVersionRequest) =>
-    api.post<FlowVersion>(`/agents/${agentId}/flow-versions`, body),
-  listFlowVersions: (agentId: number) => api.get<FlowVersion[]>(`/agents/${agentId}/flow-versions`),
+    api.post<FlowVersion>(`/workflows/${agentId}/flow-versions`, body),
+  listFlowVersions: (agentId: number) => api.get<FlowVersion[]>(`/workflows/${agentId}/flow-versions`),
   getFlowVersion: (id: number) => api.get<FlowVersion>(`/flow-versions/${id}`),
   publishFlowVersion: (id: number) => api.post<FlowVersion>(`/flow-versions/${id}/publish`),
   validateFlowVersion: (id: number) => api.post<{ valid: boolean }>(`/flow-versions/${id}/validate`),
-  run: (agentId: number, body: RunAgentRequest) => api.post<{ run: Run; output: Record<string, unknown> }>(`/agents/${agentId}/runs`, body),
+  run: (agentId: number, body: RunWorkflowRequest) => api.post<{ run: Run; output: Record<string, unknown> }>(`/workflows/${agentId}/runs`, body),
   streamRun: (
     agentId: number,
-    body: RunAgentRequest,
+    body: RunWorkflowRequest,
     handlers: { onMessage: (msg: SSEMessage) => void; onError?: (err: Error) => void; signal?: AbortSignal },
-  ) => streamPost(`/agents/${agentId}/runs/stream`, { body, ...handlers }),
+  ) => streamPost(`/workflows/${agentId}/runs/stream`, { body, ...handlers }),
   getRun: (id: number) => api.get<Run>(`/runs/${id}`),
   listRunEvents: (id: number) => api.get<RunEvent[]>(`/runs/${id}/events`),
   listChildRuns: (id: number) => api.get<Run[]>(`/runs/${id}/children`),
@@ -96,15 +96,15 @@ export const agentApi = {
     api.get<ApprovalRequest[]>('/approval-requests', status ? { status } : undefined),
   approveRequest: (id: number, note?: string) => api.post<ApprovalRequest>(`/approval-requests/${id}/approve`, { note }),
   rejectRequest: (id: number, note?: string) => api.post<ApprovalRequest>(`/approval-requests/${id}/reject`, { note }),
-  listTeams: () => api.get<AgentTeam[]>('/agent-teams'),
-  createTeam: (body: { name: string; supervisor_agent_id: number; handoff_strategy?: string; max_depth?: number }) =>
-    api.post<AgentTeam>('/agent-teams', body),
-  removeTeam: (id: number) => api.delete<{ success: boolean }>(`/agent-teams/${id}`),
-  listTeamMembers: (teamId: number) => api.get<AgentTeamMember[]>(`/agent-teams/${teamId}/members`),
-  addTeamMember: (teamId: number, body: { agent_id: number; role?: string }) =>
-    api.post<AgentTeamMember>(`/agent-teams/${teamId}/members`, body),
+  listTeams: () => api.get<WorkflowTeam[]>('/workflow-teams'),
+  createTeam: (body: { name: string; supervisor_workflow_id: number; handoff_strategy?: string; max_depth?: number }) =>
+    api.post<WorkflowTeam>('/workflow-teams', body),
+  removeTeam: (id: number) => api.delete<{ success: boolean }>(`/workflow-teams/${id}`),
+  listTeamMembers: (teamId: number) => api.get<WorkflowTeamMember[]>(`/workflow-teams/${teamId}/members`),
+  addTeamMember: (teamId: number, body: { workflow_id: number; role?: string }) =>
+    api.post<WorkflowTeamMember>(`/workflow-teams/${teamId}/members`, body),
   removeTeamMember: (teamId: number, agentId: number) =>
-    api.delete<{ success: boolean }>(`/agent-teams/${teamId}/members/${agentId}`),
+    api.delete<{ success: boolean }>(`/workflow-teams/${teamId}/members/${agentId}`),
 };
 
 export const knowledgeApi = {

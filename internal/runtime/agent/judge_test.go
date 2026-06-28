@@ -5,7 +5,7 @@ import (
 )
 
 func TestScoreToolsExact(t *testing.T) {
-	score := scoreTools([]string{"search_knowledge", "call_agent"}, []string{"search_knowledge", "call_agent"})
+	score := scoreTools([]string{"search_knowledge", "call_workflow"}, []string{"search_knowledge", "call_workflow"})
 	if score != 1.0 {
 		t.Fatalf("expected 1.0, got %.2f", score)
 	}

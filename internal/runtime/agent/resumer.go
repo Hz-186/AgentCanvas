@@ -10,11 +10,11 @@ import (
 
 type ResumeRequest struct {
 	OwnerID            int64
-	AgentID            int64
+	WorkflowID         int64
 	RunID              int64
 	NodeID             string
 	CallDepth          int
-	CallChain          []int64
+	WorkflowCallChain  []int64
 	ConversationID     *int64
 	Provider           llm.ChatProviderConfig
 	Model              string
@@ -68,11 +68,11 @@ func BuildResumeRequest(req ResumeRequest) (*RunRequest, error) {
 	}
 	return &RunRequest{
 		OwnerID:            req.OwnerID,
-		AgentID:            req.AgentID,
+		WorkflowID:         req.WorkflowID,
 		RunID:              req.RunID,
 		NodeID:             req.NodeID,
 		CallDepth:          req.CallDepth,
-		CallChain:          req.CallChain,
+		WorkflowCallChain:  req.WorkflowCallChain,
 		ConversationID:     req.ConversationID,
 		Provider:           req.Provider,
 		Model:              req.Model,

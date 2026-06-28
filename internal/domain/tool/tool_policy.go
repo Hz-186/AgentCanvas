@@ -2,8 +2,8 @@ package tool
 
 import (
 	"encoding/json"
-	"time"
 	"gorm.io/gorm"
+	"time"
 )
 
 type ToolPolicy struct {

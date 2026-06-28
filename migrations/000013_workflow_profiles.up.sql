@@ -1,0 +1,23 @@
+CREATE TABLE IF NOT EXISTS workflow_profiles (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    owner_id BIGINT NOT NULL,
+    workflow_id BIGINT NOT NULL,
+    role VARCHAR(255) NOT NULL,
+    goal TEXT NOT NULL,
+    backstory TEXT,
+    system_prompt TEXT,
+    default_provider_id BIGINT NULL,
+    default_model VARCHAR(128),
+    max_iterations INT NOT NULL DEFAULT 10,
+    max_execution_time_ms INT NOT NULL DEFAULT 120000,
+    memory_enabled TINYINT(1) NOT NULL DEFAULT 0,
+    planning_enabled TINYINT(1) NOT NULL DEFAULT 0,
+    allow_delegation TINYINT(1) NOT NULL DEFAULT 0,
+    allow_code_execution TINYINT(1) NOT NULL DEFAULT 0,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    deleted_at DATETIME NULL,
+    UNIQUE KEY uk_owner_workflow_profile (owner_id, workflow_id),
+    INDEX idx_owner_id (owner_id),
+    INDEX idx_workflow_id (workflow_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

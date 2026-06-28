@@ -67,4 +67,3 @@ const chunkVectorMappingWithoutVector = `{
     "embedding_dimensions": { "type": "integer" }
   }
 }`
-

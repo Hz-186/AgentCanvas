@@ -6,11 +6,11 @@ import (
 	"fmt"
 )
 
-type AgentCallHook func(ctx context.Context, rc ToolRunContext, parentRunID int64, agentID, flowVersionID int64, input map[string]any) error
+type WorkflowCallHook func(ctx context.Context, rc ToolRunContext, parentRunID int64, workflowID, flowVersionID int64, input map[string]any) error
 
-var callChainChecker AgentCallHook
+var callChainChecker WorkflowCallHook
 
-func SetCallChainChecker(hook AgentCallHook) {
+func SetCallChainChecker(hook WorkflowCallHook) {
 	callChainChecker = hook
 }
 

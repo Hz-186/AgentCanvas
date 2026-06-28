@@ -7,10 +7,10 @@ import (
 	"fmt"
 	"strings"
 
-	"agentcanvas/internal/domain/agent"
 	"agentcanvas/internal/domain/memory"
 	"agentcanvas/internal/domain/retrieval"
 	"agentcanvas/internal/domain/tool"
+	"agentcanvas/internal/domain/workflow"
 	runtimeagent "agentcanvas/internal/runtime/agent"
 	"agentcanvas/internal/runtime/engine"
 	runtimeevent "agentcanvas/internal/runtime/event"
@@ -29,7 +29,7 @@ type AgentNode struct {
 	Retriever      retrieval.Retriever
 	Memories       memory.Repository
 	MemoryLogs     memory.WriteLogRepository
-	AgentCaller    toolruntime.AgentCaller
+	WorkflowCaller toolruntime.WorkflowCaller
 	Profiles       AgentProfileLoader
 	Sandbox        sandbox.Runner
 	MessageHistory MessageHistoryReader
@@ -55,8 +55,8 @@ type agentRuntimeConfig struct {
 	KnowledgeIDs            []int64         `json:"knowledge_ids"`
 	KnowledgeTopK           int             `json:"knowledge_top_k"`
 	KnowledgeMode           string          `json:"knowledge_mode"`
-	CallAgentIDs            []int64         `json:"call_agent_ids"`
-	MaxAgentCallDepth       int             `json:"max_agent_call_depth"`
+	CallWorkflowIDs         []int64         `json:"call_workflow_ids"`
+	MaxWorkflowCallDepth    int             `json:"max_workflow_call_depth"`
 	CodeExecutionEnabled    bool            `json:"code_execution_enabled"`
 	MemoryEnabled           bool            `json:"memory_enabled"`
 	MaxIterations           int             `json:"max_iterations"`
@@ -90,8 +90,8 @@ type agentNodeConfig struct {
 		KnowledgeIDs         []int64 `json:"knowledge_ids"`
 		KnowledgeTopK        int     `json:"knowledge_top_k"`
 		KnowledgeMode        string  `json:"knowledge_mode"`
-		CallAgentIDs         []int64 `json:"call_agent_ids"`
-		MaxAgentCallDepth    int     `json:"max_agent_call_depth"`
+		CallWorkflowIDs      []int64 `json:"call_workflow_ids"`
+		MaxWorkflowCallDepth int     `json:"max_workflow_call_depth"`
 		CodeExecutionEnabled bool    `json:"code_execution_enabled"`
 	} `json:"tools"`
 	Memory struct {
@@ -182,11 +182,11 @@ func parseAgentNodeConfig(config json.RawMessage) (agentRuntimeConfig, error) {
 	if strings.TrimSpace(nested.Tools.KnowledgeMode) != "" {
 		cfg.KnowledgeMode = nested.Tools.KnowledgeMode
 	}
-	if len(nested.Tools.CallAgentIDs) > 0 {
-		cfg.CallAgentIDs = nested.Tools.CallAgentIDs
+	if len(nested.Tools.CallWorkflowIDs) > 0 {
+		cfg.CallWorkflowIDs = nested.Tools.CallWorkflowIDs
 	}
-	if nested.Tools.MaxAgentCallDepth > 0 {
-		cfg.MaxAgentCallDepth = nested.Tools.MaxAgentCallDepth
+	if nested.Tools.MaxWorkflowCallDepth > 0 {
+		cfg.MaxWorkflowCallDepth = nested.Tools.MaxWorkflowCallDepth
 	}
 	if nested.Tools.CodeExecutionEnabled {
 		cfg.CodeExecutionEnabled = true
@@ -264,8 +264,8 @@ func validateAgentRuntimeConfig(cfg agentRuntimeConfig, nodeType string, require
 	if cfg.KnowledgeMode != "" && cfg.KnowledgeMode != string(retrieval.ModeKeyword) && cfg.KnowledgeMode != string(retrieval.ModeVector) && cfg.KnowledgeMode != string(retrieval.ModeHybrid) {
 		return fmt.Errorf("%w: unsupported %s knowledge_mode", agenterrors.ErrInvalidInput, nodeType)
 	}
-	if cfg.MaxAgentCallDepth < 0 || cfg.MaxAgentCallDepth > 5 {
-		return fmt.Errorf("%w: %s max_agent_call_depth must be <= 5", agenterrors.ErrInvalidInput, nodeType)
+	if cfg.MaxWorkflowCallDepth < 0 || cfg.MaxWorkflowCallDepth > 5 {
+		return fmt.Errorf("%w: %s max_workflow_call_depth must be <= 5", agenterrors.ErrInvalidInput, nodeType)
 	}
 	if cfg.Mode != "" && cfg.Mode != "react" && cfg.Mode != "plan_execute" && cfg.Mode != "reflect" && cfg.Mode != "supervisor" {
 		return fmt.Errorf("%w: %s mode must be react, plan_execute, reflect, or supervisor", agenterrors.ErrInvalidInput, nodeType)
@@ -373,11 +373,11 @@ func (n AgentNode) runAgent(ctx context.Context, rc *engine.RunContext, input en
 	}
 	runRequest := runtimeagent.RunRequest{
 		OwnerID:            rc.OwnerID,
-		AgentID:            rc.AgentID,
+		WorkflowID:         rc.WorkflowID,
 		RunID:              rc.RunID,
 		NodeID:             rc.CurrentNodeID,
 		CallDepth:          rc.CallDepth,
-		CallChain:          append([]int64(nil), rc.CallChain...),
+		WorkflowCallChain:  append([]int64(nil), rc.WorkflowCallChain...),
 		ConversationID:     rc.ConversationID,
 		Provider:           loaded.Config,
 		Model:              loaded.Model,
@@ -399,11 +399,11 @@ func (n AgentNode) runAgent(ctx context.Context, rc *engine.RunContext, input en
 	if resume != nil && resume.Checkpoint != nil {
 		resumeRequest, buildErr := runtimeagent.BuildResumeRequest(runtimeagent.ResumeRequest{
 			OwnerID:            rc.OwnerID,
-			AgentID:            rc.AgentID,
+			WorkflowID:         rc.WorkflowID,
 			RunID:              rc.RunID,
 			NodeID:             rc.CurrentNodeID,
 			CallDepth:          rc.CallDepth,
-			CallChain:          append([]int64(nil), rc.CallChain...),
+			WorkflowCallChain:  append([]int64(nil), rc.WorkflowCallChain...),
 			ConversationID:     rc.ConversationID,
 			Provider:           loaded.Config,
 			Model:              loaded.Model,
@@ -485,10 +485,10 @@ func (n AgentNode) runAgent(ctx context.Context, rc *engine.RunContext, input en
 }
 
 func (n AgentNode) applyProfileDefaults(ctx context.Context, rc *engine.RunContext, cfg agentRuntimeConfig) (agentRuntimeConfig, error) {
-	if n.Profiles == nil || rc == nil || rc.AgentID <= 0 {
+	if n.Profiles == nil || rc == nil || rc.WorkflowID <= 0 {
 		return cfg, nil
 	}
-	profile, err := n.Profiles.GetAgentProfile(ctx, rc.OwnerID, rc.AgentID)
+	profile, err := n.Profiles.GetWorkflowProfile(ctx, rc.OwnerID, rc.WorkflowID)
 	if err != nil {
 		return cfg, err
 	}
@@ -535,13 +535,13 @@ func (n AgentNode) applyProfileDefaults(ctx context.Context, rc *engine.RunConte
 	if strings.TrimSpace(cfg.KnowledgeMode) == "" && strings.TrimSpace(profile.DefaultKnowledgeMode) != "" {
 		cfg.KnowledgeMode = profile.DefaultKnowledgeMode
 	}
-	if len(cfg.CallAgentIDs) == 0 && profile.AllowDelegation {
-		if ids := profile.DefaultCallAgentIDsSlice(); len(ids) > 0 {
-			cfg.CallAgentIDs = ids
+	if len(cfg.CallWorkflowIDs) == 0 && profile.AllowDelegation {
+		if ids := profile.DefaultCallWorkflowIDsSlice(); len(ids) > 0 {
+			cfg.CallWorkflowIDs = ids
 		}
 	}
-	if cfg.MaxAgentCallDepth <= 0 && profile.DefaultMaxAgentCallDepth > 0 {
-		cfg.MaxAgentCallDepth = profile.DefaultMaxAgentCallDepth
+	if cfg.MaxWorkflowCallDepth <= 0 && profile.DefaultMaxWorkflowCallDepth > 0 {
+		cfg.MaxWorkflowCallDepth = profile.DefaultMaxWorkflowCallDepth
 	}
 	if len(cfg.OutputSchemaJSON) == 0 && len(profile.OutputSchemaJSON) > 0 && string(bytes.TrimSpace(profile.OutputSchemaJSON)) != "{}" {
 		cfg.OutputSchemaJSON = profile.OutputSchemaJSON
@@ -579,7 +579,7 @@ func mergeInt64IDs(values ...[]int64) []int64 {
 	return merged
 }
 
-func profileSystemPrompt(profile *agent.Profile) string {
+func profileSystemPrompt(profile *workflow.Profile) string {
 	if profile == nil {
 		return ""
 	}
@@ -639,14 +639,14 @@ func (n AgentNode) loadTools(ctx context.Context, ownerID int64, cfg agentRuntim
 			Mode:      retrieval.Mode(cfg.KnowledgeMode),
 		})
 	}
-	if len(cfg.CallAgentIDs) > 0 {
-		if n.AgentCaller == nil {
-			return nil, fmt.Errorf("agent_loop agent caller is not configured")
+	if len(cfg.CallWorkflowIDs) > 0 {
+		if n.WorkflowCaller == nil {
+			return nil, fmt.Errorf("agent_loop workflow caller is not configured")
 		}
-		tools = append(tools, toolruntime.AgentCallTool{
-			Caller:          n.AgentCaller,
-			AllowedAgentIDs: cfg.CallAgentIDs,
-			MaxDepth:        cfg.MaxAgentCallDepth,
+		tools = append(tools, toolruntime.WorkflowCallTool{
+			Caller:             n.WorkflowCaller,
+			AllowedWorkflowIDs: cfg.CallWorkflowIDs,
+			MaxDepth:           cfg.MaxWorkflowCallDepth,
 		})
 	}
 	if cfg.CodeExecutionEnabled {

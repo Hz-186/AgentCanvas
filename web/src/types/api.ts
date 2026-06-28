@@ -343,7 +343,7 @@ export interface Conversation {
   dialog_id?: number | null;
   title: string;
   source: string;
-  agent_id?: number | null;
+  workflow_id?: number | null;
   last_message_at: string | null;
   created_at: string;
   updated_at: string;
@@ -414,8 +414,8 @@ export interface ChatResponse {
   usage?: Record<string, unknown>;
 }
 
-// —— Agent / Flow / Run ——
-export interface Agent {
+// —— Workflow / Flow / Run ——
+export interface Workflow {
   id: number;
   owner_id: number;
   name: string;
@@ -427,10 +427,10 @@ export interface Agent {
   updated_at: string;
 }
 
-export interface AgentProfile {
+export interface WorkflowProfile {
   id: number;
   owner_id: number;
-  agent_id: number;
+  workflow_id: number;
   role: string;
   goal: string;
   backstory: string;
@@ -449,28 +449,28 @@ export interface AgentProfile {
   default_knowledge_ids?: number[];
   default_knowledge_top_k?: number;
   default_knowledge_mode?: 'keyword' | 'vector' | 'hybrid';
-  default_call_agent_ids?: number[];
-  default_max_agent_call_depth?: number;
+  default_call_workflow_ids?: number[];
+  default_max_workflow_call_depth?: number;
   output_schema_json?: unknown;
   created_at: string;
   updated_at: string;
 }
 
-export interface CreateAgentRequest {
+export interface CreateWorkflowRequest {
   name: string;
   description?: string;
   avatar_url?: string;
 }
 
-export interface UpdateAgentRequest {
+export interface UpdateWorkflowRequest {
   name?: string;
   description?: string;
   avatar_url?: string;
   status?: number;
 }
 
-export type UpdateAgentProfileRequest = Partial<Pick<
-  AgentProfile,
+export type UpdateWorkflowProfileRequest = Partial<Pick<
+  WorkflowProfile,
   | 'role'
   | 'goal'
   | 'backstory'
@@ -489,15 +489,15 @@ export type UpdateAgentProfileRequest = Partial<Pick<
   | 'default_knowledge_ids'
   | 'default_knowledge_top_k'
   | 'default_knowledge_mode'
-  | 'default_call_agent_ids'
-  | 'default_max_agent_call_depth'
+  | 'default_call_workflow_ids'
+  | 'default_max_workflow_call_depth'
   | 'output_schema_json'
 >>;
 
 export interface EvalDataset {
   id: number;
   owner_id: number;
-  agent_id: number;
+  workflow_id: number;
   name: string;
   description: string;
   status: number;
@@ -521,7 +521,7 @@ export interface EvalCase {
 export interface EvalRun {
   id: number;
   owner_id: number;
-  agent_id: number;
+  workflow_id: number;
   dataset_id: number;
   flow_version_id: number;
   status: 'running' | 'completed' | 'failed';
@@ -542,7 +542,7 @@ export interface EvalResult {
   owner_id: number;
   eval_run_id: number;
   eval_case_id: number;
-  agent_run_id?: number | null;
+  workflow_run_id?: number | null;
   status: 'passed' | 'failed';
   score: number;
   reason: string;
@@ -578,7 +578,7 @@ export interface RunEvalDatasetResponse {
 export interface FlowVersion {
   id: number;
   owner_id: number;
-  agent_id: number;
+  workflow_id: number;
   version_no: number;
   dsl_json: unknown;
   description: string;
@@ -598,7 +598,7 @@ export type RunStatus = 'running' | 'succeeded' | 'failed' | 'cancelled' | 'wait
 export interface Run {
   id: number;
   owner_id: number;
-  agent_id: number;
+  workflow_id: number;
   flow_version_id: number;
   conversation_id: number | null;
   parent_run_id?: number | null;
@@ -620,7 +620,7 @@ export interface Run {
 export interface ApprovalRequest {
   id: number;
   owner_id: number;
-  agent_id: number;
+  workflow_id: number;
   run_id: number;
   node_id: string;
   tool_call_id: string;
@@ -635,22 +635,22 @@ export interface ApprovalRequest {
   updated_at: string;
 }
 
-export interface AgentTeam {
+export interface WorkflowTeam {
   id: number;
   owner_id: number;
   name: string;
-  supervisor_agent_id: number;
+  supervisor_workflow_id: number;
   handoff_strategy: 'supervisor' | 'handoff';
   max_depth: number;
   created_at: string;
   updated_at: string;
 }
 
-export interface AgentTeamMember {
+export interface WorkflowTeamMember {
   id: number;
   owner_id: number;
   team_id: number;
-  agent_id: number;
+  workflow_id: number;
   role: string;
   created_at: string;
 }
@@ -731,7 +731,7 @@ export interface ToolInvocation {
   created_at: string;
 }
 
-export interface RunAgentRequest {
+export interface RunWorkflowRequest {
   flow_version_id?: number;
   conversation_id?: number | null;
   input: Record<string, unknown>;

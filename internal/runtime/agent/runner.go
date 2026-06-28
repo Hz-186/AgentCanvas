@@ -105,13 +105,13 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 			result.ToolCalls++
 			toolStarted := r.now()
 			toolResult, toolErr := toolImpl.Execute(ctx, toolruntime.ToolRunContext{
-				OwnerID:        req.OwnerID,
-				AgentID:        req.AgentID,
-				RunID:          req.RunID,
-				NodeID:         req.NodeID,
-				CallDepth:      req.CallDepth,
-				CallChain:      append([]int64(nil), req.CallChain...),
-				ConversationID: req.ConversationID,
+				OwnerID:           req.OwnerID,
+				WorkflowID:        req.WorkflowID,
+				RunID:             req.RunID,
+				NodeID:            req.NodeID,
+				CallDepth:         req.CallDepth,
+				WorkflowCallChain: append([]int64(nil), req.WorkflowCallChain...),
+				ConversationID:    req.ConversationID,
 			}, call.Arguments)
 			toolLatencyMS := int(r.now().Sub(toolStarted).Milliseconds())
 			r.appendStep(result, RunStep{
@@ -242,12 +242,12 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 					ToolPolicy:      req.ToolPolicy,
 					ToolNames:       append([]string(nil), toolNames...),
 					Metadata: map[string]any{
-						"run_id":      req.RunID,
-						"agent_id":    req.AgentID,
-						"node_id":     req.NodeID,
-						"call_depth":  req.CallDepth,
-						"call_chain":  append([]int64(nil), req.CallChain...),
-						"stop_reason": StopReasonWaitingHuman,
+						"run_id":              req.RunID,
+						"workflow_id":         req.WorkflowID,
+						"node_id":             req.NodeID,
+						"call_depth":          req.CallDepth,
+						"workflow_call_chain": append([]int64(nil), req.WorkflowCallChain...),
+						"stop_reason":         StopReasonWaitingHuman,
 					},
 				}
 				approvalStep := r.appendStep(result, RunStep{
@@ -266,13 +266,13 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 			result.ToolCalls++
 			toolStarted := r.now()
 			toolResult, toolErr := toolImpl.Execute(ctx, toolruntime.ToolRunContext{
-				OwnerID:        req.OwnerID,
-				AgentID:        req.AgentID,
-				RunID:          req.RunID,
-				NodeID:         req.NodeID,
-				CallDepth:      req.CallDepth,
-				CallChain:      append([]int64(nil), req.CallChain...),
-				ConversationID: req.ConversationID,
+				OwnerID:           req.OwnerID,
+				WorkflowID:        req.WorkflowID,
+				RunID:             req.RunID,
+				NodeID:            req.NodeID,
+				CallDepth:         req.CallDepth,
+				WorkflowCallChain: append([]int64(nil), req.WorkflowCallChain...),
+				ConversationID:    req.ConversationID,
 			}, call.Arguments)
 			toolLatencyMS := int(r.now().Sub(toolStarted).Milliseconds())
 			if toolResult == nil {
@@ -322,12 +322,12 @@ func checkpointFromMessages(req RunRequest, messages []llm.ChatMessage, contextT
 		ToolPolicy:      req.ToolPolicy,
 		ToolNames:       append([]string(nil), toolNames...),
 		Metadata: map[string]any{
-			"run_id":      req.RunID,
-			"agent_id":    req.AgentID,
-			"node_id":     req.NodeID,
-			"call_depth":  req.CallDepth,
-			"call_chain":  append([]int64(nil), req.CallChain...),
-			"stop_reason": stopReason,
+			"run_id":              req.RunID,
+			"workflow_id":         req.WorkflowID,
+			"node_id":             req.NodeID,
+			"call_depth":          req.CallDepth,
+			"workflow_call_chain": append([]int64(nil), req.WorkflowCallChain...),
+			"stop_reason":         stopReason,
 		},
 	}
 }

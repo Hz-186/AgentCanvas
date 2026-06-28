@@ -17,7 +17,7 @@ export type ChatStreamEvent =
   | { type: 'done'; data: ChatResponse }
   | { type: 'error'; data: { message: string } };
 
-// —— Agent Run 流式事件 ——
+// —— Workflow Run 流式事件 ——
 // 后端 run stream 的 data 是整个 Event 对象。
 export interface RuntimeEvent {
   type: string;
