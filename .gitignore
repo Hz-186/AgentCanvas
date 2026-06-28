@@ -22,6 +22,4 @@ tmp/
 
 # doc / study
 doc/*
-!doc/chunking_improvement_plan.md
-!doc/current_bug_inventory.md
 TEST
