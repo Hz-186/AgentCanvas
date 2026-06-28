@@ -8,12 +8,14 @@ configs/config.local.yaml
 
 # IDE files
 .idea/
+.vscode
 
 # Build outputs
 bin/
 dist/
 tmp/
 .tmp-go-build/
+.cache/
 
 # OS files
 .DS_Store
