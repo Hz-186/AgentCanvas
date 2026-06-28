@@ -1800,6 +1800,43 @@ body.is-resizing-panels .canvas-body {
   gap: var(--space-3);
 }
 
+.inline-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+.trace-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+  color: var(--text-secondary);
+}
+
+.trace-list {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.trace-item {
+  display: grid;
+  gap: var(--space-1);
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface-2);
+}
+
+.trace-item-head,
+.toolbar-actions {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  justify-content: space-between;
+}
+
 @media (max-width: 760px) {
   .chat-shell {
     grid-template-columns: minmax(0, 1fr);

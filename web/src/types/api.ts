@@ -163,6 +163,65 @@ export interface ToolDefinition {
   updated_at: string;
 }
 
+export interface ToolPolicy {
+  id: number;
+  owner_id: number;
+  name: string;
+  require_approval_for_risk?: string[];
+  max_timeout_ms: number;
+  max_output_bytes: number;
+  allowed_hosts?: string[];
+  credential_scope?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ToolPack {
+  id: number;
+  owner_id: number;
+  name: string;
+  description?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ToolPackItem {
+  id: number;
+  owner_id: number;
+  pack_id: number;
+  tool_id: number;
+  created_at: string;
+}
+
+export interface MCPServer {
+  id: number;
+  owner_id: number;
+  name: string;
+  transport: 'sse' | 'stdio';
+  endpoint_url: string;
+  command: string;
+  args_json?: string[] | unknown;
+  env_json?: Record<string, string> | unknown;
+  status: number;
+  last_error: string;
+  discovered_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface MCPToolCache {
+  id: number;
+  owner_id: number;
+  server_id: number;
+  tool_name: string;
+  description: string;
+  parameters_json?: unknown;
+  schema_hash: string;
+  cached_at: string;
+  created_at: string;
+  updated_at: string;
+}
+
 // —— 知识库 ——
 export interface KnowledgeBase {
   id: number;
@@ -384,6 +443,15 @@ export interface AgentProfile {
   planning_enabled: boolean;
   allow_delegation: boolean;
   allow_code_execution: boolean;
+  default_tool_pack_ids?: number[];
+  default_tool_ids?: number[];
+  default_mcp_server_ids?: number[];
+  default_knowledge_ids?: number[];
+  default_knowledge_top_k?: number;
+  default_knowledge_mode?: 'keyword' | 'vector' | 'hybrid';
+  default_call_agent_ids?: number[];
+  default_max_agent_call_depth?: number;
+  output_schema_json?: unknown;
   created_at: string;
   updated_at: string;
 }
@@ -415,7 +483,97 @@ export type UpdateAgentProfileRequest = Partial<Pick<
   | 'planning_enabled'
   | 'allow_delegation'
   | 'allow_code_execution'
+  | 'default_tool_pack_ids'
+  | 'default_tool_ids'
+  | 'default_mcp_server_ids'
+  | 'default_knowledge_ids'
+  | 'default_knowledge_top_k'
+  | 'default_knowledge_mode'
+  | 'default_call_agent_ids'
+  | 'default_max_agent_call_depth'
+  | 'output_schema_json'
 >>;
+
+export interface EvalDataset {
+  id: number;
+  owner_id: number;
+  agent_id: number;
+  name: string;
+  description: string;
+  status: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface EvalCase {
+  id: number;
+  owner_id: number;
+  dataset_id: number;
+  name: string;
+  input_json: unknown;
+  expected_json?: unknown;
+  tags_json?: unknown;
+  required_tools_json?: unknown;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface EvalRun {
+  id: number;
+  owner_id: number;
+  agent_id: number;
+  dataset_id: number;
+  flow_version_id: number;
+  status: 'running' | 'completed' | 'failed';
+  total_cases: number;
+  passed_cases: number;
+  failed_cases: number;
+  success_rate: number;
+  summary_json?: unknown;
+  error_message: string;
+  started_at: string;
+  finished_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface EvalResult {
+  id: number;
+  owner_id: number;
+  eval_run_id: number;
+  eval_case_id: number;
+  agent_run_id?: number | null;
+  status: 'passed' | 'failed';
+  score: number;
+  reason: string;
+  output_json?: unknown;
+  metrics_json?: unknown;
+  error_message: string;
+  latency_ms: number;
+  created_at: string;
+}
+
+export interface CreateEvalDatasetRequest {
+  name: string;
+  description?: string;
+}
+
+export interface CreateEvalCaseRequest {
+  name: string;
+  input_json: Record<string, unknown>;
+  expected_json?: unknown;
+  tags_json?: unknown;
+  required_tools_json?: unknown;
+}
+
+export interface RunEvalDatasetRequest {
+  flow_version_id?: number;
+}
+
+export interface RunEvalDatasetResponse {
+  eval_run: EvalRun;
+  results: EvalResult[];
+}
 
 export interface FlowVersion {
   id: number;
@@ -435,7 +593,7 @@ export interface CreateFlowVersionRequest {
   description?: string;
 }
 
-export type RunStatus = 'running' | 'succeeded' | 'failed' | 'cancelled';
+export type RunStatus = 'running' | 'succeeded' | 'failed' | 'cancelled' | 'waiting_human' | 'paused' | 'resuming' | 'timeout';
 
 export interface Run {
   id: number;
@@ -446,6 +604,7 @@ export interface Run {
   parent_run_id?: number | null;
   caller_node_id?: string;
   call_depth?: number;
+  call_chain_json?: unknown;
   status: RunStatus;
   input_json: string;
   output_json: string;
@@ -456,6 +615,44 @@ export interface Run {
   finished_at: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface ApprovalRequest {
+  id: number;
+  owner_id: number;
+  agent_id: number;
+  run_id: number;
+  node_id: string;
+  tool_call_id: string;
+  tool_name: string;
+  risk_level: string;
+  reason: string;
+  request_json?: unknown;
+  status: 'pending' | 'approved' | 'rejected';
+  decision_note: string;
+  decided_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AgentTeam {
+  id: number;
+  owner_id: number;
+  name: string;
+  supervisor_agent_id: number;
+  handoff_strategy: 'supervisor' | 'handoff';
+  max_depth: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AgentTeamMember {
+  id: number;
+  owner_id: number;
+  team_id: number;
+  agent_id: number;
+  role: string;
+  created_at: string;
 }
 
 export interface RunEvent {

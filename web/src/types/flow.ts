@@ -7,11 +7,13 @@ export type NodeType =
   | 'llm'
   | 'agent_loop'
   | 'agent_call'
+  | 'team_call'
   | 'code_sandbox'
   | 'message'
   | 'memory_read'
   | 'memory_write'
   | 'http_tool'
+  | 'mcp_tool'
   | 'switch'
   | 'json_output'
   | 'guardrail';
@@ -39,7 +41,8 @@ export interface LLMConfig {
 }
 
 export interface AgentLoopConfig {
-  provider_id: number;
+  mode?: 'react' | 'plan_execute' | 'reflect' | 'supervisor';
+  provider_id?: number;
   model?: string;
   system_prompt?: string;
   task_template?: string;
@@ -54,7 +57,11 @@ export interface AgentLoopConfig {
   max_iterations?: number;
   max_tool_calls?: number;
   max_execution_time_ms?: number;
+  max_input_chars?: number;
   temperature?: number;
+  reflection_enabled?: boolean;
+  require_approval_for_risk?: string[];
+  output_schema_json?: Record<string, unknown>;
   return_intermediate_steps?: boolean;
   output_mode?: 'final_answer' | 'full';
 }
@@ -67,6 +74,12 @@ export interface MessageConfig {
 export interface AgentCallConfig {
   agent_id: number;
   flow_version_id?: number;
+  input?: Record<string, unknown>;
+  max_depth?: number;
+}
+
+export interface TeamCallConfig {
+  team_id: number;
   input?: Record<string, unknown>;
   max_depth?: number;
 }
@@ -100,6 +113,12 @@ export interface HTTPToolConfig {
   input: Record<string, unknown>;
 }
 
+export interface MCPToolConfig {
+  server_id: number;
+  tool_name: string;
+  input: Record<string, unknown>;
+}
+
 export interface SwitchConfig {
   conditions: Array<{ expr: string; target: string }>;
 }
@@ -125,11 +144,13 @@ export type NodeConfig =
   | LLMConfig
   | AgentLoopConfig
   | AgentCallConfig
+  | TeamCallConfig
   | CodeSandboxConfig
   | MessageConfig
   | MemoryReadConfig
   | MemoryWriteConfig
   | HTTPToolConfig
+  | MCPToolConfig
   | SwitchConfig
   | JSONOutputConfig
   | GuardrailConfig
