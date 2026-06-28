@@ -14,14 +14,19 @@ const (
 	StopReasonMaxToolCalls     = "max_tool_calls_exceeded"
 	StopReasonTimeout          = "timeout"
 	StopReasonCancelled        = "cancelled"
+	StopReasonPaused           = "paused"
+	StopReasonWaitingHuman     = "waiting_human"
 	StopReasonLLMError         = "llm_error"
 	StopReasonToolNameNotFound = "tool_name_not_found"
+	StopReasonPlanCompleted    = "plan_completed"
+	StopReasonReflectionFailed = "reflection_failed"
 )
 
 const (
 	StepTypeLLMResponse = "llm_response"
 	StepTypeToolCall    = "tool_call"
 	StepTypeToolResult  = "tool_result"
+	StepTypeApproval    = "approval_required"
 	StepTypeFinalAnswer = "final_answer"
 	StepTypeError       = "error"
 )
@@ -32,28 +37,40 @@ type RunRequest struct {
 	RunID              int64
 	NodeID             string
 	CallDepth          int
+	CallChain          []int64
 	ConversationID     *int64
 	Provider           llm.ChatProviderConfig
 	Model              string
+	Mode               string
 	SystemPrompt       string
 	Task               string
+	ReflectionEnabled  bool
 	Temperature        *float64
 	MaxIterations      int
 	MaxToolCalls       int
 	MaxExecutionTimeMS int
+	MaxInputChars      int
+	ContextBlocks      []ContextBlock
+	ToolPolicy         ToolPolicy
 	Tools              []toolruntime.RuntimeTool
+	ResumeMessages     []llm.ChatMessage
+	ResumeIteration    int
+	ResumeToolCalls    int
 }
 
 type RunResult struct {
-	FinalAnswer string    `json:"final_answer"`
-	StopReason  string    `json:"stop_reason"`
-	Iterations  int       `json:"iterations"`
-	ToolCalls   int       `json:"tool_calls"`
-	Usage       llm.Usage `json:"usage"`
-	Steps       []RunStep `json:"steps,omitempty"`
-	StartedAt   time.Time `json:"started_at"`
-	FinishedAt  time.Time `json:"finished_at"`
-	LatencyMS   int       `json:"latency_ms"`
+	FinalAnswer string       `json:"final_answer"`
+	StopReason  string       `json:"stop_reason"`
+	Iterations  int          `json:"iterations"`
+	ToolCalls   int          `json:"tool_calls"`
+	Usage       llm.Usage    `json:"usage"`
+	Steps       []RunStep    `json:"steps,omitempty"`
+	Context     ContextTrace `json:"context_trace,omitempty"`
+	Approval    *Approval    `json:"approval,omitempty"`
+	Checkpoint  *Checkpoint  `json:"checkpoint,omitempty"`
+	StartedAt   time.Time    `json:"started_at"`
+	FinishedAt  time.Time    `json:"finished_at"`
+	LatencyMS   int          `json:"latency_ms"`
 }
 
 type RunStep struct {
@@ -68,5 +85,46 @@ type RunStep struct {
 	IsError       bool            `json:"is_error,omitempty"`
 	Error         string          `json:"error,omitempty"`
 	LatencyMS     int             `json:"latency_ms,omitempty"`
+	ProviderID    int64           `json:"provider_id,omitempty"`
+	Model         string          `json:"model,omitempty"`
+	TokenCount    int             `json:"token_count,omitempty"`
 	CreatedAt     time.Time       `json:"created_at"`
+}
+
+type ToolPolicy struct {
+	RequireApprovalForRisk []string `json:"require_approval_for_risk,omitempty"`
+}
+
+type Approval struct {
+	ToolCallID string                   `json:"tool_call_id"`
+	ToolName   string                   `json:"tool_name"`
+	RiskLevel  string                   `json:"risk_level"`
+	Reason     string                   `json:"reason"`
+	Metadata   toolruntime.ToolMetadata `json:"metadata"`
+}
+
+type Checkpoint struct {
+	Messages        []llm.ChatMessage `json:"messages"`
+	MessagesSummary string            `json:"messages_summary"`
+	PendingToolCall *llm.ToolCall     `json:"pending_tool_call,omitempty"`
+	Context         ContextTrace      `json:"context"`
+	ToolPolicy      ToolPolicy        `json:"tool_policy"`
+	ToolNames       []string          `json:"tool_names"`
+	Metadata        map[string]any    `json:"metadata,omitempty"`
+}
+
+type ContextBlock struct {
+	Name    string `json:"name"`
+	Role    string `json:"role"`
+	Content string `json:"content"`
+	Pinned  bool   `json:"pinned"`
+}
+
+type ContextTrace struct {
+	MaxChars  int      `json:"max_chars,omitempty"`
+	UsedChars int      `json:"used_chars,omitempty"`
+	Included  []string `json:"included,omitempty"`
+	Omitted   []string `json:"omitted,omitempty"`
+	Truncated []string `json:"truncated,omitempty"`
+	Strategy  string   `json:"strategy,omitempty"`
 }

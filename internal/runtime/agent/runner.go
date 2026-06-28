@@ -18,9 +18,11 @@ var ErrNoToolCallingClient = errors.New("llm client does not support tool callin
 type StepEmitter func(ctx context.Context, step RunStep) error
 
 type Runner struct {
-	LLM    llm.ToolCallingClient
-	OnStep StepEmitter
-	Now    func() time.Time
+	LLM        llm.ToolCallingClient
+	OnStep     StepEmitter
+	Now        func() time.Time
+	ProviderID int64
+	ModelName  string
 }
 
 func NewRunner(client llm.ToolCallingClient) *Runner {
@@ -54,6 +56,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 
 	tools := make([]llm.ToolDefinition, 0, len(req.Tools))
 	toolByName := make(map[string]toolruntime.RuntimeTool, len(req.Tools))
+	toolNames := make([]string, 0, len(req.Tools))
 	for _, item := range req.Tools {
 		if item == nil {
 			continue
@@ -63,6 +66,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 			continue
 		}
 		toolByName[name] = item
+		toolNames = append(toolNames, name)
 		tools = append(tools, llm.ToolDefinition{
 			Type: "function",
 			Function: llm.ToolFunctionDefinition{
@@ -74,10 +78,78 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 		})
 	}
 
-	messages := initialMessages(req.SystemPrompt, task)
-	for iteration := 0; iteration < req.MaxIterations; iteration++ {
+	messages, contextTrace := ContextAssembler{}.Build(req)
+	result.Context = contextTrace
+	startIteration := 0
+	startToolCalls := 0
+	if len(req.ResumeMessages) > 0 {
+		messages = req.ResumeMessages
+		startIteration = req.ResumeIteration
+		startToolCalls = req.ResumeToolCalls
+		result.Iterations = startIteration
+		result.ToolCalls = startToolCalls
+		if req.ResumeIteration > 0 {
+			startIteration = req.ResumeIteration
+		}
+		result.Context = ContextTrace{MaxChars: defaultMaxInputChars, Strategy: "resumed_from_checkpoint"}
+		unresolved := findUnresolvedToolCalls(messages, toolByName)
+		for _, call := range unresolved {
+			toolImpl := toolByName[call.Name]
+			if result.ToolCalls >= req.MaxToolCalls {
+				result.StopReason = StopReasonMaxToolCalls
+				result.FinalAnswer = "Agent stopped because max_tool_calls was exceeded after resume."
+				finalStep := r.appendStep(result, RunStep{Type: StepTypeFinalAnswer, Role: conversation.RoleAssistant, Content: result.FinalAnswer, ProviderID: r.ProviderID, Model: r.ModelName})
+				_ = r.emit(ctx, finalStep)
+				return finish(result, r.now()), nil
+			}
+			result.ToolCalls++
+			toolStarted := r.now()
+			toolResult, toolErr := toolImpl.Execute(ctx, toolruntime.ToolRunContext{
+				OwnerID:        req.OwnerID,
+				AgentID:        req.AgentID,
+				RunID:          req.RunID,
+				NodeID:         req.NodeID,
+				CallDepth:      req.CallDepth,
+				CallChain:      append([]int64(nil), req.CallChain...),
+				ConversationID: req.ConversationID,
+			}, call.Arguments)
+			toolLatencyMS := int(r.now().Sub(toolStarted).Milliseconds())
+			r.appendStep(result, RunStep{
+				Type:          StepTypeToolCall,
+				ToolCallID:    call.ID,
+				ToolName:      call.Name,
+				ArgumentsJSON: call.Arguments,
+				ProviderID:    r.ProviderID,
+				Model:         r.ModelName,
+			})
+			content := toolResult.ContentText
+			if content == "" && len(toolResult.ContentJSON) > 0 {
+				content = string(toolResult.ContentJSON)
+			}
+			if toolErr != nil {
+				if content == "" {
+					content = toolErr.Error()
+				}
+			}
+			messages = append(messages, toolMessage(call.ID, content))
+			r.appendStep(result, RunStep{
+				Type:       StepTypeToolResult,
+				ToolCallID: call.ID,
+				ToolName:   call.Name,
+				Content:    content,
+				ProviderID: r.ProviderID,
+				Model:      r.ModelName,
+				LatencyMS:  toolLatencyMS,
+			})
+		}
+	}
+	for iteration := startIteration; iteration < req.MaxIterations; iteration++ {
 		if err := ctx.Err(); err != nil {
-			return finishWithContext(result, err, r.now()), nil
+			result = finishWithContext(result, err, r.now())
+			if errors.Is(err, context.Canceled) {
+				result.Checkpoint = checkpointFromMessages(req, messages, contextTrace, toolNames, nil, result.StopReason)
+			}
+			return result, nil
 		}
 		result.Iterations = iteration + 1
 		llmStarted := r.now()
@@ -90,8 +162,13 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 		})
 		latencyMS := int(r.now().Sub(llmStarted).Milliseconds())
 		if err != nil {
+			if errors.Is(err, context.Canceled) {
+				result = finishWithContext(result, err, r.now())
+				result.Checkpoint = checkpointFromMessages(req, messages, contextTrace, toolNames, nil, result.StopReason)
+				return result, nil
+			}
 			result.StopReason = StopReasonLLMError
-			step := r.appendStep(result, RunStep{Type: StepTypeError, Error: err.Error(), LatencyMS: latencyMS})
+			step := r.appendStep(result, RunStep{Type: StepTypeError, Error: err.Error(), LatencyMS: latencyMS, ProviderID: r.ProviderID, Model: r.ModelName})
 			_ = r.emit(ctx, step)
 			return finish(result, r.now()), err
 		}
@@ -101,16 +178,19 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 			assistant.Role = conversation.RoleAssistant
 		}
 		step := r.appendStep(result, RunStep{
-			Type:      StepTypeLLMResponse,
-			Role:      assistant.Role,
-			Content:   assistant.Content,
-			LatencyMS: latencyMS,
+			Type:       StepTypeLLMResponse,
+			Role:       assistant.Role,
+			Content:    assistant.Content,
+			LatencyMS:  latencyMS,
+			ProviderID: r.ProviderID,
+			Model:      r.ModelName,
+			TokenCount: resp.Usage.TotalTokens,
 		})
 		_ = r.emit(ctx, step)
 		if len(assistant.ToolCalls) == 0 {
 			result.FinalAnswer = assistant.Content
 			result.StopReason = StopReasonFinalAnswer
-			finalStep := r.appendStep(result, RunStep{Type: StepTypeFinalAnswer, Role: conversation.RoleAssistant, Content: assistant.Content})
+			finalStep := r.appendStep(result, RunStep{Type: StepTypeFinalAnswer, Role: conversation.RoleAssistant, Content: assistant.Content, ProviderID: r.ProviderID, Model: r.ModelName})
 			_ = r.emit(ctx, finalStep)
 			return finish(result, r.now()), nil
 		}
@@ -119,7 +199,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 			if result.ToolCalls >= req.MaxToolCalls {
 				result.StopReason = StopReasonMaxToolCalls
 				result.FinalAnswer = "Agent stopped because max_tool_calls was exceeded."
-				finalStep := r.appendStep(result, RunStep{Type: StepTypeFinalAnswer, Role: conversation.RoleAssistant, Content: result.FinalAnswer})
+				finalStep := r.appendStep(result, RunStep{Type: StepTypeFinalAnswer, Role: conversation.RoleAssistant, Content: result.FinalAnswer, ProviderID: r.ProviderID, Model: r.ModelName})
 				_ = r.emit(ctx, finalStep)
 				return finish(result, r.now()), nil
 			}
@@ -128,6 +208,8 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 				ToolCallID:    call.ID,
 				ToolName:      call.Name,
 				ArgumentsJSON: call.Arguments,
+				ProviderID:    r.ProviderID,
+				Model:         r.ModelName,
 			})
 			_ = r.emit(ctx, toolStep)
 			toolImpl, ok := toolByName[call.Name]
@@ -141,9 +223,45 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 					ToolName:   call.Name,
 					Content:    errMessage,
 					IsError:    true,
+					ProviderID: r.ProviderID,
+					Model:      r.ModelName,
 				})
 				_ = r.emit(ctx, resultStep)
 				continue
+			}
+			if approval := requiredApproval(call.ID, call.Name, toolruntime.MetadataOf(toolImpl), req.ToolPolicy); approval != nil {
+				result.StopReason = StopReasonWaitingHuman
+				result.FinalAnswer = "Agent is waiting for human approval before executing tool " + call.Name + "."
+				result.Approval = approval
+				pending := call
+				result.Checkpoint = &Checkpoint{
+					Messages:        append([]llm.ChatMessage(nil), messages...),
+					MessagesSummary: summarizeMessages(messages),
+					PendingToolCall: &pending,
+					Context:         contextTrace,
+					ToolPolicy:      req.ToolPolicy,
+					ToolNames:       append([]string(nil), toolNames...),
+					Metadata: map[string]any{
+						"run_id":      req.RunID,
+						"agent_id":    req.AgentID,
+						"node_id":     req.NodeID,
+						"call_depth":  req.CallDepth,
+						"call_chain":  append([]int64(nil), req.CallChain...),
+						"stop_reason": StopReasonWaitingHuman,
+					},
+				}
+				approvalStep := r.appendStep(result, RunStep{
+					Type:       StepTypeApproval,
+					ToolCallID: call.ID,
+					ToolName:   call.Name,
+					Content:    approval.Reason,
+					ProviderID: r.ProviderID,
+					Model:      r.ModelName,
+				})
+				_ = r.emit(ctx, approvalStep)
+				finalStep := r.appendStep(result, RunStep{Type: StepTypeFinalAnswer, Role: conversation.RoleAssistant, Content: result.FinalAnswer, ProviderID: r.ProviderID, Model: r.ModelName})
+				_ = r.emit(ctx, finalStep)
+				return finish(result, r.now()), nil
 			}
 			result.ToolCalls++
 			toolStarted := r.now()
@@ -153,6 +271,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 				RunID:          req.RunID,
 				NodeID:         req.NodeID,
 				CallDepth:      req.CallDepth,
+				CallChain:      append([]int64(nil), req.CallChain...),
 				ConversationID: req.ConversationID,
 			}, call.Arguments)
 			toolLatencyMS := int(r.now().Sub(toolStarted).Milliseconds())
@@ -178,6 +297,8 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 				OutputJSON: toolResult.ContentJSON,
 				IsError:    toolResult.IsError,
 				LatencyMS:  toolLatencyMS,
+				ProviderID: r.ProviderID,
+				Model:      r.ModelName,
 			})
 			if toolErr != nil {
 				resultStep.Error = toolErr.Error()
@@ -187,18 +308,28 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 	}
 	result.StopReason = StopReasonMaxIterations
 	result.FinalAnswer = "Agent stopped because max_iterations was exceeded."
-	finalStep := r.appendStep(result, RunStep{Type: StepTypeFinalAnswer, Role: conversation.RoleAssistant, Content: result.FinalAnswer})
-	_ = r.emit(ctx, finalStep)
+	finalStep2 := r.appendStep(result, RunStep{Type: StepTypeFinalAnswer, Role: conversation.RoleAssistant, Content: result.FinalAnswer, ProviderID: r.ProviderID, Model: r.ModelName})
+	_ = r.emit(ctx, finalStep2)
 	return finish(result, r.now()), nil
 }
 
-func initialMessages(systemPrompt, task string) []llm.ChatMessage {
-	messages := make([]llm.ChatMessage, 0, 2)
-	if strings.TrimSpace(systemPrompt) != "" {
-		messages = append(messages, llm.ChatMessage{Role: conversation.RoleSystem, Content: systemPrompt})
+func checkpointFromMessages(req RunRequest, messages []llm.ChatMessage, contextTrace ContextTrace, toolNames []string, pending *llm.ToolCall, stopReason string) *Checkpoint {
+	return &Checkpoint{
+		Messages:        append([]llm.ChatMessage(nil), messages...),
+		MessagesSummary: summarizeMessages(messages),
+		PendingToolCall: pending,
+		Context:         contextTrace,
+		ToolPolicy:      req.ToolPolicy,
+		ToolNames:       append([]string(nil), toolNames...),
+		Metadata: map[string]any{
+			"run_id":      req.RunID,
+			"agent_id":    req.AgentID,
+			"node_id":     req.NodeID,
+			"call_depth":  req.CallDepth,
+			"call_chain":  append([]int64(nil), req.CallChain...),
+			"stop_reason": stopReason,
+		},
 	}
-	messages = append(messages, llm.ChatMessage{Role: conversation.RoleUser, Content: task})
-	return messages
 }
 
 func toolMessage(toolCallID, content string) llm.ChatMessage {
@@ -211,6 +342,28 @@ func addUsage(left, right llm.Usage) llm.Usage {
 		CompletionTokens: left.CompletionTokens + right.CompletionTokens,
 		TotalTokens:      left.TotalTokens + right.TotalTokens,
 	}
+}
+
+func summarizeMessages(messages []llm.ChatMessage) string {
+	if len(messages) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(messages))
+	for _, message := range messages {
+		content := strings.TrimSpace(message.Content)
+		if len(content) > 160 {
+			content = content[:160] + "..."
+		}
+		if content == "" && len(message.ToolCalls) > 0 {
+			content = fmt.Sprintf("%d tool call(s)", len(message.ToolCalls))
+		}
+		parts = append(parts, strings.TrimSpace(message.Role+": "+content))
+	}
+	summary := strings.Join(parts, "\n")
+	if len(summary) > 2048 {
+		return summary[:2048] + "..."
+	}
+	return summary
 }
 
 func (r *Runner) appendStep(result *RunResult, step RunStep) RunStep {
@@ -253,6 +406,30 @@ func finishWithContext(result *RunResult, err error, now time.Time) *RunResult {
 	return finish(result, now)
 }
 
+func requiredApproval(toolCallID, toolName string, metadata toolruntime.ToolMetadata, policy ToolPolicy) *Approval {
+	risk := strings.TrimSpace(metadata.RiskLevel)
+	if risk == "" {
+		risk = toolruntime.RiskLow
+	}
+	required := metadata.RequiresApproval
+	for _, item := range policy.RequireApprovalForRisk {
+		if strings.EqualFold(strings.TrimSpace(item), risk) {
+			required = true
+			break
+		}
+	}
+	if !required {
+		return nil
+	}
+	return &Approval{
+		ToolCallID: toolCallID,
+		ToolName:   toolName,
+		RiskLevel:  risk,
+		Reason:     fmt.Sprintf("tool %s requires human approval because risk level is %s", toolName, risk),
+		Metadata:   metadata,
+	}
+}
+
 func finish(result *RunResult, now time.Time) *RunResult {
 	result.FinishedAt = now
 	result.LatencyMS = int(result.FinishedAt.Sub(result.StartedAt).Milliseconds())
@@ -289,4 +466,28 @@ func compactRawJSON(raw json.RawMessage, maxBytes int) json.RawMessage {
 func strconvQuote(value string) string {
 	data, _ := json.Marshal(value)
 	return string(data)
+}
+
+func findUnresolvedToolCalls(messages []llm.ChatMessage, toolByName map[string]toolruntime.RuntimeTool) []llm.ToolCall {
+	toolResultIDs := make(map[string]bool)
+	for _, m := range messages {
+		if m.Role == conversation.RoleTool && m.ToolCallID != "" {
+			toolResultIDs[m.ToolCallID] = true
+		}
+	}
+	var unresolved []llm.ToolCall
+	for i := len(messages) - 1; i >= 0; i-- {
+		m := messages[i]
+		if m.Role == conversation.RoleAssistant && len(m.ToolCalls) > 0 {
+			for _, call := range m.ToolCalls {
+				if !toolResultIDs[call.ID] {
+					if _, ok := toolByName[call.Name]; ok {
+						unresolved = append(unresolved, call)
+					}
+				}
+			}
+			break
+		}
+	}
+	return unresolved
 }
