@@ -68,6 +68,7 @@ func (n AgentCallNode) Run(ctx context.Context, rc *engine.RunContext, input eng
 		FlowVersionID: cfg.FlowVersionID,
 		Input:         inputMap,
 		CallDepth:     rc.CallDepth,
+		CallChain:     append([]int64(nil), rc.CallChain...),
 		MaxDepth:      cfg.MaxDepth,
 	})
 	if err != nil {

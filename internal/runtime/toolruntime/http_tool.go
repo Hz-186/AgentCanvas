@@ -45,6 +45,23 @@ func (t HTTPRuntimeTool) Parameters() json.RawMessage {
 	return defaultObjectSchema(t.def.InputSchemaJSON)
 }
 
+func (t HTTPRuntimeTool) Metadata() ToolMetadata {
+	metadata := ToolMetadata{RiskLevel: RiskHigh, SideEffect: SideEffectExternalAction, TimeoutMS: 5000, MaxOutputBytes: 512 * 1024}
+	var cfg httpDefinitionConfig
+	if err := json.Unmarshal(t.def.ConfigJSON, &cfg); err == nil {
+		if cfg.TimeoutMS > 0 {
+			metadata.TimeoutMS = cfg.TimeoutMS
+		}
+		if cfg.MaxResponseBytes > 0 {
+			metadata.MaxOutputBytes = int(cfg.MaxResponseBytes)
+		}
+		if endpoint, err := url.Parse(strings.TrimSpace(cfg.URL)); err == nil && endpoint.Hostname() != "" {
+			metadata.AllowedHosts = []string{endpoint.Hostname()}
+		}
+	}
+	return metadata
+}
+
 func (t HTTPRuntimeTool) Execute(ctx context.Context, rc ToolRunContext, input json.RawMessage) (*ToolResult, error) {
 	started := time.Now()
 	output, callErr := ExecuteHTTPDefinition(ctx, t.def, input)

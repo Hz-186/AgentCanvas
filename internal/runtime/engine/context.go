@@ -24,6 +24,8 @@ type AgentStepRecord struct {
 	ErrorMessage  string
 	TokenCount    int
 	LatencyMS     int
+	ProviderID    int64
+	Model         string
 }
 
 type AgentStepRecorder interface {
@@ -37,6 +39,7 @@ type RunContext struct {
 	RunID           int64                 `json:"run_id" tag:"unique run ID"`
 	ParentRunID     *int64                `json:"parent_run_id" tag:"optional parent run ID"`
 	CallDepth       int                   `json:"call_depth" tag:"nested agent call depth"`
+	CallChain       []int64               `json:"call_chain" tag:"ancestor agent IDs including current agent"`
 	ConversationID  *int64                `json:"conversation_id" tag:"optional conversation ID"`
 	Input           map[string]any        `json:"input" tag:"original user input"`
 	Variables       map[string]any        `json:"variables" tag:"user-defined global vars"`

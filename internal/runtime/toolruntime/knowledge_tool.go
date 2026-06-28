@@ -34,6 +34,10 @@ func (KnowledgeSearchTool) Parameters() json.RawMessage {
 	return json.RawMessage(`{"type":"object","properties":{"query":{"type":"string","description":"A concise semantic search query."},"top_k":{"type":"number","description":"Number of chunks to retrieve. Use 3 to 8 for most cases."},"mode":{"type":"string","enum":["keyword","vector","hybrid"],"description":"Retrieval mode. Defaults to keyword."}},"required":["query"],"additionalProperties":false}`)
 }
 
+func (KnowledgeSearchTool) Metadata() ToolMetadata {
+	return ToolMetadata{RiskLevel: RiskLow, SideEffect: SideEffectRead}
+}
+
 func (t KnowledgeSearchTool) Execute(ctx context.Context, rc ToolRunContext, input json.RawMessage) (*ToolResult, error) {
 	if t.Retriever == nil {
 		return nil, fmt.Errorf("retriever is not configured")

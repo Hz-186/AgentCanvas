@@ -30,6 +30,10 @@ func (MemoryReadTool) Parameters() json.RawMessage {
 	return json.RawMessage(`{"type":"object","properties":{"memory_types":{"type":"array","items":{"type":"string"},"description":"Memory types to read. Common values: profile_memory, summary_memory, episodic_memory, task_memory."},"limit":{"type":"number","description":"Maximum memories to read. Default 5, maximum 20."}},"additionalProperties":false}`)
 }
 
+func (MemoryReadTool) Metadata() ToolMetadata {
+	return ToolMetadata{RiskLevel: RiskLow, SideEffect: SideEffectRead}
+}
+
 func (t MemoryReadTool) Execute(ctx context.Context, rc ToolRunContext, input json.RawMessage) (*ToolResult, error) {
 	if t.Memories == nil {
 		return nil, fmt.Errorf("memory repository is not configured")
@@ -87,6 +91,10 @@ func (MemoryWriteTool) Description() string {
 
 func (MemoryWriteTool) Parameters() json.RawMessage {
 	return json.RawMessage(`{"type":"object","properties":{"memory_id":{"type":"number","description":"Existing memory ID to update. Omit or use 0 to create."},"memory_type":{"type":"string","enum":["profile_memory","summary_memory","episodic_memory","task_memory"]},"title":{"type":"string"},"content":{"type":"string","description":"Durable memory content to store."},"importance":{"type":"number","description":"0 to 1. Defaults to 0.5."},"reason":{"type":"string","description":"Why this memory should be stored."}},"required":["memory_type","content"],"additionalProperties":false}`)
+}
+
+func (MemoryWriteTool) Metadata() ToolMetadata {
+	return ToolMetadata{RiskLevel: RiskMedium, SideEffect: SideEffectWrite}
 }
 
 func (t MemoryWriteTool) Execute(ctx context.Context, rc ToolRunContext, input json.RawMessage) (*ToolResult, error) {

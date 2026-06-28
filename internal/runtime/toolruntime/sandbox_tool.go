@@ -27,6 +27,10 @@ func (PythonSandboxTool) Parameters() json.RawMessage {
 	return json.RawMessage(`{"type":"object","properties":{"code":{"type":"string","description":"Python code to execute. Print relevant results to stdout."},"timeout_ms":{"type":"number","description":"Execution timeout in milliseconds. Maximum is 30000."}},"required":["code"],"additionalProperties":false}`)
 }
 
+func (PythonSandboxTool) Metadata() ToolMetadata {
+	return ToolMetadata{RiskLevel: RiskHigh, SideEffect: SideEffectWrite, TimeoutMS: 30000, MaxOutputBytes: 64 * 1024}
+}
+
 func (t PythonSandboxTool) Execute(ctx context.Context, rc ToolRunContext, input json.RawMessage) (*ToolResult, error) {
 	if t.Runner == nil {
 		return nil, fmt.Errorf("sandbox runner is not configured")

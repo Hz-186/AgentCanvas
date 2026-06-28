@@ -3,6 +3,7 @@ package node
 import (
 	"context"
 
+	"agentcanvas/internal/domain/agent"
 	"agentcanvas/internal/domain/conversation"
 	"agentcanvas/internal/domain/memory"
 	"agentcanvas/internal/domain/retrieval"
@@ -31,6 +32,10 @@ type MessageHistoryReader interface {
 	ListByConversation(ctx context.Context, ownerID, conversationID int64) ([]conversation.Message, error)
 }
 
+type AgentProfileLoader interface {
+	GetAgentProfile(ctx context.Context, ownerID, agentID int64) (*agent.Profile, error)
+}
+
 type Deps struct {
 	Retriever       retrieval.Retriever
 	LLM             llm.ChatClient
@@ -40,10 +45,14 @@ type Deps struct {
 	Memories        memory.Repository
 	MemoryWriteLogs memory.WriteLogRepository
 	Tools           tool.DefinitionRepository
+	ToolPacks       tool.PackRepository
+	MCPServers      tool.MCPRepository
 	ToolInvocations tool.InvocationRepository
 	ToolCalling     llm.ToolCallingClient
 	ToolRegistry    toolruntime.Registry
 	AgentCaller     toolruntime.AgentCaller
+	Profiles        AgentProfileLoader
+	Teams           agent.TeamRepository
 	Sandbox         sandbox.Runner
 }
 
@@ -63,18 +72,21 @@ func DefaultNodes(deps Deps) []engine.Node {
 		defaultRunner := sandbox.NewDockerRunner()
 		sandboxRunner = defaultRunner
 	}
+	agentNode := AgentNode{LLM: toolCalling, Providers: deps.Providers, Tools: toolRegistry, ToolPacks: deps.ToolPacks, Retriever: deps.Retriever, Memories: deps.Memories, MemoryLogs: deps.MemoryWriteLogs, AgentCaller: deps.AgentCaller, Profiles: deps.Profiles, Sandbox: sandboxRunner, MessageHistory: deps.MessageHistory}
 	return []engine.Node{
 		BeginNode{},
 		RetrievalNode{Retriever: deps.Retriever},
 		PromptNode{},
 		LLMNode{Client: deps.LLM, Providers: deps.Providers, History: deps.MessageHistory},
-		AgentLoopNode{LLM: toolCalling, Providers: deps.Providers, Tools: toolRegistry, Retriever: deps.Retriever, Memories: deps.Memories, MemoryLogs: deps.MemoryWriteLogs, AgentCaller: deps.AgentCaller, Sandbox: sandboxRunner},
+		AgentLoopNode{AgentNode: agentNode},
 		AgentCallNode{Caller: deps.AgentCaller},
+		TeamCallNode{Teams: deps.Teams, Caller: deps.AgentCaller},
 		CodeSandboxNode{Runner: sandboxRunner},
 		MessageNode{Writer: deps.Messages},
 		MemoryReadNode{Memories: deps.Memories},
 		MemoryWriteNode{Memories: deps.Memories, Logs: deps.MemoryWriteLogs},
 		HTTPToolNode{Tools: deps.Tools, Invocations: deps.ToolInvocations},
+		MCPToolNode{Servers: deps.MCPServers},
 		SwitchNode{},
 		JSONOutputNode{},
 		GuardrailNode{},

@@ -38,6 +38,10 @@ func (t AgentCallTool) Parameters() json.RawMessage {
 	return json.RawMessage(fmt.Sprintf(`{"type":"object","properties":{"agent_id":{%s},"flow_version_id":{"type":"number","description":"Optional flow version ID. Leave empty to use the worker agent's current published version."},"task":{"type":"string","description":"Natural language task for the worker. Used as input.query when input is omitted."},"input":{"type":"object","description":"Structured input object for the worker agent."}},"required":["agent_id"],"additionalProperties":false}`, agentIDSchema))
 }
 
+func (AgentCallTool) Metadata() ToolMetadata {
+	return ToolMetadata{RiskLevel: RiskMedium, SideEffect: SideEffectExternalAction}
+}
+
 func (t AgentCallTool) Execute(ctx context.Context, rc ToolRunContext, input json.RawMessage) (*ToolResult, error) {
 	if t.Caller == nil {
 		return nil, fmt.Errorf("agent caller is not configured")
@@ -52,6 +56,13 @@ func (t AgentCallTool) Execute(ctx context.Context, rc ToolRunContext, input jso
 	if len(t.AllowedAgentIDs) > 0 && !slices.Contains(t.AllowedAgentIDs, parsed.AgentID) {
 		msg := fmt.Sprintf("agent %d is not in allowed call_agent_ids", parsed.AgentID)
 		return &ToolResult{ContentText: msg, IsError: true}, fmt.Errorf("%w: %s", agenterrors.ErrForbidden, msg)
+	}
+	if callChainChecker != nil {
+		chainErr := callChainChecker(ctx, rc, rc.RunID, parsed.AgentID, parsed.FlowVersionID, nil)
+		if chainErr != nil {
+			msg := fmt.Sprintf("call_agent blocked: %s", chainErr.Error())
+			return &ToolResult{ContentText: msg, IsError: true}, fmt.Errorf("%w: %s", agenterrors.ErrForbidden, msg)
+		}
 	}
 	callInput := parsed.Input
 	if callInput == nil {
@@ -72,6 +83,7 @@ func (t AgentCallTool) Execute(ctx context.Context, rc ToolRunContext, input jso
 		FlowVersionID: parsed.FlowVersionID,
 		Input:         callInput,
 		CallDepth:     rc.CallDepth,
+		CallChain:     append([]int64(nil), rc.CallChain...),
 		MaxDepth:      t.MaxDepth,
 	})
 	if err != nil {

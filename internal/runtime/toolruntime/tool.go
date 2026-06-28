@@ -11,6 +11,7 @@ type ToolRunContext struct {
 	RunID          int64
 	NodeID         string
 	CallDepth      int
+	CallChain      []int64
 	ConversationID *int64
 }
 
@@ -21,11 +22,54 @@ type ToolResult struct {
 	Metadata    map[string]any  `json:"metadata,omitempty"`
 }
 
+const (
+	RiskLow    = "low"
+	RiskMedium = "medium"
+	RiskHigh   = "high"
+)
+
+const (
+	SideEffectNone           = "none"
+	SideEffectRead           = "read"
+	SideEffectWrite          = "write"
+	SideEffectExternalAction = "external_action"
+)
+
+type ToolMetadata struct {
+	RiskLevel        string   `json:"risk_level"`
+	RequiresApproval bool     `json:"requires_approval"`
+	TimeoutMS        int      `json:"timeout_ms,omitempty"`
+	MaxOutputBytes   int      `json:"max_output_bytes,omitempty"`
+	SideEffect       string   `json:"side_effect,omitempty"`
+	AllowedHosts     []string `json:"allowed_hosts,omitempty"`
+}
+
 type RuntimeTool interface {
 	Name() string
 	Description() string
 	Parameters() json.RawMessage
 	Execute(ctx context.Context, rc ToolRunContext, input json.RawMessage) (*ToolResult, error)
+}
+
+type MetadataProvider interface {
+	Metadata() ToolMetadata
+}
+
+func MetadataOf(tool RuntimeTool) ToolMetadata {
+	if tool == nil {
+		return ToolMetadata{RiskLevel: RiskLow, SideEffect: SideEffectNone}
+	}
+	if provider, ok := tool.(MetadataProvider); ok {
+		metadata := provider.Metadata()
+		if metadata.RiskLevel == "" {
+			metadata.RiskLevel = RiskLow
+		}
+		if metadata.SideEffect == "" {
+			metadata.SideEffect = SideEffectNone
+		}
+		return metadata
+	}
+	return ToolMetadata{RiskLevel: RiskLow, SideEffect: SideEffectNone}
 }
 
 type Registry interface {
@@ -41,6 +85,7 @@ type AgentCallRequest struct {
 	FlowVersionID int64          `json:"flow_version_id"`
 	Input         map[string]any `json:"input"`
 	CallDepth     int            `json:"call_depth"`
+	CallChain     []int64        `json:"call_chain"`
 	MaxDepth      int            `json:"max_depth"`
 }
 
