@@ -6,10 +6,14 @@ import (
 )
 
 const (
-	RunStatusRunning   = "running"
-	RunStatusSucceeded = "succeeded"
-	RunStatusFailed    = "failed"
-	RunStatusCancelled = "cancelled"
+	RunStatusRunning      = "running"
+	RunStatusSucceeded    = "succeeded"
+	RunStatusFailed       = "failed"
+	RunStatusCancelled    = "cancelled"
+	RunStatusWaitingHuman = "waiting_human"
+	RunStatusPaused       = "paused"
+	RunStatusResuming     = "resuming"
+	RunStatusTimeout      = "timeout"
 )
 
 type Run struct {
@@ -21,6 +25,7 @@ type Run struct {
 	ParentRunID    *int64          `json:"parent_run_id" gorm:"column:parent_run_id"`
 	CallerNodeID   string          `json:"caller_node_id" gorm:"column:caller_node_id"`
 	CallDepth      int             `json:"call_depth" gorm:"column:call_depth"`
+	CallChainJSON  json.RawMessage `json:"call_chain_json" gorm:"column:call_chain_json"`
 	Status         string          `json:"status" gorm:"column:status"`
 	InputJSON      json.RawMessage `json:"input_json" gorm:"column:input_json"`
 	OutputJSON     json.RawMessage `json:"output_json" gorm:"column:output_json"`
