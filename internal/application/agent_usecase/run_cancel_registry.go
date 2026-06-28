@@ -7,11 +7,23 @@ import (
 
 type runCancelRegistry struct {
 	mu      sync.Mutex
-	cancels map[int64]context.CancelFunc
+	cancels map[int64]runCancelEntry
+}
+
+type runCancelReason string
+
+const (
+	runCancelReasonCancel runCancelReason = "cancel"
+	runCancelReasonPause  runCancelReason = "pause"
+)
+
+type runCancelEntry struct {
+	cancel context.CancelFunc
+	reason runCancelReason
 }
 
 func newRunCancelRegistry() *runCancelRegistry {
-	return &runCancelRegistry{cancels: make(map[int64]context.CancelFunc)}
+	return &runCancelRegistry{cancels: make(map[int64]runCancelEntry)}
 }
 
 func (r *runCancelRegistry) Register(runID int64, cancel context.CancelFunc) {
@@ -19,7 +31,7 @@ func (r *runCancelRegistry) Register(runID int64, cancel context.CancelFunc) {
 		return
 	}
 	r.mu.Lock()
-	r.cancels[runID] = cancel
+	r.cancels[runID] = runCancelEntry{cancel: cancel}
 	r.mu.Unlock()
 }
 
@@ -33,14 +45,36 @@ func (r *runCancelRegistry) Unregister(runID int64) {
 }
 
 func (r *runCancelRegistry) Cancel(runID int64) bool {
+	return r.cancelWithReason(runID, runCancelReasonCancel)
+}
+
+func (r *runCancelRegistry) Pause(runID int64) bool {
+	return r.cancelWithReason(runID, runCancelReasonPause)
+}
+
+func (r *runCancelRegistry) Reason(runID int64) runCancelReason {
+	if r == nil || runID <= 0 {
+		return ""
+	}
+	r.mu.Lock()
+	entry := r.cancels[runID]
+	r.mu.Unlock()
+	return entry.reason
+}
+
+func (r *runCancelRegistry) cancelWithReason(runID int64, reason runCancelReason) bool {
 	if r == nil || runID <= 0 {
 		return false
 	}
 	r.mu.Lock()
-	cancel, ok := r.cancels[runID]
-	r.mu.Unlock()
+	entry, ok := r.cancels[runID]
 	if ok {
-		cancel()
+		entry.reason = reason
+		r.cancels[runID] = entry
+	}
+	r.mu.Unlock()
+	if ok && entry.cancel != nil {
+		entry.cancel()
 	}
 	return ok
 }

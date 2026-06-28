@@ -2,6 +2,7 @@ package handler
 
 import (
 	"net/http"
+	"strings"
 
 	agentusecase "agentcanvas/internal/application/agent_usecase"
 	"agentcanvas/internal/interface/http/sse"
@@ -125,6 +126,205 @@ func (h *AgentHandler) UpdateProfile(c *gin.Context) {
 		return
 	}
 	response.OK(c, item)
+}
+
+func (h *AgentHandler) CreateEvalDataset(c *gin.Context) {
+	ownerID, agentID, ok := h.ownerAndAgentID(c)
+	if !ok {
+		return
+	}
+	var req agentusecase.CreateEvalDatasetRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		writeAppError(c, err)
+		return
+	}
+	item, err := h.service.CreateEvalDataset(c.Request.Context(), ownerID, agentID, req)
+	if err != nil {
+		writeAppError(c, err)
+		return
+	}
+	response.OK(c, item)
+}
+
+func (h *AgentHandler) ListEvalDatasets(c *gin.Context) {
+	ownerID, agentID, ok := h.ownerAndAgentID(c)
+	if !ok {
+		return
+	}
+	items, err := h.service.ListEvalDatasets(c.Request.Context(), ownerID, agentID)
+	if err != nil {
+		writeAppError(c, err)
+		return
+	}
+	response.OK(c, items)
+}
+
+func (h *AgentHandler) CreateEvalCase(c *gin.Context) {
+	ownerID, datasetID, ok := h.ownerAndID(c, "id")
+	if !ok {
+		return
+	}
+	var req agentusecase.CreateEvalCaseRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		writeAppError(c, err)
+		return
+	}
+	item, err := h.service.CreateEvalCase(c.Request.Context(), ownerID, datasetID, req)
+	if err != nil {
+		writeAppError(c, err)
+		return
+	}
+	response.OK(c, item)
+}
+
+func (h *AgentHandler) ListEvalCases(c *gin.Context) {
+	ownerID, datasetID, ok := h.ownerAndID(c, "id")
+	if !ok {
+		return
+	}
+	items, err := h.service.ListEvalCases(c.Request.Context(), ownerID, datasetID)
+	if err != nil {
+		writeAppError(c, err)
+		return
+	}
+	response.OK(c, items)
+}
+
+func (h *AgentHandler) RunEvalDataset(c *gin.Context) {
+	ownerID, datasetID, ok := h.ownerAndID(c, "id")
+	if !ok {
+		return
+	}
+	var req agentusecase.RunEvalDatasetRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		writeAppError(c, err)
+		return
+	}
+	evalRun, results, err := h.service.RunEvalDataset(c.Request.Context(), ownerID, datasetID, req)
+	if err != nil {
+		writeAppError(c, err)
+		return
+	}
+	response.OK(c, gin.H{"eval_run": evalRun, "results": results})
+}
+
+func (h *AgentHandler) ListEvalRuns(c *gin.Context) {
+	ownerID, datasetID, ok := h.ownerAndID(c, "id")
+	if !ok {
+		return
+	}
+	items, err := h.service.ListEvalRuns(c.Request.Context(), ownerID, datasetID)
+	if err != nil {
+		writeAppError(c, err)
+		return
+	}
+	response.OK(c, items)
+}
+
+func (h *AgentHandler) ListEvalResults(c *gin.Context) {
+	ownerID, evalRunID, ok := h.ownerAndID(c, "id")
+	if !ok {
+		return
+	}
+	items, err := h.service.ListEvalResults(c.Request.Context(), ownerID, evalRunID)
+	if err != nil {
+		writeAppError(c, err)
+		return
+	}
+	response.OK(c, items)
+}
+
+func (h *AgentHandler) CreateTeam(c *gin.Context) {
+	ownerID, ok := currentUserID(c)
+	if !ok {
+		response.Error(c, http.StatusUnauthorized, agenterrors.CodeUnauthorized, agenterrors.ErrUnauthorized.Error())
+		return
+	}
+	var req agentusecase.CreateTeamRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		writeAppError(c, err)
+		return
+	}
+	item, err := h.service.CreateTeam(c.Request.Context(), ownerID, req)
+	if err != nil {
+		writeAppError(c, err)
+		return
+	}
+	response.OK(c, item)
+}
+
+func (h *AgentHandler) ListTeams(c *gin.Context) {
+	ownerID, ok := currentUserID(c)
+	if !ok {
+		response.Error(c, http.StatusUnauthorized, agenterrors.CodeUnauthorized, agenterrors.ErrUnauthorized.Error())
+		return
+	}
+	items, err := h.service.ListTeams(c.Request.Context(), ownerID)
+	if err != nil {
+		writeAppError(c, err)
+		return
+	}
+	response.OK(c, items)
+}
+
+func (h *AgentHandler) DeleteTeam(c *gin.Context) {
+	ownerID, teamID, ok := h.ownerAndID(c, "id")
+	if !ok {
+		return
+	}
+	if err := h.service.DeleteTeam(c.Request.Context(), ownerID, teamID); err != nil {
+		writeAppError(c, err)
+		return
+	}
+	response.OK(c, gin.H{"success": true})
+}
+
+func (h *AgentHandler) AddTeamMember(c *gin.Context) {
+	ownerID, teamID, ok := h.ownerAndID(c, "id")
+	if !ok {
+		return
+	}
+	var req agentusecase.AddTeamMemberRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		writeAppError(c, err)
+		return
+	}
+	item, err := h.service.AddTeamMember(c.Request.Context(), ownerID, teamID, req)
+	if err != nil {
+		writeAppError(c, err)
+		return
+	}
+	response.OK(c, item)
+}
+
+func (h *AgentHandler) ListTeamMembers(c *gin.Context) {
+	ownerID, teamID, ok := h.ownerAndID(c, "id")
+	if !ok {
+		return
+	}
+	items, err := h.service.ListTeamMembers(c.Request.Context(), ownerID, teamID)
+	if err != nil {
+		writeAppError(c, err)
+		return
+	}
+	response.OK(c, items)
+}
+
+func (h *AgentHandler) RemoveTeamMember(c *gin.Context) {
+	ownerID, teamID, ok := h.ownerAndID(c, "id")
+	if !ok {
+		return
+	}
+	agentID, err := parseInt64Param(c, "agent_id")
+	if err != nil {
+		writeAppError(c, agenterrors.ErrInvalidInput)
+		return
+	}
+	if err := h.service.RemoveTeamMember(c.Request.Context(), ownerID, teamID, agentID); err != nil {
+		writeAppError(c, err)
+		return
+	}
+	response.OK(c, gin.H{"success": true})
 }
 
 func (h *AgentHandler) Delete(c *gin.Context) {
@@ -279,6 +479,19 @@ func (h *AgentHandler) ListRunEvents(c *gin.Context) {
 	response.OK(c, items)
 }
 
+func (h *AgentHandler) ListChildRuns(c *gin.Context) {
+	ownerID, id, ok := h.ownerAndID(c, "id")
+	if !ok {
+		return
+	}
+	items, err := h.service.ListChildRuns(c.Request.Context(), ownerID, id)
+	if err != nil {
+		writeAppError(c, err)
+		return
+	}
+	response.OK(c, items)
+}
+
 func (h *AgentHandler) ListNodeLogs(c *gin.Context) {
 	ownerID, id, ok := h.ownerAndID(c, "id")
 	if !ok {
@@ -337,6 +550,80 @@ func (h *AgentHandler) CancelRun(c *gin.Context) {
 		return
 	}
 	item, err := h.service.CancelRun(c.Request.Context(), ownerID, id)
+	if err != nil {
+		writeAppError(c, err)
+		return
+	}
+	response.OK(c, item)
+}
+
+func (h *AgentHandler) PauseRun(c *gin.Context) {
+	ownerID, id, ok := h.ownerAndID(c, "id")
+	if !ok {
+		return
+	}
+	item, err := h.service.PauseRun(c.Request.Context(), ownerID, id)
+	if err != nil {
+		writeAppError(c, err)
+		return
+	}
+	response.OK(c, item)
+}
+
+func (h *AgentHandler) ListApprovalRequests(c *gin.Context) {
+	ownerID, ok := currentUserID(c)
+	if !ok {
+		response.Error(c, http.StatusUnauthorized, agenterrors.CodeUnauthorized, agenterrors.ErrUnauthorized.Error())
+		return
+	}
+	items, err := h.service.ListApprovalRequests(c.Request.Context(), ownerID, strings.TrimSpace(c.Query("status")))
+	if err != nil {
+		writeAppError(c, err)
+		return
+	}
+	response.OK(c, items)
+}
+
+func (h *AgentHandler) ApproveRequest(c *gin.Context) {
+	h.decideApproval(c, true)
+}
+
+func (h *AgentHandler) RejectRequest(c *gin.Context) {
+	h.decideApproval(c, false)
+}
+
+func (h *AgentHandler) ResumeRun(c *gin.Context) {
+	ownerID, runID, ok := h.ownerAndID(c, "id")
+	if !ok {
+		return
+	}
+	item, err := h.service.ResumeRun(c.Request.Context(), ownerID, runID)
+	if err != nil {
+		writeAppError(c, err)
+		return
+	}
+	response.OK(c, item)
+}
+
+func (h *AgentHandler) decideApproval(c *gin.Context, approve bool) {
+	ownerID, approvalID, ok := h.ownerAndID(c, "id")
+	if !ok {
+		return
+	}
+	var req agentusecase.DecideApprovalRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		writeAppError(c, err)
+		return
+	}
+	var (
+		item any
+		err  error
+	)
+	if approve {
+		item, err = h.service.ApproveRequest(c.Request.Context(), ownerID, approvalID, req)
+	} else {
+		item, err = h.service.RejectRequest(c.Request.Context(), ownerID, approvalID, req)
+	}
 	if err != nil {
 		writeAppError(c, err)
 		return

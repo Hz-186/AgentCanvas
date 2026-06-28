@@ -32,6 +32,15 @@ func (r *RunRepository) FindByID(ctx context.Context, ownerID, id int64) (*agent
 	return &item, nil
 }
 
+func (r *RunRepository) ListByParent(ctx context.Context, ownerID, parentRunID int64) ([]agent.Run, error) {
+	var items []agent.Run
+	err := r.db.WithContext(ctx).
+		Where("owner_id = ? AND parent_run_id = ?", ownerID, parentRunID).
+		Order("id ASC").
+		Find(&items).Error
+	return items, err
+}
+
 func (r *RunRepository) Update(ctx context.Context, item *agent.Run) error {
 	item.UpdatedAt = time.Now().UTC()
 	return r.db.WithContext(ctx).Save(item).Error

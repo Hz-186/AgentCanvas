@@ -21,3 +21,19 @@ func TestRunCancelRegistryCancelsRegisteredRun(t *testing.T) {
 		t.Fatal("Cancel() after Unregister = true, want false")
 	}
 }
+
+func TestRunCancelRegistryRecordsPauseReason(t *testing.T) {
+	registry := newRunCancelRegistry()
+	ctx, cancel := context.WithCancel(context.Background())
+
+	registry.Register(10, cancel)
+	if !registry.Pause(10) {
+		t.Fatal("Pause() = false, want true")
+	}
+	if ctx.Err() != context.Canceled {
+		t.Fatalf("ctx.Err() = %v, want context.Canceled", ctx.Err())
+	}
+	if got := registry.Reason(10); got != runCancelReasonPause {
+		t.Fatalf("Reason() = %q, want %q", got, runCancelReasonPause)
+	}
+}
