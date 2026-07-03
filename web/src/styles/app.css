@@ -1387,6 +1387,7 @@ body.is-resizing-workspace .workspace {
 
 .canvas-body {
   min-height: 0;
+  height: 100%;
   display: grid;
   grid-template-columns: var(--palette-width, 128px) 10px minmax(360px, 1fr) 10px var(--config-width, 360px);
   gap: 0;
@@ -1439,6 +1440,7 @@ body.is-resizing-workspace .workspace {
 .node-palette,
 .config-panel,
 .debug-panel {
+  height: 100%;
   min-height: 0;
   overflow: auto;
 }
@@ -1582,25 +1584,130 @@ body.is-resizing-panels .canvas-body {
   padding: var(--space-4);
 }
 
-.agent-node {
-  width: 190px;
+.workflow-node {
+  position: relative;
+  isolation: isolate;
+  width: 208px;
+  height: 142px;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 8px;
   padding: 12px;
-  border-radius: var(--radius-md);
-  background: color-mix(in srgb, var(--bg-elevated) 82%, rgba(255, 255, 255, 0.12));
-  -webkit-backdrop-filter: blur(var(--blur-sm)) saturate(140%);
-  backdrop-filter: blur(var(--blur-sm)) saturate(140%);
-  border: 1px solid var(--border-strong);
-  box-shadow: var(--shadow-md);
+  overflow: hidden;
+  border-radius: 18px;
+  color: var(--text-primary);
+  background:
+    linear-gradient(145deg, rgba(255, 255, 255, 0.74), rgba(225, 242, 255, 0.58)),
+    color-mix(in srgb, var(--bg-elevated) 78%, transparent);
+  -webkit-backdrop-filter: blur(16px) saturate(175%) contrast(108%);
+  backdrop-filter: blur(16px) saturate(175%) contrast(108%);
+  border: 1px solid rgba(255, 255, 255, 0.72);
+  box-shadow:
+    0 18px 44px rgba(42, 76, 110, 0.16),
+    inset 0 1px 0 rgba(255, 255, 255, 0.92),
+    inset 0 0 0 1px rgba(10, 132, 255, 0.1),
+    inset 0 -22px 42px rgba(10, 132, 255, 0.055);
 }
 
-.agent-node strong {
+.workflow-node::before {
+  content: "";
+  position: absolute;
+  inset: 1px;
+  z-index: -1;
+  border-radius: 17px;
+  pointer-events: none;
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.62), transparent 36%, rgba(10, 132, 255, 0.12) 72%, rgba(255, 255, 255, 0.34)),
+    radial-gradient(circle at 20% 12%, rgba(255, 255, 255, 0.52), transparent 34%);
+  opacity: 0.82;
+}
+
+.workflow-node.selected {
+  border-color: color-mix(in srgb, var(--accent) 58%, rgba(255, 255, 255, 0.72));
+  box-shadow:
+    0 0 0 3px var(--accent-soft),
+    0 20px 48px rgba(10, 132, 255, 0.18),
+    inset 0 1px 0 rgba(255, 255, 255, 0.94),
+    inset 0 0 0 1px rgba(10, 132, 255, 0.16),
+    inset 0 -22px 42px rgba(10, 132, 255, 0.07);
+}
+
+.workflow-node-head {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.workflow-node-head strong {
   display: block;
-  margin-top: 6px;
+  line-height: 1.16;
+  font-size: var(--font-md);
 }
 
-.agent-node span {
+.workflow-node-head span,
+.workflow-node-desc {
   color: var(--text-secondary);
   font-size: var(--font-xs);
+}
+
+.workflow-node-desc {
+  min-width: 0;
+  margin: 0;
+  display: -webkit-box;
+  overflow: hidden;
+  line-height: 1.45;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.workflow-node-tags {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 5px;
+}
+
+.workflow-node-tags span {
+  min-height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  padding: 0 8px;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.48);
+  border: 1px solid rgba(255, 255, 255, 0.56);
+  color: var(--text-secondary);
+  font-size: 10px;
+  font-weight: 700;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.48);
+}
+
+.workflow-node-tags span::before {
+  content: "";
+  width: 5px;
+  height: 5px;
+  flex: 0 0 auto;
+  margin-right: 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 56%, rgba(255, 255, 255, 0.7));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+html[data-theme='dark'] .workflow-node {
+  background:
+    linear-gradient(145deg, rgba(41, 55, 72, 0.82), rgba(24, 35, 49, 0.72)),
+    color-mix(in srgb, var(--bg-elevated) 78%, transparent);
+  border-color: rgba(255, 255, 255, 0.18);
+  box-shadow:
+    0 18px 44px rgba(0, 0, 0, 0.24),
+    inset 0 1px 0 rgba(255, 255, 255, 0.16),
+    inset 0 -22px 42px rgba(10, 132, 255, 0.08);
+}
+
+html[data-theme='dark'] .workflow-node-tags span {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.12);
 }
 
 .node-icon {
@@ -1614,10 +1721,10 @@ body.is-resizing-panels .canvas-body {
 }
 
 .config-panel {
-  display: grid;
-  align-content: start;
+  display: block;
   gap: var(--space-3);
   min-width: 0;
+  max-height: 100%;
   padding-left: 8px;
   opacity: 1;
   transform: translateX(0) scale(1);
@@ -1626,6 +1733,38 @@ body.is-resizing-panels .canvas-body {
     opacity var(--dur-slow) var(--ease-out),
     transform var(--dur-slow) var(--ease-out),
     visibility var(--dur-slow) var(--ease-out);
+}
+
+.config-panel .panel {
+  max-height: 100%;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.config-section-title {
+  position: sticky;
+  top: -1px;
+  z-index: 2;
+  margin: 4px 0 -2px;
+  padding: 8px 10px;
+  border-radius: var(--radius-md);
+  color: var(--text-tertiary);
+  background: color-mix(in srgb, var(--bg-elevated) 72%, rgba(255, 255, 255, 0.26));
+  border: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+  -webkit-backdrop-filter: blur(10px) saturate(150%);
+  backdrop-filter: blur(10px) saturate(150%);
+  font-size: var(--font-xs);
+  font-weight: 800;
+  text-transform: uppercase;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.54);
+}
+
+.agent-config-panel .field {
+  padding: 10px;
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--bg-surface) 50%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--glass-highlight) 42%, transparent);
 }
 
 .code-box {

@@ -51,6 +51,7 @@ export interface AgentLoopConfig {
   knowledge_top_k?: number;
   knowledge_mode?: 'keyword' | 'vector' | 'hybrid';
   call_workflow_ids?: number[];
+  mcp_server_ids?: number[];
   max_workflow_call_depth?: number;
   code_execution_enabled?: boolean;
   memory_enabled?: boolean;

@@ -57,6 +57,26 @@ func TestMCPToolNodeValidate(t *testing.T) {
 	}
 }
 
+func TestAgentNodeLoadToolsIncludesMCPServerTools(t *testing.T) {
+	agent := AgentNode{MCPServers: fakeMCPServerRepo{server: &tool.MCPServer{
+		ID:        10,
+		OwnerID:   1,
+		Name:      "stdio",
+		Transport: tool.MCPTransportStdio,
+		Command:   os.Args[0],
+		ArgsJSON:  mustRawJSON([]string{"-test.run=TestMCPToolNodeHelperProcess", "--"}),
+		EnvJSON:   mustRawJSON(map[string]string{"MCP_NODE_HELPER": "1"}),
+		Status:    tool.MCPStatusActive,
+	}}}
+	tools, err := agent.loadTools(context.Background(), 1, agentRuntimeConfig{MCPServerIDs: []int64{10}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tools) != 2 || tools[0].Name() != "request_human_approval" || tools[1].Name() != "echo" {
+		t.Fatalf("unexpected tools: %+v", tools)
+	}
+}
+
 func TestMCPToolNodeHelperProcess(t *testing.T) {
 	if os.Getenv("MCP_NODE_HELPER") != "1" {
 		return
@@ -74,6 +94,8 @@ func TestMCPToolNodeHelperProcess(t *testing.T) {
 		switch req.Method {
 		case "initialize":
 			writeMCPNodeHelperResponse(req.ID, map[string]any{"protocolVersion": "2024-11-05"})
+		case "tools/list":
+			writeMCPNodeHelperResponse(req.ID, map[string]any{"tools": []map[string]any{{"name": "echo", "description": "echo text", "parameters": map[string]any{"type": "object", "properties": map[string]any{"text": map[string]any{"type": "string"}}}}}})
 		case "tools/call":
 			var params struct {
 				Arguments struct {

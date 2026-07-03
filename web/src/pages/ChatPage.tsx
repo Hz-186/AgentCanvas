@@ -313,7 +313,16 @@ export function ChatPage() {
                   ) : null}
                 </div>
                 <form className="chat-composer" onSubmit={(event) => void ask(event)}>
-                  <TextArea value={question} onChange={(event) => setQuestion(event.target.value)} placeholder="输入问题" />
+                  <TextArea
+                    value={question}
+                    onChange={(event) => setQuestion(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing) return;
+                      event.preventDefault();
+                      event.currentTarget.form?.requestSubmit();
+                    }}
+                    placeholder="输入问题，Enter 发送，Shift+Enter 换行"
+                  />
                   <Button tone="primary" disabled={streaming}>
                     <Send size={16} />
                     发送

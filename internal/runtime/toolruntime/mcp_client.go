@@ -43,6 +43,10 @@ type MCPToolRuntime struct {
 	client *MCPClient
 }
 
+func NewMCPToolRuntime(def MCPToolDef, client *MCPClient) RuntimeTool {
+	return &MCPToolRuntime{def: def, client: client}
+}
+
 func NewMCPClient(name, sseURL string) *MCPClient {
 	return &MCPClient{
 		Name:      name,

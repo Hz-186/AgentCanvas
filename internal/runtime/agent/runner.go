@@ -229,7 +229,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 				_ = r.emit(ctx, resultStep)
 				continue
 			}
-			if approval := requiredApproval(call.ID, call.Name, toolruntime.MetadataOf(toolImpl), req.ToolPolicy); approval != nil {
+			if approval := requiredApproval(call.ID, call.Name, call.Arguments, toolruntime.MetadataOf(toolImpl), req.ToolPolicy); approval != nil {
 				result.StopReason = StopReasonWaitingHuman
 				result.FinalAnswer = "Agent is waiting for human approval before executing tool " + call.Name + "."
 				result.Approval = approval
@@ -406,7 +406,7 @@ func finishWithContext(result *RunResult, err error, now time.Time) *RunResult {
 	return finish(result, now)
 }
 
-func requiredApproval(toolCallID, toolName string, metadata toolruntime.ToolMetadata, policy ToolPolicy) *Approval {
+func requiredApproval(toolCallID, toolName string, arguments json.RawMessage, metadata toolruntime.ToolMetadata, policy ToolPolicy) *Approval {
 	risk := strings.TrimSpace(metadata.RiskLevel)
 	if risk == "" {
 		risk = toolruntime.RiskLow
@@ -421,11 +421,30 @@ func requiredApproval(toolCallID, toolName string, metadata toolruntime.ToolMeta
 	if !required {
 		return nil
 	}
+	reason := fmt.Sprintf("tool %s requires human approval because risk level is %s", toolName, risk)
+	if strings.EqualFold(toolName, "request_human_approval") {
+		var args struct {
+			Action string `json:"action"`
+			Reason string `json:"reason"`
+		}
+		if err := json.Unmarshal(arguments, &args); err == nil {
+			parts := make([]string, 0, 2)
+			if strings.TrimSpace(args.Action) != "" {
+				parts = append(parts, "action: "+strings.TrimSpace(args.Action))
+			}
+			if strings.TrimSpace(args.Reason) != "" {
+				parts = append(parts, "reason: "+strings.TrimSpace(args.Reason))
+			}
+			if len(parts) > 0 {
+				reason = strings.Join(parts, "; ")
+			}
+		}
+	}
 	return &Approval{
 		ToolCallID: toolCallID,
 		ToolName:   toolName,
 		RiskLevel:  risk,
-		Reason:     fmt.Sprintf("tool %s requires human approval because risk level is %s", toolName, risk),
+		Reason:     reason,
 		Metadata:   metadata,
 	}
 }

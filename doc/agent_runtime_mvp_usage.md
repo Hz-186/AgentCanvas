@@ -21,13 +21,13 @@
 - `agent_call` 节点可在确定性 Workflow 中调用另一个 Agent。
 - `code_sandbox` 节点可在确定性 Workflow 中执行 Python 代码。
 - `agent_started / agent_step / agent_finished / agent_failed` 运行事件。
-- `agent_run_steps` 持久化表和 `/runs/:id/steps` 查询接口。
-- `agent_profiles` 持久化表和 `/agents/:id/profile` 读写接口。
+- `workflow_run_steps` 持久化表和 `/runs/:id/steps` 查询接口。
+- `workflow_profiles` 持久化表和 `/workflows/:id/profile` 读写接口。
 - Canvas 中新增 `Agent Loop` 节点配置。
 
 ## Canvas 配置方式
 
-1. 进入 Agent Canvas。
+1. 进入 Workflow Canvas。
 2. 在 `Profile` 标签页维护角色、目标、默认模型、委派和代码执行边界。
 3. 添加 `Agent Loop` 节点。
 4. 配置 `Provider` 和可选 `model`。
@@ -156,9 +156,9 @@
 
 这些字段用于追踪 Supervisor-Worker 运行关系，并防止无限递归。
 
-## Agent Profile
+## Workflow Profile
 
-每个 Agent 都可以维护独立 Profile：
+每个 Workflow 都可以维护独立 Profile：
 
 ```json
 {
@@ -179,10 +179,10 @@
 
 接口：
 
-- `GET /api/v1/agents/:id/profile`
-- `PATCH /api/v1/agents/:id/profile`
+- `GET /api/v1/workflows/:id/profile`
+- `PATCH /api/v1/workflows/:id/profile`
 
-新建 Agent 时会自动生成默认 Profile。当前 Profile 先作为角色、目标和能力边界的持久化配置；后续可进一步让 `agent_loop` 直接继承 Profile 默认值。
+新建 Workflow 时会自动生成默认 Profile。当前 Profile 先作为角色、目标和能力边界的持久化配置；后续可进一步让 `agent_loop` 直接继承 Profile 默认值。
 
 ## 代码沙盒
 
@@ -265,22 +265,22 @@
 }
 ```
 
-当开启 `return_intermediate_steps` 或 `output_mode = full` 时，输出会额外包含 `steps`。无论是否返回到节点输出，`agent_loop` 的中间步骤都会写入 `agent_run_steps`。
+当开启 `return_intermediate_steps` 或 `output_mode = full` 时，输出会额外包含 `steps`。无论是否返回到节点输出，`agent_loop` 的中间步骤都会写入 `workflow_run_steps`。
 
 ## 当前边界
 
-本 MVP 先完成真正 Agent 的核心闭环，没有推翻现有 Workflow：
+本 MVP 先完成 AI Agent 的核心闭环，没有推翻现有 Workflow：
 
 - 暂不支持任意带环 Canvas。
 - 已支持 `code_sandbox` 节点和 `execute_python` 工具的 Docker 沙盒初版。
 - 已支持 `agent_call` 节点和 `call_agent` 工具的初版 Supervisor-Worker 调用。
-- 已持久化独立 `agent_run_steps` 表，同时保留 `agent_run_events` 中的实时 step 事件。
+- 已持久化独立 `workflow_run_steps` 表，同时保留 `workflow_run_events` 中的实时 step 事件。
 - 当前 Runtime Tool 已接入已有 HTTP Tool、知识库检索、长期记忆读写、子 Agent 调用和 Python 沙盒执行。
 
 ## 验收建议
 
 1. 创建一个 HTTP Tool，并确保它有清晰的 `input_schema_json`。
-2. 创建包含 `begin -> agent_loop -> message` 的 Agent。
+2. 创建包含 `begin -> agent_loop -> message` 的 Workflow。
 3. 发布后运行：
 
 ```json

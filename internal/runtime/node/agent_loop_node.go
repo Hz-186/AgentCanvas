@@ -26,6 +26,7 @@ type AgentNode struct {
 	Providers      ProviderConfigLoader
 	Tools          toolruntime.Registry
 	ToolPacks      tool.PackRepository
+	MCPServers     tool.MCPRepository
 	Retriever      retrieval.Retriever
 	Memories       memory.Repository
 	MemoryLogs     memory.WriteLogRepository
@@ -56,6 +57,7 @@ type agentRuntimeConfig struct {
 	KnowledgeTopK           int             `json:"knowledge_top_k"`
 	KnowledgeMode           string          `json:"knowledge_mode"`
 	CallWorkflowIDs         []int64         `json:"call_workflow_ids"`
+	MCPServerIDs            []int64         `json:"mcp_server_ids"`
 	MaxWorkflowCallDepth    int             `json:"max_workflow_call_depth"`
 	CodeExecutionEnabled    bool            `json:"code_execution_enabled"`
 	MemoryEnabled           bool            `json:"memory_enabled"`
@@ -91,6 +93,7 @@ type agentNodeConfig struct {
 		KnowledgeTopK        int     `json:"knowledge_top_k"`
 		KnowledgeMode        string  `json:"knowledge_mode"`
 		CallWorkflowIDs      []int64 `json:"call_workflow_ids"`
+		MCPServerIDs         []int64 `json:"mcp_server_ids"`
 		MaxWorkflowCallDepth int     `json:"max_workflow_call_depth"`
 		CodeExecutionEnabled bool    `json:"code_execution_enabled"`
 	} `json:"tools"`
@@ -184,6 +187,9 @@ func parseAgentNodeConfig(config json.RawMessage) (agentRuntimeConfig, error) {
 	}
 	if len(nested.Tools.CallWorkflowIDs) > 0 {
 		cfg.CallWorkflowIDs = nested.Tools.CallWorkflowIDs
+	}
+	if len(nested.Tools.MCPServerIDs) > 0 {
+		cfg.MCPServerIDs = nested.Tools.MCPServerIDs
 	}
 	if nested.Tools.MaxWorkflowCallDepth > 0 {
 		cfg.MaxWorkflowCallDepth = nested.Tools.MaxWorkflowCallDepth
@@ -540,6 +546,11 @@ func (n AgentNode) applyProfileDefaults(ctx context.Context, rc *engine.RunConte
 			cfg.CallWorkflowIDs = ids
 		}
 	}
+	if len(cfg.MCPServerIDs) == 0 {
+		if ids := profile.DefaultMCPServerIDsSlice(); len(ids) > 0 {
+			cfg.MCPServerIDs = ids
+		}
+	}
 	if cfg.MaxWorkflowCallDepth <= 0 && profile.DefaultMaxWorkflowCallDepth > 0 {
 		cfg.MaxWorkflowCallDepth = profile.DefaultMaxWorkflowCallDepth
 	}
@@ -627,7 +638,8 @@ func agentStepRecord(step runtimeagent.RunStep, nodeID string) engine.AgentStepR
 }
 
 func (n AgentNode) loadTools(ctx context.Context, ownerID int64, cfg agentRuntimeConfig) ([]toolruntime.RuntimeTool, error) {
-	tools := make([]toolruntime.RuntimeTool, 0, len(cfg.ToolIDs)+1)
+	tools := make([]toolruntime.RuntimeTool, 0, len(cfg.ToolIDs)+2)
+	tools = append(tools, toolruntime.HumanApprovalTool{})
 	if len(cfg.KnowledgeIDs) > 0 {
 		if n.Retriever == nil {
 			return nil, fmt.Errorf("agent_loop retriever is not configured")
@@ -648,6 +660,16 @@ func (n AgentNode) loadTools(ctx context.Context, ownerID int64, cfg agentRuntim
 			AllowedWorkflowIDs: cfg.CallWorkflowIDs,
 			MaxDepth:           cfg.MaxWorkflowCallDepth,
 		})
+	}
+	if len(cfg.MCPServerIDs) > 0 {
+		if n.MCPServers == nil {
+			return nil, fmt.Errorf("agent_loop mcp server repository is not configured")
+		}
+		loaded, err := n.loadMCPTools(ctx, ownerID, cfg.MCPServerIDs)
+		if err != nil {
+			return nil, err
+		}
+		tools = append(tools, loaded...)
 	}
 	if cfg.CodeExecutionEnabled {
 		if n.Sandbox == nil {
@@ -675,6 +697,31 @@ func (n AgentNode) loadTools(ctx context.Context, ownerID int64, cfg agentRuntim
 		return nil, err
 	}
 	return append(tools, loaded...), nil
+}
+
+func (n AgentNode) loadMCPTools(ctx context.Context, ownerID int64, serverIDs []int64) ([]toolruntime.RuntimeTool, error) {
+	loaded := make([]toolruntime.RuntimeTool, 0)
+	for _, serverID := range serverIDs {
+		if serverID <= 0 {
+			continue
+		}
+		server, err := n.MCPServers.FindServerByID(ctx, ownerID, serverID)
+		if err != nil {
+			return nil, err
+		}
+		if server.Status != tool.MCPStatusActive {
+			continue
+		}
+		client := mcpClientFromDomainServer(server)
+		defs, err := client.Discover(ctx)
+		if err != nil {
+			return nil, err
+		}
+		for _, def := range defs {
+			loaded = append(loaded, toolruntime.NewMCPToolRuntime(def, client))
+		}
+	}
+	return loaded, nil
 }
 
 func resolveAgentTask(template string, rc *engine.RunContext, input engine.NodeInput) string {

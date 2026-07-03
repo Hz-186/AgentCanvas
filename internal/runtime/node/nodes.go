@@ -72,7 +72,7 @@ func DefaultNodes(deps Deps) []engine.Node {
 		defaultRunner := sandbox.NewDockerRunner()
 		sandboxRunner = defaultRunner
 	}
-	agentNode := AgentNode{LLM: toolCalling, Providers: deps.Providers, Tools: toolRegistry, ToolPacks: deps.ToolPacks, Retriever: deps.Retriever, Memories: deps.Memories, MemoryLogs: deps.MemoryWriteLogs, WorkflowCaller: deps.WorkflowCaller, Profiles: deps.Profiles, Sandbox: sandboxRunner, MessageHistory: deps.MessageHistory}
+	agentNode := AgentNode{LLM: toolCalling, Providers: deps.Providers, Tools: toolRegistry, ToolPacks: deps.ToolPacks, MCPServers: deps.MCPServers, Retriever: deps.Retriever, Memories: deps.Memories, MemoryLogs: deps.MemoryWriteLogs, WorkflowCaller: deps.WorkflowCaller, Profiles: deps.Profiles, Sandbox: sandboxRunner, MessageHistory: deps.MessageHistory}
 	return []engine.Node{
 		BeginNode{},
 		RetrievalNode{Retriever: deps.Retriever},

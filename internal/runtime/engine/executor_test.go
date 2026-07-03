@@ -180,7 +180,7 @@ func TestAgentLoopNodeUsesProfileDefaults(t *testing.T) {
 	if len(chat.toolRequest.Messages) != 2 || chat.toolRequest.Messages[0].Content != "来自 Profile 的系统提示" || chat.toolRequest.Messages[1].Content != "读取 Profile 默认值" {
 		t.Fatalf("messages = %+v", chat.toolRequest.Messages)
 	}
-	if len(chat.toolRequest.Tools) != 0 {
+	if len(chat.toolRequest.Tools) != 1 || chat.toolRequest.Tools[0].Function.Name != "request_human_approval" {
 		t.Fatalf("unexpected tools: %+v", chat.toolRequest.Tools)
 	}
 }
@@ -232,7 +232,7 @@ func TestAgentLoopNodeExpandsProfileToolPacks(t *testing.T) {
 	if len(registry.loadedIDs) != 2 || registry.loadedIDs[0] != 100 || registry.loadedIDs[1] != 101 {
 		t.Fatalf("expected tool pack ids to be expanded, got %+v", registry.loadedIDs)
 	}
-	if len(chat.toolRequest.Tools) != 2 || chat.toolRequest.Tools[0].Function.Name != "tool_100" || chat.toolRequest.Tools[1].Function.Name != "tool_101" {
+	if len(chat.toolRequest.Tools) != 3 || chat.toolRequest.Tools[0].Function.Name != "request_human_approval" || chat.toolRequest.Tools[1].Function.Name != "tool_100" || chat.toolRequest.Tools[2].Function.Name != "tool_101" {
 		t.Fatalf("unexpected tools sent to LLM: %+v", chat.toolRequest.Tools)
 	}
 }

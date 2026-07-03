@@ -55,7 +55,7 @@ const nodeMeta: Record<NodeType, { label: string; icon: React.ElementType; descr
   prompt: { label: 'Prompt', icon: MessageSquare, description: '组装提示词' },
   llm: { label: 'LLM', icon: BrainCircuit, description: '调用模型生成内容' },
   agent_loop: { label: 'Agent Loop', icon: Bot, description: '自治 ReAct Agent，自动调用工具并可委托子 Agent' },
-  workflow_call: { label: 'Call Workflow', icon: WorkflowIcon, description: '调用另一个 Workflow' },
+  workflow_call: { label: 'Agent Call', icon: WorkflowIcon, description: '静态调用另一个 Agent' },
   team_call: { label: 'Team Call', icon: WorkflowIcon, description: '调用一个 Workflow Team 的 supervisor' },
   code_sandbox: { label: 'Code Sandbox', icon: Braces, description: '隔离执行 Python 代码' },
   message: { label: 'Message', icon: Send, description: '输出或写入会话消息' },
@@ -96,6 +96,7 @@ function defaultConfig(type: NodeType): CanvasNodeData['config'] {
       task_template: '{{sys.query}}',
       tool_ids: [],
       knowledge_ids: [],
+      mcp_server_ids: [],
       knowledge_top_k: 5,
       knowledge_mode: 'keyword',
       call_workflow_ids: [],
@@ -127,17 +128,52 @@ function defaultConfig(type: NodeType): CanvasNodeData['config'] {
   return { source: '{{llm.content}}', max_length: 4000, banned_terms: [], require_citation: false, require_json: false };
 }
 
+function nodeSummaryItems(data: CanvasNodeData) {
+  const config = data.config as Record<string, unknown>;
+  if (data.nodeType === 'agent_loop') {
+    const tools = numberArray(config.tool_ids).length;
+    const kb = numberArray(config.knowledge_ids).length;
+    const mcp = numberArray(config.mcp_server_ids).length;
+    const callable = numberArray(config.call_workflow_ids).length;
+    return [String(config.mode ?? 'react'), `${tools + kb + mcp + callable} tools`, `${Number(config.max_iterations ?? 8)} loops`];
+  }
+  if (data.nodeType === 'knowledge_retrieval') return [`Top ${Number(config.top_k ?? 5)}`, String(config.mode ?? 'keyword'), `${numberArray(config.kb_ids).length} KB`];
+  if (data.nodeType === 'llm') return [String(config.model || 'default'), `T ${Number(config.temperature ?? 0.7)}`, config.stream === false ? 'sync' : 'stream'];
+  if (data.nodeType === 'workflow_call') return [`Agent #${Number(config.workflow_id ?? 0) || '-'}`, `depth ${Number(config.max_depth ?? 3)}`];
+  if (data.nodeType === 'team_call') return [`Team #${Number(config.team_id ?? 0) || '-'}`, `depth ${Number(config.max_depth ?? 3)}`];
+  if (data.nodeType === 'code_sandbox') return [String(config.language ?? 'python'), `${Number(config.timeout_ms ?? 5000)}ms`, config.network_enabled ? 'network' : 'isolated'];
+  if (data.nodeType === 'switch') return [`${Array.isArray(config.conditions) ? config.conditions.length : 0} routes`, 'branch'];
+  if (data.nodeType === 'guardrail') return [config.require_json ? 'JSON' : 'rules', `${Number(config.max_length ?? 4000)} chars`];
+  if (data.nodeType === 'json_output') return ['schema', 'structured'];
+  if (data.nodeType === 'memory_read') return ['read', `${Number(config.limit ?? 5)} items`];
+  if (data.nodeType === 'memory_write') return ['write', String(config.memory_type ?? 'memory')];
+  if (data.nodeType === 'http_tool') return [`Tool #${Number(config.tool_id ?? 0) || '-'}`, 'HTTP'];
+  if (data.nodeType === 'mcp_tool') return [`Server #${Number(config.server_id ?? 0) || '-'}`, String(config.tool_name || 'tool')];
+  if (data.nodeType === 'prompt') return ['template', 'prompt'];
+  if (data.nodeType === 'message') return ['output', config.with_citation ? 'citation' : 'plain'];
+  return ['input', 'start'];
+}
+
 function AgentNode({ data, selected }: NodeProps<CanvasNode>) {
   const meta = nodeMeta[data.nodeType];
   const Icon = meta.icon;
+  const summary = nodeSummaryItems(data).slice(0, 3);
   return (
-    <div className="workflow-node" style={{ borderColor: selected ? 'var(--accent)' : undefined }}>
+    <div className={`workflow-node ${selected ? 'selected' : ''}`}>
       <Handle type="target" position={Position.Left} />
-      <div className="node-icon">
-        <Icon size={16} />
+      <div className="workflow-node-head">
+        <div className="node-icon">
+          <Icon size={16} />
+        </div>
+        <div className="min-w-0">
+          <strong className="truncate">{data.label}</strong>
+          <span className="truncate">{meta.label}</span>
+        </div>
       </div>
-      <strong className="truncate">{data.label}</strong>
-      <span className="truncate">{meta.description}</span>
+      <p className="workflow-node-desc">{meta.description}</p>
+      <div className="workflow-node-tags">
+        {summary.map((item) => <span className="truncate" key={item}>{item}</span>)}
+      </div>
       <Handle type="source" position={Position.Right} />
     </div>
   );
@@ -336,8 +372,54 @@ function validateLocal(nodes: CanvasNode[], edges: Edge[]): string {
   const beginCount = nodes.filter((node) => node.data.nodeType === 'begin').length;
   if (beginCount !== 1) return '画布必须且只能包含一个 Begin 节点';
   const ids = new Set(nodes.map((node) => node.id));
+  const adjacency = new Map<string, string[]>();
+  const indegree = new Map<string, number>();
+  for (const node of nodes) {
+    adjacency.set(node.id, []);
+    indegree.set(node.id, 0);
+  }
   for (const edge of edges) {
     if (!ids.has(edge.source) || !ids.has(edge.target) || edge.source === edge.target) return '连线包含无效节点';
+    adjacency.get(edge.source)?.push(edge.target);
+    indegree.set(edge.target, (indegree.get(edge.target) ?? 0) + 1);
+  }
+  for (const node of nodes) {
+    const nexts = adjacency.get(node.id) ?? [];
+    if (node.data.nodeType !== 'switch' && nexts.length > 1) return `${node.data.label} 不能连接多个后续节点，只有 Switch 支持多分支`;
+    if (node.data.nodeType === 'switch') {
+      const conditions = (node.data.config as Record<string, unknown>).conditions;
+      if (Array.isArray(conditions)) {
+        for (const condition of conditions) {
+          const target = String((condition as Record<string, unknown>).target ?? '').trim();
+          if (!target || !nexts.includes(target)) return `Switch 分支目标 ${target || '-'} 必须是它的出边节点`;
+        }
+      }
+    }
+  }
+  const queue = [...Array.from(indegree.entries()).filter(([, degree]) => degree === 0).map(([id]) => id)];
+  let visitedCount = 0;
+  const indegreeCopy = new Map(indegree);
+  while (queue.length > 0) {
+    const id = queue.shift()!;
+    visitedCount += 1;
+    for (const next of adjacency.get(id) ?? []) {
+      indegreeCopy.set(next, (indegreeCopy.get(next) ?? 0) - 1);
+      if ((indegreeCopy.get(next) ?? 0) === 0) queue.push(next);
+    }
+  }
+  if (visitedCount !== nodes.length) return '画布存在循环连线，请把循环逻辑放进 Agent Loop 节点内部';
+  const begin = nodes.find((node) => node.data.nodeType === 'begin');
+  const reachable = new Set<string>();
+  const reachQueue = begin ? [begin.id] : [];
+  while (reachQueue.length > 0) {
+    const id = reachQueue.shift()!;
+    if (reachable.has(id)) continue;
+    reachable.add(id);
+    reachQueue.push(...(adjacency.get(id) ?? []));
+  }
+  if (reachable.size !== nodes.length) {
+    const missing = nodes.find((node) => !reachable.has(node.id));
+    return `${missing?.data.label ?? '存在节点'} 没有从 Begin 连通`;
   }
   for (const node of nodes) {
     const config = node.data.config as Record<string, unknown>;
@@ -345,7 +427,7 @@ function validateLocal(nodes: CanvasNode[], edges: Edge[]): string {
     if (node.data.nodeType === 'prompt' && !String(config.template ?? '').trim()) return 'Prompt 节点需要模板';
     if (node.data.nodeType === 'llm' && Number(config.provider_id ?? 0) <= 0) return 'LLM 节点需要选择 Provider';
     if (isAgentNodeType(node.data.nodeType) && !agentTaskTemplate(config)) return 'Agent 节点需要任务模板';
-    if (node.data.nodeType === 'workflow_call' && Number(config.workflow_id ?? 0) <= 0) return 'Call Workflow 节点需要选择 Agent';
+    if (node.data.nodeType === 'workflow_call' && Number(config.workflow_id ?? 0) <= 0) return 'Agent Call 节点需要选择 Agent';
     if (node.data.nodeType === 'team_call' && Number(config.team_id ?? 0) <= 0) return 'Team Call 节点需要选择 Team';
     if (node.data.nodeType === 'code_sandbox' && !String(config.code ?? '').trim()) return 'Code Sandbox 节点需要代码';
     if (node.data.nodeType === 'message' && !String(config.content ?? '').trim()) return 'Message 节点需要内容';
@@ -399,6 +481,7 @@ export function CanvasPage() {
   const [runInput, setRunInput] = useState('{\n  "query": "请总结知识库内容"\n}');
   const [debugRunMode, setDebugRunMode] = useState<DebugRunMode>('stream');
   const [runningDebugMode, setRunningDebugMode] = useState<DebugRunMode | null>(null);
+  const [debugRunId, setDebugRunId] = useState<number | null>(null);
   const [events, setEvents] = useState<RuntimeEvent[]>([]);
   const [runOutput, setRunOutput] = useState<Record<string, unknown> | null>(null);
   const [runSteps, setRunSteps] = useState<RunStep[]>([]);
@@ -900,6 +983,7 @@ export function CanvasPage() {
     const selectedRunMode = debugRunMode;
     runAbortRef.current = controller;
     setRunningDebugMode(selectedRunMode);
+    setDebugRunId(null);
     setEvents([]);
     setRunOutput(null);
     setRunSteps([]);
@@ -911,6 +995,7 @@ export function CanvasPage() {
       if (selectedRunMode === 'complete') {
         const resp = await workflowApi.run(workflowId, { flow_version_id: target.id, input });
         if (controller.signal.aborted) return;
+        setDebugRunId(resp.run.id);
         setRunOutput(resp.output);
         void Promise.all([
           workflowApi.listRunSteps(resp.run.id),
@@ -932,6 +1017,7 @@ export function CanvasPage() {
           if (controller.signal.aborted) return;
           if (msg.event === 'done') {
             const done = JSON.parse(msg.data) as { run: { id: number }; output: Record<string, unknown> };
+            setDebugRunId(done.run.id);
             setRunOutput(done.output);
             void Promise.all([
               workflowApi.listRunSteps(done.run.id),
@@ -952,6 +1038,7 @@ export function CanvasPage() {
             return;
           }
           const data = JSON.parse(msg.data) as RuntimeEvent;
+          if (data.run_id) setDebugRunId(data.run_id);
           setEvents((current) => [...current, data]);
         },
         onError: (err) => {
@@ -966,6 +1053,41 @@ export function CanvasPage() {
         runAbortRef.current = null;
         if (!controller.signal.aborted) setRunningDebugMode(null);
       }
+    }
+  }
+
+  async function pauseDebugRun() {
+    if (!debugRunId) {
+      setError('当前调试运行还没有生成 run id');
+      return;
+    }
+    try {
+      await workflowApi.pauseRun(debugRunId);
+      runAbortRef.current?.abort();
+      runAbortRef.current = null;
+      setRunningDebugMode(null);
+      setMessage(`Run #${debugRunId} 已暂停，可在审批/恢复流程中继续`);
+    } catch (err) {
+      setError(friendlyErrorMessage(err, '暂停 Run 失败'));
+    }
+  }
+
+  async function cancelDebugRun() {
+    if (!debugRunId) {
+      runAbortRef.current?.abort();
+      runAbortRef.current = null;
+      setRunningDebugMode(null);
+      setError('已停止浏览器端调试流；后端 run id 尚未返回，无法调用取消接口');
+      return;
+    }
+    try {
+      await workflowApi.cancelRun(debugRunId);
+      runAbortRef.current?.abort();
+      runAbortRef.current = null;
+      setRunningDebugMode(null);
+      setMessage(`Run #${debugRunId} 已取消`);
+    } catch (err) {
+      setError(friendlyErrorMessage(err, '取消 Run 失败'));
     }
   }
 
@@ -1055,7 +1177,7 @@ export function CanvasPage() {
 
         <aside className="config-panel" aria-hidden={!sidePanelOpen}>
           {mode === 'config' && selected && config ? (
-            <Panel title={selected.data.label} eyebrow={selected.id}>
+            <Panel title={selected.data.label} eyebrow={selected.id} className={isAgentNodeType(selected.data.nodeType) ? 'agent-config-panel' : ''}>
               <Field label="显示名称">
                 <TextInput value={selected.data.label} onChange={(event) => setNodes((current) => current.map((node) => node.id === selectedId ? { ...node, data: { ...node.data, label: event.target.value } } : node))} />
               </Field>
@@ -1108,6 +1230,7 @@ export function CanvasPage() {
               )}
               {isAgentNodeType(selected.data.nodeType) && (
                 <>
+                  <div className="config-section-title">Profile & Mode</div>
                   <Field label="模式">
                     <Select value={String(config.mode ?? 'react')} onChange={(event) => updateSelectedConfig({ mode: event.target.value })}>
                       <option value="react">ReAct</option>
@@ -1128,6 +1251,7 @@ export function CanvasPage() {
                       <option value="enabled">Enabled</option>
                     </Select>
                   </Field>
+                  <div className="config-section-title">Model</div>
                   <Field label="Provider">
                     <Select value={agentProviderID(config)} onChange={(event) => updateSelectedConfig(patchAgentModel({ provider_id: Number(event.target.value) }))}>
                       <option value={0}>继承 Profile 默认 Provider</option>
@@ -1143,6 +1267,7 @@ export function CanvasPage() {
                   <Field label="任务模板" hint="支持 {{sys.query}} 和 {{node_id.field}}">
                     <TextArea value={String(config.task_template ?? '')} onChange={(event) => updateSelectedConfig({ task_template: event.target.value })} />
                   </Field>
+                  <div className="config-section-title">Tools</div>
                   <Field label="可用工具">
                     <Select
                       multiple
@@ -1150,6 +1275,15 @@ export function CanvasPage() {
                       onChange={(event) => updateSelectedConfig(patchAgentTools({ tool_ids: Array.from(event.target.selectedOptions).map((option) => Number(option.value)) }))}
                     >
                       {tools.map((tool) => <option key={tool.id} value={tool.id}>{tool.name}</option>)}
+                    </Select>
+                  </Field>
+                  <Field label="MCP Server">
+                    <Select
+                      multiple
+                      value={numberArray(agentToolsConfig(config).mcp_server_ids).map(String)}
+                      onChange={(event) => updateSelectedConfig(patchAgentTools({ mcp_server_ids: Array.from(event.target.selectedOptions).map((option) => Number(option.value)) }))}
+                    >
+                      {mcpServers.map((server) => <option key={server.id} value={server.id}>{server.name}</option>)}
                     </Select>
                   </Field>
                   <Field label="知识库工具">
@@ -1189,6 +1323,7 @@ export function CanvasPage() {
                       <option value="enabled">Enabled</option>
                     </Select>
                   </Field>
+                  <div className="config-section-title">Memory & Context</div>
                   <Field label="记忆工具">
                     <Select value={agentMemoryEnabled(config) ? 'enabled' : 'disabled'} onChange={(event) => updateSelectedConfig(patchAgentMemory(event.target.value === 'enabled'))}>
                       <option value="disabled">Disabled</option>
@@ -1198,6 +1333,7 @@ export function CanvasPage() {
                   <Field label="上下文预算 tokens">
                     <TextInput type="number" min={1024} max={200000} step={1024} value={Math.round(Number(config.max_input_chars ?? 96000) / 4)} onChange={(event) => updateSelectedConfig(patchAgentContext({ max_input_tokens: Number(event.target.value) }))} />
                   </Field>
+                  <div className="config-section-title">Policy & Limits</div>
                   <Field label="需审批风险等级" hint="多选；默认 high。高风险工具会让 Run 进入 waiting_human。">
                     <Select
                       multiple
@@ -1221,6 +1357,7 @@ export function CanvasPage() {
                   <Field label="Temperature">
                     <TextInput type="number" min={0} max={2} step={0.1} value={agentTemperature(config)} onChange={(event) => updateSelectedConfig(patchAgentModel({ temperature: Number(event.target.value) }))} />
                   </Field>
+                  <div className="config-section-title">Output</div>
                   <Field label="输出模式">
                     <Select value={agentOutputMode(config)} onChange={(event) => updateSelectedConfig(patchAgentOutput(event.target.value))}>
                       <option value="final_answer">Final Answer</option>
@@ -1428,6 +1565,15 @@ export function CanvasPage() {
                   onChange={(event) => setProfile({ ...profile, default_tool_ids: Array.from(event.target.selectedOptions).map((option) => Number(option.value)) })}
                 >
                   {tools.map((tool) => <option key={tool.id} value={tool.id}>{tool.name}</option>)}
+                </Select>
+              </Field>
+              <Field label="默认 MCP Server">
+                <Select
+                  multiple
+                  value={numberArray(profile.default_mcp_server_ids).map(String)}
+                  onChange={(event) => setProfile({ ...profile, default_mcp_server_ids: Array.from(event.target.selectedOptions).map((option) => Number(option.value)) })}
+                >
+                  {mcpServers.map((server) => <option key={server.id} value={server.id}>{server.name}</option>)}
                 </Select>
               </Field>
               <Field label="默认知识库">
@@ -1682,8 +1828,10 @@ export function CanvasPage() {
                   <Play size={16} />
                   {runningDebugMode ? '运行中' : '运行'}
                 </Button>
+                <Button disabled={!runningDebugMode} onClick={() => void pauseDebugRun()}>暂停</Button>
+                <Button disabled={!runningDebugMode} onClick={() => void cancelDebugRun()}>取消</Button>
               </div>
-              <p className="muted">{debugRunMode === 'complete' ? '完整运行会等待整套流程结束，只显示最终返回结果。' : '流式运行会实时展示每个运行事件和 LLM delta。'}</p>
+              <p className="muted">{debugRunMode === 'complete' ? '完整运行会等待整套流程结束，只显示最终返回结果。' : '流式运行会实时展示每个运行事件和 LLM delta。'}{debugRunId ? ` 当前 Run #${debugRunId}` : ''}</p>
               {error ? <p className="error-text">{error}</p> : null}
               <div className="stack">
                 {debugRunMode === 'stream' ? events.map((event, index) => (

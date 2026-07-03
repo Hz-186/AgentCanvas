@@ -91,6 +91,7 @@ export const workflowApi = {
   listMemoryWriteLogs: (id: number) => api.get<MemoryWriteLog[]>(`/runs/${id}/memory-write-logs`),
   listToolInvocations: (id: number) => api.get<ToolInvocation[]>(`/runs/${id}/tool-invocations`),
   cancelRun: (id: number) => api.post<Run>(`/runs/${id}/cancel`),
+  pauseRun: (id: number) => api.post<Run>(`/runs/${id}/pause`),
   resumeRun: (id: number) => api.post<Run>(`/runs/${id}/resume`),
   listApprovalRequests: (status?: 'pending' | 'approved' | 'rejected') =>
     api.get<ApprovalRequest[]>('/approval-requests', status ? { status } : undefined),
