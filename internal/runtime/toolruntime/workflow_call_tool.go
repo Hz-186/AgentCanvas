@@ -14,6 +14,7 @@ type WorkflowCallTool struct {
 	Caller             WorkflowCaller
 	AllowedWorkflowIDs []int64
 	MaxDepth           int
+	ToolName           string
 }
 
 type workflowCallToolInput struct {
@@ -23,7 +24,12 @@ type workflowCallToolInput struct {
 	Task          string         `json:"task"`
 }
 
-func (WorkflowCallTool) Name() string { return "call_workflow" }
+func (t WorkflowCallTool) Name() string {
+	if strings.TrimSpace(t.ToolName) != "" {
+		return strings.TrimSpace(t.ToolName)
+	}
+	return "call_workflow"
+}
 
 func (WorkflowCallTool) Description() string {
 	return "Call another published AgentCanvas agent as a worker. Use this when a task should be delegated to a specialist agent, then use the returned output to continue."

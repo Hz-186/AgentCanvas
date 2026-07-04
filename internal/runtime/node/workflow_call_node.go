@@ -16,6 +16,10 @@ type WorkflowCallNode struct {
 	Caller toolruntime.WorkflowCaller
 }
 
+type AgentCallNode struct {
+	Caller toolruntime.WorkflowCaller
+}
+
 type workflowCallConfig struct {
 	WorkflowID    int64          `json:"workflow_id"`
 	FlowVersionID int64          `json:"flow_version_id"`
@@ -26,22 +30,40 @@ type workflowCallConfig struct {
 func (WorkflowCallNode) Type() string { return "workflow_call" }
 
 func (WorkflowCallNode) Validate(config json.RawMessage) error {
+	return validateWorkflowCallConfig(config, "workflow_call")
+}
+
+func (AgentCallNode) Type() string { return "agent_call" }
+
+func (AgentCallNode) Validate(config json.RawMessage) error {
+	return validateWorkflowCallConfig(config, "agent_call")
+}
+
+func validateWorkflowCallConfig(config json.RawMessage, nodeType string) error {
 	var cfg workflowCallConfig
 	if err := json.Unmarshal(config, &cfg); err != nil {
-		return fmt.Errorf("%w: invalid workflow_call config", agenterrors.ErrInvalidInput)
+		return fmt.Errorf("%w: invalid %s config", agenterrors.ErrInvalidInput, nodeType)
 	}
 	if cfg.WorkflowID <= 0 {
-		return fmt.Errorf("%w: workflow_call workflow_id is required", agenterrors.ErrInvalidInput)
+		return fmt.Errorf("%w: %s workflow_id is required", agenterrors.ErrInvalidInput, nodeType)
 	}
 	if cfg.MaxDepth < 0 || cfg.MaxDepth > 5 {
-		return fmt.Errorf("%w: workflow_call max_depth must be <= 5", agenterrors.ErrInvalidInput)
+		return fmt.Errorf("%w: %s max_depth must be <= 5", agenterrors.ErrInvalidInput, nodeType)
 	}
 	return nil
 }
 
 func (n WorkflowCallNode) Run(ctx context.Context, rc *engine.RunContext, input engine.NodeInput, config json.RawMessage) (engine.NodeOutput, error) {
-	if n.Caller == nil {
-		return nil, fmt.Errorf("workflow_call dependency is not configured")
+	return runWorkflowCallNode(ctx, rc, input, config, n.Caller, n.Type())
+}
+
+func (n AgentCallNode) Run(ctx context.Context, rc *engine.RunContext, input engine.NodeInput, config json.RawMessage) (engine.NodeOutput, error) {
+	return runWorkflowCallNode(ctx, rc, input, config, n.Caller, n.Type())
+}
+
+func runWorkflowCallNode(ctx context.Context, rc *engine.RunContext, input engine.NodeInput, config json.RawMessage, caller toolruntime.WorkflowCaller, nodeType string) (engine.NodeOutput, error) {
+	if caller == nil {
+		return nil, fmt.Errorf("%s dependency is not configured", nodeType)
 	}
 	var cfg workflowCallConfig
 	if err := json.Unmarshal(config, &cfg); err != nil {
@@ -52,14 +74,14 @@ func (n WorkflowCallNode) Run(ctx context.Context, rc *engine.RunContext, input 
 		Type:     runtimeevent.WorkflowCallStarted,
 		RunID:    rc.RunID,
 		NodeID:   rc.CurrentNodeID,
-		NodeType: n.Type(),
+		NodeType: nodeType,
 		Payload: map[string]any{
 			"workflow_id":     cfg.WorkflowID,
 			"flow_version_id": cfg.FlowVersionID,
 			"call_depth":      rc.CallDepth,
 		},
 	})
-	result, err := n.Caller.CallWorkflow(ctx, toolruntime.WorkflowCallRequest{
+	result, err := caller.CallWorkflow(ctx, toolruntime.WorkflowCallRequest{
 		OwnerID:           rc.OwnerID,
 		ParentRunID:       rc.RunID,
 		CallerWorkflowID:  rc.WorkflowID,
@@ -76,7 +98,7 @@ func (n WorkflowCallNode) Run(ctx context.Context, rc *engine.RunContext, input 
 			Type:     runtimeevent.WorkflowCallFailed,
 			RunID:    rc.RunID,
 			NodeID:   rc.CurrentNodeID,
-			NodeType: n.Type(),
+			NodeType: nodeType,
 			Payload:  map[string]any{"workflow_id": cfg.WorkflowID, "error": err.Error()},
 		})
 		return nil, err
@@ -85,7 +107,7 @@ func (n WorkflowCallNode) Run(ctx context.Context, rc *engine.RunContext, input 
 		Type:     runtimeevent.WorkflowCallFinished,
 		RunID:    rc.RunID,
 		NodeID:   rc.CurrentNodeID,
-		NodeType: n.Type(),
+		NodeType: nodeType,
 		Payload: map[string]any{
 			"workflow_id": result.WorkflowID,
 			"run_id":      result.RunID,

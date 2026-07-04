@@ -79,6 +79,7 @@ func DefaultNodes(deps Deps) []engine.Node {
 		PromptNode{},
 		LLMNode{Client: deps.LLM, Providers: deps.Providers, History: deps.MessageHistory},
 		AgentLoopNode{AgentNode: agentNode},
+		AgentCallNode{Caller: deps.WorkflowCaller},
 		WorkflowCallNode{Caller: deps.WorkflowCaller},
 		TeamCallNode{Teams: deps.Teams, Caller: deps.WorkflowCaller},
 		CodeSandboxNode{Runner: sandboxRunner},

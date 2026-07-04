@@ -54,3 +54,39 @@ func TestWorkflowCallNodeRunsChildAgent(t *testing.T) {
 		t.Fatalf("unexpected output: %+v", output)
 	}
 }
+
+func TestAgentCallNodeRunsChildAgentWithAgentCallNodeType(t *testing.T) {
+	caller := &fakeNodeAgentCaller{}
+	node := AgentCallNode{Caller: caller}
+	rc := &engine.RunContext{
+		OwnerID:           1,
+		WorkflowID:        2,
+		RunID:             3,
+		CurrentNodeID:     "agent_call",
+		WorkflowCallChain: []int64{2},
+	}
+	output, err := node.Run(context.Background(), rc, nil, json.RawMessage(`{
+		"workflow_id": 10,
+		"input": {"query": "delegate"},
+		"max_depth": 3
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if caller.req.CallerNodeID != "agent_call" || caller.req.WorkflowID != 10 || caller.req.Input["query"] != "delegate" {
+		t.Fatalf("unexpected call request: %+v", caller.req)
+	}
+	if output["content"] != "child output" || output["workflow_id"] != int64(10) {
+		t.Fatalf("unexpected output: %+v", output)
+	}
+}
+
+func TestAgentCallNodeValidate(t *testing.T) {
+	node := AgentCallNode{}
+	if err := node.Validate(json.RawMessage(`{"workflow_id":0}`)); err == nil {
+		t.Fatal("expected missing workflow_id to fail")
+	}
+	if err := node.Validate(json.RawMessage(`{"workflow_id":1,"max_depth":5}`)); err != nil {
+		t.Fatalf("expected valid agent_call config: %v", err)
+	}
+}
