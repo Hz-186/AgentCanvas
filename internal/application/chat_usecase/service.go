@@ -321,7 +321,11 @@ func validChatRole(role string) bool {
 	}
 }
 
-func (s *Service) providerConfig(ctx context.Context, ownerID, providerID int64, requestedModel string) (*providerdomain.ModelProvider, string, llm.ChatProviderConfig, error) {
+func (s *Service) providerConfig(
+	ctx context.Context,
+	ownerID, providerID int64,
+	requestedModel string,
+) (*providerdomain.ModelProvider, string, llm.ChatProviderConfig, error) {
 	provider, err := s.providers.FindByID(ctx, ownerID, providerID)
 	if err != nil {
 		return nil, "", llm.ChatProviderConfig{}, mapNotFound(err)
@@ -354,7 +358,12 @@ func (s *Service) getDialog(ctx context.Context, ownerID, dialogID int64) (*dial
 	return item, nil
 }
 
-func (s *Service) ensureConversation(ctx context.Context, ownerID, dialogID, conversationID int64, question string) (*conversation.Conversation, error) {
+func (s *Service) ensureConversation(
+	ctx context.Context,
+	ownerID, dialogID,
+	conversationID int64,
+	question string,
+) (*conversation.Conversation, error) {
 	if conversationID > 0 {
 		item, err := s.conversations.FindByID(ctx, ownerID, conversationID)
 		if err != nil {
@@ -380,7 +389,13 @@ func conversationInDialog(item *conversation.Conversation, dialogID int64) bool 
 	return item != nil && item.DialogID != nil && *item.DialogID == dialogID
 }
 
-func (s *Service) saveAssistant(ctx context.Context, ownerID, conversationID int64, content string, references []conversation.MessageReference, tokenCount int) (*conversation.Message, []conversation.MessageReference, error) {
+func (s *Service) saveAssistant(
+	ctx context.Context,
+	ownerID, conversationID int64,
+	content string,
+	references []conversation.MessageReference,
+	tokenCount int,
+) (*conversation.Message, []conversation.MessageReference, error) {
 	message := &conversation.Message{
 		OwnerID:        ownerID,
 		ConversationID: conversationID,
@@ -405,7 +420,16 @@ func (s *Service) saveAssistant(ctx context.Context, ownerID, conversationID int
 	return message, references, nil
 }
 
-func (s *Service) writeUsage(ctx context.Context, ownerID int64, provider *providerdomain.ModelProvider, model string, usageData llm.Usage, latencyMS int, success bool, message string) error {
+func (s *Service) writeUsage(
+	ctx context.Context,
+	ownerID int64,
+	provider *providerdomain.ModelProvider,
+	model string,
+	usageData llm.Usage,
+	latencyMS int,
+	success bool,
+	message string,
+) error {
 	return s.usages.Create(ctx, &usage.ModelUsageLog{
 		OwnerID:          ownerID,
 		ProviderID:       provider.ID,

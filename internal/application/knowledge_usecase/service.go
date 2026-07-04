@@ -582,7 +582,13 @@ func (s *Service) logRetrieval(ctx context.Context, ownerID, kbID int64, query s
 	})
 }
 
-func (s *Service) audit(ctx context.Context, ownerID, actorID int64, action, resourceType, resourceID string, detail map[string]any, client ClientInfo) error {
+func (s *Service) audit(
+	ctx context.Context,
+	ownerID, actorID int64,
+	action, resourceType, resourceID string,
+	detail map[string]any,
+	client ClientInfo,
+) error {
 	if s.audits == nil {
 		return nil
 	}
