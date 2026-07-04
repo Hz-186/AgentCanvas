@@ -62,6 +62,9 @@ export interface AgentLoopConfig {
   temperature?: number;
   reflection_enabled?: boolean;
   require_approval_for_risk?: string[];
+  max_tool_timeout_ms?: number;
+  max_tool_output_bytes?: number;
+  allowed_hosts?: string[];
   output_schema_json?: Record<string, unknown>;
   return_intermediate_steps?: boolean;
   output_mode?: 'final_answer' | 'full';

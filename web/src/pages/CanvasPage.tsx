@@ -110,6 +110,9 @@ function defaultConfig(type: NodeType): CanvasNodeData['config'] {
       temperature: 0.2,
       reflection_enabled: false,
       require_approval_for_risk: ['high'],
+      max_tool_timeout_ms: 30000,
+      max_tool_output_bytes: 524288,
+      allowed_hosts: [],
       output_schema_json: {},
       return_intermediate_steps: true,
       output_mode: 'final_answer',
@@ -828,6 +831,10 @@ export function CanvasPage() {
         default_call_workflow_ids: profile.default_call_workflow_ids ?? [],
         default_max_workflow_call_depth: profile.default_max_workflow_call_depth ?? 3,
         output_schema_json: profile.output_schema_json ?? {},
+        tool_policy_json: profile.tool_policy_json ?? {},
+        context_policy_json: profile.context_policy_json ?? {},
+        risk_level: profile.risk_level ?? 'medium',
+        mode: profile.mode ?? 'react',
       });
       setProfile(saved);
       setMessage('Workflow Profile 已保存');
@@ -1345,6 +1352,15 @@ export function CanvasPage() {
                       <option value="high">High</option>
                     </Select>
                   </Field>
+                  <Field label="工具超时毫秒" hint="限制单次工具调用；会覆盖工具自身更长的超时。">
+                    <TextInput type="number" min={1000} max={600000} step={1000} value={Number(config.max_tool_timeout_ms ?? 30000)} onChange={(event) => updateSelectedConfig(patchAgentPolicy({ max_tool_timeout_ms: Number(event.target.value) }))} />
+                  </Field>
+                  <Field label="工具输出字节" hint="超出后压缩进入上下文和 trace。">
+                    <TextInput type="number" min={1024} max={2097152} step={1024} value={Number(config.max_tool_output_bytes ?? 524288)} onChange={(event) => updateSelectedConfig(patchAgentPolicy({ max_tool_output_bytes: Number(event.target.value) }))} />
+                  </Field>
+                  <Field label="允许 Host" hint="逗号分隔；为空则不额外限制。">
+                    <TextInput value={stringArray(config.allowed_hosts).join(', ')} onChange={(event) => updateSelectedConfig(patchAgentPolicy({ allowed_hosts: event.target.value.split(',').map((item) => item.trim()).filter(Boolean) }))} placeholder="api.example.com, mcp.example.com" />
+                  </Field>
                   <Field label="最大轮次">
                     <TextInput type="number" min={1} max={50} value={Number(agentLimitsConfig(config).max_iterations ?? 8)} onChange={(event) => updateSelectedConfig(patchAgentLimits({ max_iterations: Number(event.target.value) }))} />
                   </Field>
@@ -1549,6 +1565,21 @@ export function CanvasPage() {
               <Field label="默认模型">
                 <TextInput value={profile.default_model ?? ''} onChange={(event) => setProfile({ ...profile, default_model: event.target.value })} />
               </Field>
+              <Field label="默认 Agent Mode">
+                <Select value={profile.mode ?? 'react'} onChange={(event) => setProfile({ ...profile, mode: event.target.value as WorkflowProfile['mode'] })}>
+                  <option value="react">React</option>
+                  <option value="plan_execute">Plan Execute</option>
+                  <option value="reflect">Reflect</option>
+                  <option value="supervisor">Supervisor</option>
+                </Select>
+              </Field>
+              <Field label="默认风险等级">
+                <Select value={profile.risk_level ?? 'medium'} onChange={(event) => setProfile({ ...profile, risk_level: event.target.value as WorkflowProfile['risk_level'] })}>
+                  <option value="low">Low</option>
+                  <option value="medium">Medium</option>
+                  <option value="high">High</option>
+                </Select>
+              </Field>
               <Field label="默认 Tool Pack">
                 <Select
                   multiple
@@ -1646,6 +1677,32 @@ export function CanvasPage() {
                       setError('');
                     } catch {
                       setError('输出 Schema JSON 格式不正确');
+                    }
+                  }}
+                />
+              </Field>
+              <Field label="默认 Tool Policy JSON">
+                <TextArea
+                  value={prettyJson(profile.tool_policy_json ?? {})}
+                  onChange={(event) => {
+                    try {
+                      setProfile({ ...profile, tool_policy_json: JSON.parse(event.target.value) as unknown });
+                      setError('');
+                    } catch {
+                      setError('Tool Policy JSON 格式不正确');
+                    }
+                  }}
+                />
+              </Field>
+              <Field label="默认 Context Policy JSON">
+                <TextArea
+                  value={prettyJson(profile.context_policy_json ?? {})}
+                  onChange={(event) => {
+                    try {
+                      setProfile({ ...profile, context_policy_json: JSON.parse(event.target.value) as unknown });
+                      setError('');
+                    } catch {
+                      setError('Context Policy JSON 格式不正确');
                     }
                   }}
                 />
@@ -1854,7 +1911,11 @@ export function CanvasPage() {
                 ) : null}
                 {runSteps.length > 0 ? (
                   <div className="card">
-                    <div className="card-title"><h3>Agent Steps</h3><StatusBadge tone="info">{runSteps.length}</StatusBadge></div>
+                    <div className="card-title">
+                      <h3>Agent Steps</h3>
+                      <StatusBadge tone="info">{runSteps.length}</StatusBadge>
+                      {runSteps.some((step) => step.compressed) ? <StatusBadge tone="warn">{runSteps.filter((step) => step.compressed).length} compressed</StatusBadge> : null}
+                    </div>
                     <pre className="code-box">{prettyJson(runSteps)}</pre>
                   </div>
                 ) : null}

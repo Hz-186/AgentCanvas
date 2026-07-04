@@ -452,6 +452,10 @@ export interface WorkflowProfile {
   default_call_workflow_ids?: number[];
   default_max_workflow_call_depth?: number;
   output_schema_json?: unknown;
+  tool_policy_json?: unknown;
+  context_policy_json?: unknown;
+  risk_level?: 'low' | 'medium' | 'high';
+  mode?: 'react' | 'plan_execute' | 'reflect' | 'supervisor';
   created_at: string;
   updated_at: string;
 }
@@ -492,6 +496,10 @@ export type UpdateWorkflowProfileRequest = Partial<Pick<
   | 'default_call_workflow_ids'
   | 'default_max_workflow_call_depth'
   | 'output_schema_json'
+  | 'tool_policy_json'
+  | 'context_policy_json'
+  | 'risk_level'
+  | 'mode'
 >>;
 
 export interface EvalDataset {
@@ -696,6 +704,7 @@ export interface RunStep {
   tool_name: string;
   arguments_json?: unknown;
   output_json?: unknown;
+  compressed?: boolean;
   error_message: string;
   token_count: number;
   latency_ms: number;
