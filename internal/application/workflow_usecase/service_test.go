@@ -10,7 +10,9 @@ import (
 
 	"agentcanvas/internal/domain/conversation"
 	"agentcanvas/internal/domain/flow"
+	"agentcanvas/internal/domain/memory"
 	providerdomain "agentcanvas/internal/domain/provider"
+	"agentcanvas/internal/domain/tool"
 	"agentcanvas/internal/domain/workflow"
 	cryptoinfra "agentcanvas/internal/infrastructure/crypto"
 	"agentcanvas/internal/infrastructure/llm"
@@ -158,6 +160,7 @@ func TestUpdateAgentProfileValidatesLimits(t *testing.T) {
 	defaultAgents := []int64{21}
 	outputSchema := rawJSON(`{"type":"object","required":["answer"]}`)
 	toolPolicy := rawJSON(`{"require_approval_for_risk":["high"],"max_tool_timeout_ms":1500,"max_tool_output_bytes":4096,"allowed_hosts":["api.example.com"]}`)
+	memoryPolicy := rawJSON(`{"enabled":true}`)
 	contextPolicy := rawJSON(`{"max_input_tokens":12000}`)
 	riskLevel := "high"
 	profileMode := "reflect"
@@ -174,6 +177,7 @@ func TestUpdateAgentProfileValidatesLimits(t *testing.T) {
 		DefaultMaxWorkflowCallDepth: &maxDepth,
 		OutputSchemaJSON:            &outputSchema,
 		ToolPolicyJSON:              &toolPolicy,
+		MemoryPolicyJSON:            &memoryPolicy,
 		ContextPolicyJSON:           &contextPolicy,
 		RiskLevel:                   &riskLevel,
 		Mode:                        &profileMode,
@@ -207,6 +211,9 @@ func TestUpdateAgentProfileValidatesLimits(t *testing.T) {
 	}
 	if string(updated.ToolPolicyJSON) != `{"allowed_hosts":["api.example.com"],"max_tool_output_bytes":4096,"max_tool_timeout_ms":1500,"require_approval_for_risk":["high"]}` {
 		t.Fatalf("unexpected tool policy: %s", string(updated.ToolPolicyJSON))
+	}
+	if string(updated.MemoryPolicyJSON) != `{"enabled":true}` {
+		t.Fatalf("unexpected memory policy: %s", string(updated.MemoryPolicyJSON))
 	}
 	if string(updated.ContextPolicyJSON) != `{"max_input_tokens":12000}` || updated.RiskLevel != "high" || updated.Mode != "reflect" {
 		t.Fatalf("unexpected profile policy fields: %+v context=%s", updated, string(updated.ContextPolicyJSON))
@@ -320,6 +327,22 @@ func TestScoreEvalOutputDetailedReportsToolAndSchemaMetrics(t *testing.T) {
 	}
 }
 
+func TestScoreEvalOutputTreatsCallAgentAndCallWorkflowAsAliases(t *testing.T) {
+	result := scoreEvalOutputDetailed(
+		engine.NodeOutput{
+			"final_answer": "ok",
+			"steps": []runtimeagent.RunStep{
+				{Type: runtimeagent.StepTypeToolCall, ToolName: "call_agent"},
+			},
+		},
+		rawJSON(`{"contains":"ok"}`),
+		rawJSON(`["call_workflow"]`),
+	)
+	if result.Score != 1 || result.Metrics["tool_call_accuracy"] != 1.0 {
+		t.Fatalf("expected call_agent to satisfy legacy call_workflow requirement, got %+v", result)
+	}
+}
+
 func TestScoreEvalOutputDetailedFailsSchemaMismatch(t *testing.T) {
 	result := scoreEvalOutputDetailed(
 		engine.NodeOutput{"final_answer": `{"answer":7}`},
@@ -328,6 +351,31 @@ func TestScoreEvalOutputDetailedFailsSchemaMismatch(t *testing.T) {
 	)
 	if result.Score != 0 || result.Metrics["schema_compliance"] != 0.0 {
 		t.Fatalf("expected schema mismatch failure, got %+v", result)
+	}
+}
+
+func TestScoreEvalOutputDetailedRequiresReferences(t *testing.T) {
+	missing := scoreEvalOutputDetailed(
+		engine.NodeOutput{"final_answer": "ok"},
+		rawJSON(`{"contains":"ok","require_references":true}`),
+		nil,
+	)
+	if missing.Score != 0 || missing.Metrics["reference_hit_rate"] != 0.0 {
+		t.Fatalf("expected missing references to fail, got %+v", missing)
+	}
+
+	withRefs := scoreEvalOutputDetailed(
+		engine.NodeOutput{
+			"final_answer": "ok",
+			"results": []map[string]any{
+				{"document_id": 10, "chunk_id": 20, "content": "source"},
+			},
+		},
+		rawJSON(`{"contains":"ok","min_references":1}`),
+		nil,
+	)
+	if withRefs.Score != 1 || withRefs.Metrics["reference_count"] != 1 || withRefs.Metrics["reference_hit_rate"] != 1.0 {
+		t.Fatalf("expected references to satisfy eval, got %+v", withRefs)
 	}
 }
 
@@ -377,6 +425,45 @@ func TestListChildRunsReturnsRunsByParent(t *testing.T) {
 	}
 	if len(items) != 2 || items[0].ID != 11 || items[1].ID != 12 {
 		t.Fatalf("unexpected child runs: %+v", items)
+	}
+}
+
+func TestGetRunTraceAggregatesReplayArtifacts(t *testing.T) {
+	parentID := int64(10)
+	childID := int64(11)
+	runs := &fakeRunRepo{items: []*workflow.Run{
+		{ID: parentID, OwnerID: 1, WorkflowID: 20, Status: workflow.RunStatusSucceeded, LatencyMS: 123, TotalTokens: 42},
+		{ID: childID, OwnerID: 1, WorkflowID: 21, ParentRunID: &parentID, Status: workflow.RunStatusSucceeded},
+	}}
+	service := &Service{
+		runs: runs,
+		events: &fakeRunEventRepo{items: []workflow.RunEvent{
+			{ID: 1, OwnerID: 1, RunID: parentID, EventType: "node_started"},
+		}},
+		nodeLogs: &fakeNodeLogRepo{items: []workflow.NodeLog{
+			{ID: 2, OwnerID: 1, RunID: parentID, NodeID: "agent_loop"},
+		}},
+		runSteps: &fakeRunStepRepo{items: []workflow.RunStep{
+			{ID: 3, OwnerID: 1, RunID: parentID, StepType: runtimeagent.StepTypeToolCall, ToolName: "search_knowledge"},
+			{ID: 4, OwnerID: 1, RunID: parentID, StepType: runtimeagent.StepTypeReflection, Compressed: true},
+		}},
+		memoryLogs: &fakeMemoryWriteLogRepo{items: []memory.WriteLog{
+			{ID: 5, OwnerID: 1, RunID: parentID, Action: "create"},
+		}},
+		toolInvocations: &fakeToolInvocationRepo{items: []tool.Invocation{
+			{ID: 6, OwnerID: 1, RunID: parentID, ToolName: "search_knowledge"},
+		}},
+	}
+
+	trace, err := service.GetRunTrace(context.Background(), 1, parentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if trace.Run.ID != parentID || len(trace.Events) != 1 || len(trace.NodeLogs) != 1 || len(trace.Steps) != 2 || len(trace.ChildRuns) != 1 || len(trace.MemoryWriteLogs) != 1 || len(trace.ToolInvocations) != 1 {
+		t.Fatalf("unexpected trace aggregate: %+v", trace)
+	}
+	if trace.ReplaySummary["compressed_step_count"] != 1 || trace.ReplaySummary["reflection_step_count"] != 1 || trace.ReplaySummary["tool_call_step_count"] != 1 || trace.ReplaySummary["child_run_count"] != 1 {
+		t.Fatalf("unexpected replay summary: %+v", trace.ReplaySummary)
 	}
 }
 
@@ -479,6 +566,87 @@ func TestRunEvalDatasetExecutesCasesAndScoresOutput(t *testing.T) {
 	}
 	if metrics["tool_call_accuracy"] != float64(1) || metrics["schema_compliance"] != float64(1) {
 		t.Fatalf("expected detailed eval metrics, got %+v", metrics)
+	}
+	var summary struct {
+		Metrics map[string]float64 `json:"metrics"`
+	}
+	if err := json.Unmarshal(evals.evalRuns[0].SummaryJSON, &summary); err != nil {
+		t.Fatal(err)
+	}
+	if summary.Metrics["avg_score"] != 1 || summary.Metrics["avg_tool_call_accuracy"] != 1 || summary.Metrics["avg_schema_compliance"] != 1 {
+		t.Fatalf("expected eval run metric summary, got %+v raw=%s", summary.Metrics, string(evals.evalRuns[0].SummaryJSON))
+	}
+}
+
+func TestGetEvalTrendAggregatesRunHistory(t *testing.T) {
+	started := time.Date(2026, 7, 1, 8, 0, 0, 0, time.UTC)
+	finished := started.Add(time.Minute)
+	evals := &fakeEvalRepo{
+		datasets: []*workflow.EvalDataset{{ID: 30, OwnerID: 1, WorkflowID: 20, Name: "Regression", Status: workflow.EvalDatasetStatusActive}},
+		evalRuns: []*workflow.EvalRun{
+			{
+				ID:            401,
+				OwnerID:       1,
+				WorkflowID:    20,
+				DatasetID:     30,
+				FlowVersionID: 42,
+				Status:        workflow.EvalRunStatusCompleted,
+				TotalCases:    4,
+				PassedCases:   2,
+				FailedCases:   2,
+				SuccessRate:   0.5,
+				SummaryJSON:   rawJSON(`{"metrics":{"avg_score":0.5,"avg_tool_call_accuracy":0.25,"avg_latency_ms":100}}`),
+				StartedAt:     started,
+				FinishedAt:    &finished,
+			},
+			{
+				ID:            402,
+				OwnerID:       1,
+				WorkflowID:    20,
+				DatasetID:     30,
+				FlowVersionID: 43,
+				Status:        workflow.EvalRunStatusCompleted,
+				TotalCases:    4,
+				PassedCases:   3,
+				FailedCases:   1,
+				SuccessRate:   0.75,
+				SummaryJSON:   rawJSON(`{"metrics":{"avg_score":0.75,"avg_tool_call_accuracy":0.75,"avg_latency_ms":80}}`),
+				StartedAt:     started.Add(time.Hour),
+				FinishedAt:    &finished,
+			},
+		},
+	}
+	service := &Service{evals: evals}
+
+	trend, err := service.GetEvalTrend(context.Background(), 1, 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if trend.DatasetID != 30 || trend.WorkflowID != 20 || len(trend.Points) != 2 {
+		t.Fatalf("unexpected trend envelope: %+v", trend)
+	}
+	if trend.Latest == nil || trend.Latest.EvalRunID != 402 || trend.Best == nil || trend.Best.EvalRunID != 402 {
+		t.Fatalf("unexpected latest/best: latest=%+v best=%+v", trend.Latest, trend.Best)
+	}
+	if trend.Delta["success_rate"] != 0.25 || trend.Delta["avg_score"] != 0.25 || trend.Delta["avg_tool_call_accuracy"] != 0.5 || trend.Delta["avg_latency_ms"] != -20.0 {
+		t.Fatalf("unexpected trend delta: %+v", trend.Delta)
+	}
+	if trend.TrendSummary["run_count"] != 2 || trend.TrendSummary["best_success_rate"] != 0.75 {
+		t.Fatalf("unexpected trend summary: %+v", trend.TrendSummary)
+	}
+}
+
+func TestSummarizeEvalMetricsCountsMissingMetricsAsZero(t *testing.T) {
+	results := []workflow.EvalResult{
+		{Status: "passed", Score: 1, LatencyMS: 20, MetricsJSON: rawJSON(`{"tool_call_accuracy":1,"schema_compliance":1,"reference_hit_rate":1,"human_approval_waiting":true}`)},
+		{Status: "failed", Score: 0, LatencyMS: 40, ErrorMessage: "runtime error", MetricsJSON: rawJSON(`{"score":0}`)},
+	}
+	summary := summarizeEvalMetrics(results)
+	if summary["avg_score"] != 0.5 || summary["avg_tool_call_accuracy"] != 0.5 || summary["avg_schema_compliance"] != 0.5 || summary["avg_reference_hit_rate"] != 0.5 {
+		t.Fatalf("expected missing metrics to count as zero, got %+v", summary)
+	}
+	if summary["avg_latency_ms"] != float64(30) || summary["human_approval_waiting_rate"] != 0.5 || summary["failed_cases_with_runtime_error_rate"] != 0.5 {
+		t.Fatalf("unexpected eval metric summary: %+v", summary)
 	}
 }
 
@@ -832,6 +1000,14 @@ type fakeRunStepRepo struct {
 	items []workflow.RunStep
 }
 
+type fakeMemoryWriteLogRepo struct {
+	items []memory.WriteLog
+}
+
+type fakeToolInvocationRepo struct {
+	items []tool.Invocation
+}
+
 type fakeRunRepo struct {
 	items []*workflow.Run
 }
@@ -894,14 +1070,16 @@ func (r *fakeRunEventRepo) ListByRun(context.Context, int64, int64) ([]workflow.
 	return r.items, nil
 }
 
-type fakeNodeLogRepo struct{}
+type fakeNodeLogRepo struct {
+	items []workflow.NodeLog
+}
 
 func (fakeNodeLogRepo) Create(context.Context, *workflow.NodeLog) error { return nil }
 
 func (fakeNodeLogRepo) Update(context.Context, *workflow.NodeLog) error { return nil }
 
-func (fakeNodeLogRepo) ListByRun(context.Context, int64, int64) ([]workflow.NodeLog, error) {
-	return nil, nil
+func (r *fakeNodeLogRepo) ListByRun(context.Context, int64, int64) ([]workflow.NodeLog, error) {
+	return append([]workflow.NodeLog(nil), r.items...), nil
 }
 
 func (r *fakeRunStepRepo) Create(_ context.Context, item *workflow.RunStep) error {
@@ -911,6 +1089,24 @@ func (r *fakeRunStepRepo) Create(_ context.Context, item *workflow.RunStep) erro
 
 func (r *fakeRunStepRepo) ListByRun(context.Context, int64, int64) ([]workflow.RunStep, error) {
 	return r.items, nil
+}
+
+func (r *fakeMemoryWriteLogRepo) Create(_ context.Context, item *memory.WriteLog) error {
+	r.items = append(r.items, *item)
+	return nil
+}
+
+func (r *fakeMemoryWriteLogRepo) ListByRun(context.Context, int64, int64) ([]memory.WriteLog, error) {
+	return append([]memory.WriteLog(nil), r.items...), nil
+}
+
+func (r *fakeToolInvocationRepo) Create(_ context.Context, item *tool.Invocation) error {
+	r.items = append(r.items, *item)
+	return nil
+}
+
+func (r *fakeToolInvocationRepo) ListByRun(context.Context, int64, int64) ([]tool.Invocation, error) {
+	return append([]tool.Invocation(nil), r.items...), nil
 }
 
 type fakeEvalRepo struct {

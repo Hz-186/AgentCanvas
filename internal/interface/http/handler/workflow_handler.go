@@ -221,6 +221,19 @@ func (h *WorkflowHandler) ListEvalRuns(c *gin.Context) {
 	response.OK(c, items)
 }
 
+func (h *WorkflowHandler) GetEvalTrend(c *gin.Context) {
+	ownerID, datasetID, ok := h.ownerAndID(c, "id")
+	if !ok {
+		return
+	}
+	item, err := h.service.GetEvalTrend(c.Request.Context(), ownerID, datasetID)
+	if err != nil {
+		writeAppError(c, err)
+		return
+	}
+	response.OK(c, item)
+}
+
 func (h *WorkflowHandler) ListEvalResults(c *gin.Context) {
 	ownerID, evalRunID, ok := h.ownerAndID(c, "id")
 	if !ok {
@@ -542,6 +555,19 @@ func (h *WorkflowHandler) ListToolInvocations(c *gin.Context) {
 		return
 	}
 	response.OK(c, items)
+}
+
+func (h *WorkflowHandler) GetRunTrace(c *gin.Context) {
+	ownerID, id, ok := h.ownerAndID(c, "id")
+	if !ok {
+		return
+	}
+	item, err := h.service.GetRunTrace(c.Request.Context(), ownerID, id)
+	if err != nil {
+		writeAppError(c, err)
+		return
+	}
+	response.OK(c, item)
 }
 
 func (h *WorkflowHandler) CancelRun(c *gin.Context) {

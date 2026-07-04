@@ -59,6 +59,40 @@ type Service struct {
 	runCancels      *runCancelRegistry
 }
 
+type RunTrace struct {
+	Run             *workflow.Run       `json:"run"`
+	Events          []workflow.RunEvent `json:"events"`
+	NodeLogs        []workflow.NodeLog  `json:"node_logs"`
+	Steps           []workflow.RunStep  `json:"steps"`
+	ChildRuns       []workflow.Run      `json:"child_runs"`
+	MemoryWriteLogs []memory.WriteLog   `json:"memory_write_logs"`
+	ToolInvocations []tool.Invocation   `json:"tool_invocations"`
+	ReplaySummary   map[string]any      `json:"replay_summary"`
+}
+
+type EvalTrendPoint struct {
+	EvalRunID     int64          `json:"eval_run_id"`
+	FlowVersionID int64          `json:"flow_version_id"`
+	Status        string         `json:"status"`
+	TotalCases    int            `json:"total_cases"`
+	PassedCases   int            `json:"passed_cases"`
+	FailedCases   int            `json:"failed_cases"`
+	SuccessRate   float64        `json:"success_rate"`
+	Metrics       map[string]any `json:"metrics"`
+	StartedAt     time.Time      `json:"started_at"`
+	FinishedAt    *time.Time     `json:"finished_at"`
+}
+
+type EvalTrend struct {
+	DatasetID    int64            `json:"dataset_id"`
+	WorkflowID   int64            `json:"workflow_id"`
+	Points       []EvalTrendPoint `json:"points"`
+	Latest       *EvalTrendPoint  `json:"latest,omitempty"`
+	Best         *EvalTrendPoint  `json:"best,omitempty"`
+	Delta        map[string]any   `json:"delta"`
+	TrendSummary map[string]any   `json:"trend_summary"`
+}
+
 func NewService(workflows workflow.Repository, profiles workflow.ProfileRepository, versions workflow.WorkflowVersionRepository, runs workflow.RunRepository, events workflow.RunEventRepository, nodeLogs workflow.NodeLogRepository, runSteps workflow.RunStepRepository, evals workflow.EvalDatasetRepository, approvals workflow.ApprovalRepository, teams workflow.TeamRepository, memories memory.Repository, memoryLogs memory.WriteLogRepository, tools tool.DefinitionRepository, toolPacks tool.PackRepository, mcpServers tool.MCPRepository, toolInvocations tool.InvocationRepository, providers providerdomain.Repository, messages conversation.MessageRepository, retriever retrieval.Retriever, llmClient llm.ChatClient, secrets *cryptoinfra.SecretBox) *Service {
 	s := &Service{workflows: workflows, profiles: profiles, versions: versions, runs: runs, events: events, nodeLogs: nodeLogs, runSteps: runSteps, evals: evals, approvals: approvals, teams: teams, memories: memories, memoryLogs: memoryLogs, tools: tools, toolPacks: toolPacks, mcpServers: mcpServers, toolInvocations: toolInvocations, providers: providers, messages: messages, retriever: retriever, llm: llmClient, secrets: secrets}
 	s.executor = engine.NewExecutor(runtimenode.DefaultNodes(runtimenode.Deps{Retriever: retriever, LLM: llmClient, Providers: s, Messages: s, MessageHistory: messages, Memories: memories, MemoryWriteLogs: memoryLogs, Tools: tools, ToolPacks: toolPacks, MCPServers: mcpServers, ToolInvocations: toolInvocations, WorkflowCaller: s, Profiles: s, Teams: teams}))
@@ -556,6 +590,7 @@ func (s *Service) RunEvalDataset(ctx context.Context, ownerID, datasetID int64, 
 		"passed_cases": evalRun.PassedCases,
 		"failed_cases": evalRun.FailedCases,
 		"success_rate": evalRun.SuccessRate,
+		"metrics":      summarizeEvalMetrics(results),
 	})
 	if err := s.evals.UpdateEvalRun(ctx, evalRun); err != nil {
 		return evalRun, results, err
@@ -571,6 +606,72 @@ func (s *Service) ListEvalRuns(ctx context.Context, ownerID, datasetID int64) ([
 		return nil, mapNotFound(err)
 	}
 	return s.evals.ListEvalRunsByDataset(ctx, ownerID, datasetID)
+}
+
+func (s *Service) GetEvalTrend(ctx context.Context, ownerID, datasetID int64) (*EvalTrend, error) {
+	if s.evals == nil {
+		return nil, fmt.Errorf("%w: eval repository is not configured", agenterrors.ErrInvalidInput)
+	}
+	dataset, err := s.evals.FindDatasetByID(ctx, ownerID, datasetID)
+	if err != nil {
+		return nil, mapNotFound(err)
+	}
+	runs, err := s.evals.ListEvalRunsByDataset(ctx, ownerID, datasetID)
+	if err != nil {
+		return nil, err
+	}
+	sort.SliceStable(runs, func(i, j int) bool {
+		if runs[i].StartedAt.Equal(runs[j].StartedAt) {
+			return runs[i].ID < runs[j].ID
+		}
+		return runs[i].StartedAt.Before(runs[j].StartedAt)
+	})
+	points := make([]EvalTrendPoint, 0, len(runs))
+	for _, run := range runs {
+		points = append(points, EvalTrendPoint{
+			EvalRunID:     run.ID,
+			FlowVersionID: run.FlowVersionID,
+			Status:        run.Status,
+			TotalCases:    run.TotalCases,
+			PassedCases:   run.PassedCases,
+			FailedCases:   run.FailedCases,
+			SuccessRate:   run.SuccessRate,
+			Metrics:       evalRunSummaryMetrics(run.SummaryJSON),
+			StartedAt:     run.StartedAt,
+			FinishedAt:    run.FinishedAt,
+		})
+	}
+	trend := &EvalTrend{
+		DatasetID:    dataset.ID,
+		WorkflowID:   dataset.WorkflowID,
+		Points:       points,
+		Delta:        map[string]any{},
+		TrendSummary: map[string]any{"run_count": len(points)},
+	}
+	if len(points) == 0 {
+		return trend, nil
+	}
+	latest := points[len(points)-1]
+	best := latest
+	for _, point := range points {
+		if point.SuccessRate > best.SuccessRate || (point.SuccessRate == best.SuccessRate && point.StartedAt.After(best.StartedAt)) {
+			best = point
+		}
+	}
+	trend.Latest = &latest
+	trend.Best = &best
+	trend.Delta = buildEvalTrendDelta(points[0], latest)
+	trend.TrendSummary = map[string]any{
+		"run_count":              len(points),
+		"latest_eval_run_id":     latest.EvalRunID,
+		"latest_flow_version_id": latest.FlowVersionID,
+		"latest_success_rate":    latest.SuccessRate,
+		"best_eval_run_id":       best.EvalRunID,
+		"best_flow_version_id":   best.FlowVersionID,
+		"best_success_rate":      best.SuccessRate,
+		"success_rate_delta":     latest.SuccessRate - points[0].SuccessRate,
+	}
+	return trend, nil
 }
 
 func (s *Service) ListEvalResults(ctx context.Context, ownerID, evalRunID int64) ([]workflow.EvalResult, error) {
@@ -919,6 +1020,96 @@ func (s *Service) ListToolInvocations(ctx context.Context, ownerID, runID int64)
 		return nil, err
 	}
 	return s.toolInvocations.ListByRun(ctx, ownerID, runID)
+}
+
+func (s *Service) GetRunTrace(ctx context.Context, ownerID, runID int64) (*RunTrace, error) {
+	run, err := s.GetRun(ctx, ownerID, runID)
+	if err != nil {
+		return nil, err
+	}
+	trace := &RunTrace{
+		Run:             run,
+		Events:          []workflow.RunEvent{},
+		NodeLogs:        []workflow.NodeLog{},
+		Steps:           []workflow.RunStep{},
+		ChildRuns:       []workflow.Run{},
+		MemoryWriteLogs: []memory.WriteLog{},
+		ToolInvocations: []tool.Invocation{},
+		ReplaySummary:   map[string]any{},
+	}
+	if s.events != nil {
+		trace.Events, err = s.events.ListByRun(ctx, ownerID, runID)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if s.nodeLogs != nil {
+		trace.NodeLogs, err = s.nodeLogs.ListByRun(ctx, ownerID, runID)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if s.runSteps != nil {
+		trace.Steps, err = s.runSteps.ListByRun(ctx, ownerID, runID)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if s.runs != nil {
+		trace.ChildRuns, err = s.runs.ListByParent(ctx, ownerID, runID)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if s.memoryLogs != nil {
+		trace.MemoryWriteLogs, err = s.memoryLogs.ListByRun(ctx, ownerID, runID)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if s.toolInvocations != nil {
+		trace.ToolInvocations, err = s.toolInvocations.ListByRun(ctx, ownerID, runID)
+		if err != nil {
+			return nil, err
+		}
+	}
+	trace.ReplaySummary = buildRunTraceReplaySummary(trace)
+	return trace, nil
+}
+
+func buildRunTraceReplaySummary(trace *RunTrace) map[string]any {
+	if trace == nil {
+		return map[string]any{}
+	}
+	compressedSteps := 0
+	reflectionSteps := 0
+	toolSteps := 0
+	for _, step := range trace.Steps {
+		if step.Compressed {
+			compressedSteps++
+		}
+		if step.StepType == runtimeagent.StepTypeReflection {
+			reflectionSteps++
+		}
+		if step.StepType == runtimeagent.StepTypeToolCall {
+			toolSteps++
+		}
+	}
+	return map[string]any{
+		"event_count":           len(trace.Events),
+		"node_log_count":        len(trace.NodeLogs),
+		"step_count":            len(trace.Steps),
+		"compressed_step_count": compressedSteps,
+		"reflection_step_count": reflectionSteps,
+		"tool_call_step_count":  toolSteps,
+		"child_run_count":       len(trace.ChildRuns),
+		"memory_write_count":    len(trace.MemoryWriteLogs),
+		"tool_invocation_count": len(trace.ToolInvocations),
+		"status":                trace.Run.Status,
+		"latency_ms":            trace.Run.LatencyMS,
+		"total_tokens":          trace.Run.TotalTokens,
+		"has_error":             strings.TrimSpace(trace.Run.ErrorMessage) != "",
+	}
 }
 
 func (s *Service) CancelRun(ctx context.Context, ownerID, id int64) (*workflow.Run, error) {
@@ -1706,6 +1897,141 @@ func failedEvalResult(ownerID, evalRunID, evalCaseID int64, agentRunID *int64, o
 	}
 }
 
+func summarizeEvalMetrics(results []workflow.EvalResult) map[string]any {
+	summary := map[string]any{
+		"avg_score":                            averageEvalResultScore(results),
+		"avg_latency_ms":                       averageEvalResultLatency(results),
+		"avg_tool_call_accuracy":               averageMetric(results, "tool_call_accuracy"),
+		"avg_schema_compliance":                averageMetric(results, "schema_compliance"),
+		"avg_json_schema_compliance":           averageMetric(results, "json_schema_compliance"),
+		"avg_reference_hit_rate":               averageMetric(results, "reference_hit_rate"),
+		"avg_total_tokens":                     averageMetric(results, "total_tokens"),
+		"max_iteration_exceeded_rate":          averageMetric(results, "max_iteration_exceeded"),
+		"max_tool_calls_exceeded_rate":         averageMetric(results, "max_tool_calls_exceeded"),
+		"human_approval_waiting_rate":          averageMetric(results, "human_approval_waiting"),
+		"reflection_repair_attempted_rate":     averageMetric(results, "reflection_repair_attempted"),
+		"failed_cases_with_runtime_error_rate": runtimeErrorRate(results),
+	}
+	return summary
+}
+
+func evalRunSummaryMetrics(raw json.RawMessage) map[string]any {
+	if len(raw) == 0 {
+		return map[string]any{}
+	}
+	var summary map[string]any
+	decoder := json.NewDecoder(strings.NewReader(string(raw)))
+	decoder.UseNumber()
+	if err := decoder.Decode(&summary); err != nil {
+		return map[string]any{}
+	}
+	metrics, _ := summary["metrics"].(map[string]any)
+	if metrics == nil {
+		return map[string]any{}
+	}
+	return metrics
+}
+
+func buildEvalTrendDelta(first, latest EvalTrendPoint) map[string]any {
+	delta := map[string]any{
+		"success_rate": latest.SuccessRate - first.SuccessRate,
+		"passed_cases": latest.PassedCases - first.PassedCases,
+		"failed_cases": latest.FailedCases - first.FailedCases,
+	}
+	for _, key := range []string{
+		"avg_score",
+		"avg_latency_ms",
+		"avg_tool_call_accuracy",
+		"avg_schema_compliance",
+		"avg_json_schema_compliance",
+		"avg_reference_hit_rate",
+		"avg_total_tokens",
+		"max_iteration_exceeded_rate",
+		"max_tool_calls_exceeded_rate",
+		"human_approval_waiting_rate",
+		"reflection_repair_attempted_rate",
+		"failed_cases_with_runtime_error_rate",
+	} {
+		firstValue, firstOK := evalMetricFloat(first.Metrics[key])
+		latestValue, latestOK := evalMetricFloat(latest.Metrics[key])
+		if firstOK || latestOK {
+			delta[key] = latestValue - firstValue
+		}
+	}
+	return delta
+}
+
+func averageEvalResultScore(results []workflow.EvalResult) float64 {
+	if len(results) == 0 {
+		return 0
+	}
+	total := 0.0
+	for _, result := range results {
+		total += result.Score
+	}
+	return total / float64(len(results))
+}
+
+func averageEvalResultLatency(results []workflow.EvalResult) float64 {
+	if len(results) == 0 {
+		return 0
+	}
+	total := 0.0
+	for _, result := range results {
+		total += float64(result.LatencyMS)
+	}
+	return total / float64(len(results))
+}
+
+func averageMetric(results []workflow.EvalResult, key string) float64 {
+	if len(results) == 0 {
+		return 0
+	}
+	total := 0.0
+	for _, result := range results {
+		var metrics map[string]any
+		if len(result.MetricsJSON) == 0 || json.Unmarshal(result.MetricsJSON, &metrics) != nil {
+			continue
+		}
+		if value, ok := evalMetricFloat(metrics[key]); ok {
+			total += value
+		}
+	}
+	return total / float64(len(results))
+}
+
+func evalMetricFloat(value any) (float64, bool) {
+	switch typed := value.(type) {
+	case float64:
+		return typed, true
+	case int:
+		return float64(typed), true
+	case json.Number:
+		number, err := typed.Float64()
+		return number, err == nil
+	case bool:
+		if typed {
+			return 1, true
+		}
+		return 0, true
+	default:
+		return 0, false
+	}
+}
+
+func runtimeErrorRate(results []workflow.EvalResult) float64 {
+	if len(results) == 0 {
+		return 0
+	}
+	failed := 0
+	for _, result := range results {
+		if strings.TrimSpace(result.ErrorMessage) != "" {
+			failed++
+		}
+	}
+	return float64(failed) / float64(len(results))
+}
+
 func scoreEvalOutput(output engine.NodeOutput, expectedJSON, requiredToolsJSON json.RawMessage) (float64, string) {
 	result := scoreEvalOutputDetailed(output, expectedJSON, requiredToolsJSON)
 	return result.Score, result.Reason
@@ -1732,7 +2058,7 @@ func scoreEvalOutputDetailed(output engine.NodeOutput, expectedJSON, requiredToo
 				if name == "" {
 					continue
 				}
-				if called[name] {
+				if requiredToolCalled(called, name) {
 					matched++
 				} else {
 					metrics["tool_call_accuracy"] = float64(matched) / float64(len(required))
@@ -1793,6 +2119,19 @@ func scoreEvalOutputDetailed(output engine.NodeOutput, expectedJSON, requiredToo
 			}
 		}
 	}
+	if minRefs := expectedMinReferences(expected); minRefs > 0 {
+		refCount := referenceCount(output)
+		metrics["reference_count"] = refCount
+		metrics["reference_hit_rate"] = clampEvalRatio(float64(refCount) / float64(minRefs))
+		if refCount < minRefs {
+			metrics["score"] = 0.0
+			metrics["reason"] = fmt.Sprintf("references below required minimum: expected at least %d got %d", minRefs, refCount)
+			return evalScoreResult{Score: 0, Reason: fmt.Sprintf("references below required minimum: expected at least %d got %d", minRefs, refCount), Metrics: metrics}
+		}
+	} else {
+		metrics["reference_count"] = referenceCount(output)
+		metrics["reference_hit_rate"] = 1.0
+	}
 	if equals, ok := expected["equals"]; ok {
 		actual := output["final_answer"]
 		if actual == nil {
@@ -1822,6 +2161,8 @@ func baseEvalMetrics(output engine.NodeOutput) map[string]any {
 		"json_schema_compliance":      1.0,
 		"schema_compliance":           1.0,
 		"tool_call_accuracy":          1.0,
+		"reference_count":             referenceCount(output),
+		"reference_hit_rate":          1.0,
 		"max_tool_calls_exceeded":     stopReason == runtimeagent.StopReasonMaxToolCalls,
 		"reflection_repair_attempted": hasStepType(output, runtimeagent.StepTypeReflection),
 	}
@@ -1948,6 +2289,102 @@ func expectedContainsList(value any) []string {
 	}
 }
 
+func expectedMinReferences(expected map[string]any) int {
+	if value, ok := expected["min_references"]; ok {
+		number, numberOK := evalMetricFloat(value)
+		if numberOK && number > 0 {
+			return int(number)
+		}
+	}
+	switch value := expected["require_references"].(type) {
+	case bool:
+		if value {
+			return 1
+		}
+	case string:
+		if strings.EqualFold(strings.TrimSpace(value), "true") {
+			return 1
+		}
+	}
+	return 0
+}
+
+func referenceCount(output engine.NodeOutput) int {
+	if output == nil {
+		return 0
+	}
+	bytes, err := json.Marshal(output)
+	if err != nil {
+		return 0
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(bytes, &decoded); err != nil {
+		return 0
+	}
+	total := 0
+	seen := map[string]bool{}
+	for _, key := range []string{"references", "citations", "results"} {
+		total += referenceCountFromValue(decoded[key], seen)
+	}
+	return total
+}
+
+func referenceCountFromValue(value any, seen map[string]bool) int {
+	switch typed := value.(type) {
+	case []any:
+		total := 0
+		for _, item := range typed {
+			total += referenceCountFromValue(item, seen)
+		}
+		return total
+	case map[string]any:
+		if !referenceLike(typed) {
+			return 0
+		}
+		key := referenceIdentity(typed)
+		if seen[key] {
+			return 0
+		}
+		seen[key] = true
+		return 1
+	default:
+		return 0
+	}
+}
+
+func referenceLike(item map[string]any) bool {
+	for _, key := range []string{"chunk_id", "document_id", "kb_id", "quote_text", "document_name", "source", "content"} {
+		if _, ok := item[key]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func referenceIdentity(item map[string]any) string {
+	parts := make([]string, 0, 4)
+	for _, key := range []string{"kb_id", "document_id", "chunk_id", "ref_index"} {
+		if value, ok := item[key]; ok {
+			parts = append(parts, fmt.Sprintf("%s=%v", key, value))
+		}
+	}
+	if len(parts) > 0 {
+		return strings.Join(parts, "|")
+	}
+	bytes, _ := json.Marshal(item)
+	return string(bytes)
+}
+
+func clampEvalRatio(value float64) float64 {
+	if value < 0 {
+		return 0
+	}
+	if value > 1 {
+		return 1
+	}
+	return value
+}
+
 func outputText(output engine.NodeOutput) string {
 	for _, key := range []string{"final_answer", "answer", "text", "content"} {
 		if value, ok := output[key].(string); ok && strings.TrimSpace(value) != "" {
@@ -1989,6 +2426,33 @@ func sortedToolNames(called map[string]bool) []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+func requiredToolCalled(called map[string]bool, required string) bool {
+	required = strings.TrimSpace(required)
+	if required == "" {
+		return false
+	}
+	if called[required] {
+		return true
+	}
+	for _, alias := range toolNameAliases(required) {
+		if called[alias] {
+			return true
+		}
+	}
+	return false
+}
+
+func toolNameAliases(name string) []string {
+	switch strings.TrimSpace(name) {
+	case "call_agent":
+		return []string{"call_workflow"}
+	case "call_workflow":
+		return []string{"call_agent"}
+	default:
+		return nil
+	}
 }
 
 func hasStepType(output engine.NodeOutput, stepType string) bool {
