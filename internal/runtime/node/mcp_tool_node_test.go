@@ -80,6 +80,44 @@ func TestAgentNodeLoadToolsIncludesMCPServerTools(t *testing.T) {
 	}
 }
 
+func TestAgentNodeLoadMCPToolsUsesCachedDefinitions(t *testing.T) {
+	agent := AgentNode{MCPServers: fakeMCPServerRepo{
+		server: &tool.MCPServer{
+			ID:        10,
+			OwnerID:   1,
+			Name:      "cached",
+			Transport: tool.MCPTransportStdio,
+			Command:   "missing-mcp-helper",
+			Status:    tool.MCPStatusActive,
+		},
+		cache: []tool.MCPToolCache{{
+			OwnerID:        1,
+			ServerID:       10,
+			ToolName:       "cached_echo",
+			Description:    "cached tool",
+			ParametersJSON: json.RawMessage(`{"type":"object"}`),
+		}},
+	}}
+	tools, err := agent.loadTools(context.Background(), 1, agentRuntimeConfig{MCPServerIDs: []int64{10}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tools) != 2 || tools[1].Name() != "cached_echo" {
+		t.Fatalf("expected cached MCP tool without live discover, got %+v", tools)
+	}
+}
+
+func TestAgentNodeLoadToolsExposesDynamicDelegationAsCallAgent(t *testing.T) {
+	agent := AgentNode{WorkflowCaller: &fakeNodeAgentCaller{}}
+	tools, err := agent.loadTools(context.Background(), 1, agentRuntimeConfig{CallWorkflowIDs: []int64{10}, MaxWorkflowCallDepth: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tools) != 2 || tools[0].Name() != "request_human_approval" || tools[1].Name() != "call_agent" {
+		t.Fatalf("expected agent_loop delegation tool to be call_agent, got %+v", tools)
+	}
+}
+
 func TestAgentLoopNodePlanExecuteReturnsPlanTrace(t *testing.T) {
 	client := &fakeNodeToolClient{responses: []llm.ToolChatResponse{
 		{Message: llm.ChatMessage{Role: "assistant", Content: `{"steps":[{"number":1,"description":"inspect input"},{"number":2,"description":"write answer"}]}`}},
@@ -219,6 +257,7 @@ func TestAgentNodeApplyProfileDefaultsInheritsPolicyAndContext(t *testing.T) {
 		WorkflowID:        2,
 		Mode:              "reflect",
 		ToolPolicyJSON:    json.RawMessage(`{"require_approval_for_risk":["medium"],"max_tool_timeout_ms":1500,"max_tool_output_bytes":4096,"allowed_hosts":["api.example.com"]}`),
+		MemoryPolicyJSON:  json.RawMessage(`{"enabled":true}`),
 		ContextPolicyJSON: json.RawMessage(`{"max_input_tokens":12000}`),
 	}}}
 	cfg, err := agent.applyProfileDefaults(context.Background(), &engine.RunContext{OwnerID: 1, WorkflowID: 2}, agentRuntimeConfig{})
@@ -233,6 +272,58 @@ func TestAgentNodeApplyProfileDefaultsInheritsPolicyAndContext(t *testing.T) {
 	}
 	if len(cfg.AllowedHosts) != 1 || cfg.AllowedHosts[0] != "api.example.com" {
 		t.Fatalf("profile allowed hosts not inherited: %+v", cfg.AllowedHosts)
+	}
+	if !cfg.MemoryEnabled {
+		t.Fatalf("profile memory policy not inherited: %+v", cfg)
+	}
+}
+
+func TestAgentNodePolicyJSONOverridesProfileDefaults(t *testing.T) {
+	agent := AgentNode{Profiles: fakeAgentProfileLoader{profile: &workflow.Profile{
+		OwnerID:           1,
+		WorkflowID:        2,
+		MemoryEnabled:     true,
+		MemoryPolicyJSON:  json.RawMessage(`{"enabled":true}`),
+		ContextPolicyJSON: json.RawMessage(`{"max_input_tokens":12000}`),
+		ToolPolicyJSON:    json.RawMessage(`{"require_approval_for_risk":["high"],"max_tool_timeout_ms":30000,"max_tool_output_bytes":8192,"allowed_hosts":["profile.example.com"]}`),
+	}}}
+	cfg, err := agent.applyProfileDefaults(context.Background(), &engine.RunContext{OwnerID: 1, WorkflowID: 2}, agentRuntimeConfig{
+		ToolPolicyJSON:    json.RawMessage(`{"require_approval_for_risk":[],"max_tool_timeout_ms":1500,"max_tool_output_bytes":4096,"allowed_hosts":["node.example.com"]}`),
+		MemoryPolicyJSON:  json.RawMessage(`{"enabled":false}`),
+		ContextPolicyJSON: json.RawMessage(`{"max_input_tokens":1000}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg = applyNodeMemoryPolicy(cfg, cfg.MemoryPolicyJSON)
+	cfg = applyNodeContextPolicy(cfg, cfg.ContextPolicyJSON)
+	cfg = applyNodeToolPolicy(cfg, cfg.ToolPolicyJSON)
+	if cfg.MemoryEnabled {
+		t.Fatalf("node memory policy should override profile default: %+v", cfg)
+	}
+	if cfg.MaxInputChars != 4000 {
+		t.Fatalf("node context policy should override profile default, got %+v", cfg)
+	}
+	if len(cfg.RequireApprovalForRisk) != 0 || cfg.MaxToolTimeoutMS != 1500 || cfg.MaxToolOutputBytes != 4096 || len(cfg.AllowedHosts) != 1 || cfg.AllowedHosts[0] != "node.example.com" {
+		t.Fatalf("node tool policy should override profile default, got %+v", cfg)
+	}
+}
+
+func TestParseAgentNodeConfigAcceptsNestedPolicyJSON(t *testing.T) {
+	cfg, err := parseAgentNodeConfig(json.RawMessage(`{
+		"model":{"provider_id":1,"model":"test"},
+		"task_template":"{{sys.query}}",
+		"memory":{"policy":{"enabled":false}},
+		"context":{"max_input_tokens":12000,"policy":{"max_input_tokens":1000}}
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(cfg.MemoryPolicyJSON) != `{"enabled":false}` || string(cfg.ContextPolicyJSON) != `{"max_input_tokens":1000}` {
+		t.Fatalf("expected nested policy JSON to be parsed, got %+v", cfg)
+	}
+	if cfg.MaxInputChars != 48000 {
+		t.Fatalf("expected direct context budget to be preserved before policy override, got %+v", cfg)
 	}
 }
 
@@ -293,6 +384,7 @@ func writeMCPNodeHelperResponse(id int64, result any) {
 
 type fakeMCPServerRepo struct {
 	server *tool.MCPServer
+	cache  []tool.MCPToolCache
 }
 
 func (r fakeMCPServerRepo) CreateServer(context.Context, *tool.MCPServer) error { return nil }
@@ -312,7 +404,7 @@ func (r fakeMCPServerRepo) ReplaceToolCache(context.Context, int64, int64, []too
 	return nil
 }
 func (r fakeMCPServerRepo) ListToolCache(context.Context, int64, int64) ([]tool.MCPToolCache, error) {
-	return nil, nil
+	return append([]tool.MCPToolCache(nil), r.cache...), nil
 }
 
 type fakeProviderLoader struct{}
