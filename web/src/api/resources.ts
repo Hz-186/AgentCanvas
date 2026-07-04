@@ -18,6 +18,7 @@ import type {
   EvalDataset,
   EvalResult,
   EvalRun,
+  EvalTrend,
   CreateWorkflowRequest,
   CreateEvalCaseRequest,
   CreateEvalDatasetRequest,
@@ -38,6 +39,7 @@ import type {
   RunEvalDatasetRequest,
   RunEvalDatasetResponse,
   RunEvent,
+  RunTrace,
   RunStep,
   NodeLog,
   Memory,
@@ -70,6 +72,7 @@ export const workflowApi = {
   runEvalDataset: (datasetId: number, body: RunEvalDatasetRequest = {}) =>
     api.post<RunEvalDatasetResponse>(`/eval-datasets/${datasetId}/runs`, body),
   listEvalRuns: (datasetId: number) => api.get<EvalRun[]>(`/eval-datasets/${datasetId}/runs`),
+  getEvalTrend: (datasetId: number) => api.get<EvalTrend>(`/eval-datasets/${datasetId}/trend`),
   listEvalResults: (evalRunId: number) => api.get<EvalResult[]>(`/eval-runs/${evalRunId}/results`),
   createFlowVersion: (agentId: number, body: CreateFlowVersionRequest) =>
     api.post<FlowVersion>(`/workflows/${agentId}/flow-versions`, body),
@@ -90,6 +93,7 @@ export const workflowApi = {
   listRunSteps: (id: number) => api.get<RunStep[]>(`/runs/${id}/steps`),
   listMemoryWriteLogs: (id: number) => api.get<MemoryWriteLog[]>(`/runs/${id}/memory-write-logs`),
   listToolInvocations: (id: number) => api.get<ToolInvocation[]>(`/runs/${id}/tool-invocations`),
+  getRunTrace: (id: number) => api.get<RunTrace>(`/runs/${id}/trace`),
   cancelRun: (id: number) => api.post<Run>(`/runs/${id}/cancel`),
   pauseRun: (id: number) => api.post<Run>(`/runs/${id}/pause`),
   resumeRun: (id: number) => api.post<Run>(`/runs/${id}/resume`),

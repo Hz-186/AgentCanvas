@@ -453,6 +453,7 @@ export interface WorkflowProfile {
   default_max_workflow_call_depth?: number;
   output_schema_json?: unknown;
   tool_policy_json?: unknown;
+  memory_policy_json?: unknown;
   context_policy_json?: unknown;
   risk_level?: 'low' | 'medium' | 'high';
   mode?: 'react' | 'plan_execute' | 'reflect' | 'supervisor';
@@ -497,6 +498,7 @@ export type UpdateWorkflowProfileRequest = Partial<Pick<
   | 'default_max_workflow_call_depth'
   | 'output_schema_json'
   | 'tool_policy_json'
+  | 'memory_policy_json'
   | 'context_policy_json'
   | 'risk_level'
   | 'mode'
@@ -543,6 +545,29 @@ export interface EvalRun {
   finished_at: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface EvalTrendPoint {
+  eval_run_id: number;
+  flow_version_id: number;
+  status: 'running' | 'completed' | 'failed';
+  total_cases: number;
+  passed_cases: number;
+  failed_cases: number;
+  success_rate: number;
+  metrics: Record<string, unknown>;
+  started_at: string;
+  finished_at: string | null;
+}
+
+export interface EvalTrend {
+  dataset_id: number;
+  workflow_id: number;
+  points: EvalTrendPoint[];
+  latest?: EvalTrendPoint;
+  best?: EvalTrendPoint;
+  delta: Record<string, unknown>;
+  trend_summary: Record<string, unknown>;
 }
 
 export interface EvalResult {
@@ -738,6 +763,17 @@ export interface ToolInvocation {
   error_message: string;
   latency_ms: number;
   created_at: string;
+}
+
+export interface RunTrace {
+  run: Run;
+  events: RunEvent[];
+  node_logs: NodeLog[];
+  steps: RunStep[];
+  child_runs: Run[];
+  memory_write_logs: MemoryWriteLog[];
+  tool_invocations: ToolInvocation[];
+  replay_summary: Record<string, unknown>;
 }
 
 export interface RunWorkflowRequest {

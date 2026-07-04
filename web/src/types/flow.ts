@@ -6,6 +6,7 @@ export type NodeType =
   | 'prompt'
   | 'llm'
   | 'agent_loop'
+  | 'agent_call'
   | 'workflow_call'
   | 'team_call'
   | 'code_sandbox'
@@ -65,6 +66,9 @@ export interface AgentLoopConfig {
   max_tool_timeout_ms?: number;
   max_tool_output_bytes?: number;
   allowed_hosts?: string[];
+  tool_policy_json?: Record<string, unknown>;
+  memory_policy_json?: Record<string, unknown>;
+  context_policy_json?: Record<string, unknown>;
   output_schema_json?: Record<string, unknown>;
   return_intermediate_steps?: boolean;
   output_mode?: 'final_answer' | 'full';

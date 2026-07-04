@@ -4,8 +4,6 @@ import {
   Background,
   BackgroundVariant,
   Controls,
-  Handle,
-  Position,
   ReactFlow,
   addEdge,
   applyEdgeChanges,
@@ -13,176 +11,33 @@ import {
   type Connection,
   type Edge,
   type EdgeChange,
-  type Node,
   type NodeChange,
-  type NodeProps,
 } from '@xyflow/react';
 import {
   Bot,
-  BrainCircuit,
-  Braces,
-  Database,
-  GitBranch,
-  Globe2,
-  MessageSquare,
   Play,
-  PlugZap,
   Save,
-  Send,
-  ShieldCheck,
   Sparkles,
   Workflow as WorkflowIcon,
 } from 'lucide-react';
 import { workflowApi, knowledgeApi, settingsApi } from '../api/resources';
 import { Button, EmptyState, Field, Panel, Segmented, Select, StatusBadge, TextArea, TextInput, Toast } from '../components/ui';
-import type { Workflow, WorkflowProfile, WorkflowTeam, WorkflowTeamMember, ApprovalRequest, EvalCase, EvalDataset, EvalResult, EvalRun, FlowVersion, KnowledgeBase, MCPServer, MemoryWriteLog, ModelProvider, Run, RunStep, ToolDefinition, ToolInvocation, ToolPack } from '../types/api';
-import type { DSLEdge, DSLNode, FlowDSL, NodeConfig, NodeType } from '../types/flow';
+import type { Workflow, WorkflowProfile, WorkflowTeam, WorkflowTeamMember, ApprovalRequest, EvalCase, EvalDataset, EvalResult, EvalRun, EvalTrend, FlowVersion, KnowledgeBase, MCPServer, MemoryWriteLog, ModelProvider, Run, RunStep, RunTrace, ToolDefinition, ToolInvocation, ToolPack } from '../types/api';
+import type { NodeType } from '../types/flow';
 import type { RuntimeEvent } from '../types/events';
 import { friendlyErrorMessage, parseJsonObject, prettyJson } from '../utils/format';
+import { defaultConfig, isAgentNodeType, isStaticAgentCallNodeType, nodeMeta, numberArray, paletteNodeTypes } from './canvas/config';
+import { nodeTypes } from './canvas/canvas/node-types';
+import { defaultNodes, fromDSL, normalizeDSL, runtimeDSLKey, toDSL } from './canvas/canvas/hooks/useDslBridge';
+import { validateLocal } from './canvas/canvas/hooks/useCanvasValidation';
+import type { CanvasNode, NodeRunStatus } from './canvas/types';
+import { FormSheet } from './canvas/form-sheet/FormSheet';
+import { AgentLoopForm } from './canvas/forms/agent-loop/AgentLoopForm';
+import { AgentTraceTimeline } from './canvas/debug/AgentTraceTimeline';
+import { ToolInvocationList } from './canvas/debug/ToolInvocationList';
+import { ApprovalQueue } from './canvas/debug/ApprovalQueue';
 
-interface CanvasNodeData extends Record<string, unknown> {
-  label: string;
-  nodeType: NodeType;
-  config: NodeConfig & { _ui?: { x: number; y: number } };
-}
-
-type CanvasNode = Node<CanvasNodeData>;
 type DebugRunMode = 'stream' | 'complete';
-
-const nodeMeta: Record<NodeType, { label: string; icon: React.ElementType; description: string }> = {
-  begin: { label: 'Begin', icon: Sparkles, description: '读取运行输入' },
-  knowledge_retrieval: { label: 'Retrieval', icon: Database, description: '从知识库检索上下文' },
-  prompt: { label: 'Prompt', icon: MessageSquare, description: '组装提示词' },
-  llm: { label: 'LLM', icon: BrainCircuit, description: '调用模型生成内容' },
-  agent_loop: { label: 'Agent Loop', icon: Bot, description: '自治 ReAct Agent，自动调用工具并可委托子 Agent' },
-  workflow_call: { label: 'Agent Call', icon: WorkflowIcon, description: '静态调用另一个 Agent' },
-  team_call: { label: 'Team Call', icon: WorkflowIcon, description: '调用一个 Workflow Team 的 supervisor' },
-  code_sandbox: { label: 'Code Sandbox', icon: Braces, description: '隔离执行 Python 代码' },
-  message: { label: 'Message', icon: Send, description: '输出或写入会话消息' },
-  memory_read: { label: 'Memory Read', icon: BrainCircuit, description: '读取长期记忆' },
-  memory_write: { label: 'Memory Write', icon: Save, description: '写入或更新记忆' },
-  http_tool: { label: 'HTTP Tool', icon: Globe2, description: '调用受控 HTTP 工具' },
-  mcp_tool: { label: 'MCP Tool', icon: PlugZap, description: '显式调用 MCP Server 工具' },
-  switch: { label: 'Switch', icon: GitBranch, description: '按条件选择分支' },
-  json_output: { label: 'JSON Output', icon: Braces, description: '校验结构化输出' },
-  guardrail: { label: 'Guardrail', icon: ShieldCheck, description: '检查输出规则' },
-};
-
-const paletteNodeTypes = Object.keys(nodeMeta) as NodeType[];
-
-function isAgentNodeType(type: NodeType) {
-  return type === 'agent_loop';
-}
-
-function numberArray(value: unknown): number[] {
-  return Array.isArray(value) ? value.map((item) => Number(item)).filter((item) => Number.isFinite(item)) : [];
-}
-
-function stringArray(value: unknown, fallback: string[] = []): string[] {
-  return Array.isArray(value) ? value.map((item) => String(item)).filter(Boolean) : fallback;
-}
-
-function defaultConfig(type: NodeType): CanvasNodeData['config'] {
-  if (type === 'begin') return { input_schema: { query: 'string' } };
-  if (type === 'knowledge_retrieval') return { kb_ids: [], top_k: 5, mode: 'keyword', query: '{{sys.query}}' };
-  if (type === 'prompt') return { template: '请根据以下上下文回答用户问题：\n\n{{retrieval.context}}\n\n问题：{{sys.query}}' };
-  if (type === 'llm') return { provider_id: 0, model: '', temperature: 0.7, stream: true };
-  if (type === 'agent_loop') {
-    return {
-      mode: 'react',
-      provider_id: 0,
-      model: '',
-      system_prompt: '你是一个严谨的 Agent。必要时调用可用工具，看到工具结果后再继续推理并给出最终答案。',
-      task_template: '{{sys.query}}',
-      tool_ids: [],
-      knowledge_ids: [],
-      mcp_server_ids: [],
-      knowledge_top_k: 5,
-      knowledge_mode: 'keyword',
-      call_workflow_ids: [],
-      max_workflow_call_depth: 3,
-      code_execution_enabled: false,
-      memory_enabled: false,
-      max_iterations: 8,
-      max_tool_calls: 16,
-      max_execution_time_ms: 120000,
-      max_input_chars: 96000,
-      temperature: 0.2,
-      reflection_enabled: false,
-      require_approval_for_risk: ['high'],
-      max_tool_timeout_ms: 30000,
-      max_tool_output_bytes: 524288,
-      allowed_hosts: [],
-      output_schema_json: {},
-      return_intermediate_steps: true,
-      output_mode: 'final_answer',
-    };
-  }
-  if (type === 'workflow_call') return { workflow_id: 0, flow_version_id: 0, input: { query: '{{sys.query}}' }, max_depth: 3 };
-  if (type === 'team_call') return { team_id: 0, input: { query: '{{sys.query}}' }, max_depth: 3 };
-  if (type === 'code_sandbox') return { language: 'python', code: 'print("hello from sandbox")', timeout_ms: 5000, max_output_bytes: 65536, network_enabled: false, memory_limit_mb: 128 };
-  if (type === 'message') return { content: '{{llm.content}}', with_citation: true };
-  if (type === 'memory_read') return { memory_types: ['profile_memory', 'summary_memory'], limit: 5 };
-  if (type === 'memory_write') return { memory_type: 'summary_memory', content: '{{llm.content}}', importance: 0.5, source: 'workflow' };
-  if (type === 'http_tool') return { tool_id: 0, input: { query: '{{sys.query}}' } };
-  if (type === 'mcp_tool') return { server_id: 0, tool_name: '', input: { query: '{{sys.query}}' } };
-  if (type === 'switch') return { conditions: [{ expr: '{{retrieval.result_count}} > 0', target: 'llm' }, { expr: 'default', target: 'message' }] };
-  if (type === 'json_output') return { value: '{{llm.content}}', schema: { type: 'object' } };
-  return { source: '{{llm.content}}', max_length: 4000, banned_terms: [], require_citation: false, require_json: false };
-}
-
-function nodeSummaryItems(data: CanvasNodeData) {
-  const config = data.config as Record<string, unknown>;
-  if (data.nodeType === 'agent_loop') {
-    const tools = numberArray(config.tool_ids).length;
-    const kb = numberArray(config.knowledge_ids).length;
-    const mcp = numberArray(config.mcp_server_ids).length;
-    const callable = numberArray(config.call_workflow_ids).length;
-    return [String(config.mode ?? 'react'), `${tools + kb + mcp + callable} tools`, `${Number(config.max_iterations ?? 8)} loops`];
-  }
-  if (data.nodeType === 'knowledge_retrieval') return [`Top ${Number(config.top_k ?? 5)}`, String(config.mode ?? 'keyword'), `${numberArray(config.kb_ids).length} KB`];
-  if (data.nodeType === 'llm') return [String(config.model || 'default'), `T ${Number(config.temperature ?? 0.7)}`, config.stream === false ? 'sync' : 'stream'];
-  if (data.nodeType === 'workflow_call') return [`Agent #${Number(config.workflow_id ?? 0) || '-'}`, `depth ${Number(config.max_depth ?? 3)}`];
-  if (data.nodeType === 'team_call') return [`Team #${Number(config.team_id ?? 0) || '-'}`, `depth ${Number(config.max_depth ?? 3)}`];
-  if (data.nodeType === 'code_sandbox') return [String(config.language ?? 'python'), `${Number(config.timeout_ms ?? 5000)}ms`, config.network_enabled ? 'network' : 'isolated'];
-  if (data.nodeType === 'switch') return [`${Array.isArray(config.conditions) ? config.conditions.length : 0} routes`, 'branch'];
-  if (data.nodeType === 'guardrail') return [config.require_json ? 'JSON' : 'rules', `${Number(config.max_length ?? 4000)} chars`];
-  if (data.nodeType === 'json_output') return ['schema', 'structured'];
-  if (data.nodeType === 'memory_read') return ['read', `${Number(config.limit ?? 5)} items`];
-  if (data.nodeType === 'memory_write') return ['write', String(config.memory_type ?? 'memory')];
-  if (data.nodeType === 'http_tool') return [`Tool #${Number(config.tool_id ?? 0) || '-'}`, 'HTTP'];
-  if (data.nodeType === 'mcp_tool') return [`Server #${Number(config.server_id ?? 0) || '-'}`, String(config.tool_name || 'tool')];
-  if (data.nodeType === 'prompt') return ['template', 'prompt'];
-  if (data.nodeType === 'message') return ['output', config.with_citation ? 'citation' : 'plain'];
-  return ['input', 'start'];
-}
-
-function AgentNode({ data, selected }: NodeProps<CanvasNode>) {
-  const meta = nodeMeta[data.nodeType];
-  const Icon = meta.icon;
-  const summary = nodeSummaryItems(data).slice(0, 3);
-  return (
-    <div className={`workflow-node ${selected ? 'selected' : ''}`}>
-      <Handle type="target" position={Position.Left} />
-      <div className="workflow-node-head">
-        <div className="node-icon">
-          <Icon size={16} />
-        </div>
-        <div className="min-w-0">
-          <strong className="truncate">{data.label}</strong>
-          <span className="truncate">{meta.label}</span>
-        </div>
-      </div>
-      <p className="workflow-node-desc">{meta.description}</p>
-      <div className="workflow-node-tags">
-        {summary.map((item) => <span className="truncate" key={item}>{item}</span>)}
-      </div>
-      <Handle type="source" position={Position.Right} />
-    </div>
-  );
-}
-
-const nodeTypes = { agentNode: AgentNode };
 const debugRunModeOptions: Array<{ value: DebugRunMode; label: string }> = [
   { value: 'stream', label: '流式运行' },
   { value: 'complete', label: '完整运行' },
@@ -195,253 +50,6 @@ const DEFAULT_PANEL_WIDTH = 360;
 const MIN_PANEL_WIDTH = 300;
 const PANEL_COLLAPSE_THRESHOLD = 280;
 const MAX_PANEL_WIDTH = 460;
-
-function normalizeDSL(raw: unknown): FlowDSL | null {
-  if (!raw) return null;
-  const value = typeof raw === 'string' ? JSON.parse(raw) : raw;
-  if (!value || typeof value !== 'object') return null;
-  const maybe = value as Partial<FlowDSL>;
-  if (!Array.isArray(maybe.nodes) || !Array.isArray(maybe.edges)) return null;
-  return maybe as FlowDSL;
-}
-
-function stableRuntimeValue(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(stableRuntimeValue);
-  if (!value || typeof value !== 'object') return value;
-  return Object.fromEntries(
-    Object.entries(value as Record<string, unknown>)
-      .sort(([left], [right]) => left.localeCompare(right))
-      .map(([key, child]) => [key, stableRuntimeValue(child)]),
-  );
-}
-
-function runtimeConfig(config: unknown): unknown {
-  if (!config || typeof config !== 'object' || Array.isArray(config)) return stableRuntimeValue(config ?? {});
-  const rest = { ...(config as Record<string, unknown>) };
-  delete rest._ui;
-  return stableRuntimeValue(rest);
-}
-
-function runtimeDSLKey(raw: unknown): string {
-  const parsed = normalizeDSL(raw);
-  if (!parsed) return '';
-  return JSON.stringify({
-    schema_version: parsed.schema_version,
-    flow_id: parsed.flow_id,
-    nodes: [...parsed.nodes]
-      .map((node) => ({ ...node, config: runtimeConfig(node.config) }))
-      .sort((left, right) => `${left.id}:${left.type}:${left.name}`.localeCompare(`${right.id}:${right.type}:${right.name}`)),
-    edges: [...parsed.edges].sort((left, right) => `${left.from}:${left.to}`.localeCompare(`${right.from}:${right.to}`)),
-  });
-}
-
-function defaultNodes(): CanvasNode[] {
-  return [
-    {
-      id: 'begin',
-      type: 'agentNode',
-      position: { x: 120, y: 170 },
-      data: { label: 'Begin', nodeType: 'begin', config: defaultConfig('begin') },
-    },
-  ];
-}
-
-function fromDSL(dsl: FlowDSL): { nodes: CanvasNode[]; edges: Edge[] } {
-  const nodes: CanvasNode[] = dsl.nodes.map((node, index) => {
-    const config = (node.config ?? {}) as CanvasNodeData['config'];
-    const pos = config._ui ?? { x: 120 + index * 240, y: 170 };
-    const isLegacyAgent = node.type === 'agent_loop';
-    return {
-      id: node.id,
-      type: 'agentNode',
-      position: pos,
-      data: {
-        label: isLegacyAgent ? 'Agent' : node.name || nodeMeta[node.type]?.label || node.type,
-        nodeType: node.type,
-        config,
-      },
-    };
-  });
-  return {
-    nodes: nodes.length > 0 ? nodes : defaultNodes(),
-    edges: dsl.edges.map((edge, index) => ({ id: `edge-${edge.from}-${edge.to}-${index}`, source: edge.from, target: edge.to })),
-  };
-}
-
-function toDSL(workflowId: number, nodes: CanvasNode[], edges: Edge[]): FlowDSL {
-  return {
-    schema_version: 'v1',
-    flow_id: `workflow-${workflowId}`,
-    nodes: nodes.map<DSLNode>((node) => ({
-      id: node.id,
-      type: node.data.nodeType,
-      name: node.data.label,
-      config: {
-        ...node.data.config,
-        _ui: { x: Math.round(node.position.x), y: Math.round(node.position.y) },
-      },
-    })),
-    edges: edges.map<DSLEdge>((edge) => ({ from: edge.source, to: edge.target })),
-  };
-}
-
-function agentProviderID(config: Record<string, unknown>) {
-  return Number(config.provider_id ?? 0);
-}
-
-function agentTaskTemplate(config: Record<string, unknown>) {
-  return String(config.task_template ?? '').trim();
-}
-
-function agentModelName(config: Record<string, unknown>) {
-  return String(config.model ?? '');
-}
-
-function agentTemperature(config: Record<string, unknown>) {
-  return Number(config.temperature ?? 0.2);
-}
-
-function agentSystemPrompt(config: Record<string, unknown>) {
-  return String(config.system_prompt ?? '');
-}
-
-function agentToolsConfig(config: Record<string, unknown>) {
-  return config;
-}
-
-function agentMemoryEnabled(config: Record<string, unknown>) {
-  return Boolean(config.memory_enabled);
-}
-
-function agentLimitsConfig(config: Record<string, unknown>) {
-  return config;
-}
-
-function agentOutputMode(config: Record<string, unknown>) {
-  return String(config.output_mode ?? 'final_answer');
-}
-
-function patchAgentModel(patch: Record<string, unknown>) {
-  if ('provider_id' in patch) return { provider_id: patch.provider_id };
-  if ('model' in patch) return { model: patch.model };
-  if ('temperature' in patch) return { temperature: patch.temperature };
-  return {};
-}
-
-function patchAgentSystemPrompt(systemPrompt: string) {
-  return { system_prompt: systemPrompt };
-}
-
-function patchAgentTools(patch: Record<string, unknown>) {
-  const legacy: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(patch)) {
-    legacy[key] = value;
-  }
-  return legacy;
-}
-
-function patchAgentMemory(enabled: boolean) {
-  return { memory_enabled: enabled };
-}
-
-function patchAgentLimits(patch: Record<string, unknown>) {
-  return patch;
-}
-
-function patchAgentOutput(mode: string) {
-  return { output_mode: mode, return_intermediate_steps: mode === 'full' };
-}
-
-function patchAgentPlanning(patch: Record<string, unknown>) {
-  if ('enabled' in patch) {
-    return { mode: patch.enabled ? 'plan_execute' : 'react' };
-  }
-  if ('reflection_enabled' in patch) {
-    return { reflection_enabled: patch.reflection_enabled };
-  }
-  return {};
-}
-
-function patchAgentContext(patch: Record<string, unknown>) {
-  if ('max_input_tokens' in patch) return { max_input_chars: Number(patch.max_input_tokens) * 4 };
-  return {};
-}
-
-function patchAgentPolicy(patch: Record<string, unknown>) {
-  return patch;
-}
-
-function validateLocal(nodes: CanvasNode[], edges: Edge[]): string {
-  const beginCount = nodes.filter((node) => node.data.nodeType === 'begin').length;
-  if (beginCount !== 1) return '画布必须且只能包含一个 Begin 节点';
-  const ids = new Set(nodes.map((node) => node.id));
-  const adjacency = new Map<string, string[]>();
-  const indegree = new Map<string, number>();
-  for (const node of nodes) {
-    adjacency.set(node.id, []);
-    indegree.set(node.id, 0);
-  }
-  for (const edge of edges) {
-    if (!ids.has(edge.source) || !ids.has(edge.target) || edge.source === edge.target) return '连线包含无效节点';
-    adjacency.get(edge.source)?.push(edge.target);
-    indegree.set(edge.target, (indegree.get(edge.target) ?? 0) + 1);
-  }
-  for (const node of nodes) {
-    const nexts = adjacency.get(node.id) ?? [];
-    if (node.data.nodeType !== 'switch' && nexts.length > 1) return `${node.data.label} 不能连接多个后续节点，只有 Switch 支持多分支`;
-    if (node.data.nodeType === 'switch') {
-      const conditions = (node.data.config as Record<string, unknown>).conditions;
-      if (Array.isArray(conditions)) {
-        for (const condition of conditions) {
-          const target = String((condition as Record<string, unknown>).target ?? '').trim();
-          if (!target || !nexts.includes(target)) return `Switch 分支目标 ${target || '-'} 必须是它的出边节点`;
-        }
-      }
-    }
-  }
-  const queue = [...Array.from(indegree.entries()).filter(([, degree]) => degree === 0).map(([id]) => id)];
-  let visitedCount = 0;
-  const indegreeCopy = new Map(indegree);
-  while (queue.length > 0) {
-    const id = queue.shift()!;
-    visitedCount += 1;
-    for (const next of adjacency.get(id) ?? []) {
-      indegreeCopy.set(next, (indegreeCopy.get(next) ?? 0) - 1);
-      if ((indegreeCopy.get(next) ?? 0) === 0) queue.push(next);
-    }
-  }
-  if (visitedCount !== nodes.length) return '画布存在循环连线，请把循环逻辑放进 Agent Loop 节点内部';
-  const begin = nodes.find((node) => node.data.nodeType === 'begin');
-  const reachable = new Set<string>();
-  const reachQueue = begin ? [begin.id] : [];
-  while (reachQueue.length > 0) {
-    const id = reachQueue.shift()!;
-    if (reachable.has(id)) continue;
-    reachable.add(id);
-    reachQueue.push(...(adjacency.get(id) ?? []));
-  }
-  if (reachable.size !== nodes.length) {
-    const missing = nodes.find((node) => !reachable.has(node.id));
-    return `${missing?.data.label ?? '存在节点'} 没有从 Begin 连通`;
-  }
-  for (const node of nodes) {
-    const config = node.data.config as Record<string, unknown>;
-    if (node.data.nodeType === 'knowledge_retrieval' && (!Array.isArray(config.kb_ids) || config.kb_ids.length === 0)) return 'Retrieval 节点需要选择知识库';
-    if (node.data.nodeType === 'prompt' && !String(config.template ?? '').trim()) return 'Prompt 节点需要模板';
-    if (node.data.nodeType === 'llm' && Number(config.provider_id ?? 0) <= 0) return 'LLM 节点需要选择 Provider';
-    if (isAgentNodeType(node.data.nodeType) && !agentTaskTemplate(config)) return 'Agent 节点需要任务模板';
-    if (node.data.nodeType === 'workflow_call' && Number(config.workflow_id ?? 0) <= 0) return 'Agent Call 节点需要选择 Agent';
-    if (node.data.nodeType === 'team_call' && Number(config.team_id ?? 0) <= 0) return 'Team Call 节点需要选择 Team';
-    if (node.data.nodeType === 'code_sandbox' && !String(config.code ?? '').trim()) return 'Code Sandbox 节点需要代码';
-    if (node.data.nodeType === 'message' && !String(config.content ?? '').trim()) return 'Message 节点需要内容';
-    if (node.data.nodeType === 'memory_write' && (!String(config.memory_type ?? '').trim() || !String(config.content ?? '').trim())) return 'Memory Write 节点需要类型和内容';
-    if (node.data.nodeType === 'http_tool' && Number(config.tool_id ?? 0) <= 0) return 'HTTP Tool 节点需要选择 Tool';
-    if (node.data.nodeType === 'switch' && !Array.isArray(config.conditions)) return 'Switch 节点需要 conditions';
-    if (node.data.nodeType === 'json_output' && !String(config.value ?? '').trim()) return 'JSON Output 节点需要 value';
-    if (node.data.nodeType === 'guardrail' && !String(config.source ?? '').trim()) return 'Guardrail 节点需要 source';
-  }
-  return '';
-}
 
 function nodeTitle(type: NodeType, nodes: CanvasNode[]) {
   const base = type === 'knowledge_retrieval' ? 'retrieval' : type;
@@ -459,6 +67,40 @@ function runOutputText(output: Record<string, unknown>) {
   const content = output.content;
   if (typeof content === 'string' && content.trim()) return content;
   return prettyJson(output);
+}
+
+function objectRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function evalSummaryMetrics(run: EvalRun | null): Record<string, unknown> {
+  const summary = objectRecord(run?.summary_json);
+  return objectRecord(summary.metrics);
+}
+
+function latestEvalRunFrom(items: EvalRun[]): EvalRun | null {
+  if (items.length === 0) return null;
+  const sorted = [...items].sort((a, b) => {
+    const startedDelta = Date.parse(a.started_at) - Date.parse(b.started_at);
+    if (startedDelta !== 0) return startedDelta;
+    return a.id - b.id;
+  });
+  return sorted[sorted.length - 1] ?? null;
+}
+
+function metricNumber(metrics: Record<string, unknown>, key: string): number | null {
+  const value = metrics[key];
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function metricPercent(metrics: Record<string, unknown>, key: string): string {
+  const value = metricNumber(metrics, key);
+  return value === null ? '-' : `${(value * 100).toFixed(1)}%`;
+}
+
+function metricFixed(metrics: Record<string, unknown>, key: string, suffix = ''): string {
+  const value = metricNumber(metrics, key);
+  return value === null ? '-' : `${value.toFixed(1)}${suffix}`;
 }
 
 export function CanvasPage() {
@@ -491,6 +133,7 @@ export function CanvasPage() {
   const [childRuns, setChildRuns] = useState<Run[]>([]);
   const [memoryLogs, setMemoryLogs] = useState<MemoryWriteLog[]>([]);
   const [toolInvocations, setToolInvocations] = useState<ToolInvocation[]>([]);
+  const [runTraceSummary, setRunTraceSummary] = useState<Record<string, unknown> | null>(null);
   const [approvalRequests, setApprovalRequests] = useState<ApprovalRequest[]>([]);
   const [workflowTeams, setWorkflowTeams] = useState<WorkflowTeam[]>([]);
   const [teamMembers, setTeamMembers] = useState<WorkflowTeamMember[]>([]);
@@ -509,6 +152,7 @@ export function CanvasPage() {
   const [evalCaseExpected, setEvalCaseExpected] = useState('{\n  "contains": []\n}');
   const [evalRuns, setEvalRuns] = useState<EvalRun[]>([]);
   const [latestEvalRun, setLatestEvalRun] = useState<EvalRun | null>(null);
+  const [evalTrend, setEvalTrend] = useState<EvalTrend | null>(null);
   const [latestEvalResults, setLatestEvalResults] = useState<EvalResult[]>([]);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
@@ -523,6 +167,27 @@ export function CanvasPage() {
   const currentRuntimeKey = useMemo(() => runtimeDSLKey(dsl), [dsl]);
   const savedRuntimeKey = useMemo(() => runtimeDSLKey(version?.dsl_json), [version]);
   const hasRuntimeChanges = !version || currentRuntimeKey !== savedRuntimeKey;
+  const nodesWithRunStatus = useMemo(() => {
+    const statusByNode = new Map<string, NodeRunStatus>();
+    for (const event of events) {
+      if (!event.node_id) continue;
+      if (event.type.includes('failed')) statusByNode.set(event.node_id, 'failed');
+      else if (event.type.includes('finished')) statusByNode.set(event.node_id, 'succeeded');
+      else if (event.type.includes('started') || event.type.includes('delta')) statusByNode.set(event.node_id, 'running');
+    }
+    for (const approval of approvalRequests) {
+      if (approval.status === 'pending' && approval.node_id) statusByNode.set(approval.node_id, 'waiting_human');
+    }
+    if (!runningDebugMode && runOutput) {
+      for (const [nodeId, status] of statusByNode) {
+        if (status === 'running') statusByNode.set(nodeId, 'succeeded');
+      }
+    }
+    return nodes.map((node) => ({
+      ...node,
+      data: { ...node.data, runStatus: statusByNode.get(node.id) ?? 'idle' },
+    }));
+  }, [approvalRequests, events, nodes, runOutput, runningDebugMode]);
 
   useEffect(() => {
     let cancelled = false;
@@ -604,11 +269,18 @@ export function CanvasPage() {
     if (!datasetId) {
       setEvalRuns([]);
       setLatestEvalRun(null);
+      setEvalTrend(null);
       return;
     }
-    const items = await workflowApi.listEvalRuns(datasetId);
+    const [items, trend] = await Promise.all([
+      workflowApi.listEvalRuns(datasetId),
+      workflowApi.getEvalTrend(datasetId),
+    ]);
+    const latest = latestEvalRunFrom(items);
     setEvalRuns(items);
-    setLatestEvalRun(items[0] ?? null);
+    setLatestEvalRun(latest);
+    setEvalTrend(trend);
+    setLatestEvalResults(latest ? await workflowApi.listEvalResults(latest.id) : []);
   }
 
   async function refreshTeams() {
@@ -751,6 +423,32 @@ export function CanvasPage() {
     setError('');
   }
 
+  function addReferencedNode(kind: 'http_tool' | 'mcp_tool' | 'knowledge_retrieval' | 'agent_loop', refId: number) {
+    const type: NodeType = kind === 'agent_loop' ? 'workflow_call' : kind;
+    const nodeId = nodeTitle(type, nodes);
+    const baseConfig = defaultConfig(type) as Record<string, unknown>;
+    const config = {
+      ...baseConfig,
+      ...(kind === 'http_tool' ? { tool_id: refId } : {}),
+      ...(kind === 'mcp_tool' ? { server_id: refId } : {}),
+      ...(kind === 'knowledge_retrieval' ? { kb_ids: [refId] } : {}),
+      ...(kind === 'agent_loop' ? { workflow_id: refId } : {}),
+    };
+    const source = selected;
+    const node: CanvasNode = {
+      id: nodeId,
+      type: 'agentNode',
+      position: { x: (source?.position.x ?? 180) + 260, y: (source?.position.y ?? 120) + 80 },
+      data: { label: nodeMeta[type].label, nodeType: type, config },
+    };
+    setNodes((current) => [...current, node]);
+    if (source) {
+      setEdges((current) => current.some((edge) => edge.source === source.id && edge.target === nodeId) ? current : [...current, { id: `edge-${source.id}-${nodeId}`, source: source.id, target: nodeId }]);
+    }
+    setSelectedId(nodeId);
+    setMessage('已生成独立子模块节点');
+  }
+
   function updateSelectedConfig(patch: Record<string, unknown>) {
     setNodes((current) =>
       current.map((node) =>
@@ -832,6 +530,7 @@ export function CanvasPage() {
         default_max_workflow_call_depth: profile.default_max_workflow_call_depth ?? 3,
         output_schema_json: profile.output_schema_json ?? {},
         tool_policy_json: profile.tool_policy_json ?? {},
+        memory_policy_json: profile.memory_policy_json ?? {},
         context_policy_json: profile.context_policy_json ?? {},
         risk_level: profile.risk_level ?? 'medium',
         mode: profile.mode ?? 'react',
@@ -924,6 +623,20 @@ export function CanvasPage() {
     }
   }
 
+  function applyRunTrace(trace: RunTrace) {
+    setRunSteps(trace.steps ?? []);
+    setChildRuns(trace.child_runs ?? []);
+    setMemoryLogs(trace.memory_write_logs ?? []);
+    setToolInvocations(trace.tool_invocations ?? []);
+    setRunTraceSummary(trace.replay_summary ?? {});
+  }
+
+  async function loadRunTrace(runId: number, signal?: AbortSignal) {
+    const trace = await workflowApi.getRunTrace(runId);
+    if (signal?.aborted) return;
+    applyRunTrace(trace);
+  }
+
   async function createTeam() {
     const name = teamName.trim();
     if (!name) {
@@ -997,6 +710,7 @@ export function CanvasPage() {
     setChildRuns([]);
     setMemoryLogs([]);
     setToolInvocations([]);
+    setRunTraceSummary(null);
     setError('');
     try {
       if (selectedRunMode === 'complete') {
@@ -1004,18 +718,7 @@ export function CanvasPage() {
         if (controller.signal.aborted) return;
         setDebugRunId(resp.run.id);
         setRunOutput(resp.output);
-        void Promise.all([
-          workflowApi.listRunSteps(resp.run.id),
-          workflowApi.listChildRuns(resp.run.id),
-          workflowApi.listMemoryWriteLogs(resp.run.id),
-          workflowApi.listToolInvocations(resp.run.id),
-        ]).then(([stepResp, childRunResp, memoryResp, toolResp]) => {
-          if (controller.signal.aborted) return;
-          setRunSteps(stepResp);
-          setChildRuns(childRunResp);
-          setMemoryLogs(memoryResp);
-          setToolInvocations(toolResp);
-        }).catch(() => undefined);
+        void loadRunTrace(resp.run.id, controller.signal).catch(() => undefined);
         return;
       }
       await workflowApi.streamRun(workflowId, { flow_version_id: target.id, input }, {
@@ -1026,18 +729,7 @@ export function CanvasPage() {
             const done = JSON.parse(msg.data) as { run: { id: number }; output: Record<string, unknown> };
             setDebugRunId(done.run.id);
             setRunOutput(done.output);
-            void Promise.all([
-              workflowApi.listRunSteps(done.run.id),
-              workflowApi.listChildRuns(done.run.id),
-              workflowApi.listMemoryWriteLogs(done.run.id),
-              workflowApi.listToolInvocations(done.run.id),
-            ]).then(([stepResp, childRunResp, memoryResp, toolResp]) => {
-              if (controller.signal.aborted) return;
-              setRunSteps(stepResp);
-              setChildRuns(childRunResp);
-              setMemoryLogs(memoryResp);
-              setToolInvocations(toolResp);
-            }).catch(() => undefined);
+            void loadRunTrace(done.run.id, controller.signal).catch(() => undefined);
             return;
           }
           if (msg.event === 'error') {
@@ -1152,7 +844,7 @@ export function CanvasPage() {
 
         <section className="flow-surface">
           <ReactFlow
-            nodes={nodes}
+            nodes={nodesWithRunStatus}
             edges={edges}
             nodeTypes={nodeTypes}
             onNodesChange={onNodesChange}
@@ -1184,10 +876,7 @@ export function CanvasPage() {
 
         <aside className="config-panel" aria-hidden={!sidePanelOpen}>
           {mode === 'config' && selected && config ? (
-            <Panel title={selected.data.label} eyebrow={selected.id} className={isAgentNodeType(selected.data.nodeType) ? 'agent-config-panel' : ''}>
-              <Field label="显示名称">
-                <TextInput value={selected.data.label} onChange={(event) => setNodes((current) => current.map((node) => node.id === selectedId ? { ...node, data: { ...node.data, label: event.target.value } } : node))} />
-              </Field>
+            <FormSheet selected={selected} title={selected.data.label} agent={isAgentNodeType(selected.data.nodeType)} onTitleChange={(value) => setNodes((current) => current.map((node) => node.id === selectedId ? { ...node, data: { ...node.data, label: value } } : node))}>
               {selected.data.nodeType === 'knowledge_retrieval' && (
                 <>
                   <Field label="知识库">
@@ -1236,156 +925,19 @@ export function CanvasPage() {
                 </>
               )}
               {isAgentNodeType(selected.data.nodeType) && (
-                <>
-                  <div className="config-section-title">Profile & Mode</div>
-                  <Field label="模式">
-                    <Select value={String(config.mode ?? 'react')} onChange={(event) => updateSelectedConfig({ mode: event.target.value })}>
-                      <option value="react">ReAct</option>
-                      <option value="plan_execute">Plan & Execute</option>
-                      <option value="reflect">Reflect</option>
-                      <option value="supervisor">Supervisor</option>
-                    </Select>
-                  </Field>
-                  <Field label="规划">
-                    <Select value={String(config.mode ?? 'react') === 'plan_execute' ? 'enabled' : 'disabled'} onChange={(event) => updateSelectedConfig(patchAgentPlanning({ enabled: event.target.value === 'enabled' }))}>
-                      <option value="disabled">Disabled</option>
-                      <option value="enabled">Enabled</option>
-                    </Select>
-                  </Field>
-                  <Field label="反思修正">
-                    <Select value={config.reflection_enabled ? 'enabled' : 'disabled'} onChange={(event) => updateSelectedConfig(patchAgentPlanning({ reflection_enabled: event.target.value === 'enabled' }))}>
-                      <option value="disabled">Disabled</option>
-                      <option value="enabled">Enabled</option>
-                    </Select>
-                  </Field>
-                  <div className="config-section-title">Model</div>
-                  <Field label="Provider">
-                    <Select value={agentProviderID(config)} onChange={(event) => updateSelectedConfig(patchAgentModel({ provider_id: Number(event.target.value) }))}>
-                      <option value={0}>继承 Profile 默认 Provider</option>
-                      {providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.name}</option>)}
-                    </Select>
-                  </Field>
-                  <Field label="模型">
-                    <TextInput value={agentModelName(config)} onChange={(event) => updateSelectedConfig(patchAgentModel({ model: event.target.value }))} placeholder="留空使用默认模型" />
-                  </Field>
-                  <Field label="System Prompt">
-                    <TextArea value={agentSystemPrompt(config)} onChange={(event) => updateSelectedConfig(patchAgentSystemPrompt(event.target.value))} />
-                  </Field>
-                  <Field label="任务模板" hint="支持 {{sys.query}} 和 {{node_id.field}}">
-                    <TextArea value={String(config.task_template ?? '')} onChange={(event) => updateSelectedConfig({ task_template: event.target.value })} />
-                  </Field>
-                  <div className="config-section-title">Tools</div>
-                  <Field label="可用工具">
-                    <Select
-                      multiple
-                      value={numberArray(agentToolsConfig(config).tool_ids).map(String)}
-                      onChange={(event) => updateSelectedConfig(patchAgentTools({ tool_ids: Array.from(event.target.selectedOptions).map((option) => Number(option.value)) }))}
-                    >
-                      {tools.map((tool) => <option key={tool.id} value={tool.id}>{tool.name}</option>)}
-                    </Select>
-                  </Field>
-                  <Field label="MCP Server">
-                    <Select
-                      multiple
-                      value={numberArray(agentToolsConfig(config).mcp_server_ids).map(String)}
-                      onChange={(event) => updateSelectedConfig(patchAgentTools({ mcp_server_ids: Array.from(event.target.selectedOptions).map((option) => Number(option.value)) }))}
-                    >
-                      {mcpServers.map((server) => <option key={server.id} value={server.id}>{server.name}</option>)}
-                    </Select>
-                  </Field>
-                  <Field label="知识库工具">
-                    <Select
-                      multiple
-                      value={numberArray(agentToolsConfig(config).knowledge_ids).map(String)}
-                      onChange={(event) => updateSelectedConfig(patchAgentTools({ knowledge_ids: Array.from(event.target.selectedOptions).map((option) => Number(option.value)) }))}
-                    >
-                      {knowledgeBases.map((kb) => <option key={kb.id} value={kb.id}>{kb.name}</option>)}
-                    </Select>
-                  </Field>
-                  <Field label="知识库 Top K">
-                    <TextInput type="number" min={1} max={20} value={Number(agentToolsConfig(config).knowledge_top_k ?? 5)} onChange={(event) => updateSelectedConfig(patchAgentTools({ knowledge_top_k: Number(event.target.value) }))} />
-                  </Field>
-                  <Field label="知识库模式">
-                    <Select value={String(agentToolsConfig(config).knowledge_mode ?? 'keyword')} onChange={(event) => updateSelectedConfig(patchAgentTools({ knowledge_mode: event.target.value }))}>
-                      <option value="keyword">Keyword</option>
-                      <option value="vector">Vector</option>
-                      <option value="hybrid">Hybrid</option>
-                    </Select>
-                  </Field>
-                  <Field label="可调用 Agent">
-                    <Select
-                      multiple
-                      value={numberArray(agentToolsConfig(config).call_workflow_ids).map(String)}
-                      onChange={(event) => updateSelectedConfig(patchAgentTools({ call_workflow_ids: Array.from(event.target.selectedOptions).map((option) => Number(option.value)) }))}
-                    >
-                      {callableWorkflows.map((workflow) => <option key={workflow.id} value={workflow.id}>{workflow.name}</option>)}
-                    </Select>
-                  </Field>
-                  <Field label="Agent 调用深度">
-                    <TextInput type="number" min={1} max={5} value={Number(agentToolsConfig(config).max_workflow_call_depth ?? 3)} onChange={(event) => updateSelectedConfig(patchAgentTools({ max_workflow_call_depth: Number(event.target.value) }))} />
-                  </Field>
-                  <Field label="代码执行工具">
-                    <Select value={agentToolsConfig(config).code_execution_enabled ? 'enabled' : 'disabled'} onChange={(event) => updateSelectedConfig(patchAgentTools({ code_execution_enabled: event.target.value === 'enabled' }))}>
-                      <option value="disabled">Disabled</option>
-                      <option value="enabled">Enabled</option>
-                    </Select>
-                  </Field>
-                  <div className="config-section-title">Memory & Context</div>
-                  <Field label="记忆工具">
-                    <Select value={agentMemoryEnabled(config) ? 'enabled' : 'disabled'} onChange={(event) => updateSelectedConfig(patchAgentMemory(event.target.value === 'enabled'))}>
-                      <option value="disabled">Disabled</option>
-                      <option value="enabled">Enabled</option>
-                    </Select>
-                  </Field>
-                  <Field label="上下文预算 tokens">
-                    <TextInput type="number" min={1024} max={200000} step={1024} value={Math.round(Number(config.max_input_chars ?? 96000) / 4)} onChange={(event) => updateSelectedConfig(patchAgentContext({ max_input_tokens: Number(event.target.value) }))} />
-                  </Field>
-                  <div className="config-section-title">Policy & Limits</div>
-                  <Field label="需审批风险等级" hint="多选；默认 high。高风险工具会让 Run 进入 waiting_human。">
-                    <Select
-                      multiple
-                      value={stringArray(config.require_approval_for_risk, ['high'])}
-                      onChange={(event) => updateSelectedConfig(patchAgentPolicy({ require_approval_for_risk: Array.from(event.target.selectedOptions).map((option) => option.value) }))}
-                    >
-                      <option value="low">Low</option>
-                      <option value="medium">Medium</option>
-                      <option value="high">High</option>
-                    </Select>
-                  </Field>
-                  <Field label="工具超时毫秒" hint="限制单次工具调用；会覆盖工具自身更长的超时。">
-                    <TextInput type="number" min={1000} max={600000} step={1000} value={Number(config.max_tool_timeout_ms ?? 30000)} onChange={(event) => updateSelectedConfig(patchAgentPolicy({ max_tool_timeout_ms: Number(event.target.value) }))} />
-                  </Field>
-                  <Field label="工具输出字节" hint="超出后压缩进入上下文和 trace。">
-                    <TextInput type="number" min={1024} max={2097152} step={1024} value={Number(config.max_tool_output_bytes ?? 524288)} onChange={(event) => updateSelectedConfig(patchAgentPolicy({ max_tool_output_bytes: Number(event.target.value) }))} />
-                  </Field>
-                  <Field label="允许 Host" hint="逗号分隔；为空则不额外限制。">
-                    <TextInput value={stringArray(config.allowed_hosts).join(', ')} onChange={(event) => updateSelectedConfig(patchAgentPolicy({ allowed_hosts: event.target.value.split(',').map((item) => item.trim()).filter(Boolean) }))} placeholder="api.example.com, mcp.example.com" />
-                  </Field>
-                  <Field label="最大轮次">
-                    <TextInput type="number" min={1} max={50} value={Number(agentLimitsConfig(config).max_iterations ?? 8)} onChange={(event) => updateSelectedConfig(patchAgentLimits({ max_iterations: Number(event.target.value) }))} />
-                  </Field>
-                  <Field label="最大工具调用">
-                    <TextInput type="number" min={1} max={100} value={Number(agentLimitsConfig(config).max_tool_calls ?? 16)} onChange={(event) => updateSelectedConfig(patchAgentLimits({ max_tool_calls: Number(event.target.value) }))} />
-                  </Field>
-                  <Field label="超时毫秒">
-                    <TextInput type="number" min={1000} max={600000} step={1000} value={Number(agentLimitsConfig(config).max_execution_time_ms ?? 120000)} onChange={(event) => updateSelectedConfig(patchAgentLimits({ max_execution_time_ms: Number(event.target.value) }))} />
-                  </Field>
-                  <Field label="Temperature">
-                    <TextInput type="number" min={0} max={2} step={0.1} value={agentTemperature(config)} onChange={(event) => updateSelectedConfig(patchAgentModel({ temperature: Number(event.target.value) }))} />
-                  </Field>
-                  <div className="config-section-title">Output</div>
-                  <Field label="输出模式">
-                    <Select value={agentOutputMode(config)} onChange={(event) => updateSelectedConfig(patchAgentOutput(event.target.value))}>
-                      <option value="final_answer">Final Answer</option>
-                      <option value="full">Full Trace</option>
-                    </Select>
-                  </Field>
-                  <Field label="输出 Schema JSON" hint="留空对象会继承 Profile；配置后 final_answer 必须是符合 schema 的 JSON。">
-                    <TextArea value={prettyJson(config.output_schema_json ?? {})} onChange={(event) => updateSelectedJSON('output_schema_json', event.target.value)} />
-                  </Field>
-                </>
+                <AgentLoopForm
+                  config={config}
+                  providers={providers}
+                  tools={tools}
+                  knowledgeBases={knowledgeBases}
+                  mcpServers={mcpServers}
+                  callableWorkflows={callableWorkflows}
+                  updateConfig={updateSelectedConfig}
+                  updateJSON={updateSelectedJSON}
+                  addReferencedNode={addReferencedNode}
+                />
               )}
-              {selected.data.nodeType === 'workflow_call' && (
+              {isStaticAgentCallNodeType(selected.data.nodeType) && (
                 <>
                   <Field label="目标 Agent">
                     <Select value={Number(config.workflow_id ?? 0)} onChange={(event) => updateSelectedConfig({ workflow_id: Number(event.target.value) })}>
@@ -1539,7 +1091,7 @@ export function CanvasPage() {
                 <EmptyState icon={<WorkflowIcon size={22} />} title="Begin 会透传运行输入" description="调试台默认使用 query 字段，后续节点可通过 {{sys.query}} 引用。" />
               )}
               {error ? <p className="error-text">{error}</p> : null}
-            </Panel>
+            </FormSheet>
           ) : null}
 
           {mode === 'profile' && profile ? (
@@ -1694,6 +1246,19 @@ export function CanvasPage() {
                   }}
                 />
               </Field>
+              <Field label="默认 Memory Policy JSON">
+                <TextArea
+                  value={prettyJson(profile.memory_policy_json ?? {})}
+                  onChange={(event) => {
+                    try {
+                      setProfile({ ...profile, memory_policy_json: JSON.parse(event.target.value) as unknown });
+                      setError('');
+                    } catch {
+                      setError('Memory Policy JSON 格式不正确');
+                    }
+                  }}
+                />
+              </Field>
               <Field label="默认 Context Policy JSON">
                 <TextArea
                   value={prettyJson(profile.context_policy_json ?? {})}
@@ -1717,26 +1282,7 @@ export function CanvasPage() {
 
           {mode === 'approvals' ? (
             <Panel title="人工审批" eyebrow={`${approvalRequests.length} pending`}>
-              {approvalRequests.length === 0 ? (
-                <EmptyState icon={<ShieldCheck size={22} />} title="暂无待审批请求" description="高风险工具触发审批后会出现在这里。" />
-              ) : (
-                <div className="trace-list">
-                  {approvalRequests.map((item) => (
-                    <article className="trace-item" key={item.id}>
-                      <div className="trace-item-head">
-                        <strong>{item.tool_name}</strong>
-                        <StatusBadge tone={item.risk_level === 'high' ? 'warn' : 'neutral'}>{item.risk_level}</StatusBadge>
-                      </div>
-                      <p>{item.reason}</p>
-                      <p className="muted">Run #{item.run_id} · Node {item.node_id || '-'}</p>
-                      <div className="toolbar-actions">
-                        <Button onClick={() => void decideApproval(item, true)}>批准并恢复</Button>
-                        <Button onClick={() => void decideApproval(item, false)}>拒绝并恢复</Button>
-                      </div>
-                    </article>
-                  ))}
-                </div>
-              )}
+              <ApprovalQueue items={approvalRequests} onDecide={(item, approve) => void decideApproval(item, approve)} />
               {error ? <p className="error-text">{error}</p> : null}
             </Panel>
           ) : null}
@@ -1841,6 +1387,27 @@ export function CanvasPage() {
                   <span>{latestEvalRun.failed_cases} failed</span>
                 </div>
               ) : null}
+              {evalTrend?.latest ? (
+                <div className="trace-summary">
+                  <span>runs {metricFixed(evalTrend.trend_summary, 'run_count')}</span>
+                  <span>best {metricPercent(evalTrend.trend_summary, 'best_success_rate')}</span>
+                  <span>delta {metricPercent(evalTrend.delta, 'success_rate')}</span>
+                  <span>flow #{evalTrend.latest.flow_version_id || '-'}</span>
+                </div>
+              ) : null}
+              {latestEvalRun ? (() => {
+                const metrics = evalTrend?.latest?.metrics ?? evalSummaryMetrics(latestEvalRun);
+                return (
+                  <div className="trace-summary">
+                    <span>tool {metricPercent(metrics, 'avg_tool_call_accuracy')}</span>
+                    <span>schema {metricPercent(metrics, 'avg_schema_compliance')}</span>
+                    <span>refs {metricPercent(metrics, 'avg_reference_hit_rate')}</span>
+                    <span>tokens {metricFixed(metrics, 'avg_total_tokens')}</span>
+                    <span>latency {metricFixed(metrics, 'avg_latency_ms', 'ms')}</span>
+                    <span>approval {metricPercent(metrics, 'human_approval_waiting_rate')}</span>
+                  </div>
+                );
+              })() : null}
               {evalRuns.length > 0 ? (
                 <div className="trace-list">
                   {evalRuns.slice(0, 8).map((item) => (
@@ -1909,6 +1476,15 @@ export function CanvasPage() {
                     <pre className="code-box debug-result-content">{runOutputText(runOutput)}</pre>
                   </div>
                 ) : null}
+                {runTraceSummary ? (
+                  <div className="card">
+                    <div className="card-title">
+                      <h3>Trace Replay Summary</h3>
+                      <StatusBadge tone="info">{String(runTraceSummary.status ?? 'trace')}</StatusBadge>
+                    </div>
+                    <pre className="code-box">{prettyJson(runTraceSummary)}</pre>
+                  </div>
+                ) : null}
                 {runSteps.length > 0 ? (
                   <div className="card">
                     <div className="card-title">
@@ -1916,7 +1492,7 @@ export function CanvasPage() {
                       <StatusBadge tone="info">{runSteps.length}</StatusBadge>
                       {runSteps.some((step) => step.compressed) ? <StatusBadge tone="warn">{runSteps.filter((step) => step.compressed).length} compressed</StatusBadge> : null}
                     </div>
-                    <pre className="code-box">{prettyJson(runSteps)}</pre>
+                    <AgentTraceTimeline steps={runSteps} />
                   </div>
                 ) : null}
                 {childRuns.length > 0 ? (
@@ -1934,7 +1510,7 @@ export function CanvasPage() {
                 {toolInvocations.length > 0 ? (
                   <div className="card">
                     <div className="card-title"><h3>工具调用</h3><StatusBadge tone="info">{toolInvocations.length}</StatusBadge></div>
-                    <pre className="code-box">{prettyJson(toolInvocations)}</pre>
+                    <ToolInvocationList items={toolInvocations} />
                   </div>
                 ) : null}
               </div>
