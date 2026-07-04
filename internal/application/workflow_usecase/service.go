@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -108,6 +109,11 @@ type UpdateWorkflowProfileRequest struct {
 	DefaultCallWorkflowIDs      *[]int64         `json:"default_call_workflow_ids"`
 	DefaultMaxWorkflowCallDepth *int             `json:"default_max_workflow_call_depth"`
 	OutputSchemaJSON            *json.RawMessage `json:"output_schema_json"`
+	ToolPolicyJSON              *json.RawMessage `json:"tool_policy_json"`
+	MemoryPolicyJSON            *json.RawMessage `json:"memory_policy_json"`
+	ContextPolicyJSON           *json.RawMessage `json:"context_policy_json"`
+	RiskLevel                   *string          `json:"risk_level"`
+	Mode                        *string          `json:"mode"`
 }
 
 type CreateWorkflowVersionRequest struct {
@@ -317,6 +323,47 @@ func (s *Service) UpdateWorkflowProfile(ctx context.Context, ownerID, workflowID
 		}
 		profile.OutputSchemaJSON = outputSchema
 	}
+	if req.ToolPolicyJSON != nil {
+		toolPolicy, err := normalizeOptionalRawJSON(*req.ToolPolicyJSON, "tool_policy_json")
+		if err != nil {
+			return nil, err
+		}
+		if len(toolPolicy) > 0 && string(toolPolicy) != "{}" {
+			var policy runtimeagent.ToolPolicy
+			if err := json.Unmarshal(toolPolicy, &policy); err != nil {
+				return nil, fmt.Errorf("%w: tool_policy_json is invalid", agenterrors.ErrInvalidInput)
+			}
+		}
+		profile.ToolPolicyJSON = toolPolicy
+	}
+	if req.MemoryPolicyJSON != nil {
+		memoryPolicy, err := normalizeOptionalRawJSON(*req.MemoryPolicyJSON, "memory_policy_json")
+		if err != nil {
+			return nil, err
+		}
+		profile.MemoryPolicyJSON = memoryPolicy
+	}
+	if req.ContextPolicyJSON != nil {
+		contextPolicy, err := normalizeOptionalRawJSON(*req.ContextPolicyJSON, "context_policy_json")
+		if err != nil {
+			return nil, err
+		}
+		profile.ContextPolicyJSON = contextPolicy
+	}
+	if req.RiskLevel != nil {
+		risk := strings.TrimSpace(*req.RiskLevel)
+		if risk != "" && risk != toolruntime.RiskLow && risk != toolruntime.RiskMedium && risk != toolruntime.RiskHigh {
+			return nil, fmt.Errorf("%w: risk_level must be low, medium, or high", agenterrors.ErrInvalidInput)
+		}
+		profile.RiskLevel = risk
+	}
+	if req.Mode != nil {
+		mode := strings.TrimSpace(*req.Mode)
+		if mode != "" && mode != "react" && mode != "plan_execute" && mode != "reflect" && mode != "supervisor" {
+			return nil, fmt.Errorf("%w: mode must be react, plan_execute, reflect, or supervisor", agenterrors.ErrInvalidInput)
+		}
+		profile.Mode = mode
+	}
 	if strings.TrimSpace(profile.Role) == "" || strings.TrimSpace(profile.Goal) == "" {
 		return nil, fmt.Errorf("%w: role and goal are required", agenterrors.ErrInvalidInput)
 	}
@@ -465,12 +512,13 @@ func (s *Service) RunEvalDataset(ctx context.Context, ownerID, datasetID int64, 
 			results = append(results, *result)
 			continue
 		}
-		score, reason := scoreEvalOutput(output, evalCase.ExpectedJSON, evalCase.RequiredToolsJSON)
+		scoreResult := scoreEvalOutputDetailed(output, evalCase.ExpectedJSON, evalCase.RequiredToolsJSON)
+		score, reason := scoreResult.Score, scoreResult.Reason
 		status := "failed"
 		if score >= 1 {
 			status = "passed"
 		}
-		metricsJSON, _ := json.Marshal(map[string]any{"score": score, "reason": reason})
+		metricsJSON, _ := json.Marshal(scoreResult.Metrics)
 		result := &workflow.EvalResult{
 			OwnerID:       ownerID,
 			EvalRunID:     evalRun.ID,
@@ -1180,7 +1228,7 @@ func (s *Service) persistRunCheckpointArtifacts(ctx context.Context, run *workfl
 		messagesJSON, _ := json.Marshal(checkpoint.Messages)
 		stepsJSON, _ := json.Marshal(output["steps"])
 		pendingJSON, _ := json.Marshal(checkpoint.PendingToolCall)
-		contextJSON, _ := json.Marshal(checkpoint.Context)
+		contextJSON, _ := json.Marshal(checkpointContextEnvelope{Context: checkpoint.Context, Metadata: checkpoint.Metadata})
 		item := &workflow.WorkflowCheckpoint{
 			OwnerID:             run.OwnerID,
 			WorkflowID:          run.WorkflowID,
@@ -1192,8 +1240,8 @@ func (s *Service) persistRunCheckpointArtifacts(ctx context.Context, run *workfl
 			StepsJSON:           stepsJSON,
 			PendingToolCallJSON: pendingJSON,
 			ContextJSON:         contextJSON,
-			ToolRegistryHash:    stableJSONHash(checkpoint.ToolNames),
-			ToolPolicyHash:      stableJSONHash(checkpoint.ToolPolicy),
+			ToolRegistryHash:    checkpointToolRegistryHash(checkpoint),
+			ToolPolicyHash:      checkpointToolPolicyHash(checkpoint),
 		}
 		if item.NodeID == "" {
 			item.NodeID = "agent"
@@ -1211,6 +1259,37 @@ func checkpointNodeID(checkpoint *runtimeagent.Checkpoint) string {
 	}
 	nodeID, _ := checkpoint.Metadata["node_id"].(string)
 	return nodeID
+}
+
+func checkpointToolRegistryHash(checkpoint *runtimeagent.Checkpoint) string {
+	if checkpoint == nil {
+		return ""
+	}
+	if len(checkpoint.ToolNames) > 0 {
+		return stableJSONHash(checkpoint.ToolNames)
+	}
+	if checkpoint.Metadata != nil {
+		if hash, _ := checkpoint.Metadata["tool_registry_hash"].(string); hash != "" {
+			return hash
+		}
+	}
+	return stableJSONHash(checkpoint.ToolNames)
+}
+
+func checkpointToolPolicyHash(checkpoint *runtimeagent.Checkpoint) string {
+	if checkpoint == nil {
+		return ""
+	}
+	if checkpoint.Metadata != nil {
+		if hash, _ := checkpoint.Metadata["tool_policy_hash"].(string); hash != "" && isZeroToolPolicy(checkpoint.ToolPolicy) {
+			return hash
+		}
+	}
+	return stableJSONHash(checkpoint.ToolPolicy)
+}
+
+func isZeroToolPolicy(policy runtimeagent.ToolPolicy) bool {
+	return len(policy.RequireApprovalForRisk) == 0 && policy.MaxToolTimeoutMS == 0 && policy.MaxToolOutputBytes == 0 && len(policy.AllowedHosts) == 0
 }
 
 func (s *Service) resumeRunFromCheckpoint(ctx context.Context, run *workflow.Run, stored *workflow.WorkflowCheckpoint) (*workflow.Run, error) {
@@ -1312,6 +1391,11 @@ func (s *Service) resumeRunFromCheckpoint(ctx context.Context, run *workflow.Run
 			return run, err
 		}
 	}
+	if run.Status == workflow.RunStatusPaused {
+		if err := s.persistRunCheckpointArtifacts(ctx, run, output, workflow.RunStatusPaused); err != nil {
+			return run, err
+		}
+	}
 	if err := s.runs.Update(ctx, run); err != nil {
 		return run, err
 	}
@@ -1353,22 +1437,46 @@ func decodeRuntimeCheckpoint(stored *workflow.WorkflowCheckpoint, decision *work
 		pending = &call
 	}
 	var contextTrace runtimeagent.ContextTrace
+	metadata := map[string]any{}
 	if len(stored.ContextJSON) > 0 {
-		_ = json.Unmarshal(stored.ContextJSON, &contextTrace)
+		contextTrace, metadata = decodeCheckpointContext(stored.ContextJSON)
 	}
+	metadata["node_id"] = stored.NodeID
+	metadata["approval_status"] = approvalDecisionStatus(decision)
+	metadata["approval_note"] = approvalDecisionNote(decision)
+	metadata["checkpoint_id"] = stored.ID
+	metadata["checkpoint_state"] = stored.Status
+	metadata["tool_registry_hash"] = stored.ToolRegistryHash
+	metadata["tool_policy_hash"] = stored.ToolPolicyHash
 	return &runtimeagent.Checkpoint{
 		Messages:        messages,
 		MessagesSummary: stored.MessagesSummary,
 		PendingToolCall: pending,
 		Context:         contextTrace,
-		Metadata: map[string]any{
-			"node_id":          stored.NodeID,
-			"approval_status":  approvalDecisionStatus(decision),
-			"approval_note":    approvalDecisionNote(decision),
-			"checkpoint_id":    stored.ID,
-			"checkpoint_state": stored.Status,
-		},
+		Metadata:        metadata,
 	}, nil
+}
+
+type checkpointContextEnvelope struct {
+	Context  runtimeagent.ContextTrace `json:"context"`
+	Metadata map[string]any            `json:"metadata,omitempty"`
+}
+
+func decodeCheckpointContext(raw json.RawMessage) (runtimeagent.ContextTrace, map[string]any) {
+	var root map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &root); err == nil {
+		if _, ok := root["context"]; ok {
+			var envelope checkpointContextEnvelope
+			_ = json.Unmarshal(raw, &envelope)
+			if envelope.Metadata == nil {
+				envelope.Metadata = map[string]any{}
+			}
+			return envelope.Context, envelope.Metadata
+		}
+	}
+	var trace runtimeagent.ContextTrace
+	_ = json.Unmarshal(raw, &trace)
+	return trace, map[string]any{}
 }
 
 func findCheckpointAgentNode(dsl *flow.DSL, nodeID string) (*flow.Node, error) {
@@ -1446,6 +1554,7 @@ func (s *Service) RecordAgentStep(ctx context.Context, rc *engine.RunContext, st
 		ToolName:      step.ToolName,
 		ArgumentsJSON: step.ArgumentsJSON,
 		OutputJSON:    step.OutputJSON,
+		Compressed:    step.Compressed,
 		ErrorMessage:  step.ErrorMessage,
 		TokenCount:    step.TokenCount,
 		LatencyMS:     step.LatencyMS,
@@ -1598,38 +1707,89 @@ func failedEvalResult(ownerID, evalRunID, evalCaseID int64, agentRunID *int64, o
 }
 
 func scoreEvalOutput(output engine.NodeOutput, expectedJSON, requiredToolsJSON json.RawMessage) (float64, string) {
+	result := scoreEvalOutputDetailed(output, expectedJSON, requiredToolsJSON)
+	return result.Score, result.Reason
+}
+
+type evalScoreResult struct {
+	Score   float64
+	Reason  string
+	Metrics map[string]any
+}
+
+func scoreEvalOutputDetailed(output engine.NodeOutput, expectedJSON, requiredToolsJSON json.RawMessage) evalScoreResult {
 	if output == nil {
 		output = engine.NodeOutput{}
 	}
+	metrics := baseEvalMetrics(output)
 	if len(requiredToolsJSON) > 0 {
 		var required []string
 		if err := json.Unmarshal(requiredToolsJSON, &required); err == nil && len(required) > 0 {
 			called := extractToolNames(output)
+			matched := 0
 			for _, name := range required {
-				if strings.TrimSpace(name) != "" && !called[strings.TrimSpace(name)] {
-					return 0, "required tool was not called: " + strings.TrimSpace(name)
+				name = strings.TrimSpace(name)
+				if name == "" {
+					continue
+				}
+				if called[name] {
+					matched++
+				} else {
+					metrics["tool_call_accuracy"] = float64(matched) / float64(len(required))
+					metrics["required_tools"] = required
+					metrics["actual_tools"] = sortedToolNames(called)
+					return evalScoreResult{Score: 0, Reason: "required tool was not called: " + name, Metrics: metrics}
 				}
 			}
+			metrics["tool_call_accuracy"] = float64(matched) / float64(len(required))
+			metrics["required_tools"] = required
+			metrics["actual_tools"] = sortedToolNames(called)
 		}
 	}
+	if _, exists := metrics["tool_call_accuracy"]; !exists {
+		metrics["tool_call_accuracy"] = 1.0
+		metrics["actual_tools"] = sortedToolNames(extractToolNames(output))
+	}
 	if len(expectedJSON) == 0 {
-		return 1, "no expected_json configured"
+		metrics["score"] = 1.0
+		metrics["reason"] = "no expected_json configured"
+		return evalScoreResult{Score: 1, Reason: "no expected_json configured", Metrics: metrics}
 	}
 	var expected map[string]any
 	if err := json.Unmarshal(expectedJSON, &expected); err != nil {
-		return 0, "expected_json is invalid: " + err.Error()
+		metrics["score"] = 0.0
+		metrics["reason"] = "expected_json is invalid: " + err.Error()
+		return evalScoreResult{Score: 0, Reason: "expected_json is invalid: " + err.Error(), Metrics: metrics}
+	}
+	if schema, ok := expectedSchema(expected); ok {
+		if err := validateEvalSchema(schema, output); err != nil {
+			metrics["schema_compliance"] = 0.0
+			metrics["json_schema_compliance"] = 0.0
+			metrics["score"] = 0.0
+			metrics["reason"] = "schema mismatch: " + err.Error()
+			return evalScoreResult{Score: 0, Reason: "schema mismatch: " + err.Error(), Metrics: metrics}
+		}
+		metrics["schema_compliance"] = 1.0
+		metrics["json_schema_compliance"] = 1.0
+	} else {
+		metrics["schema_compliance"] = 1.0
+		metrics["json_schema_compliance"] = 1.0
 	}
 	if status, ok := expected["status"].(string); ok && status != "" {
 		actualStatus, _ := output["status"].(string)
 		if actualStatus != status {
-			return 0, fmt.Sprintf("status mismatch: expected %s got %s", status, actualStatus)
+			metrics["score"] = 0.0
+			metrics["reason"] = fmt.Sprintf("status mismatch: expected %s got %s", status, actualStatus)
+			return evalScoreResult{Score: 0, Reason: fmt.Sprintf("status mismatch: expected %s got %s", status, actualStatus), Metrics: metrics}
 		}
 	}
 	if contains, exists := expected["contains"]; exists {
 		text := strings.ToLower(outputText(output))
 		for _, expectedText := range expectedContainsList(contains) {
 			if !strings.Contains(text, strings.ToLower(expectedText)) {
-				return 0, "output does not contain expected text: " + expectedText
+				metrics["score"] = 0.0
+				metrics["reason"] = "output does not contain expected text: " + expectedText
+				return evalScoreResult{Score: 0, Reason: "output does not contain expected text: " + expectedText, Metrics: metrics}
 			}
 		}
 	}
@@ -1641,10 +1801,130 @@ func scoreEvalOutput(output engine.NodeOutput, expectedJSON, requiredToolsJSON j
 		expectedBytes, _ := json.Marshal(equals)
 		actualBytes, _ := json.Marshal(actual)
 		if string(expectedBytes) != string(actualBytes) {
-			return 0, "final answer does not equal expected value"
+			metrics["score"] = 0.0
+			metrics["reason"] = "final answer does not equal expected value"
+			return evalScoreResult{Score: 0, Reason: "final answer does not equal expected value", Metrics: metrics}
 		}
 	}
-	return 1, "matched expected_json"
+	metrics["score"] = 1.0
+	metrics["reason"] = "matched expected_json"
+	return evalScoreResult{Score: 1, Reason: "matched expected_json", Metrics: metrics}
+}
+
+func baseEvalMetrics(output engine.NodeOutput) map[string]any {
+	stopReason, _ := output["stop_reason"].(string)
+	metrics := map[string]any{
+		"stop_reason":                 stopReason,
+		"max_iteration_exceeded":      stopReason == runtimeagent.StopReasonMaxIterations,
+		"human_approval_waiting":      stopReason == runtimeagent.StopReasonWaitingHuman,
+		"latency_ms":                  numberFromOutput(output, "latency_ms"),
+		"total_tokens":                numberFromOutput(output, "total_tokens"),
+		"json_schema_compliance":      1.0,
+		"schema_compliance":           1.0,
+		"tool_call_accuracy":          1.0,
+		"max_tool_calls_exceeded":     stopReason == runtimeagent.StopReasonMaxToolCalls,
+		"reflection_repair_attempted": hasStepType(output, runtimeagent.StepTypeReflection),
+	}
+	return metrics
+}
+
+func expectedSchema(expected map[string]any) (map[string]any, bool) {
+	for _, key := range []string{"json_schema", "schema"} {
+		if raw, ok := expected[key].(map[string]any); ok && len(raw) > 0 {
+			return raw, true
+		}
+	}
+	return nil, false
+}
+
+func validateEvalSchema(schema map[string]any, output engine.NodeOutput) error {
+	value := output["structured_output"]
+	if value == nil {
+		value = output["final_answer"]
+		if text, ok := value.(string); ok {
+			var parsed any
+			if err := json.Unmarshal([]byte(text), &parsed); err != nil {
+				return fmt.Errorf("final_answer is not valid JSON")
+			}
+			value = parsed
+		}
+	}
+	if value == nil {
+		return fmt.Errorf("structured output is missing")
+	}
+	return validateEvalSchemaValue(schema, value)
+}
+
+func validateEvalSchemaValue(schema map[string]any, value any) error {
+	if typ, _ := schema["type"].(string); typ != "" {
+		if err := validateEvalJSONType(typ, value); err != nil {
+			return err
+		}
+	}
+	properties, _ := schema["properties"].(map[string]any)
+	required, _ := schema["required"].([]any)
+	if len(properties) == 0 && len(required) == 0 {
+		return nil
+	}
+	obj, ok := value.(map[string]any)
+	if !ok {
+		return fmt.Errorf("expected object")
+	}
+	for _, item := range required {
+		key, _ := item.(string)
+		if key == "" {
+			continue
+		}
+		if _, ok := obj[key]; !ok {
+			return fmt.Errorf("missing required field %s", key)
+		}
+	}
+	for key, spec := range properties {
+		value, exists := obj[key]
+		if !exists {
+			continue
+		}
+		specMap, ok := spec.(map[string]any)
+		if !ok {
+			continue
+		}
+		typ, _ := specMap["type"].(string)
+		if typ == "" {
+			continue
+		}
+		if err := validateEvalJSONType(typ, value); err != nil {
+			return fmt.Errorf("field %s: %w", key, err)
+		}
+	}
+	return nil
+}
+
+func validateEvalJSONType(typ string, value any) error {
+	switch typ {
+	case "object":
+		if _, ok := value.(map[string]any); !ok {
+			return fmt.Errorf("expected object")
+		}
+	case "array":
+		if _, ok := value.([]any); !ok {
+			return fmt.Errorf("expected array")
+		}
+	case "string":
+		if _, ok := value.(string); !ok {
+			return fmt.Errorf("expected string")
+		}
+	case "number":
+		switch value.(type) {
+		case float64, int, int64, json.Number:
+		default:
+			return fmt.Errorf("expected number")
+		}
+	case "boolean":
+		if _, ok := value.(bool); !ok {
+			return fmt.Errorf("expected boolean")
+		}
+	}
+	return nil
 }
 
 func expectedContainsList(value any) []string {
@@ -1678,10 +1958,68 @@ func outputText(output engine.NodeOutput) string {
 	return string(bytes)
 }
 
+func numberFromOutput(output engine.NodeOutput, key string) int {
+	switch value := output[key].(type) {
+	case int:
+		return value
+	case int64:
+		return int(value)
+	case float64:
+		return int(value)
+	case json.Number:
+		i, _ := value.Int64()
+		return int(i)
+	default:
+		return 0
+	}
+}
+
 func stableJSONHash(value any) string {
 	bytes, _ := json.Marshal(value)
 	sum := sha256.Sum256(bytes)
 	return hex.EncodeToString(sum[:])
+}
+
+func sortedToolNames(called map[string]bool) []string {
+	names := make([]string, 0, len(called))
+	for name := range called {
+		if strings.TrimSpace(name) != "" {
+			names = append(names, strings.TrimSpace(name))
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
+func hasStepType(output engine.NodeOutput, stepType string) bool {
+	if stepType == "" {
+		return false
+	}
+	if rawSteps, ok := output["steps"].([]any); ok {
+		for _, raw := range rawSteps {
+			if step, ok := raw.(map[string]any); ok {
+				if typ, _ := step["type"].(string); typ == stepType {
+					return true
+				}
+			}
+		}
+	}
+	stepsJSON, err := json.Marshal(output["steps"])
+	if err != nil || string(stepsJSON) == "null" {
+		return false
+	}
+	var steps []struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(stepsJSON, &steps); err != nil {
+		return false
+	}
+	for _, step := range steps {
+		if step.Type == stepType {
+			return true
+		}
+	}
+	return false
 }
 
 func extractToolNames(output engine.NodeOutput) map[string]bool {
@@ -1795,5 +2133,10 @@ func defaultWorkflowProfile(ownerID, workflowID int64, name, description string)
 		DefaultKnowledgeMode:        string(retrieval.ModeHybrid),
 		DefaultMaxWorkflowCallDepth: 3,
 		OutputSchemaJSON:            json.RawMessage("{}"),
+		ToolPolicyJSON:              json.RawMessage("{}"),
+		MemoryPolicyJSON:            json.RawMessage("{}"),
+		ContextPolicyJSON:           json.RawMessage("{}"),
+		RiskLevel:                   toolruntime.RiskMedium,
+		Mode:                        "react",
 	}
 }

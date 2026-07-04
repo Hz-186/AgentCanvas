@@ -15,6 +15,7 @@ import (
 	cryptoinfra "agentcanvas/internal/infrastructure/crypto"
 	"agentcanvas/internal/infrastructure/llm"
 	agenterrors "agentcanvas/internal/pkg/errors"
+	runtimeagent "agentcanvas/internal/runtime/agent"
 	"agentcanvas/internal/runtime/engine"
 	runtimenode "agentcanvas/internal/runtime/node"
 	"agentcanvas/internal/runtime/toolruntime"
@@ -97,6 +98,7 @@ func TestRecordAgentStepPersistsRunStep(t *testing.T) {
 		ToolCallID: "call_1",
 		ToolName:   "search_knowledge",
 		Content:    "content",
+		Compressed: true,
 		LatencyMS:  15,
 	})
 	if err != nil {
@@ -108,6 +110,9 @@ func TestRecordAgentStepPersistsRunStep(t *testing.T) {
 	item := steps.items[0]
 	if item.OwnerID != 1 || item.RunID != 2 || item.NodeID != "agent_loop" || item.StepIndex != 3 || item.ToolName != "search_knowledge" {
 		t.Fatalf("unexpected step: %+v", item)
+	}
+	if !item.Compressed {
+		t.Fatalf("expected compressed flag to be persisted: %+v", item)
 	}
 }
 
@@ -152,6 +157,10 @@ func TestUpdateAgentProfileValidatesLimits(t *testing.T) {
 	defaultKnowledge := []int64{10, 11}
 	defaultAgents := []int64{21}
 	outputSchema := rawJSON(`{"type":"object","required":["answer"]}`)
+	toolPolicy := rawJSON(`{"require_approval_for_risk":["high"],"max_tool_timeout_ms":1500,"max_tool_output_bytes":4096,"allowed_hosts":["api.example.com"]}`)
+	contextPolicy := rawJSON(`{"max_input_tokens":12000}`)
+	riskLevel := "high"
+	profileMode := "reflect"
 	updated, err := service.UpdateWorkflowProfile(context.Background(), 1, 20, UpdateWorkflowProfileRequest{
 		Role:                        &role,
 		Goal:                        &goal,
@@ -164,6 +173,10 @@ func TestUpdateAgentProfileValidatesLimits(t *testing.T) {
 		DefaultCallWorkflowIDs:      &defaultAgents,
 		DefaultMaxWorkflowCallDepth: &maxDepth,
 		OutputSchemaJSON:            &outputSchema,
+		ToolPolicyJSON:              &toolPolicy,
+		ContextPolicyJSON:           &contextPolicy,
+		RiskLevel:                   &riskLevel,
+		Mode:                        &profileMode,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -192,9 +205,19 @@ func TestUpdateAgentProfileValidatesLimits(t *testing.T) {
 	if string(updated.OutputSchemaJSON) != `{"required":["answer"],"type":"object"}` {
 		t.Fatalf("unexpected output schema: %s", string(updated.OutputSchemaJSON))
 	}
+	if string(updated.ToolPolicyJSON) != `{"allowed_hosts":["api.example.com"],"max_tool_output_bytes":4096,"max_tool_timeout_ms":1500,"require_approval_for_risk":["high"]}` {
+		t.Fatalf("unexpected tool policy: %s", string(updated.ToolPolicyJSON))
+	}
+	if string(updated.ContextPolicyJSON) != `{"max_input_tokens":12000}` || updated.RiskLevel != "high" || updated.Mode != "reflect" {
+		t.Fatalf("unexpected profile policy fields: %+v context=%s", updated, string(updated.ContextPolicyJSON))
+	}
 	badTopK := 99
 	if _, err := service.UpdateWorkflowProfile(context.Background(), 1, 20, UpdateWorkflowProfileRequest{DefaultKnowledgeTopK: &badTopK}); err == nil {
 		t.Fatal("expected default_knowledge_top_k validation error")
+	}
+	badMode := "invalid"
+	if _, err := service.UpdateWorkflowProfile(context.Background(), 1, 20, UpdateWorkflowProfileRequest{Mode: &badMode}); err == nil {
+		t.Fatal("expected invalid mode validation error")
 	}
 }
 
@@ -266,6 +289,45 @@ func TestScoreEvalOutputSupportsContainsArray(t *testing.T) {
 	score, reason = scoreEvalOutput(engine.NodeOutput{"content": "alpha beta"}, rawJSON(`{"contains":["alpha","gamma"]}`), nil)
 	if score != 0 || !strings.Contains(reason, "gamma") {
 		t.Fatalf("expected missing array item to fail, score=%v reason=%s", score, reason)
+	}
+}
+
+func TestScoreEvalOutputDetailedReportsToolAndSchemaMetrics(t *testing.T) {
+	output := engine.NodeOutput{
+		"final_answer":      `{"answer":"ok"}`,
+		"structured_output": map[string]any{"answer": "ok"},
+		"stop_reason":       runtimeagent.StopReasonPlanCompleted,
+		"total_tokens":      42,
+		"latency_ms":        120,
+		"steps": []runtimeagent.RunStep{
+			{Type: runtimeagent.StepTypeToolCall, ToolName: "search_knowledge"},
+			{Type: runtimeagent.StepTypeReflection},
+		},
+	}
+	result := scoreEvalOutputDetailed(
+		output,
+		rawJSON(`{"json_schema":{"type":"object","required":["answer"],"properties":{"answer":{"type":"string"}}},"contains":"ok"}`),
+		rawJSON(`["search_knowledge"]`),
+	)
+	if result.Score != 1 {
+		t.Fatalf("expected eval to pass: %+v", result)
+	}
+	if result.Metrics["tool_call_accuracy"] != 1.0 || result.Metrics["schema_compliance"] != 1.0 || result.Metrics["total_tokens"] != 42 {
+		t.Fatalf("unexpected metrics: %+v", result.Metrics)
+	}
+	if result.Metrics["reflection_repair_attempted"] != true {
+		t.Fatalf("expected reflection metric, got %+v", result.Metrics)
+	}
+}
+
+func TestScoreEvalOutputDetailedFailsSchemaMismatch(t *testing.T) {
+	result := scoreEvalOutputDetailed(
+		engine.NodeOutput{"final_answer": `{"answer":7}`},
+		rawJSON(`{"json_schema":{"type":"object","required":["answer"],"properties":{"answer":{"type":"string"}}}}`),
+		nil,
+	)
+	if result.Score != 0 || result.Metrics["schema_compliance"] != 0.0 {
+		t.Fatalf("expected schema mismatch failure, got %+v", result)
 	}
 }
 
@@ -411,6 +473,13 @@ func TestRunEvalDatasetExecutesCasesAndScoresOutput(t *testing.T) {
 	if len(evals.evalRuns) != 1 || len(evals.results) != 1 {
 		t.Fatalf("expected persisted eval run/result, got %d/%d", len(evals.evalRuns), len(evals.results))
 	}
+	var metrics map[string]any
+	if err := json.Unmarshal(evals.results[0].MetricsJSON, &metrics); err != nil {
+		t.Fatal(err)
+	}
+	if metrics["tool_call_accuracy"] != float64(1) || metrics["schema_compliance"] != float64(1) {
+		t.Fatalf("expected detailed eval metrics, got %+v", metrics)
+	}
 }
 
 func TestPersistWaitingHumanArtifactsStoresApprovalAndCheckpoint(t *testing.T) {
@@ -430,7 +499,7 @@ func TestPersistWaitingHumanArtifactsStoresApprovalAndCheckpoint(t *testing.T) {
 			"context":           map[string]any{"strategy": "priority_budget_sliding_window"},
 			"tool_policy":       map[string]any{"require_approval_for_risk": []string{"high"}},
 			"tool_names":        []string{"send_email"},
-			"metadata":          map[string]any{"node_id": "agent"},
+			"metadata":          map[string]any{"node_id": "agent", "iteration": 2, "tool_calls": 1},
 		},
 	}
 	err := service.persistRunCheckpointArtifacts(context.Background(), &workflow.Run{ID: 7, OwnerID: 1, WorkflowID: 20}, output, workflow.RunStatusWaitingHuman)
@@ -442,6 +511,23 @@ func TestPersistWaitingHumanArtifactsStoresApprovalAndCheckpoint(t *testing.T) {
 	}
 	if len(approvals.checkpoints) != 1 || len(approvals.checkpoints[0].MessagesJSON) == 0 || approvals.checkpoints[0].ToolPolicyHash == "" {
 		t.Fatalf("unexpected checkpoint: %+v", approvals.checkpoints)
+	}
+	var envelope checkpointContextEnvelope
+	if err := json.Unmarshal(approvals.checkpoints[0].ContextJSON, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.Context.Strategy != "priority_budget_sliding_window" || envelope.Metadata["iteration"] != float64(2) || envelope.Metadata["tool_calls"] != float64(1) {
+		t.Fatalf("checkpoint context envelope lost metadata: %+v", envelope)
+	}
+	decoded, err := decodeRuntimeCheckpoint(approvals.checkpoints[0], nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Metadata["iteration"] != float64(2) || decoded.Metadata["tool_calls"] != float64(1) {
+		t.Fatalf("decoded checkpoint lost metadata: %+v", decoded.Metadata)
+	}
+	if decoded.Metadata["tool_registry_hash"] == "" || decoded.Metadata["tool_policy_hash"] == "" {
+		t.Fatalf("decoded checkpoint should expose hashes: %+v", decoded.Metadata)
 	}
 }
 
@@ -466,6 +552,31 @@ func TestPersistPausedArtifactsStoresCheckpointWithoutApproval(t *testing.T) {
 	}
 	if len(approvals.checkpoints) != 1 || approvals.checkpoints[0].Status != workflow.RunStatusPaused || len(approvals.checkpoints[0].MessagesJSON) == 0 {
 		t.Fatalf("unexpected checkpoint: %+v", approvals.checkpoints)
+	}
+}
+
+func TestPersistPausedArtifactsPreservesCheckpointHashesFromMetadata(t *testing.T) {
+	approvals := &fakeApprovalRepo{}
+	service := &Service{approvals: approvals}
+	output := engine.NodeOutput{
+		"checkpoint": &runtimeagent.Checkpoint{
+			MessagesSummary: "paused",
+			Metadata: map[string]any{
+				"node_id":            "agent",
+				"tool_registry_hash": "stored-registry",
+				"tool_policy_hash":   "stored-policy",
+			},
+		},
+	}
+	err := service.persistRunCheckpointArtifacts(context.Background(), &workflow.Run{ID: 7, OwnerID: 1, WorkflowID: 20}, output, workflow.RunStatusPaused)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(approvals.checkpoints) != 1 {
+		t.Fatalf("expected one checkpoint, got %d", len(approvals.checkpoints))
+	}
+	if approvals.checkpoints[0].ToolRegistryHash != "stored-registry" || approvals.checkpoints[0].ToolPolicyHash != "stored-policy" {
+		t.Fatalf("expected stored hashes to be preserved, got %+v", approvals.checkpoints[0])
 	}
 }
 
