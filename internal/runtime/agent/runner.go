@@ -411,12 +411,25 @@ func toolResultContent(result *toolruntime.ToolResult, toolErr error) string {
 }
 
 func compactToolObservation(content string, raw json.RawMessage, maxBytes int) (string, json.RawMessage, bool) {
+	redactedRaw := redactToolObservation(raw)
+	if len(redactedRaw) > 0 && string(redactedRaw) != string(raw) && strings.TrimSpace(content) == strings.TrimSpace(string(raw)) {
+		content = string(redactedRaw)
+	}
+	raw = redactedRaw
 	if maxBytes <= 0 {
 		return content, raw, false
 	}
 	compactContent, contentCompressed := compactStringWithFlag(content, maxBytes)
 	compactJSON, jsonCompressed := compactRawJSONWithFlag(raw, maxBytes)
 	return compactContent, compactJSON, contentCompressed || jsonCompressed
+}
+
+func redactToolObservation(raw json.RawMessage) json.RawMessage {
+	return RedactSensitiveFields(raw, defaultSensitiveToolFields())
+}
+
+func defaultSensitiveToolFields() []string {
+	return []string{"api_key", "apikey", "authorization", "access_token", "refresh_token", "token", "password", "secret"}
 }
 
 func toolExecutionContext(ctx context.Context, metadata toolruntime.ToolMetadata, policy ToolPolicy) (context.Context, context.CancelFunc, error) {

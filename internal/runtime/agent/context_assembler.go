@@ -22,7 +22,7 @@ func (a ContextAssembler) Build(req RunRequest) ([]llm.ChatMessage, ContextTrace
 		maxChars = defaultMaxInputChars
 	}
 	trace := ContextTrace{MaxChars: maxChars, Strategy: "priority_budget:pinned_then_recent"}
-	blocks := make([]ContextBlock, 0, len(req.ContextBlocks)+2)
+	blocks := make([]ContextBlock, 0, len(req.ContextBlocks)+2) 
 	if strings.TrimSpace(req.SystemPrompt) != "" {
 		blocks = append(blocks, ContextBlock{Name: "system", Role: conversation.RoleSystem, Content: req.SystemPrompt, Pinned: true})
 	}

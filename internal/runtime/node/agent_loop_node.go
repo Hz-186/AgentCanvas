@@ -72,6 +72,9 @@ type agentRuntimeConfig struct {
 	MaxToolTimeoutMS        int             `json:"max_tool_timeout_ms"`
 	MaxToolOutputBytes      int             `json:"max_tool_output_bytes"`
 	AllowedHosts            []string        `json:"allowed_hosts"`
+	ToolPolicyJSON          json.RawMessage `json:"tool_policy_json"`
+	MemoryPolicyJSON        json.RawMessage `json:"memory_policy_json"`
+	ContextPolicyJSON       json.RawMessage `json:"context_policy_json"`
 	OutputSchemaJSON        json.RawMessage `json:"output_schema_json"`
 	ReflectionEnabled       bool            `json:"reflection_enabled"`
 	Temperature             *float64        `json:"temperature"`
@@ -104,7 +107,8 @@ type agentNodeConfig struct {
 		CodeExecutionEnabled bool    `json:"code_execution_enabled"`
 	} `json:"tools"`
 	Memory struct {
-		Enabled bool `json:"enabled"`
+		Enabled bool            `json:"enabled"`
+		Policy  json.RawMessage `json:"policy"`
 	} `json:"memory"`
 	Limits struct {
 		MaxIterations      int `json:"max_iterations"`
@@ -117,17 +121,19 @@ type agentNodeConfig struct {
 		Schema                  json.RawMessage `json:"schema"`
 	} `json:"output"`
 	Context struct {
-		MaxInputTokens int `json:"max_input_tokens"`
+		MaxInputTokens int             `json:"max_input_tokens"`
+		Policy         json.RawMessage `json:"policy"`
 	} `json:"context"`
 	Planning struct {
 		Enabled           bool `json:"enabled"`
 		ReflectionEnabled bool `json:"reflection_enabled"`
 	} `json:"planning"`
 	Policy struct {
-		RequireApprovalForRisk []string `json:"require_approval_for_risk"`
-		MaxToolTimeoutMS       int      `json:"max_tool_timeout_ms"`
-		MaxToolOutputBytes     int      `json:"max_tool_output_bytes"`
-		AllowedHosts           []string `json:"allowed_hosts"`
+		RequireApprovalForRisk []string        `json:"require_approval_for_risk"`
+		MaxToolTimeoutMS       int             `json:"max_tool_timeout_ms"`
+		MaxToolOutputBytes     int             `json:"max_tool_output_bytes"`
+		AllowedHosts           []string        `json:"allowed_hosts"`
+		Raw                    json.RawMessage `json:"raw"`
 	} `json:"policy"`
 }
 
@@ -210,6 +216,9 @@ func parseAgentNodeConfig(config json.RawMessage) (agentRuntimeConfig, error) {
 	if nested.Memory.Enabled {
 		cfg.MemoryEnabled = true
 	}
+	if len(nested.Memory.Policy) > 0 {
+		cfg.MemoryPolicyJSON = nested.Memory.Policy
+	}
 	if nested.Limits.MaxIterations > 0 {
 		cfg.MaxIterations = nested.Limits.MaxIterations
 	}
@@ -221,6 +230,9 @@ func parseAgentNodeConfig(config json.RawMessage) (agentRuntimeConfig, error) {
 	}
 	if nested.Context.MaxInputTokens > 0 {
 		cfg.MaxInputChars = nested.Context.MaxInputTokens * 4
+	}
+	if len(nested.Context.Policy) > 0 {
+		cfg.ContextPolicyJSON = nested.Context.Policy
 	}
 	if nested.Planning.Enabled && strings.TrimSpace(cfg.Mode) == "" {
 		cfg.Mode = "plan_execute"
@@ -242,6 +254,9 @@ func parseAgentNodeConfig(config json.RawMessage) (agentRuntimeConfig, error) {
 	}
 	if len(nested.Policy.AllowedHosts) > 0 {
 		cfg.AllowedHosts = nested.Policy.AllowedHosts
+	}
+	if len(nested.Policy.Raw) > 0 {
+		cfg.ToolPolicyJSON = nested.Policy.Raw
 	}
 	if strings.TrimSpace(nested.Output.Mode) != "" {
 		cfg.OutputMode = nested.Output.Mode
@@ -307,6 +322,15 @@ func validateAgentRuntimeConfig(cfg agentRuntimeConfig, nodeType string, require
 	if cfg.MaxToolOutputBytes < 0 || cfg.MaxToolOutputBytes > 2*1024*1024 {
 		return fmt.Errorf("%w: %s max_tool_output_bytes must be <= 2097152", agenterrors.ErrInvalidInput, nodeType)
 	}
+	if err := validateAgentMemoryPolicyJSON(cfg.MemoryPolicyJSON, nodeType); err != nil {
+		return err
+	}
+	if err := validateAgentContextPolicyJSON(cfg.ContextPolicyJSON, nodeType); err != nil {
+		return err
+	}
+	if err := validateAgentToolPolicyJSON(cfg.ToolPolicyJSON, nodeType); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -337,6 +361,9 @@ func (n AgentNode) runAgent(ctx context.Context, rc *engine.RunContext, input en
 			return nil, err
 		}
 	}
+	cfg = applyNodeMemoryPolicy(cfg, cfg.MemoryPolicyJSON)
+	cfg = applyNodeContextPolicy(cfg, cfg.ContextPolicyJSON)
+	cfg = applyNodeToolPolicy(cfg, cfg.ToolPolicyJSON)
 	if err := validateAgentRuntimeConfig(cfg, nodeType, true); err != nil {
 		return nil, err
 	}
@@ -635,6 +662,13 @@ type profileMemoryPolicy struct {
 	Enabled *bool `json:"enabled"`
 }
 
+type nodeToolPolicyOverride struct {
+	RequireApprovalForRisk *[]string `json:"require_approval_for_risk"`
+	MaxToolTimeoutMS       *int      `json:"max_tool_timeout_ms"`
+	MaxToolOutputBytes     *int      `json:"max_tool_output_bytes"`
+	AllowedHosts           *[]string `json:"allowed_hosts"`
+}
+
 func applyProfileMemoryPolicy(cfg agentRuntimeConfig, raw json.RawMessage) agentRuntimeConfig {
 	if cfg.MemoryEnabled || len(raw) == 0 || string(bytes.TrimSpace(raw)) == "{}" || string(bytes.TrimSpace(raw)) == "null" {
 		return cfg
@@ -651,6 +685,22 @@ func applyProfileMemoryPolicy(cfg agentRuntimeConfig, raw json.RawMessage) agent
 
 func applyProfileContextPolicy(cfg agentRuntimeConfig, raw json.RawMessage) agentRuntimeConfig {
 	if cfg.MaxInputChars > 0 || len(raw) == 0 || string(bytes.TrimSpace(raw)) == "{}" || string(bytes.TrimSpace(raw)) == "null" {
+		return cfg
+	}
+	var policy profileContextPolicy
+	if err := json.Unmarshal(raw, &policy); err != nil {
+		return cfg
+	}
+	if policy.MaxInputChars > 0 {
+		cfg.MaxInputChars = policy.MaxInputChars
+	} else if policy.MaxInputTokens > 0 {
+		cfg.MaxInputChars = policy.MaxInputTokens * 4
+	}
+	return cfg
+}
+
+func applyNodeContextPolicy(cfg agentRuntimeConfig, raw json.RawMessage) agentRuntimeConfig {
+	if len(raw) == 0 || string(bytes.TrimSpace(raw)) == "{}" || string(bytes.TrimSpace(raw)) == "null" {
 		return cfg
 	}
 	var policy profileContextPolicy
@@ -686,6 +736,93 @@ func applyProfileToolPolicy(cfg agentRuntimeConfig, raw json.RawMessage) agentRu
 		cfg.AllowedHosts = append([]string(nil), policy.AllowedHosts...)
 	}
 	return cfg
+}
+
+func applyNodeToolPolicy(cfg agentRuntimeConfig, raw json.RawMessage) agentRuntimeConfig {
+	if len(raw) == 0 || string(bytes.TrimSpace(raw)) == "{}" || string(bytes.TrimSpace(raw)) == "null" {
+		return cfg
+	}
+	var policy nodeToolPolicyOverride
+	if err := json.Unmarshal(raw, &policy); err != nil {
+		return cfg
+	}
+	if policy.RequireApprovalForRisk != nil {
+		cfg.RequireApprovalForRisk = append([]string(nil), (*policy.RequireApprovalForRisk)...)
+	}
+	if policy.MaxToolTimeoutMS != nil {
+		cfg.MaxToolTimeoutMS = *policy.MaxToolTimeoutMS
+	}
+	if policy.MaxToolOutputBytes != nil {
+		cfg.MaxToolOutputBytes = *policy.MaxToolOutputBytes
+	}
+	if policy.AllowedHosts != nil {
+		cfg.AllowedHosts = append([]string(nil), (*policy.AllowedHosts)...)
+	}
+	return cfg
+}
+
+func applyNodeMemoryPolicy(cfg agentRuntimeConfig, raw json.RawMessage) agentRuntimeConfig {
+	if len(raw) == 0 || string(bytes.TrimSpace(raw)) == "{}" || string(bytes.TrimSpace(raw)) == "null" {
+		return cfg
+	}
+	var policy profileMemoryPolicy
+	if err := json.Unmarshal(raw, &policy); err != nil {
+		return cfg
+	}
+	if policy.Enabled != nil {
+		cfg.MemoryEnabled = *policy.Enabled
+	}
+	return cfg
+}
+
+func validateAgentToolPolicyJSON(raw json.RawMessage, nodeType string) error {
+	if len(raw) == 0 || string(bytes.TrimSpace(raw)) == "{}" || string(bytes.TrimSpace(raw)) == "null" {
+		return nil
+	}
+	var policy nodeToolPolicyOverride
+	if err := json.Unmarshal(raw, &policy); err != nil {
+		return fmt.Errorf("%w: %s tool_policy_json is invalid", agenterrors.ErrInvalidInput, nodeType)
+	}
+	if policy.MaxToolTimeoutMS != nil && (*policy.MaxToolTimeoutMS < 0 || *policy.MaxToolTimeoutMS > 10*60*1000) {
+		return fmt.Errorf("%w: %s max_tool_timeout_ms must be <= 600000", agenterrors.ErrInvalidInput, nodeType)
+	}
+	if policy.MaxToolOutputBytes != nil && (*policy.MaxToolOutputBytes < 0 || *policy.MaxToolOutputBytes > 2*1024*1024) {
+		return fmt.Errorf("%w: %s max_tool_output_bytes must be <= 2097152", agenterrors.ErrInvalidInput, nodeType)
+	}
+	if policy.RequireApprovalForRisk != nil {
+		for _, risk := range *policy.RequireApprovalForRisk {
+			normalized := strings.TrimSpace(risk)
+			if normalized != "" && normalized != toolruntime.RiskLow && normalized != toolruntime.RiskMedium && normalized != toolruntime.RiskHigh {
+				return fmt.Errorf("%w: %s require_approval_for_risk contains unsupported risk level", agenterrors.ErrInvalidInput, nodeType)
+			}
+		}
+	}
+	return nil
+}
+
+func validateAgentMemoryPolicyJSON(raw json.RawMessage, nodeType string) error {
+	if len(raw) == 0 || string(bytes.TrimSpace(raw)) == "{}" || string(bytes.TrimSpace(raw)) == "null" {
+		return nil
+	}
+	var policy profileMemoryPolicy
+	if err := json.Unmarshal(raw, &policy); err != nil {
+		return fmt.Errorf("%w: %s memory_policy_json is invalid", agenterrors.ErrInvalidInput, nodeType)
+	}
+	return nil
+}
+
+func validateAgentContextPolicyJSON(raw json.RawMessage, nodeType string) error {
+	if len(raw) == 0 || string(bytes.TrimSpace(raw)) == "{}" || string(bytes.TrimSpace(raw)) == "null" {
+		return nil
+	}
+	var policy profileContextPolicy
+	if err := json.Unmarshal(raw, &policy); err != nil {
+		return fmt.Errorf("%w: %s context_policy_json is invalid", agenterrors.ErrInvalidInput, nodeType)
+	}
+	if policy.MaxInputChars < 0 || policy.MaxInputTokens < 0 {
+		return fmt.Errorf("%w: %s context policy limits must be positive", agenterrors.ErrInvalidInput, nodeType)
+	}
+	return nil
 }
 
 func (n AgentNode) toolIDsFromPacks(ctx context.Context, ownerID int64, packIDs []int64) []int64 {
@@ -788,6 +925,7 @@ func (n AgentNode) loadTools(ctx context.Context, ownerID int64, cfg agentRuntim
 			Caller:             n.WorkflowCaller,
 			AllowedWorkflowIDs: cfg.CallWorkflowIDs,
 			MaxDepth:           cfg.MaxWorkflowCallDepth,
+			ToolName:           "call_agent",
 		})
 	}
 	if len(cfg.MCPServerIDs) > 0 {
@@ -842,15 +980,42 @@ func (n AgentNode) loadMCPTools(ctx context.Context, ownerID int64, serverIDs []
 			continue
 		}
 		client := mcpClientFromDomainServer(server)
-		defs, err := client.Discover(ctx)
-		if err != nil {
-			return nil, err
+		defs := cachedMCPToolDefs(ctx, n.MCPServers, ownerID, serverID)
+		if len(defs) == 0 {
+			var err error
+			defs, err = client.Discover(ctx)
+			if err != nil {
+				return nil, err
+			}
 		}
 		for _, def := range defs {
 			loaded = append(loaded, toolruntime.NewMCPToolRuntime(def, client))
 		}
 	}
 	return loaded, nil
+}
+
+func cachedMCPToolDefs(ctx context.Context, repo tool.MCPRepository, ownerID, serverID int64) []toolruntime.MCPToolDef {
+	if repo == nil {
+		return nil
+	}
+	cached, err := repo.ListToolCache(ctx, ownerID, serverID)
+	if err != nil || len(cached) == 0 {
+		return nil
+	}
+	defs := make([]toolruntime.MCPToolDef, 0, len(cached))
+	for _, item := range cached {
+		name := strings.TrimSpace(item.ToolName)
+		if name == "" {
+			continue
+		}
+		defs = append(defs, toolruntime.MCPToolDef{
+			Name:        name,
+			Description: item.Description,
+			Parameters:  item.ParametersJSON,
+		})
+	}
+	return defs
 }
 
 func resolveAgentTask(template string, rc *engine.RunContext, input engine.NodeInput) string {

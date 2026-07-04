@@ -29,6 +29,7 @@ func (c *fakeToolClient) ChatWithTools(ctx context.Context, cfg llm.ChatProvider
 type fakeRuntimeTool struct {
 	name        string
 	output      string
+	outputJSON  json.RawMessage
 	input       json.RawMessage
 	metadata    toolruntime.ToolMetadata
 	sawDeadline bool
@@ -45,7 +46,11 @@ func (t *fakeRuntimeTool) Parameters() json.RawMessage {
 func (t *fakeRuntimeTool) Execute(ctx context.Context, rc toolruntime.ToolRunContext, input json.RawMessage) (*toolruntime.ToolResult, error) {
 	t.input = input
 	_, t.sawDeadline = ctx.Deadline()
-	return &toolruntime.ToolResult{ContentText: t.output, ContentJSON: json.RawMessage(`{"ok":true}`)}, nil
+	outputJSON := t.outputJSON
+	if len(outputJSON) == 0 {
+		outputJSON = json.RawMessage(`{"ok":true}`)
+	}
+	return &toolruntime.ToolResult{ContentText: t.output, ContentJSON: outputJSON}, nil
 }
 
 func (t *fakeRuntimeTool) Metadata() toolruntime.ToolMetadata {
@@ -412,6 +417,40 @@ func TestRunnerAppliesPolicyOutputLimit(t *testing.T) {
 	got := client.requests[1].Messages[len(client.requests[1].Messages)-1]
 	if !strings.HasPrefix(got.Content, "abcdef") || !strings.Contains(got.Content, "[truncated]") {
 		t.Fatalf("expected policy output limit to compact observation, got %q", got.Content)
+	}
+}
+
+func TestRunnerRedactsSensitiveToolObservationFields(t *testing.T) {
+	client := &fakeToolClient{responses: []llm.ToolChatResponse{
+		{Message: llm.ChatMessage{Role: conversation.RoleAssistant, ToolCalls: []llm.ToolCall{{ID: "call_1", Name: "secret_tool", Arguments: json.RawMessage(`{}`)}}}},
+		{Message: llm.ChatMessage{Role: conversation.RoleAssistant, Content: "done"}},
+	}}
+	tool := &fakeRuntimeTool{
+		name:       "secret_tool",
+		outputJSON: json.RawMessage(`{"api_key":"secret-key","password":"hidden","value":"safe"}`),
+	}
+	runner := NewRunner(client)
+	result, err := runner.Run(context.Background(), RunRequest{
+		Model:         "test-model",
+		Task:          "redact",
+		MaxIterations: 3,
+		MaxToolCalls:  2,
+		Tools:         []toolruntime.RuntimeTool{tool},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := client.requests[1].Messages[len(client.requests[1].Messages)-1].Content
+	if strings.Contains(got, "secret-key") || strings.Contains(got, "hidden") || !strings.Contains(got, "[REDACTED]") {
+		t.Fatalf("expected redacted tool observation in context, got %q", got)
+	}
+	for _, step := range result.Steps {
+		if step.Type != StepTypeToolResult {
+			continue
+		}
+		if strings.Contains(string(step.OutputJSON), "secret-key") || strings.Contains(string(step.OutputJSON), "hidden") {
+			t.Fatalf("expected redacted tool output step, got %s", string(step.OutputJSON))
+		}
 	}
 }
 
