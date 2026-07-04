@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os/exec"
 	"strings"
 	"sync"
@@ -211,7 +212,13 @@ func (t *MCPToolRuntime) Name() string                { return t.def.Name }
 func (t *MCPToolRuntime) Description() string         { return t.def.Description }
 func (t *MCPToolRuntime) Parameters() json.RawMessage { return t.def.Parameters }
 func (t *MCPToolRuntime) Metadata() ToolMetadata {
-	return ToolMetadata{RiskLevel: RiskMedium, SideEffect: SideEffectExternalAction}
+	metadata := ToolMetadata{RiskLevel: RiskMedium, SideEffect: SideEffectExternalAction}
+	if t.client != nil && t.client.SSEURL != "" {
+		if endpoint, err := url.Parse(strings.TrimSpace(t.client.SSEURL)); err == nil && endpoint.Hostname() != "" {
+			metadata.AllowedHosts = []string{endpoint.Hostname()}
+		}
+	}
+	return metadata
 }
 func (t *MCPToolRuntime) Execute(ctx context.Context, rc ToolRunContext, input json.RawMessage) (*ToolResult, error) {
 	return t.client.CallTool(ctx, t.def.Name, input)

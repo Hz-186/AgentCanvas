@@ -3,9 +3,12 @@ package node
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"agentcanvas/internal/domain/memory"
 	"agentcanvas/internal/domain/retrieval"
@@ -66,6 +69,9 @@ type agentRuntimeConfig struct {
 	MaxExecutionTimeMS      int             `json:"max_execution_time_ms"`
 	MaxInputChars           int             `json:"max_input_chars"`
 	RequireApprovalForRisk  []string        `json:"require_approval_for_risk"`
+	MaxToolTimeoutMS        int             `json:"max_tool_timeout_ms"`
+	MaxToolOutputBytes      int             `json:"max_tool_output_bytes"`
+	AllowedHosts            []string        `json:"allowed_hosts"`
 	OutputSchemaJSON        json.RawMessage `json:"output_schema_json"`
 	ReflectionEnabled       bool            `json:"reflection_enabled"`
 	Temperature             *float64        `json:"temperature"`
@@ -119,13 +125,16 @@ type agentNodeConfig struct {
 	} `json:"planning"`
 	Policy struct {
 		RequireApprovalForRisk []string `json:"require_approval_for_risk"`
+		MaxToolTimeoutMS       int      `json:"max_tool_timeout_ms"`
+		MaxToolOutputBytes     int      `json:"max_tool_output_bytes"`
+		AllowedHosts           []string `json:"allowed_hosts"`
 	} `json:"policy"`
 }
 
 func (AgentLoopNode) Type() string { return "agent_loop" }
 
 func (AgentLoopNode) Validate(config json.RawMessage) error {
-	cfg, err := parseLegacyAgentLoopConfig(config)
+	cfg, err := parseAgentNodeConfig(config)
 	if err != nil {
 		return err
 	}
@@ -146,6 +155,7 @@ func parseAgentNodeConfig(config json.RawMessage) (agentRuntimeConfig, error) {
 		if err := json.Unmarshal(config, &flat); err != nil {
 			return flat, fmt.Errorf("%w: invalid agent config", agenterrors.ErrInvalidInput)
 		}
+		return flat, nil
 	}
 	var nested agentNodeConfig
 	if err := json.Unmarshal(config, &nested); err != nil {
@@ -224,6 +234,15 @@ func parseAgentNodeConfig(config json.RawMessage) (agentRuntimeConfig, error) {
 	if len(nested.Policy.RequireApprovalForRisk) > 0 {
 		cfg.RequireApprovalForRisk = nested.Policy.RequireApprovalForRisk
 	}
+	if nested.Policy.MaxToolTimeoutMS > 0 {
+		cfg.MaxToolTimeoutMS = nested.Policy.MaxToolTimeoutMS
+	}
+	if nested.Policy.MaxToolOutputBytes > 0 {
+		cfg.MaxToolOutputBytes = nested.Policy.MaxToolOutputBytes
+	}
+	if len(nested.Policy.AllowedHosts) > 0 {
+		cfg.AllowedHosts = nested.Policy.AllowedHosts
+	}
 	if strings.TrimSpace(nested.Output.Mode) != "" {
 		cfg.OutputMode = nested.Output.Mode
 	}
@@ -282,11 +301,17 @@ func validateAgentRuntimeConfig(cfg agentRuntimeConfig, nodeType string, require
 			return fmt.Errorf("%w: %s require_approval_for_risk contains unsupported risk level", agenterrors.ErrInvalidInput, nodeType)
 		}
 	}
+	if cfg.MaxToolTimeoutMS < 0 || cfg.MaxToolTimeoutMS > 10*60*1000 {
+		return fmt.Errorf("%w: %s max_tool_timeout_ms must be <= 600000", agenterrors.ErrInvalidInput, nodeType)
+	}
+	if cfg.MaxToolOutputBytes < 0 || cfg.MaxToolOutputBytes > 2*1024*1024 {
+		return fmt.Errorf("%w: %s max_tool_output_bytes must be <= 2097152", agenterrors.ErrInvalidInput, nodeType)
+	}
 	return nil
 }
 
 func (n AgentLoopNode) Run(ctx context.Context, rc *engine.RunContext, input engine.NodeInput, config json.RawMessage) (engine.NodeOutput, error) {
-	cfg, err := parseLegacyAgentLoopConfig(config)
+	cfg, err := parseAgentNodeConfig(config)
 	if err != nil {
 		return nil, err
 	}
@@ -294,7 +319,7 @@ func (n AgentLoopNode) Run(ctx context.Context, rc *engine.RunContext, input eng
 }
 
 func (n AgentLoopNode) Resume(ctx context.Context, rc *engine.RunContext, input engine.NodeInput, config json.RawMessage, opts AgentResumeOptions) (engine.NodeOutput, error) {
-	cfg, err := parseLegacyAgentLoopConfig(config)
+	cfg, err := parseAgentNodeConfig(config)
 	if err != nil {
 		return nil, err
 	}
@@ -330,6 +355,7 @@ func (n AgentNode) runAgent(ctx context.Context, rc *engine.RunContext, input en
 	contextBlocks := buildConversationContext(ctx, n, rc, cfg.MaxInputChars)
 	systemPrompt := cfg.SystemPrompt
 	mode := agentMode(cfg.Mode)
+	var plan *runtimeagent.Plan
 	if mode == "plan_execute" && task != "" {
 		planner := runtimeagent.Planner{
 			LLM:        n.LLM,
@@ -337,13 +363,9 @@ func (n AgentNode) runAgent(ctx context.Context, rc *engine.RunContext, input en
 			ProviderID: loaded.ProviderID,
 			ModelName:  loaded.Model,
 		}
-		plan, planErr := planner.GeneratePlan(ctx, loaded.Config, loaded.Model, task, cfg.Temperature)
-		if planErr == nil && plan != nil {
-			systemPrompt = strings.TrimSpace(systemPrompt)
-			if systemPrompt != "" {
-				systemPrompt += "\n\n"
-			}
-			systemPrompt += plan.PlanContext()
+		generatedPlan, planErr := planner.GeneratePlan(ctx, loaded.Config, loaded.Model, task, cfg.Temperature)
+		if planErr == nil && generatedPlan != nil {
+			plan = generatedPlan
 		}
 	}
 
@@ -388,6 +410,7 @@ func (n AgentNode) runAgent(ctx context.Context, rc *engine.RunContext, input en
 		Provider:           loaded.Config,
 		Model:              loaded.Model,
 		Mode:               mode,
+		Plan:               plan,
 		SystemPrompt:       systemPrompt,
 		Task:               task,
 		ReflectionEnabled:  cfg.ReflectionEnabled,
@@ -399,10 +422,16 @@ func (n AgentNode) runAgent(ctx context.Context, rc *engine.RunContext, input en
 		ContextBlocks:      contextBlocks,
 		ToolPolicy: runtimeagent.ToolPolicy{
 			RequireApprovalForRisk: cfg.RequireApprovalForRisk,
+			MaxToolTimeoutMS:       cfg.MaxToolTimeoutMS,
+			MaxToolOutputBytes:     cfg.MaxToolOutputBytes,
+			AllowedHosts:           append([]string(nil), cfg.AllowedHosts...),
 		},
 		Tools: tools,
 	}
 	if resume != nil && resume.Checkpoint != nil {
+		if mismatch := checkpointHashMismatch(resume.Checkpoint, tools, runRequest.ToolPolicy); mismatch != "" {
+			return pausedForCheckpointMismatch(resume.Checkpoint, mismatch), nil
+		}
 		resumeRequest, buildErr := runtimeagent.BuildResumeRequest(runtimeagent.ResumeRequest{
 			OwnerID:            rc.OwnerID,
 			WorkflowID:         rc.WorkflowID,
@@ -414,6 +443,7 @@ func (n AgentNode) runAgent(ctx context.Context, rc *engine.RunContext, input en
 			Provider:           loaded.Config,
 			Model:              loaded.Model,
 			Mode:               mode,
+			Plan:               plan,
 			SystemPrompt:       systemPrompt,
 			Task:               task,
 			ReflectionEnabled:  cfg.ReflectionEnabled,
@@ -470,13 +500,41 @@ func (n AgentNode) runAgent(ctx context.Context, rc *engine.RunContext, input en
 	}
 	if len(cfg.OutputSchemaJSON) > 0 && string(bytes.TrimSpace(cfg.OutputSchemaJSON)) != "{}" && string(bytes.TrimSpace(cfg.OutputSchemaJSON)) != "null" {
 		var parsed any
-		if err := json.Unmarshal([]byte(result.FinalAnswer), &parsed); err != nil {
-			return nil, fmt.Errorf("%w: agent_loop final_answer must be valid JSON for output_schema_json", agenterrors.ErrInvalidInput)
+		schemaErr := parseAndValidateStructuredOutput(cfg.OutputSchemaJSON, result.FinalAnswer, &parsed)
+		if schemaErr != nil {
+			schemaErrText := schemaErr.Error()
+			repaired, repairErr := n.repairStructuredOutput(ctx, loaded.Config, loaded.Model, cfg.Temperature, task, result.FinalAnswer, cfg.OutputSchemaJSON, schemaErr)
+			if repairErr == nil {
+				var repairedParsed any
+				if repairedErr := parseAndValidateStructuredOutput(cfg.OutputSchemaJSON, repaired, &repairedParsed); repairedErr == nil {
+					result.FinalAnswer = repaired
+					output["content"] = repaired
+					output["final_answer"] = repaired
+					parsed = repairedParsed
+					schemaErr = nil
+					reflectionStep := runtimeagent.RunStep{
+						Type:       runtimeagent.StepTypeReflection,
+						Content:    "Repaired final_answer to satisfy output_schema_json after validation failed: " + schemaErrText,
+						OutputJSON: json.RawMessage(repaired),
+						ProviderID: loaded.ProviderID,
+						Model:      loaded.Model,
+						CreatedAt:  time.Now().UTC(),
+					}
+					reflectionStep.Index = len(result.Steps) + 1
+					result.Steps = append(result.Steps, reflectionStep)
+					n.recordAgentStep(ctx, rc, nodeType, reflectionStep, loaded.ProviderID, loaded.Model)
+				} else {
+					schemaErr = repairedErr
+				}
+			}
 		}
-		if err := validateSimpleJSONSchema(cfg.OutputSchemaJSON, parsed); err != nil {
-			return nil, fmt.Errorf("%w: agent_loop final_answer does not match output_schema_json: %v", agenterrors.ErrInvalidInput, err)
+		if schemaErr != nil {
+			return nil, fmt.Errorf("%w: agent_loop final_answer does not match output_schema_json: %v", agenterrors.ErrInvalidInput, schemaErr)
 		}
 		output["structured_output"] = parsed
+	}
+	if result.Plan != nil {
+		output["plan"] = result.Plan
 	}
 	if result.Approval != nil {
 		output["approval"] = result.Approval
@@ -516,12 +574,20 @@ func (n AgentNode) applyProfileDefaults(ctx context.Context, rc *engine.RunConte
 	if profile.MemoryEnabled {
 		cfg.MemoryEnabled = true
 	}
+	cfg = applyProfileMemoryPolicy(cfg, profile.MemoryPolicyJSON)
 	if profile.AllowCodeExecution {
 		cfg.CodeExecutionEnabled = true
 	}
-	if profile.PlanningEnabled && strings.TrimSpace(cfg.Mode) == "" {
-		cfg.Mode = "plan_execute"
+	if strings.TrimSpace(cfg.Mode) == "" {
+		profileMode := strings.TrimSpace(profile.Mode)
+		if profile.PlanningEnabled && (profileMode == "" || profileMode == "react") {
+			cfg.Mode = "plan_execute"
+		} else if profileMode != "" {
+			cfg.Mode = profileMode
+		}
 	}
+	cfg = applyProfileContextPolicy(cfg, profile.ContextPolicyJSON)
+	cfg = applyProfileToolPolicy(cfg, profile.ToolPolicyJSON)
 	if len(cfg.ToolIDs) == 0 {
 		if ids := profile.DefaultToolIDsSlice(); len(ids) > 0 {
 			cfg.ToolIDs = ids
@@ -558,6 +624,68 @@ func (n AgentNode) applyProfileDefaults(ctx context.Context, rc *engine.RunConte
 		cfg.OutputSchemaJSON = profile.OutputSchemaJSON
 	}
 	return cfg, nil
+}
+
+type profileContextPolicy struct {
+	MaxInputChars  int `json:"max_input_chars"`
+	MaxInputTokens int `json:"max_input_tokens"`
+}
+
+type profileMemoryPolicy struct {
+	Enabled *bool `json:"enabled"`
+}
+
+func applyProfileMemoryPolicy(cfg agentRuntimeConfig, raw json.RawMessage) agentRuntimeConfig {
+	if cfg.MemoryEnabled || len(raw) == 0 || string(bytes.TrimSpace(raw)) == "{}" || string(bytes.TrimSpace(raw)) == "null" {
+		return cfg
+	}
+	var policy profileMemoryPolicy
+	if err := json.Unmarshal(raw, &policy); err != nil {
+		return cfg
+	}
+	if policy.Enabled != nil && *policy.Enabled {
+		cfg.MemoryEnabled = true
+	}
+	return cfg
+}
+
+func applyProfileContextPolicy(cfg agentRuntimeConfig, raw json.RawMessage) agentRuntimeConfig {
+	if cfg.MaxInputChars > 0 || len(raw) == 0 || string(bytes.TrimSpace(raw)) == "{}" || string(bytes.TrimSpace(raw)) == "null" {
+		return cfg
+	}
+	var policy profileContextPolicy
+	if err := json.Unmarshal(raw, &policy); err != nil {
+		return cfg
+	}
+	if policy.MaxInputChars > 0 {
+		cfg.MaxInputChars = policy.MaxInputChars
+	} else if policy.MaxInputTokens > 0 {
+		cfg.MaxInputChars = policy.MaxInputTokens * 4
+	}
+	return cfg
+}
+
+func applyProfileToolPolicy(cfg agentRuntimeConfig, raw json.RawMessage) agentRuntimeConfig {
+	if len(raw) == 0 || string(bytes.TrimSpace(raw)) == "{}" || string(bytes.TrimSpace(raw)) == "null" {
+		return cfg
+	}
+	var policy runtimeagent.ToolPolicy
+	if err := json.Unmarshal(raw, &policy); err != nil {
+		return cfg
+	}
+	if len(cfg.RequireApprovalForRisk) == 0 && len(policy.RequireApprovalForRisk) > 0 {
+		cfg.RequireApprovalForRisk = append([]string(nil), policy.RequireApprovalForRisk...)
+	}
+	if cfg.MaxToolTimeoutMS <= 0 && policy.MaxToolTimeoutMS > 0 {
+		cfg.MaxToolTimeoutMS = policy.MaxToolTimeoutMS
+	}
+	if cfg.MaxToolOutputBytes <= 0 && policy.MaxToolOutputBytes > 0 {
+		cfg.MaxToolOutputBytes = policy.MaxToolOutputBytes
+	}
+	if len(cfg.AllowedHosts) == 0 && len(policy.AllowedHosts) > 0 {
+		cfg.AllowedHosts = append([]string(nil), policy.AllowedHosts...)
+	}
+	return cfg
 }
 
 func (n AgentNode) toolIDsFromPacks(ctx context.Context, ownerID int64, packIDs []int64) []int64 {
@@ -629,6 +757,7 @@ func agentStepRecord(step runtimeagent.RunStep, nodeID string) engine.AgentStepR
 		ToolName:      step.ToolName,
 		ArgumentsJSON: step.ArgumentsJSON,
 		OutputJSON:    step.OutputJSON,
+		Compressed:    step.Compressed,
 		ErrorMessage:  step.Error,
 		TokenCount:    step.TokenCount,
 		LatencyMS:     step.LatencyMS,
@@ -768,6 +897,9 @@ func agentStepPayload(step runtimeagent.RunStep, providerID int64, model string)
 	if len(step.OutputJSON) > 0 {
 		payload["output_json"] = json.RawMessage(step.OutputJSON)
 	}
+	if step.Compressed {
+		payload["compressed"] = true
+	}
 	if step.IsError {
 		payload["is_error"] = true
 	}
@@ -784,6 +916,108 @@ func agentStepPayload(step runtimeagent.RunStep, providerID int64, model string)
 		payload["model"] = model
 	}
 	return payload
+}
+
+func (n AgentNode) recordAgentStep(ctx context.Context, rc *engine.RunContext, nodeType string, step runtimeagent.RunStep, providerID int64, model string) {
+	if rc.AgentSteps != nil {
+		_ = rc.AgentSteps.RecordAgentStep(ctx, rc, agentStepRecord(step, rc.CurrentNodeID))
+	}
+	emitRuntimeEvent(ctx, rc, runtimeevent.Event{
+		Type:     runtimeevent.AgentStep,
+		RunID:    rc.RunID,
+		NodeID:   rc.CurrentNodeID,
+		NodeType: nodeType,
+		Payload:  agentStepPayload(step, providerID, model),
+	})
+}
+
+func checkpointHashMismatch(checkpoint *runtimeagent.Checkpoint, tools []toolruntime.RuntimeTool, policy runtimeagent.ToolPolicy) string {
+	if checkpoint == nil || checkpoint.Metadata == nil {
+		return ""
+	}
+	storedRegistryHash, _ := checkpoint.Metadata["tool_registry_hash"].(string)
+	if storedRegistryHash != "" && storedRegistryHash != stableRuntimeJSONHash(runtimeToolNames(tools)) {
+		return "tool registry changed since checkpoint"
+	}
+	storedPolicyHash, _ := checkpoint.Metadata["tool_policy_hash"].(string)
+	if storedPolicyHash != "" && storedPolicyHash != stableRuntimeJSONHash(policy) {
+		return "tool policy changed since checkpoint"
+	}
+	return ""
+}
+
+func pausedForCheckpointMismatch(checkpoint *runtimeagent.Checkpoint, reason string) engine.NodeOutput {
+	if checkpoint.Metadata == nil {
+		checkpoint.Metadata = map[string]any{}
+	}
+	checkpoint.Metadata["resume_blocked_reason"] = reason
+	return engine.NodeOutput{
+		"content":       "Agent resume paused: " + reason,
+		"final_answer":  "Agent resume paused: " + reason,
+		"stop_reason":   runtimeagent.StopReasonPaused,
+		"checkpoint":    checkpoint,
+		"context_trace": checkpoint.Context,
+	}
+}
+
+func runtimeToolNames(tools []toolruntime.RuntimeTool) []string {
+	names := make([]string, 0, len(tools))
+	for _, item := range tools {
+		if item == nil {
+			continue
+		}
+		if name := strings.TrimSpace(item.Name()); name != "" {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+func stableRuntimeJSONHash(value any) string {
+	bytes, _ := json.Marshal(value)
+	sum := sha256.Sum256(bytes)
+	return hex.EncodeToString(sum[:])
+}
+
+func parseAndValidateStructuredOutput(schema json.RawMessage, content string, parsed *any) error {
+	if err := json.Unmarshal([]byte(content), parsed); err != nil {
+		return fmt.Errorf("final_answer must be valid JSON for output_schema_json")
+	}
+	if err := validateSimpleJSONSchema(schema, *parsed); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (n AgentNode) repairStructuredOutput(ctx context.Context, provider llm.ChatProviderConfig, model string, temperature *float64, task, finalAnswer string, schema json.RawMessage, validationErr error) (string, error) {
+	if n.LLM == nil {
+		return "", fmt.Errorf("llm client is not configured")
+	}
+	prompt := fmt.Sprintf(`Rewrite the agent final answer so it strictly matches the JSON schema.
+
+Task:
+%s
+
+Validation error:
+%s
+
+JSON schema:
+%s
+
+Current final answer:
+%s
+
+Return only valid JSON. Do not include markdown fences or explanation.`, task, validationErr.Error(), string(schema), finalAnswer)
+	resp, err := n.LLM.ChatWithTools(ctx, provider, llm.ToolChatRequest{
+		Model:       model,
+		Messages:    []llm.ChatMessage{{Role: "user", Content: prompt}},
+		Tools:       nil,
+		Temperature: temperature,
+	})
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(resp.Message.Content), nil
 }
 
 func buildConversationContext(ctx context.Context, n AgentNode, rc *engine.RunContext, maxInputChars int) []runtimeagent.ContextBlock {

@@ -38,6 +38,15 @@ func TestMCPStdioClientDiscoversAndCallsTool(t *testing.T) {
 	}
 }
 
+func TestMCPToolRuntimeMetadataIncludesSSEHost(t *testing.T) {
+	client := NewMCPClient("remote", "https://mcp.example.com/sse")
+	tool := NewMCPToolRuntime(MCPToolDef{Name: "search"}, client)
+	metadata := MetadataOf(tool)
+	if len(metadata.AllowedHosts) != 1 || metadata.AllowedHosts[0] != "mcp.example.com" {
+		t.Fatalf("expected SSE host in metadata, got %+v", metadata)
+	}
+}
+
 func TestMCPStdioHelperProcess(t *testing.T) {
 	if os.Getenv("MCP_STDIO_HELPER") != "1" {
 		return

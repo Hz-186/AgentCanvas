@@ -21,6 +21,7 @@ type AgentStepRecord struct {
 	ToolName      string
 	ArgumentsJSON json.RawMessage
 	OutputJSON    json.RawMessage
+	Compressed    bool
 	ErrorMessage  string
 	TokenCount    int
 	LatencyMS     int

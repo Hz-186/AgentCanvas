@@ -9,6 +9,9 @@ import (
 	"testing"
 
 	"agentcanvas/internal/domain/tool"
+	"agentcanvas/internal/domain/workflow"
+	"agentcanvas/internal/infrastructure/llm"
+	runtimeagent "agentcanvas/internal/runtime/agent"
 	"agentcanvas/internal/runtime/engine"
 
 	"gorm.io/gorm"
@@ -77,6 +80,178 @@ func TestAgentNodeLoadToolsIncludesMCPServerTools(t *testing.T) {
 	}
 }
 
+func TestAgentLoopNodePlanExecuteReturnsPlanTrace(t *testing.T) {
+	client := &fakeNodeToolClient{responses: []llm.ToolChatResponse{
+		{Message: llm.ChatMessage{Role: "assistant", Content: `{"steps":[{"number":1,"description":"inspect input"},{"number":2,"description":"write answer"}]}`}},
+		{Message: llm.ChatMessage{Role: "assistant", Content: "planned answer"}},
+	}}
+	node := AgentLoopNode{AgentNode: AgentNode{LLM: client, Providers: fakeProviderLoader{}}}
+	output, err := node.Run(context.Background(), &engine.RunContext{OwnerID: 1, WorkflowID: 2, RunID: 3, CurrentNodeID: "agent"}, engine.NodeInput{"query": "hello"}, json.RawMessage(`{
+		"mode":"plan_execute",
+		"provider_id":1,
+		"model":"test-model",
+		"task_template":"{{sys.query}}",
+		"max_iterations":3,
+		"max_tool_calls":2,
+		"return_intermediate_steps":true
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if output["stop_reason"] != "plan_completed" {
+		t.Fatalf("expected plan_completed, got %+v", output)
+	}
+	if output["plan"] == nil {
+		t.Fatalf("expected plan in output: %+v", output)
+	}
+	steps, ok := output["steps"].([]runtimeagent.RunStep)
+	if !ok || len(steps) == 0 {
+		t.Fatalf("expected compacted steps in output: %+v", output["steps"])
+	}
+}
+
+func TestAgentLoopNodeRepairsStructuredOutputWithReflection(t *testing.T) {
+	client := &fakeNodeToolClient{responses: []llm.ToolChatResponse{
+		{Message: llm.ChatMessage{Role: "assistant", Content: "not json"}},
+		{Message: llm.ChatMessage{Role: "assistant", Content: `{"answer":"fixed"}`}},
+	}}
+	node := AgentLoopNode{AgentNode: AgentNode{LLM: client, Providers: fakeProviderLoader{}}}
+	output, err := node.Run(context.Background(), &engine.RunContext{OwnerID: 1, WorkflowID: 2, RunID: 3, CurrentNodeID: "agent"}, engine.NodeInput{"query": "hello"}, json.RawMessage(`{
+		"provider_id":1,
+		"model":"test-model",
+		"task_template":"{{sys.query}}",
+		"max_iterations":2,
+		"max_tool_calls":2,
+		"return_intermediate_steps":true,
+		"output_schema_json":{"type":"object","required":["answer"],"properties":{"answer":{"type":"string"}}}
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if output["final_answer"] != `{"answer":"fixed"}` {
+		t.Fatalf("expected repaired final answer, got %+v", output)
+	}
+	structured, ok := output["structured_output"].(map[string]any)
+	if !ok || structured["answer"] != "fixed" {
+		t.Fatalf("expected structured output, got %+v", output["structured_output"])
+	}
+	steps, ok := output["steps"].([]runtimeagent.RunStep)
+	if !ok {
+		t.Fatalf("expected runtime steps, got %T", output["steps"])
+	}
+	foundReflection := false
+	for _, step := range steps {
+		if step.Type == runtimeagent.StepTypeReflection {
+			foundReflection = true
+		}
+	}
+	if !foundReflection {
+		t.Fatalf("expected reflection step, got %+v", steps)
+	}
+}
+
+func TestAgentLoopNodeParsesNestedPolicyConfig(t *testing.T) {
+	cfg, err := parseAgentNodeConfig(json.RawMessage(`{
+		"model":{"provider_id":1,"model":"test-model"},
+		"task_template":"{{sys.query}}",
+		"policy":{
+			"require_approval_for_risk":["high"],
+			"max_tool_timeout_ms":1500,
+			"max_tool_output_bytes":2048,
+			"allowed_hosts":["api.example.com"]
+		}
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ProviderID != 1 || cfg.Model != "test-model" || cfg.MaxToolTimeoutMS != 1500 || cfg.MaxToolOutputBytes != 2048 {
+		t.Fatalf("nested config was not parsed: %+v", cfg)
+	}
+	if len(cfg.RequireApprovalForRisk) != 1 || cfg.RequireApprovalForRisk[0] != "high" {
+		t.Fatalf("approval policy was not parsed: %+v", cfg.RequireApprovalForRisk)
+	}
+	if len(cfg.AllowedHosts) != 1 || cfg.AllowedHosts[0] != "api.example.com" {
+		t.Fatalf("allowed hosts were not parsed: %+v", cfg.AllowedHosts)
+	}
+	if err := (AgentLoopNode{}).Validate(json.RawMessage(`{
+		"model":{"provider_id":1,"model":"test-model"},
+		"policy":{"max_tool_output_bytes":2097153}
+	}`)); err == nil {
+		t.Fatal("expected oversized policy output limit to fail validation")
+	}
+}
+
+func TestAgentLoopNodeResumePausesWhenCheckpointToolRegistryHashChanged(t *testing.T) {
+	client := &fakeNodeToolClient{}
+	node := AgentLoopNode{AgentNode: AgentNode{LLM: client, Providers: fakeProviderLoader{}}}
+	checkpoint := &runtimeagent.Checkpoint{
+		MessagesSummary: "user: paused",
+		Metadata: map[string]any{
+			"node_id":            "agent",
+			"tool_registry_hash": "stale-registry-hash",
+		},
+	}
+	output, err := node.Resume(
+		context.Background(),
+		&engine.RunContext{OwnerID: 1, WorkflowID: 2, RunID: 3, CurrentNodeID: "agent", Input: map[string]any{"query": "resume"}},
+		engine.NodeInput{"query": "resume"},
+		json.RawMessage(`{"provider_id":1,"model":"test-model","task_template":"{{sys.query}}","max_iterations":3,"max_tool_calls":2}`),
+		AgentResumeOptions{Checkpoint: checkpoint, Approved: true},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if output["stop_reason"] != runtimeagent.StopReasonPaused {
+		t.Fatalf("expected paused output, got %+v", output)
+	}
+	if len(client.requests) != 0 {
+		t.Fatalf("LLM should not be called when checkpoint hash mismatches, got %d requests", len(client.requests))
+	}
+	pausedCheckpoint, ok := output["checkpoint"].(*runtimeagent.Checkpoint)
+	if !ok || pausedCheckpoint.Metadata["resume_blocked_reason"] == "" {
+		t.Fatalf("expected checkpoint with blocked reason, got %+v", output["checkpoint"])
+	}
+}
+
+func TestAgentNodeApplyProfileDefaultsInheritsPolicyAndContext(t *testing.T) {
+	agent := AgentNode{Profiles: fakeAgentProfileLoader{profile: &workflow.Profile{
+		OwnerID:           1,
+		WorkflowID:        2,
+		Mode:              "reflect",
+		ToolPolicyJSON:    json.RawMessage(`{"require_approval_for_risk":["medium"],"max_tool_timeout_ms":1500,"max_tool_output_bytes":4096,"allowed_hosts":["api.example.com"]}`),
+		ContextPolicyJSON: json.RawMessage(`{"max_input_tokens":12000}`),
+	}}}
+	cfg, err := agent.applyProfileDefaults(context.Background(), &engine.RunContext{OwnerID: 1, WorkflowID: 2}, agentRuntimeConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Mode != "reflect" || cfg.MaxInputChars != 48000 || cfg.MaxToolTimeoutMS != 1500 || cfg.MaxToolOutputBytes != 4096 {
+		t.Fatalf("profile defaults were not inherited: %+v", cfg)
+	}
+	if len(cfg.RequireApprovalForRisk) != 1 || cfg.RequireApprovalForRisk[0] != "medium" {
+		t.Fatalf("profile approval policy not inherited: %+v", cfg.RequireApprovalForRisk)
+	}
+	if len(cfg.AllowedHosts) != 1 || cfg.AllowedHosts[0] != "api.example.com" {
+		t.Fatalf("profile allowed hosts not inherited: %+v", cfg.AllowedHosts)
+	}
+}
+
+func TestAgentNodeApplyProfilePlanningOverridesDefaultReactMode(t *testing.T) {
+	agent := AgentNode{Profiles: fakeAgentProfileLoader{profile: &workflow.Profile{
+		OwnerID:         1,
+		WorkflowID:      2,
+		Mode:            "react",
+		PlanningEnabled: true,
+	}}}
+	cfg, err := agent.applyProfileDefaults(context.Background(), &engine.RunContext{OwnerID: 1, WorkflowID: 2}, agentRuntimeConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Mode != "plan_execute" {
+		t.Fatalf("expected planning-enabled profile to default to plan_execute, got %+v", cfg)
+	}
+}
+
 func TestMCPToolNodeHelperProcess(t *testing.T) {
 	if os.Getenv("MCP_NODE_HELPER") != "1" {
 		return
@@ -138,6 +313,35 @@ func (r fakeMCPServerRepo) ReplaceToolCache(context.Context, int64, int64, []too
 }
 func (r fakeMCPServerRepo) ListToolCache(context.Context, int64, int64) ([]tool.MCPToolCache, error) {
 	return nil, nil
+}
+
+type fakeProviderLoader struct{}
+
+func (fakeProviderLoader) LoadChatProviderConfig(context.Context, int64, int64, string) (*LoadedProvider, error) {
+	return &LoadedProvider{ProviderID: 1, Model: "test-model", Config: llm.ChatProviderConfig{}}, nil
+}
+
+type fakeAgentProfileLoader struct {
+	profile *workflow.Profile
+}
+
+func (l fakeAgentProfileLoader) GetWorkflowProfile(context.Context, int64, int64) (*workflow.Profile, error) {
+	return l.profile, nil
+}
+
+type fakeNodeToolClient struct {
+	responses []llm.ToolChatResponse
+	requests  []llm.ToolChatRequest
+}
+
+func (c *fakeNodeToolClient) ChatWithTools(ctx context.Context, cfg llm.ChatProviderConfig, req llm.ToolChatRequest) (*llm.ToolChatResponse, error) {
+	c.requests = append(c.requests, req)
+	if len(c.responses) == 0 {
+		return &llm.ToolChatResponse{Message: llm.ChatMessage{Role: "assistant", Content: "done"}}, nil
+	}
+	resp := c.responses[0]
+	c.responses = c.responses[1:]
+	return &resp, nil
 }
 
 func mustRawJSON(value any) json.RawMessage {
