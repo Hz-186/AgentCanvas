@@ -20,7 +20,10 @@ tmp/
 # OS files
 .DS_Store
 
+# Local documentation and skills
+doc/
+skill/
+
 # doc / study
-doc/*
 TEST
 study
