@@ -120,6 +120,18 @@ func (p Plan) StepCompleted(stepNumber int) {
 	}
 }
 
+func (p *Plan) Finish() {
+	if p == nil {
+		return
+	}
+	for i := range p.Steps {
+		if p.Steps[i].Status == "" || p.Steps[i].Status == "pending" {
+			p.Steps[i].Status = "completed"
+		}
+	}
+	p.Finished = true
+}
+
 func (p *Planner) appendStep(result *RunResult, step RunStep) RunStep {
 	step.Index = len(result.Steps) + 1
 	step.CreatedAt = time.Now().UTC()

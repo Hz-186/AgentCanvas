@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -79,6 +80,13 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 	}
 
 	messages, contextTrace := ContextAssembler{}.Build(req)
+	if req.Plan != nil && len(req.Plan.Steps) > 0 {
+		plan := clonePlan(req.Plan)
+		result.Plan = &plan
+		planJSON, _ := json.Marshal(plan)
+		planStep := r.appendStep(result, RunStep{Type: StepTypePlan, Content: plan.PlanContext(), OutputJSON: planJSON, ProviderID: r.ProviderID, Model: r.ModelName})
+		_ = r.emit(ctx, planStep)
+	}
 	result.Context = contextTrace
 	startIteration := 0
 	startToolCalls := 0
@@ -95,6 +103,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 		unresolved := findUnresolvedToolCalls(messages, toolByName)
 		for _, call := range unresolved {
 			toolImpl := toolByName[call.Name]
+			metadata := toolruntime.MetadataOf(toolImpl)
 			if result.ToolCalls >= req.MaxToolCalls {
 				result.StopReason = StopReasonMaxToolCalls
 				result.FinalAnswer = "Agent stopped because max_tool_calls was exceeded after resume."
@@ -102,9 +111,26 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 				_ = r.emit(ctx, finalStep)
 				return finish(result, r.now()), nil
 			}
+			execCtx, execCancel, policyErr := toolExecutionContext(ctx, metadata, req.ToolPolicy)
+			if policyErr != nil {
+				result.StopReason = StopReasonReflectionFailed
+				messages = append(messages, toolMessage(call.ID, policyErr.Error()))
+				resultStep := r.appendStep(result, RunStep{
+					Type:       StepTypeToolResult,
+					ToolCallID: call.ID,
+					ToolName:   call.Name,
+					Content:    policyErr.Error(),
+					IsError:    true,
+					Error:      policyErr.Error(),
+					ProviderID: r.ProviderID,
+					Model:      r.ModelName,
+				})
+				_ = r.emit(ctx, resultStep)
+				continue
+			}
 			result.ToolCalls++
 			toolStarted := r.now()
-			toolResult, toolErr := toolImpl.Execute(ctx, toolruntime.ToolRunContext{
+			toolResult, toolErr := toolImpl.Execute(execCtx, toolruntime.ToolRunContext{
 				OwnerID:           req.OwnerID,
 				WorkflowID:        req.WorkflowID,
 				RunID:             req.RunID,
@@ -113,7 +139,13 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 				WorkflowCallChain: append([]int64(nil), req.WorkflowCallChain...),
 				ConversationID:    req.ConversationID,
 			}, call.Arguments)
+			if execCancel != nil {
+				execCancel()
+			}
 			toolLatencyMS := int(r.now().Sub(toolStarted).Milliseconds())
+			if toolResult == nil {
+				toolResult = &toolruntime.ToolResult{}
+			}
 			r.appendStep(result, RunStep{
 				Type:          StepTypeToolCall,
 				ToolCallID:    call.ID,
@@ -122,21 +154,16 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 				ProviderID:    r.ProviderID,
 				Model:         r.ModelName,
 			})
-			content := toolResult.ContentText
-			if content == "" && len(toolResult.ContentJSON) > 0 {
-				content = string(toolResult.ContentJSON)
-			}
-			if toolErr != nil {
-				if content == "" {
-					content = toolErr.Error()
-				}
-			}
+			content := toolResultContent(toolResult, toolErr)
+			content, outputJSON, compressed := compactToolObservation(content, toolResult.ContentJSON, effectiveMaxOutputBytes(metadata, req.ToolPolicy))
 			messages = append(messages, toolMessage(call.ID, content))
 			r.appendStep(result, RunStep{
 				Type:       StepTypeToolResult,
 				ToolCallID: call.ID,
 				ToolName:   call.Name,
 				Content:    content,
+				OutputJSON: outputJSON,
+				Compressed: compressed,
 				ProviderID: r.ProviderID,
 				Model:      r.ModelName,
 				LatencyMS:  toolLatencyMS,
@@ -147,7 +174,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 		if err := ctx.Err(); err != nil {
 			result = finishWithContext(result, err, r.now())
 			if errors.Is(err, context.Canceled) {
-				result.Checkpoint = checkpointFromMessages(req, messages, contextTrace, toolNames, nil, result.StopReason)
+				result.Checkpoint = checkpointFromMessages(req, messages, contextTrace, toolNames, nil, result.StopReason, result.Iterations, result.ToolCalls)
 			}
 			return result, nil
 		}
@@ -164,7 +191,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 		if err != nil {
 			if errors.Is(err, context.Canceled) {
 				result = finishWithContext(result, err, r.now())
-				result.Checkpoint = checkpointFromMessages(req, messages, contextTrace, toolNames, nil, result.StopReason)
+				result.Checkpoint = checkpointFromMessages(req, messages, contextTrace, toolNames, nil, result.StopReason, result.Iterations, result.ToolCalls)
 				return result, nil
 			}
 			result.StopReason = StopReasonLLMError
@@ -190,6 +217,10 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 		if len(assistant.ToolCalls) == 0 {
 			result.FinalAnswer = assistant.Content
 			result.StopReason = StopReasonFinalAnswer
+			if result.Plan != nil {
+				result.Plan.Finish()
+				result.StopReason = StopReasonPlanCompleted
+			}
 			finalStep := r.appendStep(result, RunStep{Type: StepTypeFinalAnswer, Role: conversation.RoleAssistant, Content: assistant.Content, ProviderID: r.ProviderID, Model: r.ModelName})
 			_ = r.emit(ctx, finalStep)
 			return finish(result, r.now()), nil
@@ -229,7 +260,8 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 				_ = r.emit(ctx, resultStep)
 				continue
 			}
-			if approval := requiredApproval(call.ID, call.Name, call.Arguments, toolruntime.MetadataOf(toolImpl), req.ToolPolicy); approval != nil {
+			metadata := toolruntime.MetadataOf(toolImpl)
+			if approval := requiredApproval(call.ID, call.Name, call.Arguments, metadata, req.ToolPolicy); approval != nil {
 				result.StopReason = StopReasonWaitingHuman
 				result.FinalAnswer = "Agent is waiting for human approval before executing tool " + call.Name + "."
 				result.Approval = approval
@@ -248,6 +280,8 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 						"call_depth":          req.CallDepth,
 						"workflow_call_chain": append([]int64(nil), req.WorkflowCallChain...),
 						"stop_reason":         StopReasonWaitingHuman,
+						"iteration":           result.Iterations,
+						"tool_calls":          result.ToolCalls,
 					},
 				}
 				approvalStep := r.appendStep(result, RunStep{
@@ -263,9 +297,26 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 				_ = r.emit(ctx, finalStep)
 				return finish(result, r.now()), nil
 			}
+			execCtx, execCancel, policyErr := toolExecutionContext(ctx, metadata, req.ToolPolicy)
+			if policyErr != nil {
+				result.StopReason = StopReasonReflectionFailed
+				messages = append(messages, toolMessage(call.ID, policyErr.Error()))
+				resultStep := r.appendStep(result, RunStep{
+					Type:       StepTypeToolResult,
+					ToolCallID: call.ID,
+					ToolName:   call.Name,
+					Content:    policyErr.Error(),
+					IsError:    true,
+					Error:      policyErr.Error(),
+					ProviderID: r.ProviderID,
+					Model:      r.ModelName,
+				})
+				_ = r.emit(ctx, resultStep)
+				continue
+			}
 			result.ToolCalls++
 			toolStarted := r.now()
-			toolResult, toolErr := toolImpl.Execute(ctx, toolruntime.ToolRunContext{
+			toolResult, toolErr := toolImpl.Execute(execCtx, toolruntime.ToolRunContext{
 				OwnerID:           req.OwnerID,
 				WorkflowID:        req.WorkflowID,
 				RunID:             req.RunID,
@@ -274,19 +325,17 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 				WorkflowCallChain: append([]int64(nil), req.WorkflowCallChain...),
 				ConversationID:    req.ConversationID,
 			}, call.Arguments)
+			if execCancel != nil {
+				execCancel()
+			}
 			toolLatencyMS := int(r.now().Sub(toolStarted).Milliseconds())
 			if toolResult == nil {
 				toolResult = &toolruntime.ToolResult{}
 			}
-			content := toolResult.ContentText
-			if content == "" && len(toolResult.ContentJSON) > 0 {
-				content = string(toolResult.ContentJSON)
-			}
+			content := toolResultContent(toolResult, toolErr)
+			content, outputJSON, compressed := compactToolObservation(content, toolResult.ContentJSON, effectiveMaxOutputBytes(metadata, req.ToolPolicy))
 			if toolErr != nil {
 				toolResult.IsError = true
-				if content == "" {
-					content = toolErr.Error()
-				}
 			}
 			messages = append(messages, toolMessage(call.ID, content))
 			resultStep := r.appendStep(result, RunStep{
@@ -294,7 +343,8 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 				ToolCallID: call.ID,
 				ToolName:   call.Name,
 				Content:    content,
-				OutputJSON: toolResult.ContentJSON,
+				OutputJSON: outputJSON,
+				Compressed: compressed,
 				IsError:    toolResult.IsError,
 				LatencyMS:  toolLatencyMS,
 				ProviderID: r.ProviderID,
@@ -313,7 +363,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 	return finish(result, r.now()), nil
 }
 
-func checkpointFromMessages(req RunRequest, messages []llm.ChatMessage, contextTrace ContextTrace, toolNames []string, pending *llm.ToolCall, stopReason string) *Checkpoint {
+func checkpointFromMessages(req RunRequest, messages []llm.ChatMessage, contextTrace ContextTrace, toolNames []string, pending *llm.ToolCall, stopReason string, iteration int, toolCalls int) *Checkpoint {
 	return &Checkpoint{
 		Messages:        append([]llm.ChatMessage(nil), messages...),
 		MessagesSummary: summarizeMessages(messages),
@@ -328,6 +378,8 @@ func checkpointFromMessages(req RunRequest, messages []llm.ChatMessage, contextT
 			"call_depth":          req.CallDepth,
 			"workflow_call_chain": append([]int64(nil), req.WorkflowCallChain...),
 			"stop_reason":         stopReason,
+			"iteration":           iteration,
+			"tool_calls":          toolCalls,
 		},
 	}
 }
@@ -342,6 +394,99 @@ func addUsage(left, right llm.Usage) llm.Usage {
 		CompletionTokens: left.CompletionTokens + right.CompletionTokens,
 		TotalTokens:      left.TotalTokens + right.TotalTokens,
 	}
+}
+
+func toolResultContent(result *toolruntime.ToolResult, toolErr error) string {
+	if result == nil {
+		result = &toolruntime.ToolResult{}
+	}
+	content := result.ContentText
+	if content == "" && len(result.ContentJSON) > 0 {
+		content = string(result.ContentJSON)
+	}
+	if toolErr != nil && content == "" {
+		content = toolErr.Error()
+	}
+	return content
+}
+
+func compactToolObservation(content string, raw json.RawMessage, maxBytes int) (string, json.RawMessage, bool) {
+	if maxBytes <= 0 {
+		return content, raw, false
+	}
+	compactContent, contentCompressed := compactStringWithFlag(content, maxBytes)
+	compactJSON, jsonCompressed := compactRawJSONWithFlag(raw, maxBytes)
+	return compactContent, compactJSON, contentCompressed || jsonCompressed
+}
+
+func toolExecutionContext(ctx context.Context, metadata toolruntime.ToolMetadata, policy ToolPolicy) (context.Context, context.CancelFunc, error) {
+	if err := validateAllowedHosts(metadata.AllowedHosts, policy.AllowedHosts); err != nil {
+		return ctx, nil, err
+	}
+	timeoutMS := effectiveTimeoutMS(metadata, policy)
+	if timeoutMS <= 0 {
+		return ctx, nil, nil
+	}
+	execCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutMS)*time.Millisecond)
+	return execCtx, cancel, nil
+}
+
+func effectiveTimeoutMS(metadata toolruntime.ToolMetadata, policy ToolPolicy) int {
+	timeoutMS := metadata.TimeoutMS
+	if policy.MaxToolTimeoutMS > 0 && (timeoutMS <= 0 || policy.MaxToolTimeoutMS < timeoutMS) {
+		timeoutMS = policy.MaxToolTimeoutMS
+	}
+	return timeoutMS
+}
+
+func effectiveMaxOutputBytes(metadata toolruntime.ToolMetadata, policy ToolPolicy) int {
+	maxBytes := metadata.MaxOutputBytes
+	if policy.MaxToolOutputBytes > 0 && (maxBytes <= 0 || policy.MaxToolOutputBytes < maxBytes) {
+		maxBytes = policy.MaxToolOutputBytes
+	}
+	return maxBytes
+}
+
+func validateAllowedHosts(toolHosts []string, policyHosts []string) error {
+	allowed := normalizedSet(policyHosts)
+	if len(allowed) == 0 || len(toolHosts) == 0 {
+		return nil
+	}
+	for _, host := range toolHosts {
+		normalized := normalizeHost(host)
+		if normalized == "" {
+			continue
+		}
+		if !slices.Contains(allowed, normalized) {
+			return fmt.Errorf("tool host %s is not allowed by policy", normalized)
+		}
+	}
+	return nil
+}
+
+func normalizedSet(hosts []string) []string {
+	out := make([]string, 0, len(hosts))
+	for _, host := range hosts {
+		normalized := normalizeHost(host)
+		if normalized == "" || slices.Contains(out, normalized) {
+			continue
+		}
+		out = append(out, normalized)
+	}
+	return out
+}
+
+func normalizeHost(host string) string {
+	host = strings.TrimSpace(strings.ToLower(host))
+	host = strings.TrimPrefix(host, "http://")
+	host = strings.TrimPrefix(host, "https://")
+	if idx := strings.IndexByte(host, '/'); idx >= 0 {
+		host = host[:idx]
+	}
+	if idx := strings.LastIndexByte(host, ':'); idx > 0 {
+		host = host[:idx]
+	}
+	return host
 }
 
 func summarizeMessages(messages []llm.ChatMessage) string {
@@ -455,6 +600,17 @@ func finish(result *RunResult, now time.Time) *RunResult {
 	return result
 }
 
+func clonePlan(plan *Plan) Plan {
+	if plan == nil {
+		return Plan{}
+	}
+	cloned := Plan{Finished: plan.Finished}
+	if len(plan.Steps) > 0 {
+		cloned.Steps = append([]PlanStep(nil), plan.Steps...)
+	}
+	return cloned
+}
+
 func CompactSteps(steps []RunStep, maxContentBytes int) []RunStep {
 	if maxContentBytes <= 0 {
 		return steps
@@ -462,24 +618,37 @@ func CompactSteps(steps []RunStep, maxContentBytes int) []RunStep {
 	out := make([]RunStep, len(steps))
 	copy(out, steps)
 	for i := range out {
-		out[i].Content = compactString(out[i].Content, maxContentBytes)
-		out[i].OutputJSON = compactRawJSON(out[i].OutputJSON, maxContentBytes)
+		var contentCompressed bool
+		var jsonCompressed bool
+		out[i].Content, contentCompressed = compactStringWithFlag(out[i].Content, maxContentBytes)
+		out[i].OutputJSON, jsonCompressed = compactRawJSONWithFlag(out[i].OutputJSON, maxContentBytes)
+		out[i].Compressed = out[i].Compressed || contentCompressed || jsonCompressed
 	}
 	return out
 }
 
 func compactString(value string, maxBytes int) string {
+	compact, _ := compactStringWithFlag(value, maxBytes)
+	return compact
+}
+
+func compactStringWithFlag(value string, maxBytes int) (string, bool) {
 	if len(value) <= maxBytes {
-		return value
+		return value, false
 	}
-	return value[:maxBytes] + "...[truncated]"
+	return value[:maxBytes] + "...[truncated]", true
 }
 
 func compactRawJSON(raw json.RawMessage, maxBytes int) json.RawMessage {
+	compact, _ := compactRawJSONWithFlag(raw, maxBytes)
+	return compact
+}
+
+func compactRawJSONWithFlag(raw json.RawMessage, maxBytes int) (json.RawMessage, bool) {
 	if len(raw) <= maxBytes {
-		return raw
+		return raw, false
 	}
-	return json.RawMessage(strconvQuote(compactString(string(raw), maxBytes)))
+	return json.RawMessage(strconvQuote(compactString(string(raw), maxBytes))), true
 }
 
 func strconvQuote(value string) string {

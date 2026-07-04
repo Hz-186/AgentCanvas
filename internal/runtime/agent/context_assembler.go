@@ -29,6 +29,11 @@ func (a ContextAssembler) Build(req RunRequest) ([]llm.ChatMessage, ContextTrace
 	if modePrompt := modeInstruction(req); modePrompt != "" {
 		blocks = append(blocks, ContextBlock{Name: "agent_mode", Role: conversation.RoleSystem, Content: modePrompt, Pinned: true})
 	}
+	if req.Plan != nil {
+		if planContext := req.Plan.PlanContext(); strings.TrimSpace(planContext) != "" {
+			blocks = append(blocks, ContextBlock{Name: "execution_plan", Role: conversation.RoleSystem, Content: planContext, Pinned: true})
+		}
+	}
 	for _, block := range req.ContextBlocks {
 		if strings.TrimSpace(block.Content) == "" {
 			continue

@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"agentcanvas/internal/domain/conversation"
@@ -26,10 +27,11 @@ func (c *fakeToolClient) ChatWithTools(ctx context.Context, cfg llm.ChatProvider
 }
 
 type fakeRuntimeTool struct {
-	name     string
-	output   string
-	input    json.RawMessage
-	metadata toolruntime.ToolMetadata
+	name        string
+	output      string
+	input       json.RawMessage
+	metadata    toolruntime.ToolMetadata
+	sawDeadline bool
 }
 
 func (t *fakeRuntimeTool) Name() string { return t.name }
@@ -42,6 +44,7 @@ func (t *fakeRuntimeTool) Parameters() json.RawMessage {
 
 func (t *fakeRuntimeTool) Execute(ctx context.Context, rc toolruntime.ToolRunContext, input json.RawMessage) (*toolruntime.ToolResult, error) {
 	t.input = input
+	_, t.sawDeadline = ctx.Deadline()
 	return &toolruntime.ToolResult{ContentText: t.output, ContentJSON: json.RawMessage(`{"ok":true}`)}, nil
 }
 
@@ -147,6 +150,9 @@ func TestRunnerStopsForHumanApprovalBeforeHighRiskTool(t *testing.T) {
 	if result.Checkpoint.MessagesSummary == "" || result.Checkpoint.PendingToolCall.Name != "dangerous_tool" {
 		t.Fatalf("unexpected checkpoint: %+v", result.Checkpoint)
 	}
+	if result.Checkpoint.Metadata["iteration"] != 1 || result.Checkpoint.Metadata["tool_calls"] != 0 {
+		t.Fatalf("checkpoint should preserve counters, got %+v", result.Checkpoint.Metadata)
+	}
 	if len(tool.input) != 0 {
 		t.Fatalf("expected tool not to execute, got input %s", string(tool.input))
 	}
@@ -177,6 +183,9 @@ func TestRunnerCreatesCheckpointWhenContextIsCanceled(t *testing.T) {
 	}
 	if result.Checkpoint.Metadata["node_id"] != "agent_loop" {
 		t.Fatalf("checkpoint metadata missing node_id: %+v", result.Checkpoint.Metadata)
+	}
+	if result.Checkpoint.Metadata["iteration"] != 0 || result.Checkpoint.Metadata["tool_calls"] != 0 {
+		t.Fatalf("checkpoint should preserve counters, got %+v", result.Checkpoint.Metadata)
 	}
 }
 
@@ -335,6 +344,142 @@ func TestRunnerMultipleToolsInOneResponse(t *testing.T) {
 	}
 }
 
+func TestRunnerCompactsToolObservationByMetadataLimit(t *testing.T) {
+	client := &fakeToolClient{responses: []llm.ToolChatResponse{
+		{Message: llm.ChatMessage{Role: conversation.RoleAssistant, ToolCalls: []llm.ToolCall{{ID: "call_1", Name: "large_tool", Arguments: json.RawMessage(`{}`)}}}},
+		{Message: llm.ChatMessage{Role: conversation.RoleAssistant, Content: "done"}},
+	}}
+	tool := &fakeRuntimeTool{
+		name:     "large_tool",
+		output:   "abcdefghijklmnopqrstuvwxyz",
+		metadata: toolruntime.ToolMetadata{MaxOutputBytes: 8},
+	}
+	runner := NewRunner(client)
+	result, err := runner.Run(context.Background(), RunRequest{
+		Model:         "test-model",
+		Task:          "compact",
+		MaxIterations: 3,
+		MaxToolCalls:  2,
+		Tools:         []toolruntime.RuntimeTool{tool},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second := client.requests[1]
+	got := second.Messages[len(second.Messages)-1]
+	if !strings.Contains(got.Content, "[truncated]") || strings.Contains(got.Content, "ijklmnopqrstuvwxyz") {
+		t.Fatalf("expected compacted tool observation, got %q", got.Content)
+	}
+	foundToolStep := false
+	for _, step := range result.Steps {
+		if step.Type == StepTypeToolResult {
+			foundToolStep = true
+			if !strings.Contains(step.Content, "[truncated]") {
+				t.Fatalf("expected compacted tool result step, got %+v", step)
+			}
+			if !step.Compressed {
+				t.Fatalf("expected compacted tool result step to be marked compressed: %+v", step)
+			}
+		}
+	}
+	if !foundToolStep {
+		t.Fatalf("expected tool result step, got %+v", result.Steps)
+	}
+}
+
+func TestRunnerAppliesPolicyOutputLimit(t *testing.T) {
+	client := &fakeToolClient{responses: []llm.ToolChatResponse{
+		{Message: llm.ChatMessage{Role: conversation.RoleAssistant, ToolCalls: []llm.ToolCall{{ID: "call_1", Name: "large_tool", Arguments: json.RawMessage(`{}`)}}}},
+		{Message: llm.ChatMessage{Role: conversation.RoleAssistant, Content: "done"}},
+	}}
+	tool := &fakeRuntimeTool{
+		name:     "large_tool",
+		output:   "abcdefghijklmnopqrstuvwxyz",
+		metadata: toolruntime.ToolMetadata{MaxOutputBytes: 128},
+	}
+	runner := NewRunner(client)
+	_, err := runner.Run(context.Background(), RunRequest{
+		Model:         "test-model",
+		Task:          "compact",
+		MaxIterations: 3,
+		MaxToolCalls:  2,
+		ToolPolicy:    ToolPolicy{MaxToolOutputBytes: 6},
+		Tools:         []toolruntime.RuntimeTool{tool},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := client.requests[1].Messages[len(client.requests[1].Messages)-1]
+	if !strings.HasPrefix(got.Content, "abcdef") || !strings.Contains(got.Content, "[truncated]") {
+		t.Fatalf("expected policy output limit to compact observation, got %q", got.Content)
+	}
+}
+
+func TestRunnerRejectsToolHostOutsidePolicyAllowlist(t *testing.T) {
+	client := &fakeToolClient{responses: []llm.ToolChatResponse{
+		{Message: llm.ChatMessage{Role: conversation.RoleAssistant, ToolCalls: []llm.ToolCall{{ID: "call_1", Name: "http_tool", Arguments: json.RawMessage(`{}`)}}}},
+		{Message: llm.ChatMessage{Role: conversation.RoleAssistant, Content: "recovered"}},
+	}}
+	tool := &fakeRuntimeTool{
+		name:     "http_tool",
+		output:   "should not run",
+		metadata: toolruntime.ToolMetadata{AllowedHosts: []string{"api.blocked.test"}},
+	}
+	runner := NewRunner(client)
+	result, err := runner.Run(context.Background(), RunRequest{
+		Model:         "test-model",
+		Task:          "call http",
+		MaxIterations: 3,
+		MaxToolCalls:  2,
+		ToolPolicy:    ToolPolicy{AllowedHosts: []string{"api.allowed.test"}},
+		Tools:         []toolruntime.RuntimeTool{tool},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tool.input) != 0 {
+		t.Fatalf("tool should not execute when host is blocked, input=%s", tool.input)
+	}
+	if result.FinalAnswer != "recovered" {
+		t.Fatalf("expected model to recover after policy observation, got %+v", result)
+	}
+	second := client.requests[1]
+	got := second.Messages[len(second.Messages)-1]
+	if got.Role != conversation.RoleTool || !strings.Contains(got.Content, "not allowed") {
+		t.Fatalf("expected policy violation observation, got %+v", got)
+	}
+}
+
+func TestRunnerAppliesPolicyTimeout(t *testing.T) {
+	client := &fakeToolClient{responses: []llm.ToolChatResponse{
+		{Message: llm.ChatMessage{Role: conversation.RoleAssistant, ToolCalls: []llm.ToolCall{{ID: "call_1", Name: "timed_tool", Arguments: json.RawMessage(`{}`)}}}},
+		{Message: llm.ChatMessage{Role: conversation.RoleAssistant, Content: "done"}},
+	}}
+	tool := &fakeRuntimeTool{name: "timed_tool", output: "ok"}
+	runner := NewRunner(client)
+	_, err := runner.Run(context.Background(), RunRequest{
+		Model:         "test-model",
+		Task:          "timeout",
+		MaxIterations: 3,
+		MaxToolCalls:  2,
+		ToolPolicy:    ToolPolicy{MaxToolTimeoutMS: 10},
+		Tools:         []toolruntime.RuntimeTool{tool},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !tool.sawDeadline {
+		t.Fatal("expected tool context to carry policy timeout deadline")
+	}
+}
+
+func TestCompactStepsMarksCompressed(t *testing.T) {
+	steps := CompactSteps([]RunStep{{Type: StepTypeToolResult, Content: "abcdefghijklmnopqrstuvwxyz"}}, 8)
+	if len(steps) != 1 || !steps[0].Compressed || !strings.Contains(steps[0].Content, "[truncated]") {
+		t.Fatalf("expected compacted step to be marked compressed, got %+v", steps)
+	}
+}
+
 func TestContextAssemblerProducesContextTrace(t *testing.T) {
 	client := &fakeToolClient{responses: []llm.ToolChatResponse{
 		{Message: llm.ChatMessage{Role: conversation.RoleAssistant, Content: "done"}},
@@ -360,6 +505,49 @@ func TestContextAssemblerProducesContextTrace(t *testing.T) {
 	}
 	if len(result.Context.Included) == 0 {
 		t.Fatal("expected included blocks in context trace")
+	}
+}
+
+func TestRunnerRecordsPlanAndMarksPlanCompleted(t *testing.T) {
+	client := &fakeToolClient{responses: []llm.ToolChatResponse{
+		{Message: llm.ChatMessage{Role: conversation.RoleAssistant, Content: "planned answer"}},
+	}}
+	plan := &Plan{Steps: []PlanStep{
+		{Number: 1, Description: "inspect", Status: "pending"},
+		{Number: 2, Description: "answer", Status: "pending"},
+	}}
+	runner := NewRunner(client)
+	result, err := runner.Run(context.Background(), RunRequest{
+		Model:         "test-model",
+		Mode:          "plan_execute",
+		Plan:          plan,
+		Task:          "answer with a plan",
+		MaxIterations: 2,
+		MaxToolCalls:  2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.StopReason != StopReasonPlanCompleted || result.Plan == nil || !result.Plan.Finished {
+		t.Fatalf("expected completed plan result, got %+v", result)
+	}
+	if result.Plan.Steps[0].Status != "completed" || result.Plan.Steps[1].Status != "completed" {
+		t.Fatalf("expected plan steps completed, got %+v", result.Plan.Steps)
+	}
+	if len(result.Steps) == 0 || result.Steps[0].Type != StepTypePlan {
+		t.Fatalf("expected first step to be plan, got %+v", result.Steps)
+	}
+	if len(client.requests[0].Messages) < 2 {
+		t.Fatalf("expected plan context in messages, got %+v", client.requests[0].Messages)
+	}
+	foundPlan := false
+	for _, message := range client.requests[0].Messages {
+		if message.Role == conversation.RoleSystem && strings.Contains(message.Content, "Execution Plan") {
+			foundPlan = true
+		}
+	}
+	if !foundPlan {
+		t.Fatalf("plan context was not added to messages: %+v", client.requests[0].Messages)
 	}
 }
 
@@ -406,9 +594,11 @@ func TestReactWithReflectionInstruction(t *testing.T) {
 func TestStepTypeConstants(t *testing.T) {
 	expected := map[string]string{
 		"llm_response":      StepTypeLLMResponse,
+		"plan":              StepTypePlan,
 		"tool_call":         StepTypeToolCall,
 		"tool_result":       StepTypeToolResult,
 		"approval_required": StepTypeApproval,
+		"reflection":        StepTypeReflection,
 		"final_answer":      StepTypeFinalAnswer,
 		"error":             StepTypeError,
 	}

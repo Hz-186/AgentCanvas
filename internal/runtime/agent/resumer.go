@@ -19,6 +19,7 @@ type ResumeRequest struct {
 	Provider           llm.ChatProviderConfig
 	Model              string
 	Mode               string
+	Plan               *Plan
 	SystemPrompt       string
 	Task               string
 	ReflectionEnabled  bool
@@ -77,6 +78,7 @@ func BuildResumeRequest(req ResumeRequest) (*RunRequest, error) {
 		Provider:           req.Provider,
 		Model:              req.Model,
 		Mode:               req.Mode,
+		Plan:               req.Plan,
 		SystemPrompt:       req.SystemPrompt,
 		Task:               req.Task,
 		ReflectionEnabled:  req.ReflectionEnabled,

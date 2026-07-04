@@ -24,9 +24,11 @@ const (
 
 const (
 	StepTypeLLMResponse = "llm_response"
+	StepTypePlan        = "plan"
 	StepTypeToolCall    = "tool_call"
 	StepTypeToolResult  = "tool_result"
 	StepTypeApproval    = "approval_required"
+	StepTypeReflection  = "reflection"
 	StepTypeFinalAnswer = "final_answer"
 	StepTypeError       = "error"
 )
@@ -42,6 +44,7 @@ type RunRequest struct {
 	Provider           llm.ChatProviderConfig
 	Model              string
 	Mode               string
+	Plan               *Plan
 	SystemPrompt       string
 	Task               string
 	ReflectionEnabled  bool
@@ -64,6 +67,7 @@ type RunResult struct {
 	Iterations  int          `json:"iterations"`
 	ToolCalls   int          `json:"tool_calls"`
 	Usage       llm.Usage    `json:"usage"`
+	Plan        *Plan        `json:"plan,omitempty"`
 	Steps       []RunStep    `json:"steps,omitempty"`
 	Context     ContextTrace `json:"context_trace,omitempty"`
 	Approval    *Approval    `json:"approval,omitempty"`
@@ -82,6 +86,7 @@ type RunStep struct {
 	ToolName      string          `json:"tool_name,omitempty"`
 	ArgumentsJSON json.RawMessage `json:"arguments_json,omitempty"`
 	OutputJSON    json.RawMessage `json:"output_json,omitempty"`
+	Compressed    bool            `json:"compressed,omitempty"`
 	IsError       bool            `json:"is_error,omitempty"`
 	Error         string          `json:"error,omitempty"`
 	LatencyMS     int             `json:"latency_ms,omitempty"`
@@ -93,6 +98,9 @@ type RunStep struct {
 
 type ToolPolicy struct {
 	RequireApprovalForRisk []string `json:"require_approval_for_risk,omitempty"`
+	MaxToolTimeoutMS       int      `json:"max_tool_timeout_ms,omitempty"`
+	MaxToolOutputBytes     int      `json:"max_tool_output_bytes,omitempty"`
+	AllowedHosts           []string `json:"allowed_hosts,omitempty"`
 }
 
 type Approval struct {
