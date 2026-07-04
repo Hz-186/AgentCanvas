@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS workflow_run_steps (
     tool_name VARCHAR(128) NULL,
     arguments_json JSON NULL,
     output_json JSON NULL,
+    compressed TINYINT(1) NOT NULL DEFAULT 0,
     error_message TEXT NULL,
     token_count INT NOT NULL DEFAULT 0,
     latency_ms INT NOT NULL DEFAULT 0,

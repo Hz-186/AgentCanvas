@@ -1,4 +1,9 @@
 ALTER TABLE workflow_profiles
+    DROP COLUMN mode,
+    DROP COLUMN risk_level,
+    DROP COLUMN context_policy_json,
+    DROP COLUMN memory_policy_json,
+    DROP COLUMN tool_policy_json,
     DROP COLUMN output_schema_json,
     DROP COLUMN default_mcp_server_ids,
     DROP COLUMN default_tool_pack_ids;
