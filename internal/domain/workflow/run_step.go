@@ -18,6 +18,7 @@ type RunStep struct {
 	ToolName      string          `json:"tool_name" gorm:"column:tool_name"`
 	ArgumentsJSON json.RawMessage `json:"arguments_json" gorm:"column:arguments_json"`
 	OutputJSON    json.RawMessage `json:"output_json" gorm:"column:output_json"`
+	Compressed    bool            `json:"compressed" gorm:"column:compressed"`
 	ErrorMessage  string          `json:"error_message" gorm:"column:error_message"`
 	TokenCount    int             `json:"token_count" gorm:"column:token_count"`
 	LatencyMS     int             `json:"latency_ms" gorm:"column:latency_ms"`

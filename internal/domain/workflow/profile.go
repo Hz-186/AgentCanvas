@@ -32,6 +32,11 @@ type Profile struct {
 	DefaultCallWorkflowIDs      json.RawMessage `json:"default_call_workflow_ids" gorm:"column:default_call_workflow_ids"`
 	DefaultMaxWorkflowCallDepth int             `json:"default_max_workflow_call_depth" gorm:"column:default_max_workflow_call_depth"`
 	OutputSchemaJSON            json.RawMessage `json:"output_schema_json" gorm:"column:output_schema_json"`
+	ToolPolicyJSON              json.RawMessage `json:"tool_policy_json" gorm:"column:tool_policy_json"`
+	MemoryPolicyJSON            json.RawMessage `json:"memory_policy_json" gorm:"column:memory_policy_json"`
+	ContextPolicyJSON           json.RawMessage `json:"context_policy_json" gorm:"column:context_policy_json"`
+	RiskLevel                   string          `json:"risk_level" gorm:"column:risk_level"`
+	Mode                        string          `json:"mode" gorm:"column:mode"`
 	CreatedAt                   time.Time       `json:"created_at" gorm:"column:created_at"`
 	UpdatedAt                   time.Time       `json:"updated_at" gorm:"column:updated_at"`
 	DeletedAt                   *time.Time      `json:"-" gorm:"column:deleted_at"`
@@ -74,6 +79,9 @@ func (p *Profile) normalizeJSON() error {
 	p.DefaultKnowledgeIDs = normalizeJSONField(p.DefaultKnowledgeIDs)
 	p.DefaultCallWorkflowIDs = normalizeJSONField(p.DefaultCallWorkflowIDs)
 	p.OutputSchemaJSON = normalizeJSONObjectField(p.OutputSchemaJSON)
+	p.ToolPolicyJSON = normalizeJSONObjectField(p.ToolPolicyJSON)
+	p.MemoryPolicyJSON = normalizeJSONObjectField(p.MemoryPolicyJSON)
+	p.ContextPolicyJSON = normalizeJSONObjectField(p.ContextPolicyJSON)
 	return nil
 }
 
