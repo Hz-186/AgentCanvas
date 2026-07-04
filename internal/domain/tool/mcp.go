@@ -22,10 +22,10 @@ type MCPServer struct {
 	OwnerID      int64           `json:"owner_id" gorm:"column:owner_id"`
 	Name         string          `json:"name" gorm:"column:name"`
 	Transport    string          `json:"transport" gorm:"column:transport"`
-	EndpointURL  string          `json:"endpoint_url" gorm:"column:endpoint_url"`
-	Command      string          `json:"command" gorm:"column:command"`
+	EndpointURL  string          `json:"endpoint_url" gorm:"column:endpoint_url"` // like "https://mcp.example.com/sse"
+	Command      string          `json:"command" gorm:"column:command"`           // "npx"
 	ArgsJSON     json.RawMessage `json:"args_json" gorm:"column:args_json"`
-	EnvJSON      json.RawMessage `json:"env_json" gorm:"column:env_json"`
+	EnvJSON      json.RawMessage `json:"env_json" gorm:"column:env_json"` // supplyment
 	Status       int             `json:"status" gorm:"column:status"`
 	LastError    string          `json:"last_error" gorm:"column:last_error"`
 	DiscoveredAt *time.Time      `json:"discovered_at" gorm:"column:discovered_at"`
