@@ -59,6 +59,7 @@ type Service struct {
 	runCancels      *runCancelRegistry
 }
 
+// RunTrace is a complete tracing snapshot of a workflow execution (Run).
 type RunTrace struct {
 	Run             *workflow.Run       `json:"run"`
 	Events          []workflow.RunEvent `json:"events"`
@@ -83,19 +84,85 @@ type EvalTrendPoint struct {
 	FinishedAt    *time.Time     `json:"finished_at"`
 }
 
+// EvalTrend represents a historical trend overview of multiple evaluations
+// of a workflow within a given dataset, including all data points and the
+// calculated optimal/latest/change values.
 type EvalTrend struct {
 	DatasetID    int64            `json:"dataset_id"`
 	WorkflowID   int64            `json:"workflow_id"`
-	Points       []EvalTrendPoint `json:"points"`
+	Points       []EvalTrendPoint `json:"points"` // [{eval_run_id:98,...}, {eval_run_id:100,...}, {eval_run_id:102,...}]
 	Latest       *EvalTrendPoint  `json:"latest,omitempty"`
 	Best         *EvalTrendPoint  `json:"best,omitempty"`
-	Delta        map[string]any   `json:"delta"`
-	TrendSummary map[string]any   `json:"trend_summary"`
+	Delta        map[string]any   `json:"delta"`         // like {"success_rate": 0.12, "passed_cases": 4, "avg_latency_ms": -320.5}
+	TrendSummary map[string]any   `json:"trend_summary"` // {"run_count": 3, "latest_eval_run_id": 102, "best_eval_run_id": 100, "success_rate_delta": 0.08}
 }
 
-func NewService(workflows workflow.Repository, profiles workflow.ProfileRepository, versions workflow.WorkflowVersionRepository, runs workflow.RunRepository, events workflow.RunEventRepository, nodeLogs workflow.NodeLogRepository, runSteps workflow.RunStepRepository, evals workflow.EvalDatasetRepository, approvals workflow.ApprovalRepository, teams workflow.TeamRepository, memories memory.Repository, memoryLogs memory.WriteLogRepository, tools tool.DefinitionRepository, toolPacks tool.PackRepository, mcpServers tool.MCPRepository, toolInvocations tool.InvocationRepository, providers providerdomain.Repository, messages conversation.MessageRepository, retriever retrieval.Retriever, llmClient llm.ChatClient, secrets *cryptoinfra.SecretBox) *Service {
-	s := &Service{workflows: workflows, profiles: profiles, versions: versions, runs: runs, events: events, nodeLogs: nodeLogs, runSteps: runSteps, evals: evals, approvals: approvals, teams: teams, memories: memories, memoryLogs: memoryLogs, tools: tools, toolPacks: toolPacks, mcpServers: mcpServers, toolInvocations: toolInvocations, providers: providers, messages: messages, retriever: retriever, llm: llmClient, secrets: secrets}
-	s.executor = engine.NewExecutor(runtimenode.DefaultNodes(runtimenode.Deps{Retriever: retriever, LLM: llmClient, Providers: s, Messages: s, MessageHistory: messages, Memories: memories, MemoryWriteLogs: memoryLogs, Tools: tools, ToolPacks: toolPacks, MCPServers: mcpServers, ToolInvocations: toolInvocations, WorkflowCaller: s, Profiles: s, Teams: teams}))
+func NewService(
+	workflows workflow.Repository,
+	profiles workflow.ProfileRepository,
+	versions workflow.WorkflowVersionRepository,
+	runs workflow.RunRepository,
+	events workflow.RunEventRepository,
+	nodeLogs workflow.NodeLogRepository,
+	runSteps workflow.RunStepRepository,
+	evals workflow.EvalDatasetRepository,
+	approvals workflow.ApprovalRepository,
+	teams workflow.TeamRepository,
+	memories memory.Repository,
+	memoryLogs memory.WriteLogRepository,
+	tools tool.DefinitionRepository,
+	toolPacks tool.PackRepository,
+	mcpServers tool.MCPRepository,
+	toolInvocations tool.InvocationRepository,
+	providers providerdomain.Repository,
+	messages conversation.MessageRepository,
+	retriever retrieval.Retriever,
+	llmClient llm.ChatClient,
+	secrets *cryptoinfra.SecretBox,
+) *Service {
+	s := &Service{
+		workflows:       workflows,
+		profiles:        profiles,
+		versions:        versions,
+		runs:            runs,
+		events:          events,
+		nodeLogs:        nodeLogs,
+		runSteps:        runSteps,
+		evals:           evals,
+		approvals:       approvals,
+		teams:           teams,
+		memories:        memories,
+		memoryLogs:      memoryLogs,
+		tools:           tools,
+		toolPacks:       toolPacks,
+		mcpServers:      mcpServers,
+		toolInvocations: toolInvocations,
+		providers:       providers,
+		messages:        messages,
+		retriever:       retriever,
+		llm:             llmClient,
+		secrets:         secrets,
+	}
+	s.executor = engine.NewExecutor(
+		runtimenode.DefaultNodes(
+			runtimenode.Deps{
+				Retriever:       retriever,
+				LLM:             llmClient,
+				Providers:       s,
+				Messages:        s,
+				MessageHistory:  messages,
+				Memories:        memories,
+				MemoryWriteLogs: memoryLogs,
+				Tools:           tools,
+				ToolPacks:       toolPacks,
+				MCPServers:      mcpServers,
+				ToolInvocations: toolInvocations,
+				WorkflowCaller:  s,
+				Profiles:        s,
+				Teams:           teams,
+			},
+		),
+	)
 	s.validator = flow.NewValidator(s.executor)
 	s.runCancels = newRunCancelRegistry()
 	return s
@@ -410,7 +477,11 @@ func (s *Service) UpdateWorkflowProfile(ctx context.Context, ownerID, workflowID
 	return profile, nil
 }
 
-func (s *Service) CreateEvalDataset(ctx context.Context, ownerID, workflowID int64, req CreateEvalDatasetRequest) (*workflow.EvalDataset, error) {
+func (s *Service) CreateEvalDataset(
+	ctx context.Context,
+	ownerID, workflowID int64,
+	req CreateEvalDatasetRequest,
+) (*workflow.EvalDataset, error) {
 	if s.evals == nil {
 		return nil, fmt.Errorf("%w: eval repository is not configured", agenterrors.ErrInvalidInput)
 	}
@@ -2064,7 +2135,11 @@ func scoreEvalOutputDetailed(output engine.NodeOutput, expectedJSON, requiredToo
 					metrics["tool_call_accuracy"] = float64(matched) / float64(len(required))
 					metrics["required_tools"] = required
 					metrics["actual_tools"] = sortedToolNames(called)
-					return evalScoreResult{Score: 0, Reason: "required tool was not called: " + name, Metrics: metrics}
+					return evalScoreResult{
+						Score:   0,
+						Reason:  "required tool was not called: " + name,
+						Metrics: metrics,
+					}
 				}
 			}
 			metrics["tool_call_accuracy"] = float64(matched) / float64(len(required))
@@ -2079,13 +2154,21 @@ func scoreEvalOutputDetailed(output engine.NodeOutput, expectedJSON, requiredToo
 	if len(expectedJSON) == 0 {
 		metrics["score"] = 1.0
 		metrics["reason"] = "no expected_json configured"
-		return evalScoreResult{Score: 1, Reason: "no expected_json configured", Metrics: metrics}
+		return evalScoreResult{
+			Score:   1,
+			Reason:  "no expected_json configured",
+			Metrics: metrics,
+		}
 	}
 	var expected map[string]any
 	if err := json.Unmarshal(expectedJSON, &expected); err != nil {
 		metrics["score"] = 0.0
 		metrics["reason"] = "expected_json is invalid: " + err.Error()
-		return evalScoreResult{Score: 0, Reason: "expected_json is invalid: " + err.Error(), Metrics: metrics}
+		return evalScoreResult{
+			Score:   0,
+			Reason:  "expected_json is invalid: " + err.Error(),
+			Metrics: metrics,
+		}
 	}
 	if schema, ok := expectedSchema(expected); ok {
 		if err := validateEvalSchema(schema, output); err != nil {
@@ -2106,7 +2189,11 @@ func scoreEvalOutputDetailed(output engine.NodeOutput, expectedJSON, requiredToo
 		if actualStatus != status {
 			metrics["score"] = 0.0
 			metrics["reason"] = fmt.Sprintf("status mismatch: expected %s got %s", status, actualStatus)
-			return evalScoreResult{Score: 0, Reason: fmt.Sprintf("status mismatch: expected %s got %s", status, actualStatus), Metrics: metrics}
+			return evalScoreResult{
+				Score:   0,
+				Reason:  fmt.Sprintf("status mismatch: expected %s got %s", status, actualStatus),
+				Metrics: metrics,
+			}
 		}
 	}
 	if contains, exists := expected["contains"]; exists {
@@ -2115,7 +2202,11 @@ func scoreEvalOutputDetailed(output engine.NodeOutput, expectedJSON, requiredToo
 			if !strings.Contains(text, strings.ToLower(expectedText)) {
 				metrics["score"] = 0.0
 				metrics["reason"] = "output does not contain expected text: " + expectedText
-				return evalScoreResult{Score: 0, Reason: "output does not contain expected text: " + expectedText, Metrics: metrics}
+				return evalScoreResult{
+					Score:   0,
+					Reason:  "output does not contain expected text: " + expectedText,
+					Metrics: metrics,
+				}
 			}
 		}
 	}
@@ -2126,7 +2217,11 @@ func scoreEvalOutputDetailed(output engine.NodeOutput, expectedJSON, requiredToo
 		if refCount < minRefs {
 			metrics["score"] = 0.0
 			metrics["reason"] = fmt.Sprintf("references below required minimum: expected at least %d got %d", minRefs, refCount)
-			return evalScoreResult{Score: 0, Reason: fmt.Sprintf("references below required minimum: expected at least %d got %d", minRefs, refCount), Metrics: metrics}
+			return evalScoreResult{
+				Score:   0,
+				Reason:  fmt.Sprintf("references below required minimum: expected at least %d got %d", minRefs, refCount),
+				Metrics: metrics,
+			}
 		}
 	} else {
 		metrics["reference_count"] = referenceCount(output)
@@ -2142,20 +2237,29 @@ func scoreEvalOutputDetailed(output engine.NodeOutput, expectedJSON, requiredToo
 		if string(expectedBytes) != string(actualBytes) {
 			metrics["score"] = 0.0
 			metrics["reason"] = "final answer does not equal expected value"
-			return evalScoreResult{Score: 0, Reason: "final answer does not equal expected value", Metrics: metrics}
+			return evalScoreResult{
+				Score:   0,
+				Reason:  "final answer does not equal expected value",
+				Metrics: metrics,
+			}
 		}
 	}
 	metrics["score"] = 1.0
 	metrics["reason"] = "matched expected_json"
-	return evalScoreResult{Score: 1, Reason: "matched expected_json", Metrics: metrics}
+	return evalScoreResult{
+		Score:   1,
+		Reason:  "matched expected_json",
+		Metrics: metrics,
+	}
 }
 
+// gather base merics
 func baseEvalMetrics(output engine.NodeOutput) map[string]any {
 	stopReason, _ := output["stop_reason"].(string)
 	metrics := map[string]any{
 		"stop_reason":                 stopReason,
-		"max_iteration_exceeded":      stopReason == runtimeagent.StopReasonMaxIterations,
-		"human_approval_waiting":      stopReason == runtimeagent.StopReasonWaitingHuman,
+		"max_iteration_exceeded":      stopReason == runtimeagent.StopReasonMaxIterations, // bool
+		"human_approval_waiting":      stopReason == runtimeagent.StopReasonWaitingHuman,  // bool
 		"latency_ms":                  numberFromOutput(output, "latency_ms"),
 		"total_tokens":                numberFromOutput(output, "total_tokens"),
 		"json_schema_compliance":      1.0,
