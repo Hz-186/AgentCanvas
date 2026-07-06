@@ -113,6 +113,8 @@ func pageBlocks(pageNo int, pageText string) []Block {
 	lines := strings.Split(pageText, "\n")
 	blocks := make([]Block, 0, len(lines))
 	var paragraph strings.Builder
+	var structured strings.Builder
+	structuredType := ""
 	flush := func() {
 		text := normalizeExtractedText(paragraph.String())
 		paragraph.Reset()
@@ -121,23 +123,47 @@ func pageBlocks(pageNo int, pageText string) []Block {
 		}
 		blocks = append(blocks, newBlock(pageNo, len(blocks)+1, classifyTextBlock(text), text, nil))
 	}
+	flushStructured := func() {
+		text := normalizeExtractedText(structured.String())
+		if text != "" {
+			blocks = append(blocks, newBlock(pageNo, len(blocks)+1, structuredType, text, nil))
+		}
+		structured.Reset()
+		structuredType = ""
+	}
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
 		if line == "" {
+			flushStructured()
 			flush()
 			continue
 		}
 		blockType := classifyTextBlock(line)
-		if blockType == "heading" || blockType == "table" || blockType == "list" {
+		if blockType == "heading" || blockType == "caption" || blockType == "scrap" {
+			flushStructured()
 			flush()
 			blocks = append(blocks, newBlock(pageNo, len(blocks)+1, blockType, line, nil))
 			continue
 		}
+		if blockType == "table" || blockType == "list" {
+			flush()
+			if structuredType != "" && structuredType != blockType {
+				flushStructured()
+			}
+			structuredType = blockType
+			if structured.Len() > 0 {
+				structured.WriteByte('\n')
+			}
+			structured.WriteString(line)
+			continue
+		}
+		flushStructured()
 		if paragraph.Len() > 0 {
 			paragraph.WriteByte('\n')
 		}
 		paragraph.WriteString(line)
 	}
+	flushStructured()
 	flush()
 	return blocks
 }
@@ -152,6 +178,9 @@ func newBlock(pageNo, index int, blockType, text string, bbox *BBox) Block {
 	if blockType == "heading" {
 		metadata["section_title"] = strings.TrimSpace(strings.TrimLeft(text, "#0123456789.、 "))
 	}
+	if blockType == "caption" {
+		metadata["caption"] = text
+	}
 	if bbox != nil {
 		metadata["bbox"] = bbox
 	}
@@ -163,15 +192,21 @@ func classifyTextBlock(text string) string {
 	if trimmed == "" {
 		return "text"
 	}
-	if strings.HasPrefix(trimmed, "#") || regexp.MustCompile(`^([0-9]+(\.[0-9]+)*[、. ]+|第[一二三四五六七八九十百千万0-9]+[章节条])`).MatchString(trimmed) {
+	if strings.HasPrefix(trimmed, "#") || headingPattern.MatchString(trimmed) {
 		if utf8RuneCount(trimmed) <= 80 {
 			return "heading"
 		}
 	}
+	if captionPattern.MatchString(trimmed) && utf8RuneCount(trimmed) <= 120 {
+		return "caption"
+	}
+	if scrapPattern.MatchString(trimmed) && utf8RuneCount(trimmed) <= 80 {
+		return "scrap"
+	}
 	if strings.Contains(trimmed, "|") && strings.Count(trimmed, "|") >= 2 {
 		return "table"
 	}
-	if regexp.MustCompile(`^([-*•]|[0-9]+[.)、])\s+`).MatchString(trimmed) {
+	if listPattern.MatchString(trimmed) {
 		return "list"
 	}
 	return "text"
@@ -234,12 +269,35 @@ func joinPages(pages []Page) string {
 }
 
 var (
-	pdfLiteralPattern = regexp.MustCompile(`\((?:\\.|[^\\)])*\)`)
-	pdfHexPattern     = regexp.MustCompile(`<([0-9A-Fa-f\s]{4,})>`)
+	pdfTextObjectPattern = regexp.MustCompile(`(?s)BT\s*(.*?)\s*ET`)
+	pdfLiteralPattern    = regexp.MustCompile(`\((?:\\.|[^\\)])*\)`)
+	pdfHexPattern        = regexp.MustCompile(`<([0-9A-Fa-f\s]{4,})>`)
+	cidPattern           = regexp.MustCompile(`(?i)\(?cid\s*:\s*\d+\s*\)?`)
+	headingPattern       = regexp.MustCompile(`^([0-9]+(\.[0-9]+)*[、. ]+|第[一二三四五六七八九十百千万0-9]+[章节条])`)
+	captionPattern       = regexp.MustCompile(`^(图|表|Figure|Table)\s*[-0-9一二三四五六七八九十.：: ]+`)
+	scrapPattern         = regexp.MustCompile(`(?i)^(page\s+\d+\s*(of\s+\d+)?|第\s*\d+\s*页|版权所有|copyright\b)`)
+	listPattern          = regexp.MustCompile(`^([-*•]|[0-9]+[.)、])\s+`)
 )
 
 func extractPDFLiteralText(data []byte) string {
 	source := string(data)
+	objects := pdfTextObjectPattern.FindAllStringSubmatch(source, -1)
+	if len(objects) > 0 {
+		parts := make([]string, 0, len(objects))
+		for _, object := range objects {
+			if len(object) != 2 {
+				continue
+			}
+			if decoded := extractPDFTextOperands(object[1]); decoded != "" {
+				parts = append(parts, decoded)
+			}
+		}
+		return strings.Join(parts, "\f")
+	}
+	return extractPDFTextOperands(source)
+}
+
+func extractPDFTextOperands(source string) string {
 	parts := make([]string, 0)
 	for _, match := range pdfLiteralPattern.FindAllString(source, -1) {
 		if decoded := decodePDFLiteral(match[1 : len(match)-1]); decoded != "" {
@@ -279,7 +337,23 @@ func decodePDFLiteral(value string) string {
 			out.WriteByte('\f')
 		case '(', ')', '\\':
 			out.WriteByte(value[i])
+		case '\n', '\r':
+			// PDF line continuation: a backslash followed by EOL is ignored.
+			if value[i] == '\r' && i+1 < len(value) && value[i+1] == '\n' {
+				i++
+			}
 		default:
+			if value[i] >= '0' && value[i] <= '7' {
+				end := i + 1
+				for end < len(value) && end < i+3 && value[end] >= '0' && value[end] <= '7' {
+					end++
+				}
+				if n, err := strconv.ParseUint(value[i:end], 8, 8); err == nil {
+					out.WriteByte(byte(n))
+					i = end - 1
+					continue
+				}
+			}
 			out.WriteByte(value[i])
 		}
 	}
@@ -288,18 +362,48 @@ func decodePDFLiteral(value string) string {
 
 func decodePDFHex(value string) string {
 	value = strings.Join(strings.Fields(value), "")
-	if len(value) < 4 || len(value)%4 != 0 {
+	if len(value) < 2 {
 		return ""
 	}
-	runes := make([]uint16, 0, len(value)/4)
-	for i := 0; i < len(value); i += 4 {
-		n, err := strconv.ParseUint(value[i:i+4], 16, 16)
+	if len(value)%2 != 0 {
+		value += "0"
+	}
+	bytesValue := make([]byte, 0, len(value)/2)
+	for i := 0; i < len(value); i += 2 {
+		n, err := strconv.ParseUint(value[i:i+2], 16, 8)
 		if err != nil {
 			return ""
 		}
-		runes = append(runes, uint16(n))
+		bytesValue = append(bytesValue, byte(n))
 	}
-	return normalizeExtractedText(string(utf16.Decode(runes)))
+	if len(bytesValue) >= 2 && bytesValue[0] == 0xFE && bytesValue[1] == 0xFF {
+		return normalizeExtractedText(decodeUTF16BE(bytesValue[2:]))
+	}
+	if len(bytesValue)%2 == 0 && looksUTF16BE(bytesValue) {
+		return normalizeExtractedText(decodeUTF16BE(bytesValue))
+	}
+	return normalizeExtractedText(string(bytesValue))
+}
+
+func decodeUTF16BE(data []byte) string {
+	runes := make([]uint16, 0, len(data)/2)
+	for i := 0; i+1 < len(data); i += 2 {
+		runes = append(runes, uint16(data[i])<<8|uint16(data[i+1]))
+	}
+	return string(utf16.Decode(runes))
+}
+
+func looksUTF16BE(data []byte) bool {
+	if len(data) < 4 || len(data)%2 != 0 {
+		return false
+	}
+	zeros := 0
+	for i := 0; i < len(data); i += 2 {
+		if data[i] == 0 {
+			zeros++
+		}
+	}
+	return float64(zeros)/float64(len(data)/2) >= 0.6
 }
 
 func normalizeExtractedText(text string) string {
@@ -317,6 +421,9 @@ func normalizeExtractedText(text string) string {
 func needsOCR(text string) bool {
 	text = strings.TrimSpace(text)
 	if text == "" {
+		return true
+	}
+	if cidPattern.MatchString(text) {
 		return true
 	}
 	nonSpace := 0

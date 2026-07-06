@@ -144,13 +144,28 @@ func (c *RecursiveChunker) documentSegments(doc parser.ParsedDocument) []chunkSe
 		if text == "" {
 			continue
 		}
+		if block.Type == "scrap" {
+			continue
+		}
 		if block.Type == "heading" {
 			sectionTitle = strings.TrimSpace(strings.TrimLeft(text, "#"))
 			continue
 		}
-		segments = append(segments, chunkSegment{text: text, sectionTitle: sectionTitle, pageNo: block.PageNo, blockID: block.ID, metadata: block.Metadata, singleChunk: block.Metadata["chunk_hint"] == "single_faq"})
+		segments = append(segments, chunkSegment{text: text, sectionTitle: sectionTitle, pageNo: block.PageNo, blockID: block.ID, metadata: block.Metadata, singleChunk: shouldKeepSingleChunk(block)})
 	}
 	return segments
+}
+
+func shouldKeepSingleChunk(block parser.DocumentBlock) bool {
+	if block.Metadata["chunk_hint"] == "single_faq" {
+		return true
+	}
+	switch block.Type {
+	case "faq", "table", "list", "caption":
+		return true
+	default:
+		return false
+	}
 }
 
 func chunkMetadata(method, tokenizer string, blockIDs []string, extra map[string]any, pageNo *int) map[string]any {

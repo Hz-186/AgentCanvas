@@ -107,3 +107,27 @@ func TestRecursiveChunkerPreservesPDFPageMetadata(t *testing.T) {
 		t.Fatalf("expected PDF metadata on chunk, got %+v", got[0].Metadata)
 	}
 }
+
+func TestRecursiveChunkerKeepsStructuredPDFBlocksAndDropsScraps(t *testing.T) {
+	c := NewRecursiveChunker()
+	pageNo := 2
+	got, err := c.ChunkDocument(context.Background(), parser.ParsedDocument{
+		Blocks: []parser.DocumentBlock{
+			{ID: "p2_s1", Type: "scrap", Text: "Page 2", PageNo: &pageNo, Metadata: map[string]any{"block_type": "scrap", "page_no": 2}},
+			{ID: "p2_c1", Type: "caption", Text: "Table 1: Scores", PageNo: &pageNo, Metadata: map[string]any{"block_type": "caption", "caption": "Table 1: Scores", "page_no": 2}},
+			{ID: "p2_t1", Type: "table", Text: "| name | score |\n| agent | 98 |", PageNo: &pageNo, Metadata: map[string]any{"block_type": "table", "page_no": 2}},
+		},
+	}, Policy{ChunkSize: 2, Overlap: 0})
+	if err != nil {
+		t.Fatalf("ChunkDocument() error = %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("len(chunks) = %d, want caption and table chunks: %+v", len(got), got)
+	}
+	if got[0].Metadata["block_type"] != "caption" || got[1].Metadata["block_type"] != "table" {
+		t.Fatalf("structured metadata = %+v / %+v", got[0].Metadata, got[1].Metadata)
+	}
+	if strings.Contains(got[0].Content, "Page 2") || strings.Contains(got[1].Content, "Page 2") {
+		t.Fatalf("scrap content leaked into chunks: %+v", got)
+	}
+}

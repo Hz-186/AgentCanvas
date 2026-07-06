@@ -37,8 +37,53 @@ endobj`
 	}
 }
 
+func TestExtractPDFTextReadsHexAndUTF16TextFromPDFBytes(t *testing.T) {
+	raw := `%PDF-1.4
+BT
+<48656c6c6f20486578> Tj
+<FEFF4E2D6587> Tj
+ET`
+
+	got, err := ExtractPDFText(context.Background(), "hex.pdf", strings.NewReader(raw))
+	if err != nil {
+		t.Fatalf("ExtractPDFText() error = %v", err)
+	}
+	if !strings.Contains(got.Text, "Hello Hex") || !strings.Contains(got.Text, "中文") {
+		t.Fatalf("extracted text = %q", got.Text)
+	}
+}
+
+func TestExtractPDFTextDecodesLiteralEscapes(t *testing.T) {
+	raw := `%PDF-1.4
+BT
+(Agent\040Canvas \(PDF\)) Tj
+ET`
+
+	got, err := ExtractPDFText(context.Background(), "escape.pdf", strings.NewReader(raw))
+	if err != nil {
+		t.Fatalf("ExtractPDFText() error = %v", err)
+	}
+	if !strings.Contains(got.Text, "Agent Canvas (PDF)") {
+		t.Fatalf("extracted text = %q", got.Text)
+	}
+}
+
 func TestExtractPDFTextReturnsOCRHintForScannedPDF(t *testing.T) {
 	_, err := ExtractPDFText(context.Background(), "scan.pdf", strings.NewReader("%PDF-1.4\n<< /Type /Page >>"))
+	if err == nil {
+		t.Fatal("ExtractPDFText() error = nil, want OCR hint")
+	}
+	if !strings.Contains(err.Error(), "configure OCR") {
+		t.Fatalf("error = %q, want OCR hint", err.Error())
+	}
+}
+
+func TestExtractPDFTextReturnsOCRHintForGarbledCIDPDF(t *testing.T) {
+	raw := `%PDF-1.4
+BT
+((cid:123)(cid:456)(cid:789)) Tj
+ET`
+	_, err := ExtractPDFText(context.Background(), "garbled.pdf", strings.NewReader(raw))
 	if err == nil {
 		t.Fatal("ExtractPDFText() error = nil, want OCR hint")
 	}
@@ -62,6 +107,31 @@ func TestExtractPDFTextBuildsStructuredBlocks(t *testing.T) {
 	}
 	if got.Pages[0].Blocks[2].Type != "table" || got.Pages[0].Blocks[3].Type != "list" {
 		t.Fatalf("expected table and list blocks, got %+v", got.Pages[0].Blocks)
+	}
+}
+
+func TestExtractPDFTextMergesStructuredLinesAndClassifiesCaptions(t *testing.T) {
+	raw := "Table 1: Scores\n| name | score |\n| agent | 98 |\n- first\n- second\nPage 3\n正文段落。"
+
+	got, err := ExtractPDFText(context.Background(), "manual.pdf", strings.NewReader(raw))
+	if err != nil {
+		t.Fatalf("ExtractPDFText() error = %v", err)
+	}
+	blocks := got.Pages[0].Blocks
+	if len(blocks) != 5 {
+		t.Fatalf("unexpected blocks = %+v", blocks)
+	}
+	if blocks[0].Type != "caption" || blocks[0].Metadata["caption"] == "" {
+		t.Fatalf("caption block = %+v", blocks[0])
+	}
+	if blocks[1].Type != "table" || !strings.Contains(blocks[1].Text, "agent") {
+		t.Fatalf("table block = %+v", blocks[1])
+	}
+	if blocks[2].Type != "list" || !strings.Contains(blocks[2].Text, "second") {
+		t.Fatalf("list block = %+v", blocks[2])
+	}
+	if blocks[3].Type != "scrap" || blocks[4].Type != "text" {
+		t.Fatalf("expected scrap then text, got %+v", blocks)
 	}
 }
 

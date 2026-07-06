@@ -2,6 +2,7 @@ package composite
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"time"
 
@@ -107,32 +108,44 @@ func (s *Store) Search(ctx context.Context, req retrieval.RetrievalRequest) (*re
 	if err != nil {
 		return nil, err
 	}
+	if keywordResp == nil {
+		keywordResp = &retrieval.RetrievalResponse{}
+	}
 	vectorReq := req
 	vectorReq.Mode = retrieval.ModeVector
 	vectorResp, err := s.Vector.Search(ctx, vectorReq)
 	if err != nil {
+		keywordResp.LatencyMS = int(time.Since(start).Milliseconds())
+		keywordResp.Trace = append(keywordResp.Trace, retrieval.RetrievalTraceRecord{Stage: "hybrid_vector_recall", Mode: retrieval.ModeVector, Message: "vector_backend_failed", Metadata: map[string]any{"error": err.Error(), "keyword_count": len(keywordResp.Results)}})
 		return keywordResp, nil
+	}
+	if vectorResp == nil {
+		vectorResp = &retrieval.RetrievalResponse{}
 	}
 	weight := req.HybridWeight
 	if weight <= 0 || weight > 1 {
 		weight = 0.5
 	}
 	results := fuse(keywordResp.Results, vectorResp.Results, weight, req.TopK)
-	return &retrieval.RetrievalResponse{Results: results, LatencyMS: int(time.Since(start).Milliseconds())}, nil
+	trace := append([]retrieval.RetrievalTraceRecord{}, keywordResp.Trace...)
+	trace = append(trace, vectorResp.Trace...)
+	trace = append(trace, retrieval.RetrievalTraceRecord{Stage: "hybrid_fusion", Mode: retrieval.ModeHybrid, Message: "keyword_vector_fused", Metadata: map[string]any{"keyword_count": len(keywordResp.Results), "vector_count": len(vectorResp.Results), "result_count": len(results), "vector_weight": weight}})
+	return &retrieval.RetrievalResponse{Results: results, LatencyMS: int(time.Since(start).Milliseconds()), Trace: trace}, nil
 }
 
 func fuse(keywordResults, vectorResults []retrieval.RetrievalResult, vectorWeight float64, topK int) []retrieval.RetrievalResult {
-	merged := make(map[int64]retrieval.RetrievalResult, len(keywordResults)+len(vectorResults))
+	merged := make(map[string]retrieval.RetrievalResult, len(keywordResults)+len(vectorResults))
 	maxKeyword := maxScore(keywordResults)
 	maxVector := maxScore(vectorResults)
 	for _, item := range keywordResults {
 		item.KeywordScore = effectiveScore(item)
 		item.FinalScore = normalize(item.KeywordScore, maxKeyword) * (1 - vectorWeight)
 		item.Score = item.FinalScore
-		merged[item.ChunkID] = item
+		merged[resultKey(item)] = item
 	}
 	for _, item := range vectorResults {
-		existing, ok := merged[item.ChunkID]
+		key := resultKey(item)
+		existing, ok := merged[key]
 		if !ok {
 			existing = item
 		}
@@ -151,7 +164,7 @@ func fuse(keywordResults, vectorResults []retrieval.RetrievalResult, vectorWeigh
 		if existing.Metadata == nil {
 			existing.Metadata = item.Metadata
 		}
-		merged[existing.ChunkID] = existing
+		merged[key] = existing
 	}
 	results := make([]retrieval.RetrievalResult, 0, len(merged))
 	for _, item := range merged {
@@ -162,6 +175,13 @@ func fuse(keywordResults, vectorResults []retrieval.RetrievalResult, vectorWeigh
 		results = results[:topK]
 	}
 	return results
+}
+
+func resultKey(item retrieval.RetrievalResult) string {
+	if item.ChunkID != 0 {
+		return fmt.Sprintf("chunk:%d", item.ChunkID)
+	}
+	return fmt.Sprintf("doc:%d:kb:%d:page:%v:content:%s", item.DocumentID, item.KBID, item.PageNo, item.Content)
 }
 
 func maxScore(items []retrieval.RetrievalResult) float64 {

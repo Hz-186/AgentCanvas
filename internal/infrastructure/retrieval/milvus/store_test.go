@@ -43,6 +43,23 @@ func TestSearchConvertsMilvusMetadataToRetrievalResults(t *testing.T) {
 	if resp.Results[0].Metadata["block_type"] != "text" {
 		t.Fatalf("metadata = %+v", resp.Results[0].Metadata)
 	}
+	if backend.searchRequest.Filter["enabled"] != true || backend.searchRequest.Filter["kb_id"] != int64(10) {
+		t.Fatalf("search filter = %+v", backend.searchRequest.Filter)
+	}
+}
+
+func TestSearchUsesMultiKnowledgeBaseFilter(t *testing.T) {
+	backend := &fakeVectorStore{}
+	store := NewStore(backend, "docs", 2, vectorstore.HNSWConfig{})
+
+	_, err := store.Search(context.Background(), retrieval.RetrievalRequest{OwnerID: 1, KBIDs: []int64{10, 11}, Mode: retrieval.ModeVector, TopK: 1, QueryVector: []float32{0.1, 0.2}})
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	kbIDs, ok := backend.searchRequest.Filter["kb_id"].([]int64)
+	if !ok || len(kbIDs) != 2 || kbIDs[0] != 10 || kbIDs[1] != 11 {
+		t.Fatalf("search filter = %+v", backend.searchRequest.Filter)
+	}
 }
 
 func TestDeleteByDocumentUsesMetadataFilterWhenSupported(t *testing.T) {
@@ -61,6 +78,7 @@ type fakeVectorStore struct {
 	dimensions       int
 	upserts          []vectorstore.VectorDocument
 	searchResults    []vectorstore.SearchResult
+	searchRequest    vectorstore.SearchRequest
 	deleteCollection string
 	deleteFilter     map[string]any
 }
@@ -83,6 +101,7 @@ func (f *fakeVectorStore) DeleteByFilter(_ context.Context, collection string, f
 	return nil
 }
 
-func (f *fakeVectorStore) Search(context.Context, vectorstore.SearchRequest) ([]vectorstore.SearchResult, error) {
+func (f *fakeVectorStore) Search(_ context.Context, req vectorstore.SearchRequest) ([]vectorstore.SearchResult, error) {
+	f.searchRequest = req
 	return f.searchResults, nil
 }

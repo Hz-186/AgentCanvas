@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
+	"sort"
 	"strings"
 	"time"
 )
@@ -65,10 +67,13 @@ func (s *MilvusStore) EnsureCollection(ctx context.Context, name string, dimensi
 			"params":     map[string]any{"M": config.M, "efConstruction": config.EFConstruction},
 		}},
 	}
-	if err := s.do(ctx, "/v2/vectordb/indexes/create", index, nil); err != nil {
+	if err := s.do(ctx, "/v2/vectordb/indexes/create", index, nil); err != nil && !isMilvusAlreadyExists(err) {
 		return err
 	}
-	return s.do(ctx, "/v2/vectordb/collections/load", map[string]any{"collectionName": name}, nil)
+	if err := s.do(ctx, "/v2/vectordb/collections/load", map[string]any{"collectionName": name}, nil); err != nil && !isMilvusAlreadyLoaded(err) {
+		return err
+	}
+	return nil
 }
 
 func (s *MilvusStore) hnsw(config HNSWConfig) HNSWConfig {
@@ -143,7 +148,10 @@ func (s *MilvusStore) DeleteByFilter(ctx context.Context, collection string, fil
 	if err := s.validate(); err != nil {
 		return err
 	}
-	expr := milvusFilter(filter)
+	expr, err := milvusFilter(filter)
+	if err != nil {
+		return err
+	}
 	if expr == "" {
 		return fmt.Errorf("milvus filter is empty")
 	}
@@ -171,7 +179,13 @@ func (s *MilvusStore) Search(ctx context.Context, req SearchRequest) ([]SearchRe
 		"searchParams":   map[string]any{"metricType": strings.ToUpper(config.MetricType), "params": map[string]any{"ef": config.EFSearch}},
 	}
 	if len(req.Filter) > 0 {
-		body["filter"] = milvusFilter(req.Filter)
+		expr, err := milvusFilter(req.Filter)
+		if err != nil {
+			return nil, err
+		}
+		if expr != "" {
+			body["filter"] = expr
+		}
 	}
 	var resp struct {
 		Data []struct {
@@ -263,19 +277,89 @@ func (s *MilvusStore) baseURL() (*url.URL, error) {
 	return parsed, nil
 }
 
-func milvusFilter(filter map[string]any) string {
-	parts := make([]string, 0, len(filter))
-	for key, value := range filter {
+func milvusFilter(filter map[string]any) (string, error) {
+	keys := make([]string, 0, len(filter))
+	for key := range filter {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		value := filter[key]
 		key = strings.TrimSpace(key)
 		if key == "" {
 			continue
 		}
+		if !milvusFilterFieldPattern.MatchString(key) {
+			return "", fmt.Errorf("invalid milvus filter field: %s", key)
+		}
 		switch v := value.(type) {
 		case string:
-			parts = append(parts, fmt.Sprintf("metadata['%s'] == '%s'", key, strings.ReplaceAll(v, "'", "\\'")))
-		case int, int64, float64, bool:
+			parts = append(parts, fmt.Sprintf("metadata['%s'] == '%s'", key, escapeMilvusString(v)))
+		case int, int64, int32, float64, float32, bool:
 			parts = append(parts, fmt.Sprintf("metadata['%s'] == %v", key, v))
+		case []int64:
+			if len(v) > 0 {
+				parts = append(parts, fmt.Sprintf("metadata['%s'] in [%s]", key, joinMilvusValues(v)))
+			}
+		case []int:
+			if len(v) > 0 {
+				parts = append(parts, fmt.Sprintf("metadata['%s'] in [%s]", key, joinMilvusValues(v)))
+			}
+		case []string:
+			if len(v) > 0 {
+				parts = append(parts, fmt.Sprintf("metadata['%s'] in [%s]", key, joinMilvusValues(v)))
+			}
+		case []any:
+			if joined := joinMilvusValues(v); joined != "" {
+				parts = append(parts, fmt.Sprintf("metadata['%s'] in [%s]", key, joined))
+			}
 		}
 	}
-	return strings.Join(parts, " && ")
+	return strings.Join(parts, " && "), nil
+}
+
+var milvusFilterFieldPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+func escapeMilvusString(value string) string {
+	return strings.ReplaceAll(value, "'", "\\'")
+}
+
+func joinMilvusValues[T any](values []T) string {
+	parts := make([]string, 0, len(values))
+	for _, value := range values {
+		switch v := any(value).(type) {
+		case string:
+			parts = append(parts, fmt.Sprintf("'%s'", escapeMilvusString(v)))
+		case int:
+			parts = append(parts, fmt.Sprintf("%d", v))
+		case int64:
+			parts = append(parts, fmt.Sprintf("%d", v))
+		case int32:
+			parts = append(parts, fmt.Sprintf("%d", v))
+		case float64:
+			parts = append(parts, fmt.Sprintf("%v", v))
+		case float32:
+			parts = append(parts, fmt.Sprintf("%v", v))
+		case bool:
+			parts = append(parts, fmt.Sprintf("%v", v))
+		}
+	}
+	return strings.Join(parts, ", ")
+}
+
+func isMilvusAlreadyExists(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "already exist") || strings.Contains(msg, "duplicated")
+}
+
+func isMilvusAlreadyLoaded(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "already loaded") || strings.Contains(msg, "loaded")
 }

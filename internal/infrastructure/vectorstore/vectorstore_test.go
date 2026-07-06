@@ -72,7 +72,7 @@ func TestMilvusStoreUsesRESTAPIForCollectionAndSearch(t *testing.T) {
 	if err := store.DeleteByFilter(context.Background(), "docs", map[string]any{"document_id": 20}); err != nil {
 		t.Fatalf("DeleteByFilter() error = %v", err)
 	}
-	got, err := store.Search(context.Background(), SearchRequest{Collection: "docs", Vector: []float32{0.1, 0.2}, TopK: 3, Filter: map[string]any{"kb_id": 10}})
+	got, err := store.Search(context.Background(), SearchRequest{Collection: "docs", Vector: []float32{0.1, 0.2}, TopK: 3, Filter: map[string]any{"kb_id": []int64{10, 11}, "enabled": true}})
 	if err != nil {
 		t.Fatalf("Search() error = %v", err)
 	}
@@ -92,8 +92,43 @@ func TestMilvusStoreUsesRESTAPIForCollectionAndSearch(t *testing.T) {
 		t.Fatalf("unexpected delete request: %+v", deleteReq)
 	}
 	searchReq := requests[6]
-	if searchReq["filter"] == "" || searchReq["limit"].(float64) != 3 {
+	filter := searchReq["filter"].(string)
+	if filter == "" || searchReq["limit"].(float64) != 3 || !strings.Contains(filter, "metadata['kb_id'] in [10, 11]") || !strings.Contains(filter, "metadata['enabled'] == true") {
 		t.Fatalf("unexpected search request: %+v", searchReq)
+	}
+}
+
+func TestMilvusStoreRejectsUnsafeFilterField(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"code":0,"data":[]}`))
+	}))
+	defer server.Close()
+
+	store := NewMilvusStore(server.URL, "", HNSWConfig{})
+	_, err := store.Search(context.Background(), SearchRequest{Collection: "docs", Vector: []float32{0.1}, Filter: map[string]any{"kb_id'] == 1 || metadata['owner_id": 2}})
+	if err == nil || !strings.Contains(err.Error(), "invalid milvus filter field") {
+		t.Fatalf("expected invalid filter field error, got %v", err)
+	}
+}
+
+func TestMilvusStoreTreatsExistingIndexAndLoadedCollectionAsIdempotent(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v2/vectordb/collections/has":
+			_, _ = w.Write([]byte(`{"code":0,"data":true}`))
+		case "/v2/vectordb/indexes/create":
+			_, _ = w.Write([]byte(`{"code":1100,"message":"index already exists"}`))
+		case "/v2/vectordb/collections/load":
+			_, _ = w.Write([]byte(`{"code":1100,"message":"collection already loaded"}`))
+		default:
+			_, _ = w.Write([]byte(`{"code":0,"data":{}}`))
+		}
+	}))
+	defer server.Close()
+
+	store := NewMilvusStore(server.URL, "", HNSWConfig{})
+	if err := store.EnsureCollection(context.Background(), "docs", 128, HNSWConfig{}); err != nil {
+		t.Fatalf("EnsureCollection() error = %v", err)
 	}
 }
 

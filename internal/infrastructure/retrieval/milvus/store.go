@@ -98,7 +98,10 @@ func (s *Store) Search(ctx context.Context, req retrieval.RetrievalRequest) (*re
 	filter := map[string]any{"owner_id": req.OwnerID}
 	if len(req.KBIDs) == 1 {
 		filter["kb_id"] = req.KBIDs[0]
+	} else if len(req.KBIDs) > 1 {
+		filter["kb_id"] = append([]int64(nil), req.KBIDs...)
 	}
+	filter["enabled"] = true
 	for key, value := range req.Filters {
 		filter[key] = value
 	}
