@@ -8,9 +8,11 @@ import (
 	"mime/multipart"
 	"net/textproto"
 	"testing"
+	"time"
 
 	"agentcanvas/internal/domain/knowledge"
 	"agentcanvas/internal/domain/retrieval"
+	"agentcanvas/internal/infrastructure/queue"
 
 	"gorm.io/gorm"
 )
@@ -80,6 +82,38 @@ func TestUploadDocumentStoresFileCreatesDocumentAndJob(t *testing.T) {
 	}
 }
 
+func TestUploadDocumentPublishesConfiguredJobQueue(t *testing.T) {
+	ctx := context.Background()
+	kbs := &fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{10: {ID: 10, OwnerID: 1, ChunkSize: 800, ChunkOverlap: 100}}}
+	documents := &fakeDocumentRepo{}
+	jobs := &fakeJobRepo{}
+	jobQueue := &fakeQueue{}
+	service := NewService(
+		kbs,
+		documents,
+		&fakeChunkRepo{},
+		jobs,
+		&fakeRetrievalLogRepo{},
+		nil,
+		&fakeWriteStorage{objects: map[string]string{}},
+		&fakeRetriever{},
+		&fakeIndexer{},
+	).WithJobQueue(jobQueue)
+
+	header := mustMultipartFileHeader(t, "guide.md", "text/markdown", "# Intro")
+	resp, err := service.UploadDocument(ctx, 1, 10, UploadDocumentRequest{FileHeader: header, ContentType: "text/markdown"}, ClientInfo{})
+	if err != nil {
+		t.Fatalf("UploadDocument() error = %v", err)
+	}
+	if len(jobQueue.published) != 1 {
+		t.Fatalf("expected one published queue job, got %+v", jobQueue.published)
+	}
+	published := jobQueue.published[0]
+	if published.ID != "1" || published.Type != knowledge.IngestionJobTypeDocument || published.Payload["ingestion_job_id"] != resp.Job.ID || published.Payload["document_id"] != resp.Document.ID {
+		t.Fatalf("unexpected published queue job: %+v", published)
+	}
+}
+
 func TestCreateKnowledgeBaseDefaultsToRecursiveChunkMethod(t *testing.T) {
 	ctx := context.Background()
 	kbs := &fakeKBRepo{}
@@ -116,7 +150,7 @@ func TestUploadDocumentRejectsUnsupportedFileType(t *testing.T) {
 		&fakeIndexer{},
 	)
 
-	header := mustMultipartFileHeader(t, "paper.pdf", "application/pdf", "pdf")
+	header := mustMultipartFileHeader(t, "paper.exe", "application/octet-stream", "exe")
 	if _, err := service.UploadDocument(context.Background(), 1, 10, UploadDocumentRequest{FileHeader: header}, ClientInfo{}); err == nil {
 		t.Fatal("UploadDocument() error = nil, want invalid input")
 	}
@@ -478,6 +512,27 @@ func (r *fakeRetriever) Search(_ context.Context, req retrieval.RetrievalRequest
 
 type fakeIndexer struct {
 	enabledCalls []enabledCall
+}
+
+type fakeQueue struct {
+	published []queue.Job
+}
+
+func (q *fakeQueue) Publish(_ context.Context, job queue.Job) error {
+	q.published = append(q.published, job)
+	return nil
+}
+
+func (q *fakeQueue) Claim(context.Context, queue.ClaimOptions) ([]queue.Job, error) {
+	return nil, nil
+}
+
+func (q *fakeQueue) Ack(context.Context, string) error {
+	return nil
+}
+
+func (q *fakeQueue) Nack(context.Context, string, time.Time) error {
+	return nil
 }
 
 type enabledCall struct {

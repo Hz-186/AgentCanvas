@@ -7,6 +7,7 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"time"
 
 	"agentcanvas/internal/domain/knowledge"
 	providerdomain "agentcanvas/internal/domain/provider"
@@ -15,6 +16,7 @@ import (
 	cryptoinfra "agentcanvas/internal/infrastructure/crypto"
 	"agentcanvas/internal/infrastructure/llm"
 	"agentcanvas/internal/infrastructure/parser"
+	"agentcanvas/internal/infrastructure/queue"
 
 	"gorm.io/gorm"
 )
@@ -313,6 +315,41 @@ func TestProcessNextRetriesJobBeforeMaxAttempts(t *testing.T) {
 	}
 	if docs.items[20].ParserError == "" {
 		t.Fatal("ParserError is empty")
+	}
+}
+
+func TestProcessNextFromQueueProcessesDirectPayloadAndAcks(t *testing.T) {
+	ctx := context.Background()
+	kbs := &fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{10: {ID: 10, OwnerID: 1, ChunkSize: 20, ChunkOverlap: 0}}}
+	docs := &fakeDocumentRepo{items: map[int64]*knowledge.Document{20: {ID: 20, OwnerID: 1, KBID: 10, Name: "Guide", OriginalFilename: "guide.md", FileType: "md", ObjectKey: "raw/guide.md", ParserStatus: knowledge.DocumentStatusPending, Enabled: true}}}
+	jobs := &fakeJobRepo{}
+	service := NewService(
+		kbs,
+		docs,
+		&fakeChunkRepo{},
+		jobs,
+		nil,
+		fakeReadStorage{objects: map[string]string{"raw/guide.md": "queue driven ingestion content"}},
+		parser.NewTextParser(),
+		chunker.NewDefaultRegistry(),
+		&fakeIndexer{},
+		nil,
+		nil,
+		"test_chunks",
+	)
+	q := &fakeQueue{jobs: []queue.Job{{ID: "stream-1", Type: knowledge.IngestionJobTypeDocument, Payload: map[string]any{"owner_id": int64(1), "kb_id": int64(10), "document_id": int64(20)}}}}
+	processed, err := service.ProcessNextFromQueue(ctx, q, "worker-1")
+	if err != nil || !processed {
+		t.Fatalf("ProcessNextFromQueue() = %v, %v", processed, err)
+	}
+	if len(q.acked) != 1 || q.acked[0] != "stream-1" || len(q.nacked) != 0 {
+		t.Fatalf("expected queue ack only, got ack=%+v nack=%+v", q.acked, q.nacked)
+	}
+	if len(jobs.completed) != 0 {
+		t.Fatalf("direct queue payload should not mark a DB job completed, got %+v", jobs.completed)
+	}
+	if docs.items[20].ParserStatus != knowledge.DocumentStatusCompleted {
+		t.Fatalf("document status = %s, want completed", docs.items[20].ParserStatus)
 	}
 }
 
@@ -720,4 +757,33 @@ func (r *fakeJobRepo) MarkFailed(_ context.Context, id int64, message string) (b
 		r.retrying[id] = message
 	}
 	return final, nil
+}
+
+type fakeQueue struct {
+	jobs   []queue.Job
+	acked  []string
+	nacked []string
+}
+
+func (q *fakeQueue) Publish(context.Context, queue.Job) error {
+	return nil
+}
+
+func (q *fakeQueue) Claim(context.Context, queue.ClaimOptions) ([]queue.Job, error) {
+	if len(q.jobs) == 0 {
+		return nil, nil
+	}
+	job := q.jobs[0]
+	q.jobs = q.jobs[1:]
+	return []queue.Job{job}, nil
+}
+
+func (q *fakeQueue) Ack(_ context.Context, jobID string) error {
+	q.acked = append(q.acked, jobID)
+	return nil
+}
+
+func (q *fakeQueue) Nack(_ context.Context, jobID string, retryAt time.Time) error {
+	q.nacked = append(q.nacked, jobID)
+	return nil
 }

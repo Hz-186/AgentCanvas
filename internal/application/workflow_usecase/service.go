@@ -22,6 +22,7 @@ import (
 	"agentcanvas/internal/infrastructure/llm"
 	runtimeagent "agentcanvas/internal/runtime/agent"
 	"agentcanvas/internal/runtime/engine"
+	"agentcanvas/internal/runtime/evalharness"
 	runtimeevent "agentcanvas/internal/runtime/event"
 	runtimenode "agentcanvas/internal/runtime/node"
 	"agentcanvas/internal/runtime/toolruntime"
@@ -169,8 +170,8 @@ func NewService(
 }
 
 type runOptions struct {
-	ParentRunID       *int64
-	CallerNodeID      string
+	ParentRunID       *int64 // nil or id
+	CallerNodeID      string // "" or like "node_3a7f2b1c"
 	CallDepth         int
 	WorkflowCallChain []int64
 }
@@ -515,7 +516,11 @@ func (s *Service) ListEvalDatasets(ctx context.Context, ownerID, workflowID int6
 	return s.evals.ListDatasetsByWorkflow(ctx, ownerID, workflowID)
 }
 
-func (s *Service) CreateEvalCase(ctx context.Context, ownerID, datasetID int64, req CreateEvalCaseRequest) (*workflow.EvalCase, error) {
+func (s *Service) CreateEvalCase(
+	ctx context.Context,
+	ownerID, datasetID int64,
+	req CreateEvalCaseRequest,
+) (*workflow.EvalCase, error) {
 	if s.evals == nil {
 		return nil, fmt.Errorf("%w: eval repository is not configured", agenterrors.ErrInvalidInput)
 	}
@@ -558,7 +563,10 @@ func (s *Service) CreateEvalCase(ctx context.Context, ownerID, datasetID int64, 
 	return item, nil
 }
 
-func (s *Service) ListEvalCases(ctx context.Context, ownerID, datasetID int64) ([]workflow.EvalCase, error) {
+func (s *Service) ListEvalCases(
+	ctx context.Context,
+	ownerID, datasetID int64,
+) ([]workflow.EvalCase, error) {
 	if s.evals == nil {
 		return nil, fmt.Errorf("%w: eval repository is not configured", agenterrors.ErrInvalidInput)
 	}
@@ -598,19 +606,41 @@ func (s *Service) RunEvalDataset(ctx context.Context, ownerID, datasetID int64, 
 		caseStarted := time.Now().UTC()
 		input := map[string]any{}
 		if err := json.Unmarshal(evalCase.InputJSON, &input); err != nil {
-			result := failedEvalResult(ownerID, evalRun.ID, evalCase.ID, nil, nil, "invalid input_json: "+err.Error(), int(time.Since(caseStarted).Milliseconds()))
+			result := failedEvalResult(
+				ownerID,
+				evalRun.ID,
+				evalCase.ID,
+				nil, nil,
+				"invalid input_json: "+err.Error(),
+				int(time.Since(caseStarted).Milliseconds()),
+			)
 			_ = s.evals.CreateEvalResult(ctx, result)
 			results = append(results, *result)
 			continue
 		}
-		agentRun, output, runErr := s.RunWorkflow(ctx, ownerID, dataset.WorkflowID, RunWorkflowRequest{FlowVersionID: req.FlowVersionID, Input: input})
+		agentRun, output, runErr := s.RunWorkflow(ctx,
+			ownerID,
+			dataset.WorkflowID,
+			RunWorkflowRequest{
+				FlowVersionID: req.FlowVersionID,
+				Input:         input,
+			},
+		)
 		var agentRunID *int64
 		if agentRun != nil {
 			agentRunID = &agentRun.ID
 		}
 		outputJSON, _ := json.Marshal(output)
 		if runErr != nil {
-			result := failedEvalResult(ownerID, evalRun.ID, evalCase.ID, agentRunID, outputJSON, runErr.Error(), int(time.Since(caseStarted).Milliseconds()))
+			result := failedEvalResult(
+				ownerID,
+				evalRun.ID,
+				evalCase.ID,
+				agentRunID,
+				outputJSON,
+				runErr.Error(),
+				int(time.Since(caseStarted).Milliseconds()),
+			)
 			if err := s.evals.CreateEvalResult(ctx, result); err != nil {
 				return evalRun, results, err
 			}
@@ -887,7 +917,11 @@ func (s *Service) CreateWorkflowVersion(ctx context.Context, ownerID, workflowID
 	return item, nil
 }
 
-func (s *Service) findEquivalentWorkflowVersion(ctx context.Context, ownerID, workflowID int64, dsl *flow.DSL) (*workflow.WorkflowVersion, error) {
+func (s *Service) findEquivalentWorkflowVersion(
+	ctx context.Context,
+	ownerID, workflowID int64,
+	dsl *flow.DSL,
+) (*workflow.WorkflowVersion, error) {
 	candidates := make([]*workflow.WorkflowVersion, 0, 2)
 	latest, err := s.versions.FindLatestByWorkflow(ctx, ownerID, workflowID)
 	if err != nil && err != gorm.ErrRecordNotFound {
@@ -1250,7 +1284,14 @@ func (s *Service) LoadChatProviderConfig(ctx context.Context, ownerID, providerI
 	}, nil
 }
 
-func (s *Service) WriteAssistantMessage(ctx context.Context, ownerID int64, conversationID *int64, runID int64, content string, tokenCount int) (int64, error) {
+func (s *Service) WriteAssistantMessage(
+	ctx context.Context,
+	ownerID int64,
+	conversationID *int64,
+	runID int64,
+	content string,
+	tokenCount int,
+) (int64, error) {
 	if conversationID == nil || *conversationID <= 0 {
 		return 0, nil
 	}
@@ -1269,7 +1310,13 @@ func (s *Service) WriteAssistantMessage(ctx context.Context, ownerID int64, conv
 	return message.ID, nil
 }
 
-func (s *Service) run(ctx context.Context, ownerID, workflowID int64, req RunWorkflowRequest, stream func(runtimeevent.Event) error, opts runOptions) (*workflow.Run, engine.NodeOutput, error) {
+func (s *Service) run(
+	ctx context.Context,
+	ownerID, workflowID int64,
+	req RunWorkflowRequest,
+	stream func(runtimeevent.Event) error,
+	opts runOptions,
+) (*workflow.Run, engine.NodeOutput, error) {
 	if req.Input == nil {
 		return nil, nil, agenterrors.ErrInvalidInput
 	}
@@ -1441,7 +1488,12 @@ func (s *Service) decideApproval(ctx context.Context, ownerID, approvalID int64,
 	return item, nil
 }
 
-func (s *Service) persistRunCheckpointArtifacts(ctx context.Context, run *workflow.Run, output engine.NodeOutput, checkpointStatus string) error {
+func (s *Service) persistRunCheckpointArtifacts(
+	ctx context.Context,
+	run *workflow.Run,
+	output engine.NodeOutput,
+	checkpointStatus string,
+) error {
 	if s.approvals == nil || run == nil || output == nil {
 		return nil
 	}
@@ -1950,7 +2002,13 @@ func normalizeOptionalRawJSON(raw json.RawMessage, field string) (json.RawMessag
 	return normalized, nil
 }
 
-func failedEvalResult(ownerID, evalRunID, evalCaseID int64, agentRunID *int64, outputJSON json.RawMessage, message string, latencyMS int) *workflow.EvalResult {
+func failedEvalResult(
+	ownerID, evalRunID, evalCaseID int64,
+	agentRunID *int64,
+	outputJSON json.RawMessage,
+	message string,
+	latencyMS int,
+) *workflow.EvalResult {
 	metricsJSON, _ := json.Marshal(map[string]any{"score": 0, "reason": message})
 	return &workflow.EvalResult{
 		OwnerID:       ownerID,
@@ -1976,7 +2034,13 @@ func summarizeEvalMetrics(results []workflow.EvalResult) map[string]any {
 		"avg_schema_compliance":                averageMetric(results, "schema_compliance"),
 		"avg_json_schema_compliance":           averageMetric(results, "json_schema_compliance"),
 		"avg_reference_hit_rate":               averageMetric(results, "reference_hit_rate"),
+		"avg_retrieval_hit_rate":               averageMetric(results, "retrieval_hit_rate"),
+		"avg_mrr":                              averageMetric(results, "mrr"),
+		"avg_ndcg":                             averageMetric(results, "ndcg"),
+		"avg_citation_rate":                    averageMetric(results, "citation_rate"),
+		"avg_candidate_size":                   averageMetric(results, "candidate_size"),
 		"avg_total_tokens":                     averageMetric(results, "total_tokens"),
+		"avg_token_saved":                      averageMetric(results, "token_saved"),
 		"max_iteration_exceeded_rate":          averageMetric(results, "max_iteration_exceeded"),
 		"max_tool_calls_exceeded_rate":         averageMetric(results, "max_tool_calls_exceeded"),
 		"human_approval_waiting_rate":          averageMetric(results, "human_approval_waiting"),
@@ -2016,7 +2080,13 @@ func buildEvalTrendDelta(first, latest EvalTrendPoint) map[string]any {
 		"avg_schema_compliance",
 		"avg_json_schema_compliance",
 		"avg_reference_hit_rate",
+		"avg_retrieval_hit_rate",
+		"avg_mrr",
+		"avg_ndcg",
+		"avg_citation_rate",
+		"avg_candidate_size",
 		"avg_total_tokens",
+		"avg_token_saved",
 		"max_iteration_exceeded_rate",
 		"max_tool_calls_exceeded_rate",
 		"human_approval_waiting_rate",
@@ -2114,6 +2184,11 @@ type evalScoreResult struct {
 	Metrics map[string]any
 }
 
+// scoreEvalOutputDetailed evaluates a node execution output against expected constraints,
+// including tool usage, schema validation, status matching, content checks,
+// reference requirements, and exact answer equality.
+//
+// It returns a structured evaluation result with a final score, reason, and detailed metrics.
 func scoreEvalOutputDetailed(output engine.NodeOutput, expectedJSON, requiredToolsJSON json.RawMessage) evalScoreResult {
 	if output == nil {
 		output = engine.NodeOutput{}
@@ -2170,6 +2245,7 @@ func scoreEvalOutputDetailed(output engine.NodeOutput, expectedJSON, requiredToo
 			Metrics: metrics,
 		}
 	}
+	mergeEvalMetrics(metrics, ragEvalMetrics(output, expected))
 	if schema, ok := expectedSchema(expected); ok {
 		if err := validateEvalSchema(schema, output); err != nil {
 			metrics["schema_compliance"] = 0.0
@@ -2262,6 +2338,7 @@ func baseEvalMetrics(output engine.NodeOutput) map[string]any {
 		"human_approval_waiting":      stopReason == runtimeagent.StopReasonWaitingHuman,  // bool
 		"latency_ms":                  numberFromOutput(output, "latency_ms"),
 		"total_tokens":                numberFromOutput(output, "total_tokens"),
+		"token_saved":                 tokenSavedFromOutput(output),
 		"json_schema_compliance":      1.0,
 		"schema_compliance":           1.0,
 		"tool_call_accuracy":          1.0,
@@ -2513,6 +2590,188 @@ func numberFromOutput(output engine.NodeOutput, key string) int {
 	default:
 		return 0
 	}
+}
+
+func tokenSavedFromOutput(output engine.NodeOutput) int {
+	if output == nil {
+		return 0
+	}
+	for _, key := range []string{"token_saved", "saved_tokens"} {
+		if value, ok := evalMetricFloat(output[key]); ok {
+			return int(value)
+		}
+	}
+	return int(nestedMetricFloat(output["context_trace"], "saved_tokens"))
+}
+
+func ragEvalMetrics(output engine.NodeOutput, expected map[string]any) map[string]any {
+	expectedDocs := expectedStringList(expected["expected_doc_ids"], expected["expected_docs"], expected["required_doc_ids"])
+	requiredCitations := expectedStringList(expected["required_citations"], expected["expected_citations"])
+	if len(expectedDocs) == 0 && len(requiredCitations) == 0 {
+		return nil
+	}
+	hits := retrievalHitsFromOutput(output)
+	actualCitations := citationsFromOutput(output)
+	metrics := evalharness.ScoreRAG(evalharness.RAGCase{ExpectedDocIDs: expectedDocs, RequiredCitations: requiredCitations}, hits, actualCitations)
+	return map[string]any{
+		"retrieval_hit_rate": metrics.HitRate,
+		"mrr":                metrics.MRR,
+		"ndcg":               metrics.NDCG,
+		"citation_rate":      metrics.CitationRate,
+		"candidate_size":     metrics.CandidateSize,
+	}
+}
+
+func mergeEvalMetrics(dst map[string]any, src map[string]any) {
+	for key, value := range src {
+		dst[key] = value
+	}
+}
+
+func expectedStringList(values ...any) []string {
+	for _, value := range values {
+		items := stringList(value)
+		if len(items) > 0 {
+			return items
+		}
+	}
+	return nil
+}
+
+func stringList(value any) []string {
+	switch typed := value.(type) {
+	case string:
+		if strings.TrimSpace(typed) == "" {
+			return nil
+		}
+		return []string{strings.TrimSpace(typed)}
+	case []string:
+		out := make([]string, 0, len(typed))
+		for _, item := range typed {
+			if strings.TrimSpace(item) != "" {
+				out = append(out, strings.TrimSpace(item))
+			}
+		}
+		return out
+	case []any:
+		out := make([]string, 0, len(typed))
+		for _, item := range typed {
+			if text := strings.TrimSpace(fmt.Sprint(item)); text != "" && text != "<nil>" {
+				out = append(out, text)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+func retrievalHitsFromOutput(output engine.NodeOutput) []evalharness.RetrievalHit {
+	items := referenceMaps(output)
+	hits := make([]evalharness.RetrievalHit, 0, len(items))
+	for i, item := range items {
+		docID := firstStringField(item, "doc_id", "document_id", "kb_id", "source")
+		if docID == "" {
+			continue
+		}
+		score := nestedMetricFloat(item, "score")
+		if score == 0 {
+			score = 1 / float64(i+1)
+		}
+		hits = append(hits, evalharness.RetrievalHit{DocID: docID, Score: score})
+	}
+	return hits
+}
+
+func citationsFromOutput(output engine.NodeOutput) []string {
+	items := referenceMaps(output)
+	seen := map[string]bool{}
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		for _, value := range []string{firstStringField(item, "citation_id", "chunk_id", "document_id", "doc_id", "source")} {
+			if value != "" && !seen[value] {
+				seen[value] = true
+				out = append(out, value)
+			}
+		}
+	}
+	return out
+}
+
+func referenceMaps(output engine.NodeOutput) []map[string]any {
+	if output == nil {
+		return nil
+	}
+	items := make([]map[string]any, 0)
+	for _, key := range []string{"results", "references", "citations"} {
+		items = append(items, mapsFromValue(output[key])...)
+	}
+	return items
+}
+
+func mapsFromValue(value any) []map[string]any {
+	switch typed := value.(type) {
+	case []map[string]any:
+		return typed
+	case []any:
+		out := make([]map[string]any, 0, len(typed))
+		for _, item := range typed {
+			out = append(out, mapsFromValue(item)...)
+		}
+		return out
+	case map[string]any:
+		return []map[string]any{typed}
+	default:
+		bytes, err := json.Marshal(value)
+		if err != nil || string(bytes) == "null" {
+			return nil
+		}
+		var decoded any
+		if err := json.Unmarshal(bytes, &decoded); err != nil {
+			return nil
+		}
+		switch decoded.(type) {
+		case []any, map[string]any:
+			return mapsFromValue(decoded)
+		default:
+			return nil
+		}
+	}
+}
+
+func firstStringField(item map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if value, ok := item[key]; ok {
+			text := strings.TrimSpace(fmt.Sprint(value))
+			if text != "" && text != "<nil>" {
+				return text
+			}
+		}
+	}
+	return ""
+}
+
+func nestedMetricFloat(value any, key string) float64 {
+	if value == nil {
+		return 0
+	}
+	if item, ok := value.(map[string]any); ok {
+		if number, numberOK := evalMetricFloat(item[key]); numberOK {
+			return number
+		}
+	}
+	bytes, err := json.Marshal(value)
+	if err != nil || string(bytes) == "null" {
+		return 0
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(bytes, &decoded); err != nil {
+		return 0
+	}
+	if number, ok := evalMetricFloat(decoded[key]); ok {
+		return number
+	}
+	return 0
 }
 
 func stableJSONHash(value any) string {

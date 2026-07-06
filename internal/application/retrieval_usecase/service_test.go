@@ -122,6 +122,133 @@ func TestSearchKeywordDoesNotRequireEmbeddingProvider(t *testing.T) {
 	}
 }
 
+func TestSearchExpandsCandidateKWhenRecallIsLow(t *testing.T) {
+	raw := &sequenceRawRetriever{responses: []*retrieval.RetrievalResponse{
+		{Results: []retrieval.RetrievalResult{}},
+		{Results: []retrieval.RetrievalResult{{ChunkID: 1, Score: 0.8}, {ChunkID: 2, Score: 0.7}, {ChunkID: 3, Score: 0.6}}},
+	}}
+	service := NewService(
+		&fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{10: {ID: 10, OwnerID: 1, RetrievalMode: knowledge.RetrievalModeKeyword}}},
+		&fakeProviderRepo{},
+		raw,
+		nil,
+		nil,
+		mustSecretBox(t),
+	)
+
+	resp, err := service.Search(context.Background(), retrieval.RetrievalRequest{OwnerID: 1, KBIDs: []int64{10}, Query: "missing faq", TopK: 2, Mode: retrieval.ModeKeyword, CandidateK: 4})
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if len(raw.requests) != 2 {
+		t.Fatalf("expected expanded recall request, got %d requests", len(raw.requests))
+	}
+	if raw.requests[1].CandidateK <= raw.requests[0].CandidateK {
+		t.Fatalf("candidate_k was not expanded: %+v", raw.requests)
+	}
+	if resp.Diagnostics == nil || !resp.Diagnostics.Expanded || resp.Diagnostics.ExpandedCandidate == 0 {
+		t.Fatalf("expected expanded diagnostics, got %+v", resp.Diagnostics)
+	}
+	if len(resp.Results) != 2 {
+		t.Fatalf("expected results truncated to top_k, got %+v", resp.Results)
+	}
+}
+
+func TestSearchRewritesQueryWhenRecallIsLow(t *testing.T) {
+	raw := &sequenceRawRetriever{responses: []*retrieval.RetrievalResponse{
+		{Results: []retrieval.RetrievalResult{}},
+		{Results: []retrieval.RetrievalResult{{ChunkID: 1, Score: 0.9}, {ChunkID: 2, Score: 0.8}}},
+	}}
+	service := NewService(
+		&fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{10: {ID: 10, OwnerID: 1, RetrievalMode: knowledge.RetrievalModeKeyword}}},
+		&fakeProviderRepo{},
+		raw,
+		nil,
+		nil,
+		mustSecretBox(t),
+	)
+
+	resp, err := service.Search(context.Background(), retrieval.RetrievalRequest{OwnerID: 1, KBIDs: []int64{10}, Query: "  AgentCanvas??  ", TopK: 2, Mode: retrieval.ModeKeyword, CandidateK: 100})
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if len(raw.requests) != 2 {
+		t.Fatalf("expected initial and rewrite requests, got %d", len(raw.requests))
+	}
+	if raw.requests[1].Query != "AgentCanvas" {
+		t.Fatalf("rewrite query = %q, want AgentCanvas", raw.requests[1].Query)
+	}
+	if len(resp.Results) != 2 || resp.Trace[len(resp.Trace)-1].Stage != "query_rewrite" {
+		t.Fatalf("expected rewritten response with trace, got results=%+v trace=%+v", resp.Results, resp.Trace)
+	}
+}
+
+func TestSearchFallsBackToKeywordWhenVectorRecallFails(t *testing.T) {
+	providerID := int64(90)
+	raw := &sequenceRawRetriever{
+		errors: []error{errors.New("vector backend down"), nil},
+		responses: []*retrieval.RetrievalResponse{
+			{Results: []retrieval.RetrievalResult{{ChunkID: 1, Score: 0.7}}},
+		},
+	}
+	service := NewService(
+		&fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{10: {ID: 10, OwnerID: 1, RetrievalMode: knowledge.RetrievalModeVector, EmbeddingProviderID: &providerID, EmbeddingModel: "text-embedding", EmbeddingDimensions: 2}}},
+		&fakeProviderRepo{items: map[int64]*providerdomain.ModelProvider{90: {ID: 90, OwnerID: 1, ProviderType: providerdomain.TypeOpenAICompatible, Status: providerdomain.StatusActive}}},
+		raw,
+		&fakeEmbedder{vectors: [][]float32{{0.1, 0.2}}},
+		nil,
+		mustSecretBox(t),
+	)
+
+	resp, err := service.Search(context.Background(), retrieval.RetrievalRequest{OwnerID: 1, KBIDs: []int64{10}, Query: "agent", TopK: 1, Mode: retrieval.ModeVector})
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if len(raw.requests) != 2 || raw.requests[1].Mode != retrieval.ModeKeyword {
+		t.Fatalf("fallback requests = %+v", raw.requests)
+	}
+	if resp.Diagnostics == nil || resp.Diagnostics.FallbackMode != retrieval.ModeKeyword {
+		t.Fatalf("expected keyword fallback diagnostics, got %+v", resp.Diagnostics)
+	}
+}
+
+func TestSearchFallsBackToVectorWhenKeywordRecallIsLow(t *testing.T) {
+	providerID := int64(90)
+	raw := &sequenceRawRetriever{responses: []*retrieval.RetrievalResponse{
+		{Results: []retrieval.RetrievalResult{}},
+		{Results: []retrieval.RetrievalResult{{ChunkID: 1, Score: 0.9, VectorScore: 0.9}, {ChunkID: 2, Score: 0.8, VectorScore: 0.8}}},
+	}}
+	service := NewService(
+		&fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{10: {ID: 10, OwnerID: 1, RetrievalMode: knowledge.RetrievalModeKeyword, EmbeddingProviderID: &providerID, EmbeddingModel: "BAAI/bge-m3", EmbeddingDimensions: 2}}},
+		&fakeProviderRepo{items: map[int64]*providerdomain.ModelProvider{90: {ID: 90, OwnerID: 1, ProviderType: providerdomain.TypeOpenAICompatible, Status: providerdomain.StatusActive}}},
+		raw,
+		&fakeEmbedder{vectors: [][]float32{{0.1, 0.2}}},
+		nil,
+		mustSecretBox(t),
+	)
+
+	resp, err := service.Search(context.Background(), retrieval.RetrievalRequest{OwnerID: 1, KBIDs: []int64{10}, Query: "missing", TopK: 2, Mode: retrieval.ModeKeyword, CandidateK: 100})
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if len(raw.requests) != 2 || raw.requests[1].Mode != retrieval.ModeVector || len(raw.requests[1].QueryVector) != 2 {
+		t.Fatalf("fallback requests = %+v", raw.requests)
+	}
+	if resp.Diagnostics == nil || resp.Diagnostics.FallbackMode != retrieval.ModeVector {
+		t.Fatalf("expected vector fallback diagnostics, got %+v", resp.Diagnostics)
+	}
+}
+
+func TestAnalyzeRecallDetectsIncompleteHybridCoverage(t *testing.T) {
+	diag := analyzeRecall(retrieval.RetrievalRequest{Mode: retrieval.ModeHybrid, TopK: 2, CandidateK: 4}, []retrieval.RetrievalResult{
+		{ChunkID: 1, Score: 0.9, FinalScore: 0.9, KeywordScore: 0.9},
+		{ChunkID: 2, Score: 0.8, FinalScore: 0.8, KeywordScore: 0.8},
+	})
+	if !diag.LowRecall || diag.Reason != "hybrid_coverage_incomplete" || diag.VectorCount != 0 || diag.KeywordCount != 2 {
+		t.Fatalf("diagnostics = %+v", diag)
+	}
+}
+
 func TestSearchEmbeddingProviderErrorUsesRequestedMode(t *testing.T) {
 	service := NewService(
 		&fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{
@@ -208,6 +335,29 @@ func (r *fakeProviderRepo) SoftDelete(context.Context, int64, int64) error {
 type fakeRawRetriever struct {
 	request  retrieval.RetrievalRequest
 	response *retrieval.RetrievalResponse
+}
+
+type sequenceRawRetriever struct {
+	requests  []retrieval.RetrievalRequest
+	responses []*retrieval.RetrievalResponse
+	errors    []error
+}
+
+func (r *sequenceRawRetriever) Search(_ context.Context, req retrieval.RetrievalRequest) (*retrieval.RetrievalResponse, error) {
+	r.requests = append(r.requests, req)
+	if len(r.errors) > 0 {
+		err := r.errors[0]
+		r.errors = r.errors[1:]
+		if err != nil {
+			return nil, err
+		}
+	}
+	if len(r.responses) == 0 {
+		return &retrieval.RetrievalResponse{}, nil
+	}
+	resp := r.responses[0]
+	r.responses = r.responses[1:]
+	return resp, nil
 }
 
 func (r *fakeRawRetriever) Search(_ context.Context, req retrieval.RetrievalRequest) (*retrieval.RetrievalResponse, error) {

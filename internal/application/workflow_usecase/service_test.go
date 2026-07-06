@@ -327,6 +327,27 @@ func TestScoreEvalOutputDetailedReportsToolAndSchemaMetrics(t *testing.T) {
 	}
 }
 
+func TestScoreEvalOutputDetailedReportsRAGAndTokenSavedMetrics(t *testing.T) {
+	result := scoreEvalOutputDetailed(
+		engine.NodeOutput{
+			"final_answer":  "ok with citations",
+			"context_trace": map[string]any{"saved_tokens": 512},
+			"results": []map[string]any{
+				{"document_id": "doc-a", "chunk_id": "chunk-a", "score": 0.92, "content": "source a"},
+				{"document_id": "doc-b", "chunk_id": "chunk-b", "score": 0.81, "content": "source b"},
+			},
+		},
+		rawJSON(`{"contains":"ok","expected_doc_ids":["doc-b"],"required_citations":["chunk-b"]}`),
+		nil,
+	)
+	if result.Score != 1 {
+		t.Fatalf("expected eval to pass: %+v", result)
+	}
+	if result.Metrics["token_saved"] != 512 || result.Metrics["retrieval_hit_rate"] != 1.0 || result.Metrics["mrr"] != 0.5 || result.Metrics["citation_rate"] != 1.0 {
+		t.Fatalf("expected RAG and token saved metrics, got %+v", result.Metrics)
+	}
+}
+
 func TestScoreEvalOutputTreatsCallAgentAndCallWorkflowAsAliases(t *testing.T) {
 	result := scoreEvalOutputDetailed(
 		engine.NodeOutput{
@@ -638,7 +659,7 @@ func TestGetEvalTrendAggregatesRunHistory(t *testing.T) {
 
 func TestSummarizeEvalMetricsCountsMissingMetricsAsZero(t *testing.T) {
 	results := []workflow.EvalResult{
-		{Status: "passed", Score: 1, LatencyMS: 20, MetricsJSON: rawJSON(`{"tool_call_accuracy":1,"schema_compliance":1,"reference_hit_rate":1,"human_approval_waiting":true}`)},
+		{Status: "passed", Score: 1, LatencyMS: 20, MetricsJSON: rawJSON(`{"tool_call_accuracy":1,"schema_compliance":1,"reference_hit_rate":1,"retrieval_hit_rate":1,"mrr":0.5,"ndcg":0.75,"citation_rate":1,"token_saved":100,"human_approval_waiting":true}`)},
 		{Status: "failed", Score: 0, LatencyMS: 40, ErrorMessage: "runtime error", MetricsJSON: rawJSON(`{"score":0}`)},
 	}
 	summary := summarizeEvalMetrics(results)
@@ -647,6 +668,9 @@ func TestSummarizeEvalMetricsCountsMissingMetricsAsZero(t *testing.T) {
 	}
 	if summary["avg_latency_ms"] != float64(30) || summary["human_approval_waiting_rate"] != 0.5 || summary["failed_cases_with_runtime_error_rate"] != 0.5 {
 		t.Fatalf("unexpected eval metric summary: %+v", summary)
+	}
+	if summary["avg_retrieval_hit_rate"] != 0.5 || summary["avg_mrr"] != 0.25 || summary["avg_ndcg"] != 0.375 || summary["avg_citation_rate"] != 0.5 || summary["avg_token_saved"] != float64(50) {
+		t.Fatalf("expected RAG/token metrics in summary, got %+v", summary)
 	}
 }
 

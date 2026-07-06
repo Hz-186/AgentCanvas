@@ -19,6 +19,7 @@ import (
 	cryptoinfra "agentcanvas/internal/infrastructure/crypto"
 	"agentcanvas/internal/infrastructure/llm"
 	"agentcanvas/internal/infrastructure/parser"
+	"agentcanvas/internal/infrastructure/queue"
 
 	"gorm.io/gorm"
 )
@@ -94,6 +95,36 @@ func (s *Service) ProcessNext(ctx context.Context, workerID string) (bool, error
 }
 
 func (s *Service) ProcessJob(ctx context.Context, job *knowledge.IngestionJob) error {
+	return s.processJob(ctx, job, true)
+}
+
+func (s *Service) ProcessNextFromQueue(ctx context.Context, jobs queue.JobQueue, workerID string) (bool, error) {
+	claimed, err := jobs.Claim(ctx, queue.ClaimOptions{WorkerID: workerID, Limit: 1})
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	if len(claimed) == 0 {
+		return false, nil
+	}
+	job, markDBComplete, err := s.ingestionJobFromQueue(ctx, claimed[0])
+	if err != nil {
+		_ = jobs.Nack(ctx, claimed[0].ID, time.Now().Add(time.Minute))
+		return true, err
+	}
+	if err := s.processJob(ctx, job, markDBComplete); err != nil {
+		if markDBComplete {
+			_ = s.failJob(ctx, job, err)
+		}
+		_ = jobs.Nack(ctx, claimed[0].ID, time.Now().Add(time.Minute))
+		return true, err
+	}
+	return true, jobs.Ack(ctx, claimed[0].ID)
+}
+
+func (s *Service) processJob(ctx context.Context, job *knowledge.IngestionJob, markDBComplete bool) error {
 	doc, err := s.documents.FindByID(ctx, job.OwnerID, job.DocumentID)
 	if err != nil {
 		return err
@@ -235,7 +266,61 @@ func (s *Service) ProcessJob(ctx context.Context, job *knowledge.IngestionJob) e
 	if err := s.kbs.AdjustCounts(ctx, job.OwnerID, job.KBID, 0, len(chunks)-oldChunkCount); err != nil {
 		return err
 	}
-	return s.jobs.MarkCompleted(ctx, job.ID)
+	if markDBComplete {
+		return s.jobs.MarkCompleted(ctx, job.ID)
+	}
+	return nil
+}
+
+func (s *Service) ingestionJobFromQueue(ctx context.Context, job queue.Job) (*knowledge.IngestionJob, bool, error) {
+	ownerID := queuePayloadInt64(job.Payload, "owner_id")
+	jobID := queuePayloadInt64(job.Payload, "ingestion_job_id")
+	if jobID == 0 {
+		jobID = queuePayloadInt64(job.Payload, "job_id")
+	}
+	if ownerID > 0 && jobID > 0 {
+		item, err := s.jobs.FindByID(ctx, ownerID, jobID)
+		if err != nil {
+			return nil, false, err
+		}
+		return item, true, nil
+	}
+	item := &knowledge.IngestionJob{
+		OwnerID:    ownerID,
+		KBID:       queuePayloadInt64(job.Payload, "kb_id"),
+		DocumentID: queuePayloadInt64(job.Payload, "document_id"),
+		JobType:    job.Type,
+	}
+	if item.JobType == "" {
+		item.JobType = knowledge.IngestionJobTypeDocument
+	}
+	if item.OwnerID == 0 || item.KBID == 0 || item.DocumentID == 0 {
+		return nil, false, fmt.Errorf("queue job payload must include owner_id, kb_id and document_id")
+	}
+	return item, false, nil
+}
+
+func queuePayloadInt64(payload map[string]any, key string) int64 {
+	if payload == nil {
+		return 0
+	}
+	switch value := payload[key].(type) {
+	case int64:
+		return value
+	case int:
+		return int64(value)
+	case float64:
+		return int64(value)
+	case json.Number:
+		parsed, _ := value.Int64()
+		return parsed
+	case string:
+		parsed, _ := strconv.ParseInt(value, 10, 64)
+		return parsed
+	default:
+		parsed, _ := strconv.ParseInt(fmt.Sprint(value), 10, 64)
+		return parsed
+	}
 }
 
 func chunkMetadataJSON(metadata map[string]any) string {

@@ -16,6 +16,7 @@ import (
 	"agentcanvas/internal/domain/audit"
 	"agentcanvas/internal/domain/knowledge"
 	"agentcanvas/internal/domain/retrieval"
+	"agentcanvas/internal/infrastructure/queue"
 	agenterrors "agentcanvas/internal/pkg/errors"
 
 	"gorm.io/gorm"
@@ -35,11 +36,17 @@ type Service struct {
 	storage   FileStorage
 	retriever retrieval.Retriever
 	indexer   retrieval.Indexer
+	jobQueue  queue.JobQueue
 }
 
 type ClientInfo struct {
 	UserAgent string
 	IPAddress string
+}
+
+func (s *Service) WithJobQueue(jobQueue queue.JobQueue) *Service {
+	s.jobQueue = jobQueue
+	return s
 }
 
 type CreateKnowledgeBaseRequest struct {
@@ -320,7 +327,7 @@ func (s *Service) ReindexKnowledgeBase(ctx context.Context, ownerID, id int64, c
 			MaxAttempts:  3,
 			AttemptCount: 0,
 		}
-		if err := s.jobs.Create(ctx, job); err != nil {
+		if err := s.createIngestionJob(ctx, job); err != nil {
 			return nil, err
 		}
 		jobCount++
@@ -359,8 +366,8 @@ func (s *Service) UploadDocument(ctx context.Context, ownerID, kbID int64, req U
 	}
 	originalFilename := filepath.Base(req.FileHeader.Filename)
 	fileType := normalizeFileType(filepath.Ext(originalFilename))
-	if fileType != "txt" && fileType != "md" {
-		return nil, fmt.Errorf("%w: only txt and md are supported", agenterrors.ErrInvalidInput)
+	if !isSupportedDocumentType(fileType) {
+		return nil, fmt.Errorf("%w: only txt, md, pdf, png, jpg and jpeg are supported", agenterrors.ErrInvalidInput)
 	}
 
 	name := strings.TrimSpace(req.Name)
@@ -412,7 +419,7 @@ func (s *Service) UploadDocument(ctx context.Context, ownerID, kbID int64, req U
 		MaxAttempts:  3,
 		AttemptCount: 0,
 	}
-	if err := s.jobs.Create(ctx, job); err != nil {
+	if err := s.createIngestionJob(ctx, job); err != nil {
 		doc.ParserStatus = knowledge.DocumentStatusFailed
 		doc.ParserError = err.Error()
 		_ = s.documents.Update(ctx, doc)
@@ -423,6 +430,25 @@ func (s *Service) UploadDocument(ctx context.Context, ownerID, kbID int64, req U
 	}
 	_ = s.audit(ctx, ownerID, ownerID, "document.upload", "document", strconv.FormatInt(doc.ID, 10), map[string]any{"kb_id": kbID, "job_id": job.ID}, client)
 	return &UploadDocumentResponse{Document: doc, Job: job}, nil
+}
+
+func (s *Service) createIngestionJob(ctx context.Context, job *knowledge.IngestionJob) error {
+	if err := s.jobs.Create(ctx, job); err != nil {
+		return err
+	}
+	if s.jobQueue == nil {
+		return nil
+	}
+	return s.jobQueue.Publish(ctx, queue.Job{
+		ID:   strconv.FormatInt(job.ID, 10),
+		Type: job.JobType,
+		Payload: map[string]any{
+			"owner_id":          job.OwnerID,
+			"ingestion_job_id": job.ID,
+			"kb_id":             job.KBID,
+			"document_id":       job.DocumentID,
+		},
+	})
 }
 
 func (s *Service) ListDocuments(ctx context.Context, ownerID, kbID int64) ([]knowledge.Document, error) {
@@ -616,6 +642,15 @@ func normalizeFileType(ext string) string {
 		return "md"
 	}
 	return ext
+}
+
+func isSupportedDocumentType(fileType string) bool {
+	switch fileType {
+	case "txt", "md", "pdf", "png", "jpg", "jpeg":
+		return true
+	default:
+		return false
+	}
 }
 
 func objectKey(ownerID, kbID, documentID int64, filename string) string {
