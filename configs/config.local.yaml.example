@@ -14,6 +14,12 @@ redis:
   password: ""
   db: 0
 
+queue:
+  backend: mysql # mysql or redis_stream
+  redis_stream: agentcanvas:jobs
+  redis_group: agentcanvas-workers
+  redis_consumer: worker
+
 minio:
   endpoint: localhost:9000
   access_key: minioadmin
@@ -27,6 +33,23 @@ elasticsearch:
   username: ""
   password: ""
   chunk_index: agentcanvas_chunks_v1
+
+milvus:
+  enabled: false
+  address: http://localhost:19530
+  token: ""
+  collection: agentcanvas_chunks
+  dimensions: 0
+  m: 16
+  ef_construction: 200
+  ef_search: 64
+  metric_type: COSINE
+
+ocr:
+  enabled: false
+  endpoint: http://localhost:8000/ocr
+  token: ""
+  timeout_seconds: 60
 
 security:
   jwt_secret: replace-me-with-long-random-string
@@ -43,4 +66,3 @@ oauth:
     scopes:
       - read:user
       - user:email
-
