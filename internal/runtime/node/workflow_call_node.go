@@ -61,7 +61,14 @@ func (n AgentCallNode) Run(ctx context.Context, rc *engine.RunContext, input eng
 	return runWorkflowCallNode(ctx, rc, input, config, n.Caller, n.Type())
 }
 
-func runWorkflowCallNode(ctx context.Context, rc *engine.RunContext, input engine.NodeInput, config json.RawMessage, caller toolruntime.WorkflowCaller, nodeType string) (engine.NodeOutput, error) {
+func runWorkflowCallNode(
+	ctx context.Context,
+	rc *engine.RunContext,
+	input engine.NodeInput,
+	config json.RawMessage,
+	caller toolruntime.WorkflowCaller,
+	nodeType string,
+) (engine.NodeOutput, error) {
 	if caller == nil {
 		return nil, fmt.Errorf("%s dependency is not configured", nodeType)
 	}

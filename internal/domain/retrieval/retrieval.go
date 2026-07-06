@@ -64,8 +64,34 @@ type RetrievalResult struct {
 }
 
 type RetrievalResponse struct {
-	Results   []RetrievalResult `json:"results"`
-	LatencyMS int               `json:"latency_ms"`
+	Results     []RetrievalResult      `json:"results"`
+	LatencyMS   int                    `json:"latency_ms"`
+	Diagnostics *RecallDiagnostics     `json:"diagnostics,omitempty"`
+	Trace       []RetrievalTraceRecord `json:"trace,omitempty"`
+}
+
+type RecallDiagnostics struct {
+	LowRecall         bool    `json:"low_recall"`
+	Reason            string  `json:"reason,omitempty"`
+	ResultCount       int     `json:"result_count"`
+	RequestedTopK     int     `json:"requested_top_k"`
+	CandidateK        int     `json:"candidate_k"`
+	KeywordCount      int     `json:"keyword_count"`
+	VectorCount       int     `json:"vector_count"`
+	MaxScore          float64 `json:"max_score"`
+	AverageScore      float64 `json:"average_score"`
+	ScoreGap          float64 `json:"score_gap"`
+	Expanded          bool    `json:"expanded"`
+	ExpandedCandidate int     `json:"expanded_candidate_k,omitempty"`
+	FallbackMode      Mode    `json:"fallback_mode,omitempty"`
+	Reranked          bool    `json:"reranked"`
+}
+
+type RetrievalTraceRecord struct {
+	Stage    string         `json:"stage"`
+	Mode     Mode           `json:"mode,omitempty"`
+	Message  string         `json:"message,omitempty"`
+	Metadata map[string]any `json:"metadata,omitempty"`
 }
 
 type Indexer interface {

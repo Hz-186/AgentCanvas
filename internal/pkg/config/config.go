@@ -12,8 +12,11 @@ type Config struct {
 	App           AppConfig           `yaml:"app"`
 	MySQL         MySQLConfig         `yaml:"mysql"`
 	Redis         RedisConfig         `yaml:"redis"`
+	Queue         QueueConfig         `yaml:"queue"`
 	MinIO         MinIOConfig         `yaml:"minio"`
 	Elasticsearch ElasticsearchConfig `yaml:"elasticsearch"`
+	Milvus        MilvusConfig        `yaml:"milvus"`
+	OCR           OCRConfig           `yaml:"ocr"`
 	Security      SecurityConfig      `yaml:"security"`
 	OAuth         OAuthConfig         `yaml:"oauth"`
 }
@@ -37,6 +40,13 @@ type RedisConfig struct {
 	DB       int    `yaml:"db"`
 }
 
+type QueueConfig struct {
+	Backend       string `yaml:"backend"`
+	RedisStream   string `yaml:"redis_stream"`
+	RedisGroup    string `yaml:"redis_group"`
+	RedisConsumer string `yaml:"redis_consumer"`
+}
+
 type MinIOConfig struct {
 	Endpoint  string `yaml:"endpoint"`
 	AccessKey string `yaml:"access_key"`
@@ -50,6 +60,25 @@ type ElasticsearchConfig struct {
 	Username   string   `yaml:"username"`
 	Password   string   `yaml:"password"`
 	ChunkIndex string   `yaml:"chunk_index"`
+}
+
+type MilvusConfig struct {
+	Enabled        bool   `yaml:"enabled"`
+	Address        string `yaml:"address"`
+	Token          string `yaml:"token"`
+	Collection     string `yaml:"collection"`
+	Dimensions     int    `yaml:"dimensions"`
+	M              int    `yaml:"m"`
+	EFConstruction int    `yaml:"ef_construction"`
+	EFSearch       int    `yaml:"ef_search"`
+	MetricType     string `yaml:"metric_type"`
+}
+
+type OCRConfig struct {
+	Enabled        bool   `yaml:"enabled"`
+	Endpoint       string `yaml:"endpoint"`
+	Token          string `yaml:"token"`
+	TimeoutSeconds int    `yaml:"timeout_seconds"`
 }
 
 type SecurityConfig struct {
@@ -111,6 +140,36 @@ func (c *Config) setDefaults() {
 	if c.Elasticsearch.ChunkIndex == "" {
 		c.Elasticsearch.ChunkIndex = "agentcanvas_chunks_v1"
 	}
+	if c.Queue.Backend == "" {
+		c.Queue.Backend = "mysql"
+	}
+	if c.Queue.RedisStream == "" {
+		c.Queue.RedisStream = "agentcanvas:jobs"
+	}
+	if c.Queue.RedisGroup == "" {
+		c.Queue.RedisGroup = "agentcanvas-workers"
+	}
+	if c.Queue.RedisConsumer == "" {
+		c.Queue.RedisConsumer = "worker"
+	}
+	if c.Milvus.Collection == "" {
+		c.Milvus.Collection = "agentcanvas_chunks"
+	}
+	if c.Milvus.M == 0 {
+		c.Milvus.M = 16
+	}
+	if c.Milvus.EFConstruction == 0 {
+		c.Milvus.EFConstruction = 200
+	}
+	if c.Milvus.EFSearch == 0 {
+		c.Milvus.EFSearch = 64
+	}
+	if c.Milvus.MetricType == "" {
+		c.Milvus.MetricType = "COSINE"
+	}
+	if c.OCR.TimeoutSeconds == 0 {
+		c.OCR.TimeoutSeconds = 60
+	}
 }
 
 func (c *Config) Validate() error {
@@ -125,6 +184,15 @@ func (c *Config) Validate() error {
 	}
 	if c.Security.SecretEncryptKey == "" {
 		return fmt.Errorf("security.secret_encrypt_key is required")
+	}
+	if c.Queue.Backend != "mysql" && c.Queue.Backend != "redis_stream" {
+		return fmt.Errorf("queue.backend must be mysql or redis_stream")
+	}
+	if c.Milvus.Enabled && c.Milvus.Address == "" {
+		return fmt.Errorf("milvus.address is required when milvus.enabled is true")
+	}
+	if c.OCR.Enabled && c.OCR.Endpoint == "" {
+		return fmt.Errorf("ocr.endpoint is required when ocr.enabled is true")
 	}
 	return nil
 }

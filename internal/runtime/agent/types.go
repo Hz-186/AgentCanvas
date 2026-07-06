@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"agentcanvas/internal/infrastructure/llm"
+	"agentcanvas/internal/runtime/harness/hooks"
 	"agentcanvas/internal/runtime/toolruntime"
 )
 
@@ -53,8 +54,10 @@ type RunRequest struct {
 	MaxToolCalls       int
 	MaxExecutionTimeMS int
 	MaxInputChars      int
+	MaxInputTokens     int
 	ContextBlocks      []ContextBlock
 	ToolPolicy         ToolPolicy
+	ToolHookChain      hooks.ToolHookChain
 	Tools              []toolruntime.RuntimeTool
 	ResumeMessages     []llm.ChatMessage
 	ResumeIteration    int
@@ -70,6 +73,7 @@ type RunResult struct {
 	Plan        *Plan        `json:"plan,omitempty"`
 	Steps       []RunStep    `json:"steps,omitempty"`
 	Context     ContextTrace `json:"context_trace,omitempty"`
+	HookTrace   []HookTrace  `json:"hook_trace,omitempty"`
 	Approval    *Approval    `json:"approval,omitempty"`
 	Checkpoint  *Checkpoint  `json:"checkpoint,omitempty"`
 	StartedAt   time.Time    `json:"started_at"`
@@ -96,12 +100,7 @@ type RunStep struct {
 	CreatedAt     time.Time       `json:"created_at"`
 }
 
-type ToolPolicy struct {
-	RequireApprovalForRisk []string `json:"require_approval_for_risk,omitempty"`
-	MaxToolTimeoutMS       int      `json:"max_tool_timeout_ms,omitempty"`
-	MaxToolOutputBytes     int      `json:"max_tool_output_bytes,omitempty"`
-	AllowedHosts           []string `json:"allowed_hosts,omitempty"`
-}
+type ToolPolicy = hooks.ToolPolicy
 
 type Approval struct {
 	ToolCallID string                   `json:"tool_call_id"`
@@ -129,10 +128,50 @@ type ContextBlock struct {
 }
 
 type ContextTrace struct {
-	MaxChars  int      `json:"max_chars,omitempty"`
-	UsedChars int      `json:"used_chars,omitempty"`
-	Included  []string `json:"included,omitempty"`
-	Omitted   []string `json:"omitted,omitempty"`
-	Truncated []string `json:"truncated,omitempty"`
-	Strategy  string   `json:"strategy,omitempty"`
+	MaxChars        int                 `json:"max_chars,omitempty"`
+	MaxInputTokens  int                 `json:"max_input_tokens,omitempty"`
+	UsedChars       int                 `json:"used_chars,omitempty"`
+	UsedTokens      int                 `json:"used_tokens,omitempty"`
+	EstimatedTokens int                 `json:"estimated_tokens,omitempty"`
+	SavedTokens     int                 `json:"saved_tokens,omitempty"`
+	TokenAudit      TokenAudit          `json:"token_audit,omitempty"`
+	Included        []string            `json:"included,omitempty"`
+	Omitted         []string            `json:"omitted,omitempty"`
+	Truncated       []string            `json:"truncated,omitempty"`
+	Compressed      []string            `json:"compressed,omitempty"`
+	Strategy        string              `json:"strategy,omitempty"`
+	Blocks          []ContextBlockTrace `json:"blocks,omitempty"`
+}
+
+type TokenAudit struct {
+	System     int `json:"system,omitempty"`
+	Profile    int `json:"profile,omitempty"`
+	RulesL1    int `json:"rules_l1,omitempty"`
+	RulesL2    int `json:"rules_l2,omitempty"`
+	RulesL3    int `json:"rules_l3,omitempty"`
+	ToolSchema int `json:"tool_schema,omitempty"`
+	History    int `json:"history,omitempty"`
+	Memory     int `json:"memory,omitempty"`
+	Retrieval  int `json:"retrieval,omitempty"`
+	Task       int `json:"task,omitempty"`
+	Total      int `json:"total,omitempty"`
+}
+
+type ContextBlockTrace struct {
+	Name            string `json:"name"`
+	Role            string `json:"role"`
+	Pinned          bool   `json:"pinned"`
+	OriginalChars   int    `json:"original_chars"`
+	IncludedChars   int    `json:"included_chars"`
+	EstimatedTokens int    `json:"estimated_tokens"`
+	SavedTokens     int    `json:"saved_tokens,omitempty"`
+	Status          string `json:"status"`
+}
+
+type HookTrace struct {
+	Hook     string         `json:"hook"`
+	Action   string         `json:"action"`
+	Reason   string         `json:"reason,omitempty"`
+	ToolName string         `json:"tool_name,omitempty"`
+	Metadata map[string]any `json:"metadata,omitempty"`
 }

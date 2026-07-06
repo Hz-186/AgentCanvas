@@ -67,3 +67,43 @@ func TestRecursiveChunkerUsesOverlapWithoutStandaloneOverlapChunk(t *testing.T) 
 		}
 	}
 }
+
+func TestRecursiveChunkerKeepsFAQBlocksAsSingleChunks(t *testing.T) {
+	c := NewRecursiveChunker()
+	got, err := c.ChunkDocument(context.Background(), parser.ParsedDocument{
+		Blocks: []parser.DocumentBlock{
+			{ID: "faq1", Type: "faq", Text: "What is AgentCanvas?\nAn agent runtime.", Metadata: map[string]any{"chunk_hint": "single_faq", "faq_question": "What is AgentCanvas?", "faq_aliases": []string{"AC"}, "block_type": "faq"}},
+			{ID: "faq2", Type: "faq", Text: "Why use RAG?\nGrounded answers.", Metadata: map[string]any{"chunk_hint": "single_faq", "faq_question": "Why use RAG?", "block_type": "faq"}},
+		},
+	}, Policy{ChunkSize: 1000, Overlap: 0})
+	if err != nil {
+		t.Fatalf("ChunkDocument() error = %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("len(chunks) = %d, want one chunk per FAQ: %+v", len(got), got)
+	}
+	if got[0].Metadata["faq_question"] != "What is AgentCanvas?" || got[0].Metadata["block_type"] != "faq" {
+		t.Fatalf("FAQ metadata was not preserved: %+v", got[0].Metadata)
+	}
+	ids, ok := got[0].Metadata["block_ids"].([]string)
+	if !ok || len(ids) != 1 || ids[0] != "faq1" {
+		t.Fatalf("expected source block id metadata, got %+v", got[0].Metadata)
+	}
+}
+
+func TestRecursiveChunkerPreservesPDFPageMetadata(t *testing.T) {
+	c := NewRecursiveChunker()
+	pageNo := 3
+	got, err := c.ChunkDocument(context.Background(), parser.ParsedDocument{
+		Blocks: []parser.DocumentBlock{{ID: "p3_b1", Type: "text", Text: "page text", PageNo: &pageNo, Metadata: map[string]any{"page_no": 3, "parser_version": "pdf_text_v1", "block_type": "text"}}},
+	}, Policy{ChunkSize: 1000, Overlap: 0})
+	if err != nil {
+		t.Fatalf("ChunkDocument() error = %v", err)
+	}
+	if len(got) != 1 || got[0].PageNo == nil || *got[0].PageNo != 3 {
+		t.Fatalf("expected page number on chunk, got %+v", got)
+	}
+	if got[0].Metadata["page_no"] != 3 || got[0].Metadata["parser_version"] != "pdf_text_v1" {
+		t.Fatalf("expected PDF metadata on chunk, got %+v", got[0].Metadata)
+	}
+}

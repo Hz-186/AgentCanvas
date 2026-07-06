@@ -28,6 +28,7 @@ type ResumeRequest struct {
 	MaxToolCalls       int
 	MaxExecutionTimeMS int
 	MaxInputChars      int
+	MaxInputTokens     int
 	ContextBlocks      []ContextBlock
 	ToolPolicy         ToolPolicy
 	Tools              []toolruntime.RuntimeTool
@@ -87,6 +88,7 @@ func BuildResumeRequest(req ResumeRequest) (*RunRequest, error) {
 		MaxToolCalls:       req.MaxToolCalls,
 		MaxExecutionTimeMS: req.MaxExecutionTimeMS,
 		MaxInputChars:      req.MaxInputChars,
+		MaxInputTokens:     req.MaxInputTokens,
 		ContextBlocks:      contextBlocks,
 		ToolPolicy:         req.ToolPolicy,
 		Tools:              req.Tools,

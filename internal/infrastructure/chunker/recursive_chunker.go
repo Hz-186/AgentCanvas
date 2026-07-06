@@ -60,15 +60,19 @@ func (c *RecursiveChunker) ChunkDocument(ctx context.Context, doc parser.ParsedD
 			CharCount:    utf8.RuneCountInString(content),
 			SectionTitle: buffer.sectionTitle,
 			PageNo:       buffer.pageNo,
-			Metadata: map[string]any{
-				"chunk_method": c.Method(),
-				"tokenizer":    c.tokenizer.Name(),
-				"block_ids":    append([]string(nil), buffer.blockIDs...),
-			},
+			Metadata:     chunkMetadata(c.Method(), c.tokenizer.Name(), buffer.blockIDs, buffer.metadata, buffer.pageNo),
 		})
 		buffer = c.overlapBuffer(content, policy.Overlap, buffer.sectionTitle, buffer.pageNo)
 	}
 	for _, segment := range segments {
+		if segment.singleChunk {
+			flush()
+			content := strings.TrimSpace(segment.text)
+			if content != "" {
+				chunks = append(chunks, Chunk{Index: len(chunks), Content: content, TokenCount: c.count(content), CharCount: utf8.RuneCountInString(content), SectionTitle: segment.sectionTitle, PageNo: segment.pageNo, Metadata: chunkMetadata(c.Method(), c.tokenizer.Name(), []string{segment.blockID}, segment.metadata, segment.pageNo)})
+			}
+			continue
+		}
 		pieces := c.splitRecursive(segment.text, c.separators, policy.ChunkSize)
 		for _, piece := range pieces {
 			piece = strings.TrimSpace(piece)
@@ -98,6 +102,7 @@ func (c *RecursiveChunker) ChunkDocument(ctx context.Context, doc parser.ParsedD
 			if segment.blockID != "" {
 				buffer.blockIDs = append(buffer.blockIDs, segment.blockID)
 			}
+			buffer.metadata = mergeMetadata(buffer.metadata, segment.metadata)
 		}
 	}
 	flush()
@@ -112,6 +117,8 @@ type chunkSegment struct {
 	sectionTitle string
 	pageNo       *int
 	blockID      string
+	metadata     map[string]any
+	singleChunk  bool
 }
 
 type segmentBuffer struct {
@@ -119,6 +126,7 @@ type segmentBuffer struct {
 	sectionTitle string
 	pageNo       *int
 	blockIDs     []string
+	metadata     map[string]any
 }
 
 func (c *RecursiveChunker) documentSegments(doc parser.ParsedDocument) []chunkSegment {
@@ -140,9 +148,39 @@ func (c *RecursiveChunker) documentSegments(doc parser.ParsedDocument) []chunkSe
 			sectionTitle = strings.TrimSpace(strings.TrimLeft(text, "#"))
 			continue
 		}
-		segments = append(segments, chunkSegment{text: text, sectionTitle: sectionTitle, pageNo: block.PageNo, blockID: block.ID})
+		segments = append(segments, chunkSegment{text: text, sectionTitle: sectionTitle, pageNo: block.PageNo, blockID: block.ID, metadata: block.Metadata, singleChunk: block.Metadata["chunk_hint"] == "single_faq"})
 	}
 	return segments
+}
+
+func chunkMetadata(method, tokenizer string, blockIDs []string, extra map[string]any, pageNo *int) map[string]any {
+	metadata := map[string]any{
+		"chunk_method": method,
+		"tokenizer":    tokenizer,
+		"block_ids":    append([]string(nil), blockIDs...),
+	}
+	for key, value := range extra {
+		metadata[key] = value
+	}
+	if pageNo != nil {
+		metadata["page_no"] = *pageNo
+	}
+	return metadata
+}
+
+func mergeMetadata(current, next map[string]any) map[string]any {
+	if len(next) == 0 {
+		return current
+	}
+	if current == nil {
+		current = map[string]any{}
+	}
+	for key, value := range next {
+		if _, exists := current[key]; !exists {
+			current[key] = value
+		}
+	}
+	return current
 }
 
 func (c *RecursiveChunker) splitRecursive(text string, separators []string, budget int) []string {

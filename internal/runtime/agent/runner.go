@@ -11,6 +11,7 @@ import (
 
 	"agentcanvas/internal/domain/conversation"
 	"agentcanvas/internal/infrastructure/llm"
+	"agentcanvas/internal/runtime/harness/hooks"
 	"agentcanvas/internal/runtime/toolruntime"
 )
 
@@ -53,6 +54,10 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, time.Duration(req.MaxExecutionTimeMS)*time.Millisecond)
 		defer cancel()
+	}
+	toolHooks := req.ToolHookChain
+	if len(toolHooks.Pre) == 0 && len(toolHooks.Post) == 0 {
+		toolHooks = hooks.DefaultToolHookChain()
 	}
 
 	tools := make([]llm.ToolDefinition, 0, len(req.Tools))
@@ -155,7 +160,9 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 				Model:         r.ModelName,
 			})
 			content := toolResultContent(toolResult, toolErr)
-			content, outputJSON, compressed := compactToolObservation(content, toolResult.ContentJSON, effectiveMaxOutputBytes(metadata, req.ToolPolicy))
+			post := toolHooks.AfterToolUse(ctx, hooks.PostToolUseRequest{ToolName: call.Name, Content: content, OutputJSON: toolResult.ContentJSON, Metadata: metadata, Policy: req.ToolPolicy})
+			result.HookTrace = appendHookTrace(result.HookTrace, call.Name, post.Traces)
+			content, outputJSON, compressed := post.Content, post.OutputJSON, post.Compressed
 			messages = append(messages, toolMessage(call.ID, content))
 			r.appendStep(result, RunStep{
 				Type:       StepTypeToolResult,
@@ -261,7 +268,10 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 				continue
 			}
 			metadata := toolruntime.MetadataOf(toolImpl)
-			if approval := requiredApproval(call.ID, call.Name, call.Arguments, metadata, req.ToolPolicy); approval != nil {
+			pre := toolHooks.BeforeToolUse(ctx, hooks.PreToolUseRequest{ToolCallID: call.ID, ToolName: call.Name, Arguments: call.Arguments, Metadata: metadata, Policy: req.ToolPolicy})
+			result.HookTrace = appendHookTrace(result.HookTrace, call.Name, pre.Traces)
+			if pre.Approval != nil {
+				approval := &Approval{ToolCallID: pre.Approval.ToolCallID, ToolName: pre.Approval.ToolName, RiskLevel: pre.Approval.RiskLevel, Reason: pre.Approval.Reason, Metadata: pre.Approval.Metadata}
 				result.StopReason = StopReasonWaitingHuman
 				result.FinalAnswer = "Agent is waiting for human approval before executing tool " + call.Name + "."
 				result.Approval = approval
@@ -297,23 +307,27 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 				_ = r.emit(ctx, finalStep)
 				return finish(result, r.now()), nil
 			}
-			execCtx, execCancel, policyErr := toolExecutionContext(ctx, metadata, req.ToolPolicy)
-			if policyErr != nil {
+			if pre.Denied != nil {
 				result.StopReason = StopReasonReflectionFailed
-				messages = append(messages, toolMessage(call.ID, policyErr.Error()))
+				messages = append(messages, toolMessage(call.ID, pre.Denied.Error()))
 				resultStep := r.appendStep(result, RunStep{
 					Type:       StepTypeToolResult,
 					ToolCallID: call.ID,
 					ToolName:   call.Name,
-					Content:    policyErr.Error(),
+					Content:    pre.Denied.Error(),
 					IsError:    true,
-					Error:      policyErr.Error(),
+					Error:      pre.Denied.Error(),
 					ProviderID: r.ProviderID,
 					Model:      r.ModelName,
 				})
 				_ = r.emit(ctx, resultStep)
 				continue
 			}
+			execCtx := pre.Context
+			if execCtx == nil {
+				execCtx = ctx
+			}
+			execCancel := pre.Cancel
 			result.ToolCalls++
 			toolStarted := r.now()
 			toolResult, toolErr := toolImpl.Execute(execCtx, toolruntime.ToolRunContext{
@@ -333,7 +347,9 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 				toolResult = &toolruntime.ToolResult{}
 			}
 			content := toolResultContent(toolResult, toolErr)
-			content, outputJSON, compressed := compactToolObservation(content, toolResult.ContentJSON, effectiveMaxOutputBytes(metadata, req.ToolPolicy))
+			post := toolHooks.AfterToolUse(ctx, hooks.PostToolUseRequest{ToolName: call.Name, Content: content, OutputJSON: toolResult.ContentJSON, Metadata: metadata, Policy: req.ToolPolicy})
+			result.HookTrace = appendHookTrace(result.HookTrace, call.Name, post.Traces)
+			content, outputJSON, compressed := post.Content, post.OutputJSON, post.Compressed
 			if toolErr != nil {
 				toolResult.IsError = true
 			}
@@ -535,6 +551,16 @@ func (r *Runner) appendStep(result *RunResult, step RunStep) RunStep {
 	}
 	result.Steps = append(result.Steps, step)
 	return step
+}
+
+func appendHookTrace(existing []HookTrace, toolName string, traces []hooks.Trace) []HookTrace {
+	for _, trace := range traces {
+		if trace.Hook == "" && trace.Decision == "" {
+			continue
+		}
+		existing = append(existing, HookTrace{Hook: trace.Hook, Action: trace.Stage + ":" + trace.Decision, Reason: trace.Reason, ToolName: toolName, Metadata: map[string]any{"compressed": trace.Compressed}})
+	}
+	return existing
 }
 
 func (r *Runner) emit(ctx context.Context, step RunStep) error {

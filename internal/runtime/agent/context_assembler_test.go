@@ -133,3 +133,110 @@ func TestContextAssemblerAddsConversationContextBlocks(t *testing.T) {
 		t.Fatalf("conversation history not included: %+v", trace)
 	}
 }
+
+func TestContextAssemblerBuildsTokenAuditByCategory(t *testing.T) {
+	_, trace := ContextAssembler{MaxChars: 5000}.Build(RunRequest{
+		SystemPrompt: "system prompt text",
+		Task:         "answer the task",
+		ContextBlocks: []ContextBlock{
+			{Name: "conversation", Role: "user", Content: "previous turn"},
+			{Name: "memory", Role: "user", Content: "remembered preference"},
+			{Name: "retrieval:kb", Role: "user", Content: "knowledge chunk content"},
+			{Name: "rules_l2:rag", Role: "system", Content: "cite retrieved chunks"},
+		},
+	})
+	if trace.TokenAudit.Total != trace.EstimatedTokens {
+		t.Fatalf("token audit total = %d, estimated = %d", trace.TokenAudit.Total, trace.EstimatedTokens)
+	}
+	if trace.TokenAudit.System == 0 || trace.TokenAudit.History == 0 || trace.TokenAudit.Memory == 0 || trace.TokenAudit.Retrieval == 0 || trace.TokenAudit.Task == 0 || trace.TokenAudit.RulesL2 == 0 {
+		t.Fatalf("missing token audit categories: %+v", trace.TokenAudit)
+	}
+}
+
+func TestContextAssemblerUsesTokenBudgetAndKeepsTask(t *testing.T) {
+	messages, trace := ContextAssembler{}.Build(RunRequest{
+		SystemPrompt:   "system",
+		Task:           "must answer this task",
+		MaxInputTokens: 20,
+		ContextBlocks: []ContextBlock{
+			{Name: "retrieval:large", Role: "user", Content: strings.Repeat("retrieval ", 200)},
+		},
+	})
+	if trace.MaxInputTokens != 20 || trace.UsedTokens > 20 {
+		t.Fatalf("expected token budget to be enforced, got %+v", trace)
+	}
+	if len(trace.Omitted) != 1 || trace.Omitted[0] != "retrieval:large" {
+		t.Fatalf("expected retrieval block to be omitted, got %+v", trace)
+	}
+	if messages[len(messages)-1].Content != "must answer this task" {
+		t.Fatalf("task should be preserved under budget pressure: %+v", messages)
+	}
+}
+
+func TestContextAssemblerSummarizesOldHistoryAndDedupesRetrieval(t *testing.T) {
+	blocks := []ContextBlock{
+		{Name: "conversation", Role: "user", Content: "turn 1 " + strings.Repeat("old ", 20)},
+		{Name: "conversation", Role: "assistant", Content: "turn 2 " + strings.Repeat("old ", 20)},
+		{Name: "conversation", Role: "user", Content: "turn 3 " + strings.Repeat("old ", 20)},
+		{Name: "conversation", Role: "assistant", Content: "turn 4 " + strings.Repeat("old ", 20)},
+		{Name: "conversation", Role: "user", Content: "turn 5 recent"},
+		{Name: "conversation", Role: "assistant", Content: "turn 6 recent"},
+		{Name: "retrieval:1", Role: "user", Content: "same chunk content"},
+		{Name: "retrieval:2", Role: "user", Content: " same   chunk   content "},
+	}
+	messages, trace := ContextAssembler{MaxInputTokens: 2000}.Build(RunRequest{Task: "task", ContextBlocks: blocks})
+	if trace.SavedTokens == 0 || len(trace.Compressed) == 0 {
+		t.Fatalf("expected compression to save tokens, got %+v", trace)
+	}
+	foundSummary := false
+	for _, message := range messages {
+		if strings.Contains(message.Content, "Earlier conversation summary") {
+			foundSummary = true
+			break
+		}
+	}
+	if !foundSummary {
+		t.Fatalf("expected old history summary in messages: %+v", messages)
+	}
+	duplicateOmitted := false
+	for _, omitted := range trace.Omitted {
+		if omitted == "retrieval:2" {
+			duplicateOmitted = true
+		}
+	}
+	if !duplicateOmitted {
+		t.Fatalf("expected duplicate retrieval chunk to be omitted: %+v", trace)
+	}
+}
+
+func TestContextAssemblerImprovesUsableSpaceIn32KWindow(t *testing.T) {
+	blocks := make([]ContextBlock, 0, 80)
+	for i := 0; i < 40; i++ {
+		blocks = append(blocks, ContextBlock{Name: "conversation", Role: "user", Content: strings.Repeat("old history detail ", 200)})
+	}
+	for i := 0; i < 20; i++ {
+		blocks = append(blocks, ContextBlock{Name: "retrieval:duplicate", Role: "user", Content: strings.Repeat("duplicate retrieved paragraph ", 80)})
+	}
+	for i := 0; i < 20; i++ {
+		blocks = append(blocks, ContextBlock{Name: "memory", Role: "user", Content: strings.Repeat("user preference ", 40)})
+	}
+
+	messages, trace := ContextAssembler{}.Build(RunRequest{
+		SystemPrompt:   "core system rule",
+		Task:           "answer the business question with citations",
+		MaxInputTokens: 32000,
+		ContextBlocks:  blocks,
+	})
+	if trace.UsedTokens > 32000 {
+		t.Fatalf("used tokens exceeded 32K budget: %+v", trace)
+	}
+	if trace.SavedTokens == 0 || len(trace.Compressed) == 0 || len(trace.Omitted) == 0 {
+		t.Fatalf("expected compression and dedupe to improve usable space, got %+v", trace)
+	}
+	if trace.TokenAudit.System == 0 || trace.TokenAudit.Task == 0 {
+		t.Fatalf("L1/system and task context must remain audited: %+v", trace.TokenAudit)
+	}
+	if messages[0].Content != "core system rule" || messages[len(messages)-1].Content != "answer the business question with citations" {
+		t.Fatalf("core system prompt and task should be preserved: %+v", messages)
+	}
+}

@@ -420,6 +420,31 @@ func TestRunnerAppliesPolicyOutputLimit(t *testing.T) {
 	}
 }
 
+func TestRunnerRecordsDefaultToolHookTrace(t *testing.T) {
+	client := &fakeToolClient{responses: []llm.ToolChatResponse{
+		{Message: llm.ChatMessage{Role: conversation.RoleAssistant, ToolCalls: []llm.ToolCall{{ID: "call_1", Name: "trace_tool", Arguments: json.RawMessage(`{}`)}}}},
+		{Message: llm.ChatMessage{Role: conversation.RoleAssistant, Content: "done"}},
+	}}
+	tool := &fakeRuntimeTool{name: "trace_tool", output: "ok"}
+	runner := NewRunner(client)
+	result, err := runner.Run(context.Background(), RunRequest{
+		Model:         "test-model",
+		Task:          "trace hooks",
+		MaxIterations: 3,
+		MaxToolCalls:  2,
+		Tools:         []toolruntime.RuntimeTool{tool},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.HookTrace) < 2 {
+		t.Fatalf("expected pre and post tool hook trace, got %+v", result.HookTrace)
+	}
+	if result.HookTrace[0].ToolName != "trace_tool" {
+		t.Fatalf("expected hook trace to include tool name, got %+v", result.HookTrace)
+	}
+}
+
 func TestRunnerRedactsSensitiveToolObservationFields(t *testing.T) {
 	client := &fakeToolClient{responses: []llm.ToolChatResponse{
 		{Message: llm.ChatMessage{Role: conversation.RoleAssistant, ToolCalls: []llm.ToolCall{{ID: "call_1", Name: "secret_tool", Arguments: json.RawMessage(`{}`)}}}},
@@ -489,6 +514,41 @@ func TestRunnerRejectsToolHostOutsidePolicyAllowlist(t *testing.T) {
 	}
 }
 
+func TestRunnerBlocksDangerousSandboxCommandBeforeExecution(t *testing.T) {
+	client := &fakeToolClient{responses: []llm.ToolChatResponse{
+		{Message: llm.ChatMessage{Role: conversation.RoleAssistant, ToolCalls: []llm.ToolCall{{ID: "call_1", Name: "execute_python", Arguments: json.RawMessage(`{"code":"import os\nos.system('rm -rf /')"}`)}}}},
+		{Message: llm.ChatMessage{Role: conversation.RoleAssistant, Content: "blocked and recovered"}},
+	}}
+	tool := &fakeRuntimeTool{
+		name:   "execute_python",
+		output: "should not run",
+	}
+	runner := NewRunner(client)
+	result, err := runner.Run(context.Background(), RunRequest{
+		Model:         "test-model",
+		Task:          "run unsafe code",
+		MaxIterations: 3,
+		MaxToolCalls:  2,
+		Tools:         []toolruntime.RuntimeTool{tool},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tool.input) != 0 {
+		t.Fatalf("dangerous sandbox command should not execute, input=%s", tool.input)
+	}
+	if result.ToolCalls != 0 {
+		t.Fatalf("blocked tool should not increment tool calls, got %d", result.ToolCalls)
+	}
+	if result.FinalAnswer != "blocked and recovered" {
+		t.Fatalf("expected model to recover after blocked tool, got %+v", result)
+	}
+	got := client.requests[1].Messages[len(client.requests[1].Messages)-1]
+	if got.Role != conversation.RoleTool || !strings.Contains(got.Content, "dangerous tool invocation blocked") {
+		t.Fatalf("expected blocked observation, got %+v", got)
+	}
+}
+
 func TestRunnerAppliesPolicyTimeout(t *testing.T) {
 	client := &fakeToolClient{responses: []llm.ToolChatResponse{
 		{Message: llm.ChatMessage{Role: conversation.RoleAssistant, ToolCalls: []llm.ToolCall{{ID: "call_1", Name: "timed_tool", Arguments: json.RawMessage(`{}`)}}}},
@@ -544,6 +604,12 @@ func TestContextAssemblerProducesContextTrace(t *testing.T) {
 	}
 	if len(result.Context.Included) == 0 {
 		t.Fatal("expected included blocks in context trace")
+	}
+	if result.Context.EstimatedTokens == 0 || len(result.Context.Blocks) == 0 {
+		t.Fatalf("expected block-level token audit in context trace, got %+v", result.Context)
+	}
+	if result.Context.TokenAudit.Total != result.Context.EstimatedTokens || result.Context.TokenAudit.System == 0 || result.Context.TokenAudit.Task == 0 {
+		t.Fatalf("expected token audit in context trace, got %+v", result.Context.TokenAudit)
 	}
 }
 

@@ -68,6 +68,7 @@ type agentRuntimeConfig struct {
 	MaxToolCalls            int             `json:"max_tool_calls"`
 	MaxExecutionTimeMS      int             `json:"max_execution_time_ms"`
 	MaxInputChars           int             `json:"max_input_chars"`
+	MaxInputTokens          int             `json:"max_input_tokens"`
 	RequireApprovalForRisk  []string        `json:"require_approval_for_risk"`
 	MaxToolTimeoutMS        int             `json:"max_tool_timeout_ms"`
 	MaxToolOutputBytes      int             `json:"max_tool_output_bytes"`
@@ -229,6 +230,7 @@ func parseAgentNodeConfig(config json.RawMessage) (agentRuntimeConfig, error) {
 		cfg.MaxExecutionTimeMS = nested.Limits.MaxExecutionTimeMS
 	}
 	if nested.Context.MaxInputTokens > 0 {
+		cfg.MaxInputTokens = nested.Context.MaxInputTokens
 		cfg.MaxInputChars = nested.Context.MaxInputTokens * 4
 	}
 	if len(nested.Context.Policy) > 0 {
@@ -446,6 +448,7 @@ func (n AgentNode) runAgent(ctx context.Context, rc *engine.RunContext, input en
 		MaxToolCalls:       cfg.MaxToolCalls,
 		MaxExecutionTimeMS: cfg.MaxExecutionTimeMS,
 		MaxInputChars:      cfg.MaxInputChars,
+		MaxInputTokens:     cfg.MaxInputTokens,
 		ContextBlocks:      contextBlocks,
 		ToolPolicy: runtimeagent.ToolPolicy{
 			RequireApprovalForRisk: cfg.RequireApprovalForRisk,
@@ -479,6 +482,7 @@ func (n AgentNode) runAgent(ctx context.Context, rc *engine.RunContext, input en
 			MaxToolCalls:       cfg.MaxToolCalls,
 			MaxExecutionTimeMS: cfg.MaxExecutionTimeMS,
 			MaxInputChars:      cfg.MaxInputChars,
+			MaxInputTokens:     cfg.MaxInputTokens,
 			ContextBlocks:      contextBlocks,
 			ToolPolicy:         runRequest.ToolPolicy,
 			Tools:              tools,
@@ -684,7 +688,7 @@ func applyProfileMemoryPolicy(cfg agentRuntimeConfig, raw json.RawMessage) agent
 }
 
 func applyProfileContextPolicy(cfg agentRuntimeConfig, raw json.RawMessage) agentRuntimeConfig {
-	if cfg.MaxInputChars > 0 || len(raw) == 0 || string(bytes.TrimSpace(raw)) == "{}" || string(bytes.TrimSpace(raw)) == "null" {
+	if (cfg.MaxInputChars > 0 || cfg.MaxInputTokens > 0) || len(raw) == 0 || string(bytes.TrimSpace(raw)) == "{}" || string(bytes.TrimSpace(raw)) == "null" {
 		return cfg
 	}
 	var policy profileContextPolicy
@@ -694,6 +698,7 @@ func applyProfileContextPolicy(cfg agentRuntimeConfig, raw json.RawMessage) agen
 	if policy.MaxInputChars > 0 {
 		cfg.MaxInputChars = policy.MaxInputChars
 	} else if policy.MaxInputTokens > 0 {
+		cfg.MaxInputTokens = policy.MaxInputTokens
 		cfg.MaxInputChars = policy.MaxInputTokens * 4
 	}
 	return cfg
@@ -710,6 +715,7 @@ func applyNodeContextPolicy(cfg agentRuntimeConfig, raw json.RawMessage) agentRu
 	if policy.MaxInputChars > 0 {
 		cfg.MaxInputChars = policy.MaxInputChars
 	} else if policy.MaxInputTokens > 0 {
+		cfg.MaxInputTokens = policy.MaxInputTokens
 		cfg.MaxInputChars = policy.MaxInputTokens * 4
 	}
 	return cfg

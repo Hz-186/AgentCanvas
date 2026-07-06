@@ -15,6 +15,7 @@ import (
 	retrievalusecase "agentcanvas/internal/application/retrieval_usecase"
 	toolusecase "agentcanvas/internal/application/tool_usecase"
 	agentusecase "agentcanvas/internal/application/workflow_usecase"
+	"agentcanvas/internal/domain/retrieval"
 	cataloginfra "agentcanvas/internal/infrastructure/catalog"
 	cryptoinfra "agentcanvas/internal/infrastructure/crypto"
 	esinfra "agentcanvas/internal/infrastructure/elasticsearch"
@@ -22,8 +23,12 @@ import (
 	minioinfra "agentcanvas/internal/infrastructure/minio"
 	mysqlinfra "agentcanvas/internal/infrastructure/mysql"
 	oauthinfra "agentcanvas/internal/infrastructure/oauth"
+	queueinfra "agentcanvas/internal/infrastructure/queue"
 	redisinfra "agentcanvas/internal/infrastructure/redis"
+	compositeretrieval "agentcanvas/internal/infrastructure/retrieval/composite"
 	esretrieval "agentcanvas/internal/infrastructure/retrieval/elasticsearch"
+	milvusretrieval "agentcanvas/internal/infrastructure/retrieval/milvus"
+	"agentcanvas/internal/infrastructure/vectorstore"
 	httpserver "agentcanvas/internal/interface/http"
 	"agentcanvas/internal/interface/http/handler"
 	"agentcanvas/internal/pkg/config"
@@ -58,7 +63,20 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 		return nil, fmt.Errorf("init elasticsearch: %w", err)
 	}
 	esStore := esretrieval.NewStore(esClient, cfg.Elasticsearch)
-	if err := esStore.EnsureIndex(ctx); err != nil {
+	var retrievalStore interface {
+		EnsureIndex(context.Context) error
+		IndexChunks(context.Context, []retrieval.ChunkIndexDocument) error
+		SetDocumentEnabled(context.Context, int64, int64, bool) error
+		DeleteByDocument(context.Context, int64, int64) error
+		DeleteByKnowledgeBase(context.Context, int64, int64) error
+		Search(context.Context, retrieval.RetrievalRequest) (*retrieval.RetrievalResponse, error)
+	} = esStore
+	if cfg.Milvus.Enabled {
+		milvusVector := vectorstore.NewMilvusStore(cfg.Milvus.Address, cfg.Milvus.Token, milvusHNSW(cfg))
+		milvusStore := milvusretrieval.NewStore(milvusVector, cfg.Milvus.Collection, cfg.Milvus.Dimensions, milvusHNSW(cfg))
+		retrievalStore = compositeretrieval.New(esStore, milvusStore)
+	}
+	if err := retrievalStore.EnsureIndex(ctx); err != nil {
 		return nil, fmt.Errorf("ensure elasticsearch chunk index: %w", err)
 	}
 
@@ -115,13 +133,16 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 	chatClient := llm.NewOpenAICompatibleChatClient()
 	embeddingClient := llm.NewOpenAICompatibleEmbeddingClient()
 	reranker := llm.NewChatReranker(chatClient)
-	retrievalService := retrievalusecase.NewService(knowledgeRepo, providerRepo, esStore, embeddingClient, reranker, secretBox)
+	retrievalService := retrievalusecase.NewService(knowledgeRepo, providerRepo, retrievalStore, embeddingClient, reranker, secretBox)
 
 	providerService := providerusecase.NewService(providerRepo, auditRepo, secretBox, llm.NewHTTPProviderTester())
 	auditService := auditusecase.NewService(auditRepo)
 	memoryService := memoryusecase.NewService(memoryRepo)
 	toolService := toolusecase.NewService(toolDefinitionRepo)
-	knowledgeService := knowledgeusecase.NewService(knowledgeRepo, documentRepo, chunkRepo, ingestionJobRepo, retrievalLogRepo, auditRepo, fileStorage, retrievalService, esStore)
+	knowledgeService := knowledgeusecase.NewService(knowledgeRepo, documentRepo, chunkRepo, ingestionJobRepo, retrievalLogRepo, auditRepo, fileStorage, retrievalService, retrievalStore)
+	if cfg.Queue.Backend == "redis_stream" {
+		knowledgeService.WithJobQueue(queueinfra.NewRedisStreamQueue(redisClient, cfg.Queue.RedisStream, cfg.Queue.RedisGroup, cfg.Queue.RedisConsumer))
+	}
 	dialogService := dialogusecase.NewService(dialogRepo)
 	chatService := chatusecase.NewService(providerRepo, dialogRepo, knowledgeRepo, conversationRepo, messageRepo, usageRepo, retrievalService, chatClient, secretBox)
 	workflowService := agentusecase.NewService(workflowRepo, workflowProfileRepo, flowVersionRepo, runRepo, runEventRepo, nodeLogRepo, runStepRepo, workflowEvalRepo, approvalRepo, workflowTeamRepo, memoryRepo, memoryWriteLogRepo, toolDefinitionRepo, toolPackRepo, mcpRepo, toolInvocationRepo, providerRepo, messageRepo, retrievalService, chatClient, secretBox)
@@ -158,4 +179,8 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 	})
 
 	return &App{Config: cfg, Logger: log, Router: router}, nil
+}
+
+func milvusHNSW(cfg *config.Config) vectorstore.HNSWConfig {
+	return vectorstore.HNSWConfig{M: cfg.Milvus.M, EFConstruction: cfg.Milvus.EFConstruction, EFSearch: cfg.Milvus.EFSearch, MetricType: cfg.Milvus.MetricType}
 }
