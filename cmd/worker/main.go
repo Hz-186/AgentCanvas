@@ -10,6 +10,7 @@ import (
 	"time"
 
 	ingestionusecase "agentcanvas/internal/application/ingestion_usecase"
+	"agentcanvas/internal/domain/retrieval"
 	chunkerinfra "agentcanvas/internal/infrastructure/chunker"
 	cryptoinfra "agentcanvas/internal/infrastructure/crypto"
 	esinfra "agentcanvas/internal/infrastructure/elasticsearch"
@@ -17,7 +18,12 @@ import (
 	minioinfra "agentcanvas/internal/infrastructure/minio"
 	mysqlinfra "agentcanvas/internal/infrastructure/mysql"
 	parserinfra "agentcanvas/internal/infrastructure/parser"
+	queueinfra "agentcanvas/internal/infrastructure/queue"
+	redisinfra "agentcanvas/internal/infrastructure/redis"
+	compositeretrieval "agentcanvas/internal/infrastructure/retrieval/composite"
 	esretrieval "agentcanvas/internal/infrastructure/retrieval/elasticsearch"
+	milvusretrieval "agentcanvas/internal/infrastructure/retrieval/milvus"
+	"agentcanvas/internal/infrastructure/vectorstore"
 	"agentcanvas/internal/pkg/config"
 	"agentcanvas/internal/pkg/logger"
 )
@@ -60,7 +66,13 @@ func main() {
 		os.Exit(1)
 	}
 	esStore := esretrieval.NewStore(esClient, cfg.Elasticsearch)
-	if err := esStore.EnsureIndex(ctx); err != nil {
+	var indexer retrieval.Indexer = esStore
+	if cfg.Milvus.Enabled {
+		milvusVector := vectorstore.NewMilvusStore(cfg.Milvus.Address, cfg.Milvus.Token, vectorstore.HNSWConfig{M: cfg.Milvus.M, EFConstruction: cfg.Milvus.EFConstruction, EFSearch: cfg.Milvus.EFSearch, MetricType: cfg.Milvus.MetricType})
+		milvusStore := milvusretrieval.NewStore(milvusVector, cfg.Milvus.Collection, cfg.Milvus.Dimensions, vectorstore.HNSWConfig{M: cfg.Milvus.M, EFConstruction: cfg.Milvus.EFConstruction, EFSearch: cfg.Milvus.EFSearch, MetricType: cfg.Milvus.MetricType})
+		indexer = compositeretrieval.New(esStore, milvusStore)
+	}
+	if err := indexer.EnsureIndex(ctx); err != nil {
 		appLogger.Error("ensure elasticsearch chunk index failed", "error", err)
 		os.Exit(1)
 	}
@@ -76,6 +88,10 @@ func main() {
 		appLogger.Error("init secret box failed", "error", err)
 		os.Exit(1)
 	}
+	parserRegistry := parserinfra.NewDefaultRegistry()
+	if cfg.OCR.Enabled {
+		parserRegistry = parserinfra.NewDefaultRegistryWithOCR(parserinfra.NewHTTPOCRClient(cfg.OCR.Endpoint, cfg.OCR.Token, time.Duration(cfg.OCR.TimeoutSeconds)*time.Second))
+	}
 
 	service := ingestionusecase.NewService(
 		knowledgeRepo,
@@ -84,13 +100,22 @@ func main() {
 		ingestionJobRepo,
 		providerRepo,
 		fileStorage,
-		parserinfra.NewTextParser(),
+		parserRegistry,
 		chunkerinfra.NewDefaultRegistry(),
-		esStore,
+		indexer,
 		llm.NewOpenAICompatibleEmbeddingClient(),
 		secretBox,
 		cfg.Elasticsearch.ChunkIndex,
 	)
+	var jobQueue queueinfra.JobQueue
+	if cfg.Queue.Backend == "redis_stream" {
+		redisClient := redisinfra.New(cfg.Redis)
+		if err := redisinfra.Ping(ctx, redisClient); err != nil {
+			appLogger.Error("init redis stream queue failed", "error", err)
+			os.Exit(1)
+		}
+		jobQueue = queueinfra.NewRedisStreamQueue(redisClient, cfg.Queue.RedisStream, cfg.Queue.RedisGroup, cfg.Queue.RedisConsumer)
+	}
 
 	hostname, _ := os.Hostname()
 	workerID := fmt.Sprintf("%s-%d", hostname, os.Getpid())
@@ -107,7 +132,13 @@ func main() {
 		default:
 		}
 
-		processed, err := service.ProcessNext(ctx, workerID)
+		var processed bool
+		var err error
+		if jobQueue != nil {
+			processed, err = service.ProcessNextFromQueue(ctx, jobQueue, workerID)
+		} else {
+			processed, err = service.ProcessNext(ctx, workerID)
+		}
 		if err != nil {
 			appLogger.Error("process ingestion job failed", "error", err)
 		}
