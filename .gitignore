@@ -21,9 +21,9 @@ tmp/
 .DS_Store
 
 # Local documentation and skills
-doc/
-skill/
+doc/*
+skill/*
 
 # doc / study
-TEST
 study
+test
