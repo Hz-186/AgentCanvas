@@ -114,7 +114,13 @@ func main() {
 			appLogger.Error("init redis stream queue failed", "error", err)
 			os.Exit(1)
 		}
-		jobQueue = queueinfra.NewRedisStreamQueue(redisClient, cfg.Queue.RedisStream, cfg.Queue.RedisGroup, cfg.Queue.RedisConsumer)
+		jobQueue, err = queueinfra.NewConfiguredJobQueue(ctx, cfg, redisClient)
+	} else {
+		jobQueue, err = queueinfra.NewConfiguredJobQueue(ctx, cfg, nil)
+	}
+	if err != nil {
+		appLogger.Error("init job queue failed", "backend", cfg.Queue.Backend, "error", err)
+		os.Exit(1)
 	}
 
 	hostname, _ := os.Hostname()
