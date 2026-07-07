@@ -32,17 +32,36 @@ func (a ContextAssembler) Build(req RunRequest) ([]llm.ChatMessage, ContextTrace
 	} else if maxChars <= 0 {
 		maxChars = maxTokens * 4
 	}
-	trace := ContextTrace{MaxChars: maxChars, MaxInputTokens: maxTokens, Strategy: "token_budget:pinned_recent_summary_dedupe"}
+	trace := ContextTrace{
+		MaxChars:       maxChars,
+		MaxInputTokens: maxTokens,
+		Strategy:       "token_budget:pinned_recent_summary_dedupe",
+	}
 	blocks := make([]ContextBlock, 0, len(req.ContextBlocks)+2)
 	if strings.TrimSpace(req.SystemPrompt) != "" {
-		blocks = append(blocks, ContextBlock{Name: "system", Role: conversation.RoleSystem, Content: req.SystemPrompt, Pinned: true})
+		blocks = append(blocks, ContextBlock{
+			Name:    "system",
+			Role:    conversation.RoleSystem,
+			Content: req.SystemPrompt,
+			Pinned:  true,
+		})
 	}
 	if modePrompt := modeInstruction(req); modePrompt != "" {
-		blocks = append(blocks, ContextBlock{Name: "agent_mode", Role: conversation.RoleSystem, Content: modePrompt, Pinned: true})
+		blocks = append(blocks, ContextBlock{
+			Name:    "agent_mode",
+			Role:    conversation.RoleSystem,
+			Content: modePrompt,
+			Pinned:  true,
+		})
 	}
 	if req.Plan != nil {
 		if planContext := req.Plan.PlanContext(); strings.TrimSpace(planContext) != "" {
-			blocks = append(blocks, ContextBlock{Name: "execution_plan", Role: conversation.RoleSystem, Content: planContext, Pinned: true})
+			blocks = append(blocks, ContextBlock{
+				Name:    "execution_plan",
+				Role:    conversation.RoleSystem,
+				Content: planContext,
+				Pinned:  true,
+			})
 		}
 	}
 	contextBlocks, preTrace := compressContextBlocks(req.ContextBlocks)
@@ -64,7 +83,12 @@ func (a ContextAssembler) Build(req RunRequest) ([]llm.ChatMessage, ContextTrace
 		}
 		blocks = append(blocks, block)
 	}
-	blocks = append(blocks, ContextBlock{Name: "task", Role: conversation.RoleUser, Content: req.Task, Pinned: true})
+	blocks = append(blocks, ContextBlock{
+		Name:    "task",
+		Role:    conversation.RoleUser,
+		Content: req.Task,
+		Pinned:  true,
+	})
 
 	messages := make([]llm.ChatMessage, 0, len(blocks))
 	used := 0
@@ -80,7 +104,12 @@ func (a ContextAssembler) Build(req RunRequest) ([]llm.ChatMessage, ContextTrace
 		}
 		originalChars := len(content)
 		originalTokens := estimateContextTokens(content)
-		blockTrace := ContextBlockTrace{Name: name, Role: block.Role, Pinned: block.Pinned, OriginalChars: originalChars}
+		blockTrace := ContextBlockTrace{
+			Name:          name,
+			Role:          block.Role,
+			Pinned:        block.Pinned,
+			OriginalChars: originalChars,
+		}
 		if used+len(content) > maxChars || usedTokens+originalTokens > maxTokens {
 			if !block.Pinned {
 				trace.Omitted = append(trace.Omitted, name)
