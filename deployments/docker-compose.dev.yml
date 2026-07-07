@@ -1,4 +1,17 @@
 services:
+  migrate:
+    build:
+      context: ..
+      dockerfile: deployments/docker/Dockerfile
+    container_name: agentcanvas-migrate
+    restart: "no"
+    command: ["/app/migrate"]
+    environment:
+      AGENTCANVAS_CONFIG_PATH: /app/configs/config.yaml
+    depends_on:
+      mysql:
+        condition: service_healthy
+
   api:
     build:
       context: ..
@@ -10,11 +23,42 @@ services:
     environment:
       AGENTCANVAS_CONFIG_PATH: /app/configs/config.yaml
     depends_on:
+      migrate:
+        condition: service_completed_successfully
       mysql:
         condition: service_healthy
       redis:
         condition: service_healthy
       minio:
+        condition: service_healthy
+      milvus:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: ..
+      dockerfile: deployments/docker/Dockerfile
+    container_name: agentcanvas-worker
+    restart: unless-stopped
+    command: ["/app/worker"]
+    environment:
+      AGENTCANVAS_CONFIG_PATH: /app/configs/config.yaml
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      milvus:
+        condition: service_healthy
+      nats:
         condition: service_healthy
       elasticsearch:
         condition: service_healthy
