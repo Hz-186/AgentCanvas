@@ -18,6 +18,7 @@ type ToolPolicy struct {
 	AllowedHosts           []string `json:"allowed_hosts,omitempty"`
 }
 
+// human approval request
 type Approval struct {
 	ToolCallID string                   `json:"tool_call_id"`
 	ToolName   string                   `json:"tool_name"`
@@ -26,6 +27,7 @@ type Approval struct {
 	Metadata   toolruntime.ToolMetadata `json:"metadata"`
 }
 
+// the record of hook
 type Trace struct {
 	Stage      string `json:"stage"`
 	Hook       string `json:"hook"`
@@ -268,12 +270,35 @@ func dangerousToolArgumentReason(req PreToolUseRequest) string {
 	dangerousPatterns := []string{
 		"rm -rf /",
 		"rm -fr /",
+		"rm -rf /*",
+		"rm -fr /*",
+		"sudo rm -rf",
 		"mkfs.",
+		"mkfs ",
+		"mkswap ",
 		"dd if=",
+		"dd ",
+		" of=/dev/",
 		":(){",
+		": () {",
+		"fork bomb",
 		"/dev/sda",
+		"/dev/disk",
+		"/dev/nvme",
 		"curl ",
+		"| sh",
+		"| bash",
+		"bash <(",
+		"sh <(",
 		"wget ",
+		"chmod -r 777 /",
+		"chown -r ",
+		"> /etc/",
+		"tee /etc/",
+		"launchctl unload",
+		"systemctl disable",
+		"iptables -f",
+		"pfctl -d",
 		"bash -c",
 		"sh -c",
 		"network_enabled\":true",

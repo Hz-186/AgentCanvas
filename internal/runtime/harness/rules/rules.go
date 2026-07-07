@@ -21,9 +21,12 @@ type Rule struct {
 }
 
 type Trace struct {
-	Loaded  []string `json:"loaded,omitempty"`
-	Skipped []string `json:"skipped,omitempty"`
-	Levels  []string `json:"levels,omitempty"`
+	Loaded        []string          `json:"loaded,omitempty"`
+	Skipped       []string          `json:"skipped,omitempty"`
+	Levels        []string          `json:"levels,omitempty"`
+	SkipReasons   map[string]string `json:"skip_reasons,omitempty"`
+	EstimatedUsed int               `json:"estimated_used,omitempty"`
+	TokenBudget   int               `json:"token_budget,omitempty"`
 }
 
 type Registry struct {
@@ -53,24 +56,59 @@ func (r *Registry) Load(ctx LoadContext) ([]Rule, Trace) {
 		return nil, Trace{}
 	}
 	loaded := make([]Rule, 0, len(r.rules))
-	trace := Trace{}
+	trace := Trace{TokenBudget: ctx.TokenBudget}
+	used := 0
 	for _, rule := range r.rules {
-		if shouldLoad(rule, ctx) {
-			loaded = append(loaded, rule)
-			trace.Loaded = append(trace.Loaded, rule.ID)
-			trace.Levels = append(trace.Levels, string(rule.Level))
+		if !shouldLoad(rule, ctx) {
+			trace.skip(rule.ID, "trigger_not_matched")
 			continue
 		}
-		trace.Skipped = append(trace.Skipped, rule.ID)
+		cost := ruleCost(rule)
+		if ctx.TokenBudget > 0 && used+cost > ctx.TokenBudget && rule.Level != LevelL1Core {
+			trace.skip(rule.ID, "token_budget_exceeded")
+			continue
+		}
+		loaded = append(loaded, rule)
+		trace.Loaded = append(trace.Loaded, rule.ID)
+		trace.Levels = append(trace.Levels, string(rule.Level))
+		used += cost
 	}
+	trace.EstimatedUsed = used
 	return loaded, trace
 }
 
 type LoadContext struct {
-	Mode      string
-	ToolNames []string
-	RiskLevel string
-	Tags      []string
+	Mode        string
+	ToolNames   []string
+	RiskLevel   string
+	Tags        []string
+	TokenBudget int
+}
+
+func (t *Trace) skip(ruleID, reason string) {
+	t.Skipped = append(t.Skipped, ruleID)
+	if reason == "" {
+		return
+	}
+	if t.SkipReasons == nil {
+		t.SkipReasons = map[string]string{}
+	}
+	t.SkipReasons[ruleID] = reason
+}
+
+func ruleCost(rule Rule) int {
+	if rule.TokenBudget > 0 {
+		return rule.TokenBudget
+	}
+	content := strings.TrimSpace(rule.Content)
+	if content == "" {
+		return 1
+	}
+	cost := len([]rune(content)) / 4
+	if cost <= 0 {
+		return 1
+	}
+	return cost
 }
 
 func shouldLoad(rule Rule, ctx LoadContext) bool {

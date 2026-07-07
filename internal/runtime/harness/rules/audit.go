@@ -70,7 +70,7 @@ func (r *Registry) LoadWithAudit(ctx LoadContext, audit *AuditStore, policy Audi
 		stat := audit.Snapshot(rule.ID)
 		if ShouldPrune(rule, stat, policy) {
 			stat.Pruned = true
-			trace.Skipped = append(trace.Skipped, rule.ID)
+			trace.skip(rule.ID, "audit_low_hit_rate")
 			continue
 		}
 		kept = append(kept, rule)
