@@ -8,11 +8,29 @@ func TestQueueConfigDefaults(t *testing.T) {
 	if cfg.Queue.Backend != "mysql" || cfg.Queue.RedisStream == "" || cfg.Queue.RedisGroup == "" || cfg.Queue.RedisConsumer == "" {
 		t.Fatalf("unexpected queue defaults: %+v", cfg.Queue)
 	}
+	if cfg.NATS.URL == "" || cfg.NATS.Stream == "" || cfg.NATS.Subject == "" || cfg.NATS.Durable == "" || cfg.NATS.AckWaitSeconds == 0 {
+		t.Fatalf("unexpected nats defaults: %+v", cfg.NATS)
+	}
 	if cfg.Milvus.Collection == "" || cfg.Milvus.M == 0 || cfg.Milvus.MetricType != "COSINE" {
 		t.Fatalf("unexpected milvus defaults: %+v", cfg.Milvus)
 	}
 	if cfg.OCR.TimeoutSeconds != 60 {
 		t.Fatalf("unexpected OCR defaults: %+v", cfg.OCR)
+	}
+}
+
+func TestQueueConfigAcceptsNATSBackend(t *testing.T) {
+	cfg := Config{
+		MySQL:    MySQLConfig{DSN: "dsn"},
+		Security: SecurityConfig{JWTSecret: "jwt", RefreshTokenPepper: "pepper", SecretEncryptKey: "secret"},
+		Queue:    QueueConfig{Backend: "nats"},
+	}
+	cfg.setDefaults()
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+	if cfg.NATS.URL != "nats://localhost:4222" || cfg.NATS.Durable != cfg.NATS.Consumer {
+		t.Fatalf("unexpected nats defaults: %+v", cfg.NATS)
 	}
 }
 
@@ -49,5 +67,18 @@ func TestOCRRequiresEndpointWhenEnabled(t *testing.T) {
 	cfg.setDefaults()
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("expected missing OCR endpoint error")
+	}
+}
+
+func TestDockerConfigLoadsWithNATSAndMilvus(t *testing.T) {
+	cfg, err := LoadConfig("../../../configs/config.yaml")
+	if err != nil {
+		t.Fatalf("LoadConfig(config.yaml) error = %v", err)
+	}
+	if cfg.Queue.Backend != "nats" || cfg.NATS.URL != "nats://nats:4222" {
+		t.Fatalf("unexpected docker queue config: queue=%+v nats=%+v", cfg.Queue, cfg.NATS)
+	}
+	if !cfg.Milvus.Enabled || cfg.Milvus.Address != "http://milvus:19530" {
+		t.Fatalf("unexpected docker milvus config: %+v", cfg.Milvus)
 	}
 }
