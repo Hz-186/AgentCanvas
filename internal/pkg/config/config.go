@@ -13,6 +13,7 @@ type Config struct {
 	MySQL         MySQLConfig         `yaml:"mysql"`
 	Redis         RedisConfig         `yaml:"redis"`
 	Queue         QueueConfig         `yaml:"queue"`
+	NATS          NATSConfig          `yaml:"nats"`
 	MinIO         MinIOConfig         `yaml:"minio"`
 	Elasticsearch ElasticsearchConfig `yaml:"elasticsearch"`
 	Milvus        MilvusConfig        `yaml:"milvus"`
@@ -45,6 +46,15 @@ type QueueConfig struct {
 	RedisStream   string `yaml:"redis_stream"`
 	RedisGroup    string `yaml:"redis_group"`
 	RedisConsumer string `yaml:"redis_consumer"`
+}
+
+type NATSConfig struct {
+	URL            string `yaml:"url"`
+	Stream         string `yaml:"stream"`
+	Subject        string `yaml:"subject"`
+	Consumer       string `yaml:"consumer"`
+	Durable        string `yaml:"durable"`
+	AckWaitSeconds int    `yaml:"ack_wait_seconds"`
 }
 
 type MinIOConfig struct {
@@ -152,6 +162,24 @@ func (c *Config) setDefaults() {
 	if c.Queue.RedisConsumer == "" {
 		c.Queue.RedisConsumer = "worker"
 	}
+	if c.NATS.URL == "" {
+		c.NATS.URL = "nats://localhost:4222"
+	}
+	if c.NATS.Stream == "" {
+		c.NATS.Stream = "AGENTCANVAS_INGESTION"
+	}
+	if c.NATS.Subject == "" {
+		c.NATS.Subject = "agentcanvas.ingestion"
+	}
+	if c.NATS.Consumer == "" {
+		c.NATS.Consumer = "agentcanvas-workers"
+	}
+	if c.NATS.Durable == "" {
+		c.NATS.Durable = c.NATS.Consumer
+	}
+	if c.NATS.AckWaitSeconds == 0 {
+		c.NATS.AckWaitSeconds = 60
+	}
 	if c.Milvus.Collection == "" {
 		c.Milvus.Collection = "agentcanvas_chunks"
 	}
@@ -185,8 +213,11 @@ func (c *Config) Validate() error {
 	if c.Security.SecretEncryptKey == "" {
 		return fmt.Errorf("security.secret_encrypt_key is required")
 	}
-	if c.Queue.Backend != "mysql" && c.Queue.Backend != "redis_stream" {
-		return fmt.Errorf("queue.backend must be mysql or redis_stream")
+	if c.Queue.Backend != "mysql" && c.Queue.Backend != "redis_stream" && c.Queue.Backend != "nats" {
+		return fmt.Errorf("queue.backend must be mysql, redis_stream, or nats")
+	}
+	if c.Queue.Backend == "nats" && c.NATS.URL == "" {
+		return fmt.Errorf("nats.url is required when queue.backend is nats")
 	}
 	if c.Milvus.Enabled && c.Milvus.Address == "" {
 		return fmt.Errorf("milvus.address is required when milvus.enabled is true")

@@ -15,10 +15,18 @@ redis:
   db: 0
 
 queue:
-  backend: mysql # mysql or redis_stream
+  backend: nats # mysql, redis_stream, or nats
   redis_stream: agentcanvas:jobs
   redis_group: agentcanvas-workers
   redis_consumer: worker
+
+nats:
+  url: nats://localhost:4222
+  stream: AGENTCANVAS_INGESTION
+  subject: agentcanvas.ingestion
+  consumer: agentcanvas-workers
+  durable: agentcanvas-workers
+  ack_wait_seconds: 60
 
 minio:
   endpoint: localhost:9000
@@ -35,7 +43,7 @@ elasticsearch:
   chunk_index: agentcanvas_chunks_v1
 
 milvus:
-  enabled: false
+  enabled: true
   address: http://localhost:19530
   token: ""
   collection: agentcanvas_chunks
