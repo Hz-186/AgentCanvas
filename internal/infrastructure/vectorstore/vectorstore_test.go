@@ -54,6 +54,8 @@ func TestMilvusStoreUsesRESTAPIForCollectionAndSearch(t *testing.T) {
 		switch r.URL.Path {
 		case "/v2/vectordb/collections/has":
 			_, _ = w.Write([]byte(`{"code":0,"data":false}`))
+		case "/v2/vectordb/entities/query":
+			_, _ = w.Write([]byte(`{"code":0,"data":[{"id":"chunk-1","vector":[0.1,0.2],"metadata":{"enabled":true,"document_id":20}}]}`))
 		case "/v2/vectordb/entities/search":
 			_, _ = w.Write([]byte(`{"code":0,"data":[{"id":"chunk-1","score":0.91,"metadata":{"page_no":2}}]}`))
 		default:
@@ -72,6 +74,19 @@ func TestMilvusStoreUsesRESTAPIForCollectionAndSearch(t *testing.T) {
 	if err := store.DeleteByFilter(context.Background(), "docs", map[string]any{"document_id": 20}); err != nil {
 		t.Fatalf("DeleteByFilter() error = %v", err)
 	}
+	docs, err := store.QueryByFilter(context.Background(), "docs", map[string]any{"document_id": 20}, 10)
+	if err != nil {
+		t.Fatalf("QueryByFilter() error = %v", err)
+	}
+	if len(docs) != 1 || docs[0].ID != "chunk-1" || len(docs[0].Vector) != 2 || docs[0].Metadata["enabled"] != true {
+		t.Fatalf("QueryByFilter() = %+v", docs)
+	}
+	if err := store.UpdateMetadataByFilter(context.Background(), "docs", map[string]any{"document_id": 20}, func(metadata map[string]any) map[string]any {
+		metadata["enabled"] = false
+		return metadata
+	}); err != nil {
+		t.Fatalf("UpdateMetadataByFilter() error = %v", err)
+	}
 	got, err := store.Search(context.Background(), SearchRequest{Collection: "docs", Vector: []float32{0.1, 0.2}, TopK: 3, Filter: map[string]any{"kb_id": []int64{10, 11}, "enabled": true}})
 	if err != nil {
 		t.Fatalf("Search() error = %v", err)
@@ -79,8 +94,8 @@ func TestMilvusStoreUsesRESTAPIForCollectionAndSearch(t *testing.T) {
 	if len(got) != 1 || got[0].ID != "chunk-1" || got[0].Score != 0.91 {
 		t.Fatalf("Search() = %+v", got)
 	}
-	if len(requests) != 7 {
-		t.Fatalf("request count = %d, want 7: %+v", len(requests), requests)
+	if len(requests) != 10 {
+		t.Fatalf("request count = %d, want 10: %+v", len(requests), requests)
 	}
 	indexReq := requests[2]
 	encoded, _ := json.Marshal(indexReq)
@@ -91,7 +106,28 @@ func TestMilvusStoreUsesRESTAPIForCollectionAndSearch(t *testing.T) {
 	if !strings.Contains(deleteReq["filter"].(string), "metadata['document_id']") {
 		t.Fatalf("unexpected delete request: %+v", deleteReq)
 	}
-	searchReq := requests[6]
+	queryReq := requests[6]
+	if queryReq["filter"].(string) != "metadata['document_id'] == 20" {
+		t.Fatalf("unexpected query request: %+v", queryReq)
+	}
+	updateQueryReq := requests[7]
+	if updateQueryReq["filter"].(string) != "metadata['document_id'] == 20" {
+		t.Fatalf("unexpected update query request: %+v", updateQueryReq)
+	}
+	upsertReq := requests[8]
+	upsertData, ok := upsertReq["data"].([]any)
+	if !ok || len(upsertData) != 1 {
+		t.Fatalf("unexpected update upsert request: %+v", upsertReq)
+	}
+	upsertItem, ok := upsertData[0].(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected upsert payload item: %+v", upsertData[0])
+	}
+	metadata, ok := upsertItem["metadata"].(map[string]any)
+	if !ok || metadata["enabled"] != false {
+		t.Fatalf("expected updated enabled metadata, got %+v", upsertItem)
+	}
+	searchReq := requests[9]
 	filter := searchReq["filter"].(string)
 	if filter == "" || searchReq["limit"].(float64) != 3 || !strings.Contains(filter, "metadata['kb_id'] in [10, 11]") || !strings.Contains(filter, "metadata['enabled'] == true") {
 		t.Fatalf("unexpected search request: %+v", searchReq)

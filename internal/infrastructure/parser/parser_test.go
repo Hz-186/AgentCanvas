@@ -109,6 +109,36 @@ endobj`
 	}
 }
 
+func TestDefaultRegistryParsesPDFFAQBlocksThroughDeepdoc(t *testing.T) {
+	p := NewDefaultRegistry()
+	raw := "Q: What is BGE-M3?\nAliases: embedding\nA: A multilingual embedding model."
+
+	got, err := p.Parse(context.Background(), "faq.pdf", strings.NewReader(raw))
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if len(got.Blocks) != 1 || got.Blocks[0].Type != "faq" {
+		t.Fatalf("unexpected blocks = %+v", got.Blocks)
+	}
+	if got.Blocks[0].Metadata["faq_question"] != "What is BGE-M3?" {
+		t.Fatalf("faq metadata = %+v", got.Blocks[0].Metadata)
+	}
+}
+
+func TestDefaultRegistrySplitsPDFLoosePageMarkers(t *testing.T) {
+	p := NewDefaultRegistry()
+	got, err := p.Parse(context.Background(), "manual.pdf", strings.NewReader("first page\nPage 2\nsecond page"))
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if len(got.Blocks) != 3 {
+		t.Fatalf("unexpected blocks = %+v", got.Blocks)
+	}
+	if got.Blocks[1].PageNo == nil || *got.Blocks[1].PageNo != 2 || got.Blocks[2].PageNo == nil || *got.Blocks[2].PageNo != 2 {
+		t.Fatalf("expected second-page blocks, got %+v", got.Blocks)
+	}
+}
+
 func TestTextParserBuildsFAQBlocks(t *testing.T) {
 	p := NewTextParser()
 	got, err := p.Parse(context.Background(), "faq.md", strings.NewReader("Q: What is AgentCanvas?\nAliases: AC, Agent Canvas\nCategory: runtime\nA: An agent runtime.\n\nQ: Why use RAG?\nA: Grounded answers."))

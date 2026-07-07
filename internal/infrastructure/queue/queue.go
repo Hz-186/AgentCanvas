@@ -28,6 +28,8 @@ type JobQueue interface {
 	Nack(ctx context.Context, jobID string, retryAt time.Time) error
 }
 
+// MemoryQueue is only suitable for unit tests and local in-process experiments.
+// Production ingestion should use MySQL, Redis Stream, or NATS JetStream.
 type MemoryQueue struct {
 	mu       sync.Mutex
 	pending  []Job

@@ -74,6 +74,22 @@ func TestDeleteByDocumentUsesMetadataFilterWhenSupported(t *testing.T) {
 	}
 }
 
+func TestSetDocumentEnabledUpdatesMilvusMetadataWhenSupported(t *testing.T) {
+	backend := &fakeVectorStore{}
+	store := NewStore(backend, "docs", 2, vectorstore.HNSWConfig{})
+
+	if err := store.SetDocumentEnabled(context.Background(), 1, 20, false); err != nil {
+		t.Fatalf("SetDocumentEnabled() error = %v", err)
+	}
+	if backend.updateCollection != "docs" || backend.updateFilter["owner_id"] != int64(1) || backend.updateFilter["document_id"] != int64(20) {
+		t.Fatalf("update filter = collection=%s filter=%+v", backend.updateCollection, backend.updateFilter)
+	}
+	metadata := backend.updateMutate(map[string]any{"enabled": true, "kb_id": int64(10)})
+	if metadata["enabled"] != false || metadata["kb_id"] != int64(10) {
+		t.Fatalf("mutated metadata = %+v", metadata)
+	}
+}
+
 type fakeVectorStore struct {
 	dimensions       int
 	upserts          []vectorstore.VectorDocument
@@ -81,6 +97,9 @@ type fakeVectorStore struct {
 	searchRequest    vectorstore.SearchRequest
 	deleteCollection string
 	deleteFilter     map[string]any
+	updateCollection string
+	updateFilter     map[string]any
+	updateMutate     func(map[string]any) map[string]any
 }
 
 func (f *fakeVectorStore) EnsureCollection(_ context.Context, _ string, dimensions int, _ vectorstore.HNSWConfig) error {
@@ -98,6 +117,13 @@ func (f *fakeVectorStore) Delete(context.Context, string, []string) error { retu
 func (f *fakeVectorStore) DeleteByFilter(_ context.Context, collection string, filter map[string]any) error {
 	f.deleteCollection = collection
 	f.deleteFilter = filter
+	return nil
+}
+
+func (f *fakeVectorStore) UpdateMetadataByFilter(_ context.Context, collection string, filter map[string]any, mutate func(map[string]any) map[string]any) error {
+	f.updateCollection = collection
+	f.updateFilter = filter
+	f.updateMutate = mutate
 	return nil
 }
 

@@ -81,8 +81,20 @@ func (s *Store) DeleteByKnowledgeBase(ctx context.Context, ownerID, kbID int64) 
 	return s.deleteByFilter(ctx, map[string]any{"owner_id": ownerID, "kb_id": kbID})
 }
 
-func (s *Store) SetDocumentEnabled(context.Context, int64, int64, bool) error {
-	return nil
+func (s *Store) SetDocumentEnabled(ctx context.Context, ownerID, documentID int64, enabled bool) error {
+	if s == nil || s.store == nil {
+		return nil
+	}
+	updater, ok := s.store.(interface {
+		UpdateMetadataByFilter(context.Context, string, map[string]any, func(map[string]any) map[string]any) error
+	})
+	if !ok {
+		return nil
+	}
+	return updater.UpdateMetadataByFilter(ctx, s.collection, map[string]any{"owner_id": ownerID, "document_id": documentID}, func(metadata map[string]any) map[string]any {
+		metadata["enabled"] = enabled
+		return metadata
+	})
 }
 
 func (s *Store) Search(ctx context.Context, req retrieval.RetrievalRequest) (*retrieval.RetrievalResponse, error) {

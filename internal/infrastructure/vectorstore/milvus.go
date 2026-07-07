@@ -21,6 +21,12 @@ type MilvusStore struct {
 	Client  *http.Client
 }
 
+type milvusEntityRecord struct {
+	ID       string         `json:"id"`
+	Vector   []float32      `json:"vector"`
+	Metadata map[string]any `json:"metadata"`
+}
+
 func NewMilvusStore(address, token string, hnsw HNSWConfig) *MilvusStore {
 	return &MilvusStore{Address: strings.TrimSpace(address), Token: token, Default: NormalizeHNSWConfig(hnsw), Client: &http.Client{Timeout: 15 * time.Second}}
 }
@@ -156,6 +162,59 @@ func (s *MilvusStore) DeleteByFilter(ctx context.Context, collection string, fil
 		return fmt.Errorf("milvus filter is empty")
 	}
 	return s.do(ctx, "/v2/vectordb/entities/delete", map[string]any{"collectionName": collection, "filter": expr}, nil)
+}
+
+func (s *MilvusStore) QueryByFilter(ctx context.Context, collection string, filter map[string]any, limit int) ([]VectorDocument, error) {
+	collection = strings.TrimSpace(collection)
+	if collection == "" || len(filter) == 0 {
+		return nil, fmt.Errorf("milvus collection and filter are required")
+	}
+	if err := s.validate(); err != nil {
+		return nil, err
+	}
+	if limit <= 0 {
+		limit = 10000
+	}
+	expr, err := milvusFilter(filter)
+	if err != nil {
+		return nil, err
+	}
+	var resp struct {
+		Data []milvusEntityRecord `json:"data"`
+	}
+	if err := s.do(ctx, "/v2/vectordb/entities/query", map[string]any{
+		"collectionName": collection,
+		"filter":         expr,
+		"limit":          limit,
+		"outputFields":   []string{"id", "vector", "metadata"},
+	}, &resp); err != nil {
+		return nil, err
+	}
+	results := make([]VectorDocument, 0, len(resp.Data))
+	for _, item := range resp.Data {
+		results = append(results, VectorDocument{ID: item.ID, Vector: item.Vector, Metadata: item.Metadata})
+	}
+	return results, nil
+}
+
+func (s *MilvusStore) UpdateMetadataByFilter(ctx context.Context, collection string, filter map[string]any, mutate func(map[string]any) map[string]any) error {
+	if mutate == nil {
+		return nil
+	}
+	docs, err := s.QueryByFilter(ctx, collection, filter, 10000)
+	if err != nil {
+		return err
+	}
+	if len(docs) == 0 {
+		return nil
+	}
+	updated := make([]VectorDocument, 0, len(docs))
+	for _, doc := range docs {
+		metadata := cloneMetadata(doc.Metadata)
+		metadata = mutate(metadata)
+		updated = append(updated, VectorDocument{ID: doc.ID, Vector: doc.Vector, Metadata: metadata})
+	}
+	return s.Upsert(ctx, collection, updated)
 }
 
 func (s *MilvusStore) Search(ctx context.Context, req SearchRequest) ([]SearchResult, error) {
@@ -323,6 +382,17 @@ var milvusFilterFieldPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 func escapeMilvusString(value string) string {
 	return strings.ReplaceAll(value, "'", "\\'")
+}
+
+func cloneMetadata(metadata map[string]any) map[string]any {
+	if len(metadata) == 0 {
+		return map[string]any{}
+	}
+	cloned := make(map[string]any, len(metadata))
+	for key, value := range metadata {
+		cloned[key] = value
+	}
+	return cloned
 }
 
 func joinMilvusValues[T any](values []T) string {

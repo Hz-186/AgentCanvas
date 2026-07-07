@@ -11,13 +11,10 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Loader 在启动时一次性解析内嵌的供应商 yaml 配置,并缓存到内存。
-// 对标 RagFlow 启动时把 llm_factories.json 读入 FACTORY_LLM_INFOS。
 type Loader struct {
 	providers []provider.CatalogProvider
 }
 
-// NewLoader 解析 conf/providers/*.yaml,按 rank 降序(再按 name 升序)排序后缓存。
 func NewLoader() (*Loader, error) {
 	entries, err := fs.ReadDir(conf.ProviderFiles, "providers")
 	if err != nil {
