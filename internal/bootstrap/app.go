@@ -140,8 +140,12 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 	memoryService := memoryusecase.NewService(memoryRepo)
 	toolService := toolusecase.NewService(toolDefinitionRepo)
 	knowledgeService := knowledgeusecase.NewService(knowledgeRepo, documentRepo, chunkRepo, ingestionJobRepo, retrievalLogRepo, auditRepo, fileStorage, retrievalService, retrievalStore)
-	if cfg.Queue.Backend == "redis_stream" {
-		knowledgeService.WithJobQueue(queueinfra.NewRedisStreamQueue(redisClient, cfg.Queue.RedisStream, cfg.Queue.RedisGroup, cfg.Queue.RedisConsumer))
+	jobQueue, err := queueinfra.NewConfiguredJobQueue(ctx, cfg, redisClient)
+	if err != nil {
+		return nil, fmt.Errorf("init job queue: %w", err)
+	}
+	if jobQueue != nil {
+		knowledgeService.WithJobQueue(jobQueue)
 	}
 	dialogService := dialogusecase.NewService(dialogRepo)
 	chatService := chatusecase.NewService(providerRepo, dialogRepo, knowledgeRepo, conversationRepo, messageRepo, usageRepo, retrievalService, chatClient, secretBox)
