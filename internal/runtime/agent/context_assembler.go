@@ -5,6 +5,7 @@ import (
 
 	"agentcanvas/internal/domain/conversation"
 	"agentcanvas/internal/infrastructure/llm"
+	"agentcanvas/internal/runtime/contextcompress"
 )
 
 const defaultMaxInputChars = 24000
@@ -171,14 +172,48 @@ func summarizeHistoryBlocks(blocks []ContextBlock, keepRecent int) ([]ContextBlo
 		return blocks, nil
 	}
 	summarizedCount := len(historyIndexes) - keepRecent
-	summaryParts := make([]string, 0, summarizedCount)
+	candidateIndexes := historyIndexes[:summarizedCount]
+	items := make([]contextcompress.Item, 0, len(candidateIndexes))
 	originalTokens := 0
-	summarized := make(map[int]bool, summarizedCount)
-	for _, index := range historyIndexes[:summarizedCount] {
+	for turn, index := range candidateIndexes {
 		content := strings.TrimSpace(blocks[index].Content)
 		originalTokens += estimateContextTokens(content)
+		items = append(items, contextcompress.Item{
+			ID:      index,
+			Content: content,
+			Tokens:  estimateContextTokens(content),
+			Turn:    turn + 1,
+		})
+	}
+	selectionBudget := originalTokens / 3
+	if selectionBudget < 1 {
+		selectionBudget = 1
+	}
+	selection := contextcompress.Select(items, contextcompress.Options{
+		Budget:             selectionBudget,
+		Alpha:              0.08,
+		DiversityLambda:    0.35,
+		MinReferenceLength: 4,
+		MaxNeighborScan:    96,
+	})
+	selected := make(map[int]bool, len(selection.Selected))
+	for _, item := range selection.Selected {
+		selected[item.Item.ID] = true
+	}
+	summarized := make(map[int]bool, summarizedCount)
+	summaryParts := make([]string, 0, summarizedCount-len(selected))
+	summarizedTokens := 0
+	for _, index := range candidateIndexes {
+		if selected[index] {
+			continue
+		}
+		content := strings.TrimSpace(blocks[index].Content)
 		summaryParts = append(summaryParts, "- "+firstContextLine(content, 160))
 		summarized[index] = true
+		summarizedTokens += estimateContextTokens(content)
+	}
+	if len(summaryParts) == 0 {
+		return blocks, nil
 	}
 	summary := "Earlier conversation summary:\n" + strings.Join(summaryParts, "\n")
 	result := make([]ContextBlock, 0, len(blocks)-summarizedCount+1)
@@ -193,11 +228,11 @@ func summarizeHistoryBlocks(blocks []ContextBlock, keepRecent int) ([]ContextBlo
 		}
 		result = append(result, block)
 	}
-	savedTokens := originalTokens - estimateContextTokens(summary)
+	savedTokens := summarizedTokens - estimateContextTokens(summary)
 	if savedTokens < 0 {
 		savedTokens = 0
 	}
-	return result, []ContextBlockTrace{{Name: "history_summary", Role: conversation.RoleSystem, OriginalChars: originalTokens * 4, IncludedChars: len(summary), EstimatedTokens: estimateContextTokens(summary), SavedTokens: savedTokens, Status: "compressed"}}
+	return result, []ContextBlockTrace{{Name: "history_summary", Role: conversation.RoleSystem, OriginalChars: summarizedTokens * 4, IncludedChars: len(summary), EstimatedTokens: estimateContextTokens(summary), SavedTokens: savedTokens, Status: "compressed"}}
 }
 
 func dedupeRetrievalBlocks(blocks []ContextBlock) ([]ContextBlock, []ContextBlockTrace) {

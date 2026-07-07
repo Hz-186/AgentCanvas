@@ -209,6 +209,35 @@ func TestContextAssemblerSummarizesOldHistoryAndDedupesRetrieval(t *testing.T) {
 	}
 }
 
+func TestContextAssemblerRetainsNovelOldHistoryWithinCompression(t *testing.T) {
+	blocks := []ContextBlock{
+		{Name: "conversation", Role: "user", Content: strings.Repeat("repeat repeat repeat ", 80)},
+		{Name: "conversation", Role: "assistant", Content: "rare regression keyword: webhook-signature-drift"},
+		{Name: "conversation", Role: "user", Content: "turn 3 recent"},
+		{Name: "conversation", Role: "assistant", Content: "turn 4 recent"},
+		{Name: "conversation", Role: "user", Content: "turn 5 recent"},
+		{Name: "conversation", Role: "assistant", Content: "turn 6 recent"},
+	}
+
+	messages, trace := ContextAssembler{MaxInputTokens: 2000}.Build(RunRequest{Task: "task", ContextBlocks: blocks})
+	foundNovelHistory := false
+	foundSummary := false
+	for _, message := range messages {
+		if strings.Contains(message.Content, "webhook-signature-drift") && !strings.Contains(message.Content, "Earlier conversation summary") {
+			foundNovelHistory = true
+		}
+		if strings.Contains(message.Content, "Earlier conversation summary") {
+			foundSummary = true
+		}
+	}
+	if !foundNovelHistory {
+		t.Fatalf("expected novel old history to be retained as original content, trace=%+v messages=%+v", trace, messages)
+	}
+	if !foundSummary {
+		t.Fatalf("expected repetitive old history to be summarized, trace=%+v messages=%+v", trace, messages)
+	}
+}
+
 func TestContextAssemblerImprovesUsableSpaceIn32KWindow(t *testing.T) {
 	blocks := make([]ContextBlock, 0, 80)
 	for i := 0; i < 40; i++ {
