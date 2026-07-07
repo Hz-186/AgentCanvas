@@ -53,6 +53,21 @@ ET`
 	}
 }
 
+func TestExtractPDFTextReadsTJArrayOperands(t *testing.T) {
+	raw := `%PDF-1.4
+BT
+[(Agent) 120 (Canvas) -80 <0020> (RAG)] TJ
+ET`
+
+	got, err := ExtractPDFText(context.Background(), "array.pdf", strings.NewReader(raw))
+	if err != nil {
+		t.Fatalf("ExtractPDFText() error = %v", err)
+	}
+	if !strings.Contains(got.Text, "Agent") || !strings.Contains(got.Text, "Canvas") || !strings.Contains(got.Text, "RAG") {
+		t.Fatalf("extracted text = %q", got.Text)
+	}
+}
+
 func TestExtractPDFTextDecodesLiteralEscapes(t *testing.T) {
 	raw := `%PDF-1.4
 BT
@@ -132,6 +147,41 @@ func TestExtractPDFTextMergesStructuredLinesAndClassifiesCaptions(t *testing.T) 
 	}
 	if blocks[3].Type != "scrap" || blocks[4].Type != "text" {
 		t.Fatalf("expected scrap then text, got %+v", blocks)
+	}
+}
+
+func TestExtractPDFTextBuildsFAQBlocks(t *testing.T) {
+	raw := "Q: What is AgentCanvas?\nAliases: AC, Agent Canvas\nCategory: runtime\nA: An agent runtime shell.\n\nQ: Why use Milvus?\nA: For vector recall."
+
+	got, err := ExtractPDFText(context.Background(), "faq.pdf", strings.NewReader(raw))
+	if err != nil {
+		t.Fatalf("ExtractPDFText() error = %v", err)
+	}
+	if len(got.Pages) != 1 || len(got.Pages[0].Blocks) != 2 {
+		t.Fatalf("unexpected faq blocks = %+v", got.Pages)
+	}
+	first := got.Pages[0].Blocks[0]
+	if first.Type != "faq" || first.Metadata["faq_category"] != "runtime" || first.Metadata["chunk_hint"] != "single_faq" {
+		t.Fatalf("faq metadata = %+v", first)
+	}
+	aliases, ok := first.Metadata["faq_aliases"].([]string)
+	if !ok || len(aliases) != 2 || aliases[0] != "AC" {
+		t.Fatalf("faq aliases = %+v", first.Metadata)
+	}
+}
+
+func TestExtractPDFTextSplitsLoosePageMarkersIntoPages(t *testing.T) {
+	raw := "Overview paragraph\nPage 2\nSecond page paragraph\n第 3 页\nThird page paragraph"
+
+	got, err := ExtractPDFText(context.Background(), "pages.pdf", strings.NewReader(raw))
+	if err != nil {
+		t.Fatalf("ExtractPDFText() error = %v", err)
+	}
+	if len(got.Pages) != 3 {
+		t.Fatalf("page count = %d, want 3: %+v", len(got.Pages), got.Pages)
+	}
+	if got.Pages[1].PageNo != 2 || got.Pages[2].PageNo != 3 {
+		t.Fatalf("unexpected page numbers = %+v", got.Pages)
 	}
 }
 

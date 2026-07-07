@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math"
 	"regexp"
 	"sort"
 	"strconv"
@@ -92,6 +93,7 @@ func ExtractPDF(ctx context.Context, filename string, reader io.Reader, opts Ext
 }
 
 func textPages(text string) []Page {
+	text = splitLoosePageMarkers(text)
 	rawPages := strings.Split(text, "\f")
 	pages := make([]Page, 0, len(rawPages))
 	for i, raw := range rawPages {
@@ -110,6 +112,9 @@ func textPages(text string) []Page {
 }
 
 func pageBlocks(pageNo int, pageText string) []Block {
+	if blocks := faqBlocks(pageNo, pageText); len(blocks) > 0 {
+		return blocks
+	}
 	lines := strings.Split(pageText, "\n")
 	blocks := make([]Block, 0, len(lines))
 	var paragraph strings.Builder
@@ -168,6 +173,74 @@ func pageBlocks(pageNo int, pageText string) []Block {
 	return blocks
 }
 
+func faqBlocks(pageNo int, pageText string) []Block {
+	lines := strings.Split(pageText, "\n")
+	blocks := make([]Block, 0)
+	for i := 0; i < len(lines); i++ {
+		question := strings.TrimSpace(lines[i])
+		if !isQuestionLine(question) {
+			continue
+		}
+		canonical := strings.TrimSpace(trimQuestionPrefix(question))
+		if canonical == "" {
+			continue
+		}
+		answerParts := make([]string, 0, 2)
+		aliases := make([]string, 0)
+		category := ""
+		j := i + 1
+		for ; j < len(lines); j++ {
+			line := strings.TrimSpace(lines[j])
+			if line == "" {
+				if len(answerParts) > 0 {
+					break
+				}
+				continue
+			}
+			if isQuestionLine(line) {
+				break
+			}
+			if values, ok := faqMetadataValues(line, "aliases:", "alias:", "别名:"); ok {
+				aliases = append(aliases, values...)
+				continue
+			}
+			if values, ok := faqMetadataValues(line, "category:", "分类:"); ok {
+				if len(values) > 0 {
+					category = values[0]
+				}
+				continue
+			}
+			answerParts = append(answerParts, strings.TrimSpace(trimAnswerPrefix(line)))
+		}
+		if len(answerParts) == 0 {
+			continue
+		}
+		answer := normalizeExtractedText(strings.Join(answerParts, "\n"))
+		metadata := map[string]any{
+			"parser":         "deepdoc_pdf_text",
+			"parser_version": "deepdoc_pdf_text_v1",
+			"page_no":        pageNo,
+			"block_type":     "faq",
+			"faq_question":   canonical,
+			"faq_answer":     answer,
+			"faq_aliases":    aliases,
+			"chunk_hint":     "single_faq",
+		}
+		if category != "" {
+			metadata["faq_category"] = category
+		}
+		blocks = append(blocks, Block{
+			ID:       fmt.Sprintf("p%d_faq%d", pageNo, len(blocks)+1),
+			Type:     "faq",
+			Text:     canonical + "\n" + answer,
+			PageNo:   pageNo,
+			Metadata: metadata,
+		})
+		i = j - 1
+	}
+	return blocks
+}
+
 func newBlock(pageNo, index int, blockType, text string, bbox *BBox) Block {
 	metadata := map[string]any{
 		"parser":         "deepdoc_pdf_text",
@@ -208,6 +281,9 @@ func classifyTextBlock(text string) string {
 	}
 	if listPattern.MatchString(trimmed) {
 		return "list"
+	}
+	if isQuestionLine(trimmed) {
+		return "faq"
 	}
 	return "text"
 }
@@ -270,12 +346,15 @@ func joinPages(pages []Page) string {
 
 var (
 	pdfTextObjectPattern = regexp.MustCompile(`(?s)BT\s*(.*?)\s*ET`)
+	pdfTextArrayPattern  = regexp.MustCompile(`\[(?s:.*?)\]\s*TJ`)
 	pdfLiteralPattern    = regexp.MustCompile(`\((?:\\.|[^\\)])*\)`)
 	pdfHexPattern        = regexp.MustCompile(`<([0-9A-Fa-f\s]{4,})>`)
 	cidPattern           = regexp.MustCompile(`(?i)\(?cid\s*:\s*\d+\s*\)?`)
 	headingPattern       = regexp.MustCompile(`^([0-9]+(\.[0-9]+)*[、. ]+|第[一二三四五六七八九十百千万0-9]+[章节条])`)
 	captionPattern       = regexp.MustCompile(`^(图|表|Figure|Table)\s*[-0-9一二三四五六七八九十.：: ]+`)
 	scrapPattern         = regexp.MustCompile(`(?i)^(page\s+\d+\s*(of\s+\d+)?|第\s*\d+\s*页|版权所有|copyright\b)`)
+	pageMarkerPattern    = regexp.MustCompile(`(?i)^page\s+(\d+)$`)
+	zhPageMarkerPattern  = regexp.MustCompile(`^第\s*(\d+)\s*页$`)
 	listPattern          = regexp.MustCompile(`^([-*•]|[0-9]+[.)、])\s+`)
 )
 
@@ -298,6 +377,24 @@ func extractPDFLiteralText(data []byte) string {
 }
 
 func extractPDFTextOperands(source string) string {
+	for _, arrayExpr := range pdfTextArrayPattern.FindAllString(source, -1) {
+		arrayExpr = strings.TrimSpace(strings.TrimSuffix(arrayExpr, "TJ"))
+		arrayExpr = strings.TrimSpace(strings.TrimPrefix(arrayExpr, "["))
+		arrayExpr = strings.TrimSpace(strings.TrimSuffix(arrayExpr, "]"))
+		if arrayExpr == "" {
+			continue
+		}
+		parts := tokenizePDFArray(arrayExpr)
+		for _, part := range parts {
+			if len(part) >= 2 && strings.HasPrefix(part, "(") && strings.HasSuffix(part, ")") {
+				source += "\n" + part
+				continue
+			}
+			if len(part) >= 2 && strings.HasPrefix(part, "<") && strings.HasSuffix(part, ">") {
+				source += "\n" + part
+			}
+		}
+	}
 	parts := make([]string, 0)
 	for _, match := range pdfLiteralPattern.FindAllString(source, -1) {
 		if decoded := decodePDFLiteral(match[1 : len(match)-1]); decoded != "" {
@@ -313,6 +410,54 @@ func extractPDFTextOperands(source string) string {
 		}
 	}
 	return strings.Join(parts, "\n")
+}
+
+func tokenizePDFArray(expr string) []string {
+	parts := make([]string, 0)
+	for i := 0; i < len(expr); {
+		for i < len(expr) && unicode.IsSpace(rune(expr[i])) {
+			i++
+		}
+		if i >= len(expr) {
+			break
+		}
+		switch expr[i] {
+		case '(':
+			start := i
+			depth := 1
+			i++
+			for i < len(expr) && depth > 0 {
+				if expr[i] == '\\' {
+					i += 2
+					continue
+				}
+				if expr[i] == '(' {
+					depth++
+				} else if expr[i] == ')' {
+					depth--
+				}
+				i++
+			}
+			parts = append(parts, expr[start:i])
+		case '<':
+			start := i
+			i++
+			for i < len(expr) && expr[i] != '>' {
+				i++
+			}
+			if i < len(expr) {
+				i++
+			}
+			parts = append(parts, expr[start:i])
+		default:
+			start := i
+			for i < len(expr) && !unicode.IsSpace(rune(expr[i])) {
+				i++
+			}
+			parts = append(parts, expr[start:i])
+		}
+	}
+	return parts
 }
 
 func decodePDFLiteral(value string) string {
@@ -418,6 +563,45 @@ func normalizeExtractedText(text string) string {
 	return strings.TrimSpace(strings.Join(clean, "\n"))
 }
 
+func splitLoosePageMarkers(text string) string {
+	lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
+	if len(lines) == 0 {
+		return text
+	}
+	converted := make([]string, 0, len(lines))
+	lastPageNo := 1
+	for _, raw := range lines {
+		line := strings.TrimSpace(raw)
+		if pageNo, ok := parseLoosePageMarker(line); ok && pageNo > lastPageNo && pageNo == lastPageNo+1 {
+			if len(converted) > 0 && converted[len(converted)-1] != "\f" {
+				converted = append(converted, "\f")
+			}
+			lastPageNo = pageNo
+			converted = append(converted, raw)
+			continue
+		}
+		converted = append(converted, raw)
+	}
+	return strings.Join(converted, "\n")
+}
+
+func parseLoosePageMarker(line string) (int, bool) {
+	line = strings.TrimSpace(line)
+	if match := pageMarkerPattern.FindStringSubmatch(line); len(match) == 2 {
+		pageNo, err := strconv.Atoi(match[1])
+		if err == nil && pageNo > 0 {
+			return pageNo, true
+		}
+	}
+	if match := zhPageMarkerPattern.FindStringSubmatch(line); len(match) == 2 {
+		pageNo, err := strconv.Atoi(match[1])
+		if err == nil && pageNo > 0 {
+			return pageNo, true
+		}
+	}
+	return 0, false
+}
+
 func needsOCR(text string) bool {
 	text = strings.TrimSpace(text)
 	if text == "" {
@@ -448,6 +632,52 @@ func needsOCR(text string) bool {
 		return true
 	}
 	return nonSpace >= 20 && float64(letters)/float64(nonSpace) < 0.15
+}
+
+func faqMetadataValues(line string, prefixes ...string) ([]string, bool) {
+	lower := strings.ToLower(strings.TrimSpace(line))
+	for _, prefix := range prefixes {
+		if !strings.HasPrefix(lower, prefix) {
+			continue
+		}
+		value := strings.TrimSpace(line[len(prefix):])
+		if value == "" {
+			return nil, true
+		}
+		parts := strings.FieldsFunc(value, func(r rune) bool { return r == ',' || r == '，' || r == ';' || r == '；' })
+		out := make([]string, 0, len(parts))
+		for _, part := range parts {
+			part = strings.TrimSpace(part)
+			if part != "" {
+				out = append(out, part)
+			}
+		}
+		return out, true
+	}
+	return nil, false
+}
+
+func isQuestionLine(line string) bool {
+	line = strings.TrimSpace(line)
+	return strings.HasPrefix(line, "Q:") || strings.HasPrefix(line, "问:") || strings.HasSuffix(line, "?") || strings.HasSuffix(line, "？")
+}
+
+func trimQuestionPrefix(line string) string {
+	line = strings.TrimSpace(line)
+	line = strings.TrimPrefix(line, "Q:")
+	line = strings.TrimPrefix(line, "问:")
+	return strings.TrimSpace(line)
+}
+
+func trimAnswerPrefix(line string) string {
+	line = strings.TrimSpace(line)
+	line = strings.TrimPrefix(line, "A:")
+	line = strings.TrimPrefix(line, "答:")
+	return strings.TrimSpace(line)
+}
+
+func max(a, b int) int {
+	return int(math.Max(float64(a), float64(b)))
 }
 
 func utf8RuneCount(text string) int {
