@@ -1,0 +1,76 @@
+package contextcompress
+
+import (
+	"strings"
+	"testing"
+)
+
+func TestSelectScoresRepeatedMessagesWithLowerNovelty(t *testing.T) {
+	items := []Item{
+		{ID: 1, Content: "alpha beta gamma delta", Tokens: 5, Turn: 1},
+		{ID: 2, Content: "alpha beta gamma delta", Tokens: 5, Turn: 2},
+		{ID: 3, Content: "new incident timeline contains fresh deployment evidence", Tokens: 8, Turn: 3},
+	}
+
+	result := Select(items, Options{Budget: 20, MinReferenceLength: 3})
+	if len(result.Scores) != len(items) {
+		t.Fatalf("expected %d scores, got %d", len(items), len(result.Scores))
+	}
+	if result.Scores[1].Novelty >= result.Scores[0].Novelty {
+		t.Fatalf("expected repeated message novelty to decrease, first=%f second=%f", result.Scores[0].Novelty, result.Scores[1].Novelty)
+	}
+	if result.Scores[2].Novelty <= result.Scores[1].Novelty {
+		t.Fatalf("expected fresh message to outrank duplicate novelty, fresh=%f duplicate=%f", result.Scores[2].Novelty, result.Scores[1].Novelty)
+	}
+}
+
+func TestSelectRespectsBudget(t *testing.T) {
+	items := []Item{
+		{ID: 1, Content: strings.Repeat("a unique block ", 8), Tokens: 10, Turn: 1},
+		{ID: 2, Content: strings.Repeat("another unique block ", 8), Tokens: 10, Turn: 2},
+		{ID: 3, Content: strings.Repeat("third unique block ", 8), Tokens: 10, Turn: 3},
+	}
+
+	result := Select(items, Options{Budget: 20})
+	used := 0
+	for _, item := range result.Selected {
+		used += itemCost(item.Item)
+	}
+	if used > 20 {
+		t.Fatalf("selected cost exceeded budget: %d", used)
+	}
+	if len(result.Selected) == 0 {
+		t.Fatal("expected at least one selected item")
+	}
+}
+
+func TestSelectKeepsDiverseFreshItems(t *testing.T) {
+	items := []Item{
+		{ID: 1, Content: "login failure timeout retry timeout retry timeout retry", Tokens: 6, Turn: 1},
+		{ID: 2, Content: "login failure timeout retry timeout retry timeout retry", Tokens: 6, Turn: 2},
+		{ID: 3, Content: "billing webhook signature verification regression", Tokens: 6, Turn: 3},
+	}
+
+	result := Select(items, Options{Budget: 12, DiversityLambda: 0.5, MinReferenceLength: 4})
+	selected := map[int]bool{}
+	for _, item := range result.Selected {
+		selected[item.Item.ID] = true
+	}
+	if !selected[3] {
+		t.Fatalf("expected diverse fresh item to be selected, got %+v", result.Selected)
+	}
+	if selected[1] && selected[2] {
+		t.Fatalf("expected budgeted selector not to spend all budget on near duplicates, got %+v", result.Selected)
+	}
+}
+
+func TestLongestCommonSubstringSimilarity(t *testing.T) {
+	similar := longestCommonSubstringSimilarity("same chunk content with suffix", "prefix same chunk content")
+	different := longestCommonSubstringSimilarity("alpha beta gamma", "network socket failure")
+	if similar <= different {
+		t.Fatalf("expected similar text score %f to exceed different text score %f", similar, different)
+	}
+	if similar <= 0 {
+		t.Fatalf("expected positive similarity, got %f", similar)
+	}
+}
