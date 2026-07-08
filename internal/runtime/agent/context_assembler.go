@@ -36,6 +36,7 @@ func (a ContextAssembler) Build(req RunRequest) ([]llm.ChatMessage, ContextTrace
 	trace := ContextTrace{
 		MaxChars:       maxChars,
 		MaxInputTokens: maxTokens,
+		RuleTrace:      req.RuleTrace,
 		Strategy:       "token_budget:pinned_recent_summary_dedupe",
 	}
 	blocks := make([]ContextBlock, 0, len(req.ContextBlocks)+2)
@@ -275,12 +276,16 @@ func (a *TokenAudit) add(name string, tokens int) {
 	switch tokenAuditCategory(name) {
 	case "system":
 		a.System += tokens
+	case "rules_l0":
+		a.RulesL0 += tokens
 	case "rules_l1":
 		a.RulesL1 += tokens
 	case "rules_l2":
 		a.RulesL2 += tokens
 	case "rules_l3":
 		a.RulesL3 += tokens
+	case "rules_l4":
+		a.RulesL4 += tokens
 	case "tool_schema":
 		a.ToolSchema += tokens
 	case "history":
@@ -301,12 +306,16 @@ func tokenAuditCategory(name string) string {
 	switch {
 	case name == "system" || name == "agent_mode":
 		return "system"
+	case strings.HasPrefix(name, "rule_l0") || strings.HasPrefix(name, "rules_l0"):
+		return "rules_l0"
 	case strings.HasPrefix(name, "rule_l1") || strings.HasPrefix(name, "rules_l1"):
 		return "rules_l1"
 	case strings.HasPrefix(name, "rule_l2") || strings.HasPrefix(name, "rules_l2"):
 		return "rules_l2"
 	case strings.HasPrefix(name, "rule_l3") || strings.HasPrefix(name, "rules_l3"):
 		return "rules_l3"
+	case strings.HasPrefix(name, "rule_l4") || strings.HasPrefix(name, "rules_l4"):
+		return "rules_l4"
 	case strings.Contains(name, "tool_schema"):
 		return "tool_schema"
 	case strings.Contains(name, "history") || strings.Contains(name, "conversation"):

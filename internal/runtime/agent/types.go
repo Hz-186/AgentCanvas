@@ -6,6 +6,7 @@ import (
 
 	"agentcanvas/internal/infrastructure/llm"
 	"agentcanvas/internal/runtime/harness/hooks"
+	"agentcanvas/internal/runtime/harness/rules"
 	"agentcanvas/internal/runtime/toolruntime"
 )
 
@@ -55,6 +56,7 @@ type RunRequest struct {
 	MaxExecutionTimeMS int
 	MaxInputChars      int
 	MaxInputTokens     int
+	RuleTrace          rules.Trace
 	ContextBlocks      []ContextBlock
 	ToolPolicy         ToolPolicy
 	ToolHookChain      hooks.ToolHookChain
@@ -135,6 +137,7 @@ type ContextTrace struct {
 	EstimatedTokens int                 `json:"estimated_tokens,omitempty"`
 	SavedTokens     int                 `json:"saved_tokens,omitempty"`
 	TokenAudit      TokenAudit          `json:"token_audit,omitempty"`
+	RuleTrace       rules.Trace         `json:"rule_trace,omitempty"`
 	Included        []string            `json:"included,omitempty"`
 	Omitted         []string            `json:"omitted,omitempty"`
 	Truncated       []string            `json:"truncated,omitempty"`
@@ -146,9 +149,11 @@ type ContextTrace struct {
 type TokenAudit struct {
 	System     int `json:"system,omitempty"`
 	Profile    int `json:"profile,omitempty"`
+	RulesL0    int `json:"rules_l0,omitempty"`
 	RulesL1    int `json:"rules_l1,omitempty"`
 	RulesL2    int `json:"rules_l2,omitempty"`
 	RulesL3    int `json:"rules_l3,omitempty"`
+	RulesL4    int `json:"rules_l4,omitempty"`
 	ToolSchema int `json:"tool_schema,omitempty"`
 	History    int `json:"history,omitempty"`
 	Memory     int `json:"memory,omitempty"`

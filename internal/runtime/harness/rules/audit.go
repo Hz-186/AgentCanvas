@@ -45,10 +45,10 @@ func (s *AuditStore) Snapshot(ruleID string) RuleAudit {
 }
 
 func ShouldPrune(rule Rule, audit RuleAudit, policy AuditPolicy) bool {
-	if rule.Level == LevelL1Core {
+	if hardPinnedLevel(rule.Level) {
 		return false
 	}
-	if rule.Level != LevelL2Scenario && rule.Level != LevelL3Ephemeral {
+	if rule.Level != LevelL2Scenario && rule.Level != LevelL3Tool && rule.Level != LevelL4Ephemeral {
 		return false
 	}
 	if policy.MinEvaluations <= 0 {
@@ -70,16 +70,24 @@ func (r *Registry) LoadWithAudit(ctx LoadContext, audit *AuditStore, policy Audi
 		stat := audit.Snapshot(rule.ID)
 		if ShouldPrune(rule, stat, policy) {
 			stat.Pruned = true
-			trace.skip(rule.ID, "audit_low_hit_rate")
+			trace.skip(rule.ID, ReasonAuditLowHitRate)
+			trace.SavedTokens += ruleCost(rule)
+			trace.addPrunedTokens(rule.Level, ruleCost(rule))
 			continue
 		}
 		kept = append(kept, rule)
 	}
 	trace.Loaded = trace.Loaded[:0]
 	trace.Levels = trace.Levels[:0]
+	trace.LevelLoaded = map[string]int{}
+	trace.LevelUsage = map[string]int{}
+	trace.EstimatedUsed = 0
 	for _, rule := range kept {
 		trace.Loaded = append(trace.Loaded, rule.ID)
 		trace.Levels = append(trace.Levels, string(rule.Level))
+		trace.addLevelLoaded(rule.Level)
+		trace.addLevelUsage(rule.Level, ruleCost(rule))
+		trace.EstimatedUsed += ruleCost(rule)
 	}
 	return kept, trace
 }

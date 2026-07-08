@@ -17,6 +17,7 @@ import (
 	runtimeagent "agentcanvas/internal/runtime/agent"
 	"agentcanvas/internal/runtime/engine"
 	runtimeevent "agentcanvas/internal/runtime/event"
+	"agentcanvas/internal/runtime/harness/rules"
 	"agentcanvas/internal/runtime/sandbox"
 	"agentcanvas/internal/runtime/toolruntime"
 
@@ -381,9 +382,11 @@ func (n AgentNode) runAgent(ctx context.Context, rc *engine.RunContext, input en
 	if task == "" {
 		return nil, fmt.Errorf("%w: %s task is required", agenterrors.ErrInvalidInput, nodeType)
 	}
-	contextBlocks := buildConversationContext(ctx, n, rc, cfg.MaxInputChars)
 	systemPrompt := cfg.SystemPrompt
 	mode := agentMode(cfg.Mode)
+	conversationBlocks := buildConversationContext(ctx, n, rc, cfg.MaxInputChars)
+	ruleBlocks, ruleTrace := buildRuleContextBlocks(systemPrompt, task, mode, cfg, tools, conversationBlocks)
+	contextBlocks := append(ruleBlocks, conversationBlocks...)
 	var plan *runtimeagent.Plan
 	if mode == "plan_execute" && task != "" {
 		planner := runtimeagent.Planner{
@@ -449,6 +452,7 @@ func (n AgentNode) runAgent(ctx context.Context, rc *engine.RunContext, input en
 		MaxExecutionTimeMS: cfg.MaxExecutionTimeMS,
 		MaxInputChars:      cfg.MaxInputChars,
 		MaxInputTokens:     cfg.MaxInputTokens,
+		RuleTrace:          ruleTrace,
 		ContextBlocks:      contextBlocks,
 		ToolPolicy: runtimeagent.ToolPolicy{
 			RequireApprovalForRisk: cfg.RequireApprovalForRisk,
@@ -483,6 +487,7 @@ func (n AgentNode) runAgent(ctx context.Context, rc *engine.RunContext, input en
 			MaxExecutionTimeMS: cfg.MaxExecutionTimeMS,
 			MaxInputChars:      cfg.MaxInputChars,
 			MaxInputTokens:     cfg.MaxInputTokens,
+			RuleTrace:          ruleTrace,
 			ContextBlocks:      contextBlocks,
 			ToolPolicy:         runRequest.ToolPolicy,
 			Tools:              tools,
@@ -1214,4 +1219,161 @@ func buildConversationContext(ctx context.Context, n AgentNode, rc *engine.RunCo
 		})
 	}
 	return blocks
+}
+
+func buildRuleContextBlocks(systemPrompt, task, mode string, cfg agentRuntimeConfig, tools []toolruntime.RuntimeTool, conversation []runtimeagent.ContextBlock) ([]runtimeagent.ContextBlock, rules.Trace) {
+	risk := highestToolRisk(tools)
+	if risk == "" {
+		risk = highestConfiguredRisk(cfg.RequireApprovalForRisk)
+	}
+	tags := inferRuleTags(task, mode, cfg, tools, conversation)
+	toolNames := runtimeToolNames(tools)
+	budget := 0
+	if cfg.MaxInputTokens > 0 {
+		budget = cfg.MaxInputTokens / 10
+	}
+	selected, trace := rules.ResolveForAgent(systemPrompt, task, mode, risk, toolNames, tags, budget, nil, rules.AuditPolicy{})
+	blocks := make([]runtimeagent.ContextBlock, 0, len(selected))
+	for _, item := range selected {
+		content := strings.TrimSpace(item.Content)
+		if content == "" {
+			continue
+		}
+		blocks = append(blocks, runtimeagent.ContextBlock{
+			Name:    ruleBlockName(item.Level, item.ID),
+			Role:    "system",
+			Content: content,
+			Pinned:  item.Level == rules.LevelL0Safety || item.Level == rules.LevelL1Core,
+		})
+	}
+	return blocks, trace
+}
+
+func highestToolRisk(tools []toolruntime.RuntimeTool) string {
+	best := ""
+	bestWeight := -1
+	for _, item := range tools {
+		risk := strings.TrimSpace(toolruntime.MetadataOf(item).RiskLevel)
+		weight := riskWeight(risk)
+		if weight > bestWeight {
+			best = risk
+			bestWeight = weight
+		}
+	}
+	return best
+}
+
+func highestConfiguredRisk(values []string) string {
+	best := ""
+	bestWeight := -1
+	for _, value := range values {
+		weight := riskWeight(value)
+		if weight > bestWeight {
+			best = strings.TrimSpace(value)
+			bestWeight = weight
+		}
+	}
+	return best
+}
+
+func riskWeight(risk string) int {
+	switch strings.ToLower(strings.TrimSpace(risk)) {
+	case toolruntime.RiskHigh:
+		return 3
+	case toolruntime.RiskMedium:
+		return 2
+	case toolruntime.RiskLow:
+		return 1
+	default:
+		return 0
+	}
+}
+
+func inferRuleTags(task, mode string, cfg agentRuntimeConfig, tools []toolruntime.RuntimeTool, conversation []runtimeagent.ContextBlock) []string {
+	tags := make([]string, 0, 16)
+	if len(cfg.KnowledgeIDs) > 0 {
+		tags = append(tags, "retrieval", "knowledge", "rag")
+	}
+	if cfg.MemoryEnabled {
+		tags = append(tags, "memory")
+	}
+	if cfg.CodeExecutionEnabled {
+		tags = append(tags, "code", "engineering")
+	}
+	if mode == "plan_execute" || mode == "reflect" || mode == "supervisor" {
+		tags = append(tags, "planning")
+	}
+	text := strings.ToLower(strings.TrimSpace(task + "\n" + conversationText(conversation)))
+	for _, marker := range []struct {
+		substring string
+		tag       string
+	}{
+		{"review", "review"},
+		{"code", "code"},
+		{"bug", "engineering"},
+		{"test", "engineering"},
+		{"build", "engineering"},
+		{"citation", "retrieval"},
+		{"pdf", "document"},
+		{"summary", "compression"},
+		{"32k", "long_context"},
+		{"上下文", "long_context"},
+	} {
+		if strings.Contains(text, marker.substring) {
+			tags = append(tags, marker.tag)
+		}
+	}
+	for _, tool := range tools {
+		name := strings.ToLower(strings.TrimSpace(tool.Name()))
+		if name != "" {
+			tags = append(tags, name)
+		}
+	}
+	return dedupeLower(tags)
+}
+
+func conversationText(blocks []runtimeagent.ContextBlock) string {
+	parts := make([]string, 0, len(blocks))
+	for _, block := range blocks {
+		content := strings.TrimSpace(block.Content)
+		if content != "" {
+			parts = append(parts, content)
+		}
+	}
+	return strings.Join(parts, "\n")
+}
+
+func ruleBlockName(level rules.RuleLevel, ruleID string) string {
+	return fmt.Sprintf("rules_%s:%s", levelSuffix(level), strings.TrimSpace(ruleID))
+}
+
+func levelSuffix(level rules.RuleLevel) string {
+	switch level {
+	case rules.LevelL0Safety:
+		return "l0"
+	case rules.LevelL1Core:
+		return "l1"
+	case rules.LevelL2Scenario:
+		return "l2"
+	case rules.LevelL3Tool:
+		return "l3"
+	case rules.LevelL4Ephemeral:
+		return "l4"
+	default:
+		return "l2"
+	}
+}
+
+func dedupeLower(values []string) []string {
+	seen := map[string]bool{}
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.ToLower(strings.TrimSpace(value))
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		result = append(result, value)
+	}
+	return result
 }

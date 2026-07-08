@@ -5,6 +5,7 @@ import (
 
 	"agentcanvas/internal/domain/conversation"
 	"agentcanvas/internal/infrastructure/llm"
+	"agentcanvas/internal/runtime/harness/rules"
 	"agentcanvas/internal/runtime/toolruntime"
 )
 
@@ -29,6 +30,7 @@ type ResumeRequest struct {
 	MaxExecutionTimeMS int
 	MaxInputChars      int
 	MaxInputTokens     int
+	RuleTrace          rules.Trace
 	ContextBlocks      []ContextBlock
 	ToolPolicy         ToolPolicy
 	Tools              []toolruntime.RuntimeTool
@@ -89,6 +91,7 @@ func BuildResumeRequest(req ResumeRequest) (*RunRequest, error) {
 		MaxExecutionTimeMS: req.MaxExecutionTimeMS,
 		MaxInputChars:      req.MaxInputChars,
 		MaxInputTokens:     req.MaxInputTokens,
+		RuleTrace:          req.RuleTrace,
 		ContextBlocks:      contextBlocks,
 		ToolPolicy:         req.ToolPolicy,
 		Tools:              req.Tools,
