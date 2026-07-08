@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"time"
 
 	auditusecase "agentcanvas/internal/application/audit_usecase"
 	authusecase "agentcanvas/internal/application/auth_usecase"
@@ -19,12 +20,14 @@ import (
 	cataloginfra "agentcanvas/internal/infrastructure/catalog"
 	cryptoinfra "agentcanvas/internal/infrastructure/crypto"
 	esinfra "agentcanvas/internal/infrastructure/elasticsearch"
+	jobinfra "agentcanvas/internal/infrastructure/job"
 	"agentcanvas/internal/infrastructure/llm"
 	minioinfra "agentcanvas/internal/infrastructure/minio"
 	mysqlinfra "agentcanvas/internal/infrastructure/mysql"
 	oauthinfra "agentcanvas/internal/infrastructure/oauth"
 	queueinfra "agentcanvas/internal/infrastructure/queue"
 	redisinfra "agentcanvas/internal/infrastructure/redis"
+	retrievalinfra "agentcanvas/internal/infrastructure/retrieval"
 	compositeretrieval "agentcanvas/internal/infrastructure/retrieval/composite"
 	esretrieval "agentcanvas/internal/infrastructure/retrieval/elasticsearch"
 	milvusretrieval "agentcanvas/internal/infrastructure/retrieval/milvus"
@@ -63,6 +66,7 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 		return nil, fmt.Errorf("init elasticsearch: %w", err)
 	}
 	esStore := esretrieval.NewStore(esClient, cfg.Elasticsearch)
+	memoryRetrievalStore := retrievalinfra.NewMemoryStore(esClient)
 	var retrievalStore interface {
 		EnsureIndex(context.Context) error
 		IndexChunks(context.Context, []retrieval.ChunkIndexDocument) error
@@ -78,6 +82,9 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 	}
 	if err := retrievalStore.EnsureIndex(ctx); err != nil {
 		return nil, fmt.Errorf("ensure elasticsearch chunk index: %w", err)
+	}
+	if err := memoryRetrievalStore.EnsureIndex(ctx); err != nil {
+		log.Warn("memory elasticsearch index initialization failed", "error", err)
 	}
 
 	secretBox, err := cryptoinfra.NewSecretBox(cfg.Security.SecretEncryptKey)
@@ -117,6 +124,10 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 	workflowTeamRepo := mysqlinfra.NewWorkflowTeamRepository(db)
 	memoryRepo := mysqlinfra.NewMemoryRepository(db)
 	memoryWriteLogRepo := mysqlinfra.NewMemoryWriteLogRepository(db)
+	extractionJobRepo := mysqlinfra.NewExtractionJobRepository(db)
+	mergeLogRepo := mysqlinfra.NewMergeLogRepository(db)
+	memoryCache := redisinfra.NewMemoryCache(redisClient)
+	workingMemoryRepo := redisinfra.NewWorkingMemoryRepository(redisClient)
 	toolDefinitionRepo := mysqlinfra.NewToolDefinitionRepository(db)
 	toolInvocationRepo := mysqlinfra.NewToolInvocationRepository(db)
 	toolPolicyRepo := mysqlinfra.NewToolPolicyRepository(db)
@@ -137,7 +148,7 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 
 	providerService := providerusecase.NewService(providerRepo, auditRepo, secretBox, llm.NewHTTPProviderTester())
 	auditService := auditusecase.NewService(auditRepo)
-	memoryService := memoryusecase.NewService(memoryRepo)
+	memoryService := memoryusecase.NewServiceWithCacheAndRetriever(memoryRepo, memoryCache, memoryRetrievalStore)
 	toolService := toolusecase.NewService(toolDefinitionRepo)
 	knowledgeService := knowledgeusecase.NewService(knowledgeRepo, documentRepo, chunkRepo, ingestionJobRepo, retrievalLogRepo, auditRepo, fileStorage, retrievalService, retrievalStore)
 	jobQueue, err := queueinfra.NewConfiguredJobQueue(ctx, cfg, redisClient)
@@ -149,7 +160,7 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 	}
 	dialogService := dialogusecase.NewService(dialogRepo)
 	chatService := chatusecase.NewService(providerRepo, dialogRepo, knowledgeRepo, conversationRepo, messageRepo, usageRepo, retrievalService, chatClient, secretBox)
-	workflowService := agentusecase.NewService(workflowRepo, workflowProfileRepo, flowVersionRepo, runRepo, runEventRepo, nodeLogRepo, runStepRepo, workflowEvalRepo, approvalRepo, workflowTeamRepo, memoryRepo, memoryWriteLogRepo, toolDefinitionRepo, toolPackRepo, mcpRepo, toolInvocationRepo, providerRepo, messageRepo, retrievalService, chatClient, secretBox)
+	workflowService := agentusecase.NewService(workflowRepo, workflowProfileRepo, flowVersionRepo, runRepo, runEventRepo, nodeLogRepo, runStepRepo, workflowEvalRepo, approvalRepo, workflowTeamRepo, memoryRepo, memoryWriteLogRepo, memoryRetrievalStore, workingMemoryRepo, extractionJobRepo, mergeLogRepo, toolDefinitionRepo, toolPackRepo, mcpRepo, toolInvocationRepo, providerRepo, messageRepo, retrievalService, chatClient, secretBox)
 
 	healthHandler := handler.NewHealthHandler(db, redisClient, minioClient, esClient, cfg.MinIO.Bucket)
 	authHandler := handler.NewAuthHandler(authService)
@@ -163,6 +174,12 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 	dialogHandler := handler.NewDialogHandler(dialogService)
 	chatHandler := handler.NewChatHandler(chatService)
 	workflowHandler := handler.NewWorkflowHandler(workflowService)
+
+	memoryScheduler := jobinfra.NewMemoryScheduler(memoryRepo, jobinfra.MemorySchedulerConfig{
+		ConsolidationInterval: 1 * time.Hour,
+		Logger:                log,
+	})
+	memoryScheduler.Start(ctx)
 
 	router := httpserver.NewRouter(httpserver.RouterDeps{
 		Logger:           log,

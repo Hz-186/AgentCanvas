@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	memoryusecase "agentcanvas/internal/application/memory_usecase"
 	"agentcanvas/internal/domain/conversation"
 	"agentcanvas/internal/domain/flow"
 	"agentcanvas/internal/domain/memory"
@@ -45,6 +46,9 @@ type Service struct {
 	teams           workflow.TeamRepository
 	memories        memory.Repository
 	memoryLogs      memory.WriteLogRepository
+	memoryRetriever memory.SemanticRetriever
+	workingMemory   memory.WorkingMemoryRepository
+	extractions     *memoryusecase.ExtractionService
 	tools           tool.DefinitionRepository
 	toolPacks       tool.PackRepository
 	mcpServers      tool.MCPRepository
@@ -111,6 +115,10 @@ func NewService(
 	teams workflow.TeamRepository,
 	memories memory.Repository,
 	memoryLogs memory.WriteLogRepository,
+	memoryRetriever memory.SemanticRetriever,
+	workingMemory memory.WorkingMemoryRepository,
+	extractionJobs memory.ExtractionJobRepository,
+	mergeLogs memory.MergeLogRepository,
 	tools tool.DefinitionRepository,
 	toolPacks tool.PackRepository,
 	mcpServers tool.MCPRepository,
@@ -134,6 +142,8 @@ func NewService(
 		teams:           teams,
 		memories:        memories,
 		memoryLogs:      memoryLogs,
+		memoryRetriever: memoryRetriever,
+		workingMemory:   workingMemory,
 		tools:           tools,
 		toolPacks:       toolPacks,
 		mcpServers:      mcpServers,
@@ -144,29 +154,42 @@ func NewService(
 		llm:             llmClient,
 		secrets:         secrets,
 	}
+	if extractionJobs != nil && mergeLogs != nil {
+		s.extractions = memoryusecase.NewExtractionService(memories, extractionJobs, mergeLogs)
+	}
 	s.executor = engine.NewExecutor(
 		runtimenode.DefaultNodes(
 			runtimenode.Deps{
-				Retriever:       retriever,
-				LLM:             llmClient,
-				Providers:       s,
-				Messages:        s,
-				MessageHistory:  messages,
-				Memories:        memories,
-				MemoryWriteLogs: memoryLogs,
-				Tools:           tools,
-				ToolPacks:       toolPacks,
-				MCPServers:      mcpServers,
-				ToolInvocations: toolInvocations,
-				WorkflowCaller:  s,
-				Profiles:        s,
-				Teams:           teams,
+				Retriever:               retriever,
+				LLM:                     llmClient,
+				Providers:               s,
+				Messages:                s,
+				MessageHistory:          messages,
+				Memories:                memories,
+				MemoryWriteLogs:         memoryLogs,
+				MemoryRetriever:         memoryRetriever,
+				WorkingMemory:           workingMemory,
+				MemoryExtractionTrigger: s.triggerMemoryExtraction,
+				Tools:                   tools,
+				ToolPacks:               toolPacks,
+				MCPServers:              mcpServers,
+				ToolInvocations:         toolInvocations,
+				WorkflowCaller:          s,
+				Profiles:                s,
+				Teams:                   teams,
 			},
 		),
 	)
 	s.validator = flow.NewValidator(s.executor)
 	s.runCancels = newRunCancelRegistry()
 	return s
+}
+
+func (s *Service) triggerMemoryExtraction(ctx context.Context, ownerID int64, conversationID int64) {
+	if s.extractions == nil || ownerID <= 0 || conversationID <= 0 {
+		return
+	}
+	_, _ = s.extractions.StartExtraction(ctx, ownerID, conversationID, nil)
 }
 
 type runOptions struct {
@@ -1724,16 +1747,19 @@ func (s *Service) resumeAgentLoopNode() runtimenode.AgentLoopNode {
 		registry = toolruntime.BasicRegistry{Tools: s.tools, Invocations: s.toolInvocations}
 	}
 	return runtimenode.AgentLoopNode{AgentNode: runtimenode.AgentNode{
-		LLM:            toolCalling,
-		Providers:      s,
-		Tools:          registry,
-		ToolPacks:      s.toolPacks,
-		Retriever:      s.retriever,
-		Memories:       s.memories,
-		MemoryLogs:     s.memoryLogs,
-		WorkflowCaller: s,
-		Profiles:       s,
-		MessageHistory: s.messages,
+		LLM:              toolCalling,
+		Providers:        s,
+		Tools:            registry,
+		ToolPacks:        s.toolPacks,
+		Retriever:        s.retriever,
+		MemoryRetriever:  s.memoryRetriever,
+		Memories:         s.memories,
+		MemoryLogs:       s.memoryLogs,
+		WorkingMemory:    s.workingMemory,
+		OnExtractTrigger: s.triggerMemoryExtraction,
+		WorkflowCaller:   s,
+		Profiles:         s,
+		MessageHistory:   s.messages,
 	}}
 }
 
