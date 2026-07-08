@@ -89,7 +89,15 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 		plan := clonePlan(req.Plan)
 		result.Plan = &plan
 		planJSON, _ := json.Marshal(plan)
-		planStep := r.appendStep(result, RunStep{Type: StepTypePlan, Content: plan.PlanContext(), OutputJSON: planJSON, ProviderID: r.ProviderID, Model: r.ModelName})
+		planStep := r.appendStep(result,
+			RunStep{
+				Type:       StepTypePlan,
+				Content:    plan.PlanContext(),
+				OutputJSON: planJSON,
+				ProviderID: r.ProviderID,
+				Model:      r.ModelName,
+			},
+		)
 		_ = r.emit(ctx, planStep)
 	}
 	result.Context = contextTrace
@@ -104,7 +112,10 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 		if req.ResumeIteration > 0 {
 			startIteration = req.ResumeIteration
 		}
-		result.Context = ContextTrace{MaxChars: defaultMaxInputChars, Strategy: "resumed_from_checkpoint"}
+		result.Context = ContextTrace{
+			MaxChars: defaultMaxInputChars,
+			Strategy: "resumed_from_checkpoint",
+		}
 		unresolved := findUnresolvedToolCalls(messages, toolByName)
 		for _, call := range unresolved {
 			toolImpl := toolByName[call.Name]
@@ -112,7 +123,15 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 			if result.ToolCalls >= req.MaxToolCalls {
 				result.StopReason = StopReasonMaxToolCalls
 				result.FinalAnswer = "Agent stopped because max_tool_calls was exceeded after resume."
-				finalStep := r.appendStep(result, RunStep{Type: StepTypeFinalAnswer, Role: conversation.RoleAssistant, Content: result.FinalAnswer, ProviderID: r.ProviderID, Model: r.ModelName})
+				finalStep := r.appendStep(result,
+					RunStep{
+						Type:       StepTypeFinalAnswer,
+						Role:       conversation.RoleAssistant,
+						Content:    result.FinalAnswer,
+						ProviderID: r.ProviderID,
+						Model:      r.ModelName,
+					},
+				)
 				_ = r.emit(ctx, finalStep)
 				return finish(result, r.now()), nil
 			}
@@ -160,7 +179,15 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 				Model:         r.ModelName,
 			})
 			content := toolResultContent(toolResult, toolErr)
-			post := toolHooks.AfterToolUse(ctx, hooks.PostToolUseRequest{ToolName: call.Name, Content: content, OutputJSON: toolResult.ContentJSON, Metadata: metadata, Policy: req.ToolPolicy})
+			post := toolHooks.AfterToolUse(ctx,
+				hooks.PostToolUseRequest{
+					ToolName:   call.Name,
+					Content:    content,
+					OutputJSON: toolResult.ContentJSON,
+					Metadata:   metadata,
+					Policy:     req.ToolPolicy,
+				},
+			)
 			result.HookTrace = appendHookTrace(result.HookTrace, call.Name, post.Traces)
 			content, outputJSON, compressed := post.Content, post.OutputJSON, post.Compressed
 			messages = append(messages, toolMessage(call.ID, content))
@@ -181,7 +208,9 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 		if err := ctx.Err(); err != nil {
 			result = finishWithContext(result, err, r.now())
 			if errors.Is(err, context.Canceled) {
-				result.Checkpoint = checkpointFromMessages(req, messages, contextTrace, toolNames, nil, result.StopReason, result.Iterations, result.ToolCalls)
+				result.Checkpoint = checkpointFromMessages(
+					req, messages, contextTrace, toolNames, nil,
+					result.StopReason, result.Iterations, result.ToolCalls)
 			}
 			return result, nil
 		}
@@ -198,7 +227,10 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 		if err != nil {
 			if errors.Is(err, context.Canceled) {
 				result = finishWithContext(result, err, r.now())
-				result.Checkpoint = checkpointFromMessages(req, messages, contextTrace, toolNames, nil, result.StopReason, result.Iterations, result.ToolCalls)
+				result.Checkpoint = checkpointFromMessages(
+					req, messages, contextTrace, toolNames, nil,
+					result.StopReason, result.Iterations, result.ToolCalls,
+				)
 				return result, nil
 			}
 			result.StopReason = StopReasonLLMError
@@ -228,7 +260,15 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 				result.Plan.Finish()
 				result.StopReason = StopReasonPlanCompleted
 			}
-			finalStep := r.appendStep(result, RunStep{Type: StepTypeFinalAnswer, Role: conversation.RoleAssistant, Content: assistant.Content, ProviderID: r.ProviderID, Model: r.ModelName})
+			finalStep := r.appendStep(result,
+				RunStep{
+					Type:       StepTypeFinalAnswer,
+					Role:       conversation.RoleAssistant,
+					Content:    assistant.Content,
+					ProviderID: r.ProviderID,
+					Model:      r.ModelName,
+				},
+			)
 			_ = r.emit(ctx, finalStep)
 			return finish(result, r.now()), nil
 		}
@@ -237,7 +277,15 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 			if result.ToolCalls >= req.MaxToolCalls {
 				result.StopReason = StopReasonMaxToolCalls
 				result.FinalAnswer = "Agent stopped because max_tool_calls was exceeded."
-				finalStep := r.appendStep(result, RunStep{Type: StepTypeFinalAnswer, Role: conversation.RoleAssistant, Content: result.FinalAnswer, ProviderID: r.ProviderID, Model: r.ModelName})
+				finalStep := r.appendStep(result,
+					RunStep{
+						Type:       StepTypeFinalAnswer,
+						Role:       conversation.RoleAssistant,
+						Content:    result.FinalAnswer,
+						ProviderID: r.ProviderID,
+						Model:      r.ModelName,
+					},
+				)
 				_ = r.emit(ctx, finalStep)
 				return finish(result, r.now()), nil
 			}
@@ -268,10 +316,24 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 				continue
 			}
 			metadata := toolruntime.MetadataOf(toolImpl)
-			pre := toolHooks.BeforeToolUse(ctx, hooks.PreToolUseRequest{ToolCallID: call.ID, ToolName: call.Name, Arguments: call.Arguments, Metadata: metadata, Policy: req.ToolPolicy})
+			pre := toolHooks.BeforeToolUse(ctx,
+				hooks.PreToolUseRequest{
+					ToolCallID: call.ID,
+					ToolName:   call.Name,
+					Arguments:  call.Arguments,
+					Metadata:   metadata,
+					Policy:     req.ToolPolicy,
+				},
+			)
 			result.HookTrace = appendHookTrace(result.HookTrace, call.Name, pre.Traces)
 			if pre.Approval != nil {
-				approval := &Approval{ToolCallID: pre.Approval.ToolCallID, ToolName: pre.Approval.ToolName, RiskLevel: pre.Approval.RiskLevel, Reason: pre.Approval.Reason, Metadata: pre.Approval.Metadata}
+				approval := &Approval{
+					ToolCallID: pre.Approval.ToolCallID,
+					ToolName:   pre.Approval.ToolName,
+					RiskLevel:  pre.Approval.RiskLevel,
+					Reason:     pre.Approval.Reason,
+					Metadata:   pre.Approval.Metadata,
+				}
 				result.StopReason = StopReasonWaitingHuman
 				result.FinalAnswer = "Agent is waiting for human approval before executing tool " + call.Name + "."
 				result.Approval = approval
@@ -374,7 +436,15 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 	}
 	result.StopReason = StopReasonMaxIterations
 	result.FinalAnswer = "Agent stopped because max_iterations was exceeded."
-	finalStep2 := r.appendStep(result, RunStep{Type: StepTypeFinalAnswer, Role: conversation.RoleAssistant, Content: result.FinalAnswer, ProviderID: r.ProviderID, Model: r.ModelName})
+	finalStep2 := r.appendStep(result,
+		RunStep{
+			Type:       StepTypeFinalAnswer,
+			Role:       conversation.RoleAssistant,
+			Content:    result.FinalAnswer,
+			ProviderID: r.ProviderID,
+			Model:      r.ModelName,
+		},
+	)
 	_ = r.emit(ctx, finalStep2)
 	return finish(result, r.now()), nil
 }

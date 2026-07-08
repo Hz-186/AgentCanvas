@@ -26,18 +26,22 @@ import (
 )
 
 type AgentNode struct {
-	LLM            llm.ToolCallingClient
-	Providers      ProviderConfigLoader
-	Tools          toolruntime.Registry
-	ToolPacks      tool.PackRepository
-	MCPServers     tool.MCPRepository
-	Retriever      retrieval.Retriever
-	Memories       memory.Repository
-	MemoryLogs     memory.WriteLogRepository
-	WorkflowCaller toolruntime.WorkflowCaller
-	Profiles       AgentProfileLoader
-	Sandbox        sandbox.Runner
-	MessageHistory MessageHistoryReader
+	LLM             llm.ToolCallingClient
+	Providers       ProviderConfigLoader
+	Tools           toolruntime.Registry
+	ToolPacks       tool.PackRepository
+	MCPServers      tool.MCPRepository
+	Retriever       retrieval.Retriever
+	MemoryRetriever memory.SemanticRetriever
+	Memories        memory.Repository
+	MemoryLogs      memory.WriteLogRepository
+	WorkingMemory   memory.WorkingMemoryRepository
+	WorkflowCaller  toolruntime.WorkflowCaller
+	Profiles        AgentProfileLoader
+	Sandbox         sandbox.Runner
+	MessageHistory  MessageHistoryReader
+
+	OnExtractTrigger func(ctx context.Context, ownerID int64, conversationID int64)
 }
 
 type AgentLoopNode struct {
@@ -387,6 +391,7 @@ func (n AgentNode) runAgent(ctx context.Context, rc *engine.RunContext, input en
 	conversationBlocks := buildConversationContext(ctx, n, rc, cfg.MaxInputChars)
 	ruleBlocks, ruleTrace := buildRuleContextBlocks(systemPrompt, task, mode, cfg, tools, conversationBlocks)
 	contextBlocks := append(ruleBlocks, conversationBlocks...)
+	contextBlocks = n.injectWorkingMemory(ctx, rc, contextBlocks)
 	var plan *runtimeagent.Plan
 	if mode == "plan_execute" && task != "" {
 		planner := runtimeagent.Planner{
@@ -501,6 +506,8 @@ func (n AgentNode) runAgent(ctx context.Context, rc *engine.RunContext, input en
 		runRequest = *resumeRequest
 	}
 	result, err := runner.Run(ctx, runRequest)
+	n.updateWorkingMemory(ctx, rc, result)
+	n.checkExtractionTrigger(ctx, rc, result)
 	if result != nil {
 		eventType := runtimeevent.AgentFinished
 		if err != nil {
@@ -960,8 +967,8 @@ func (n AgentNode) loadTools(ctx context.Context, ownerID int64, cfg agentRuntim
 			return nil, fmt.Errorf("agent_loop memory repository is not configured")
 		}
 		tools = append(tools,
-			toolruntime.MemoryReadTool{Memories: n.Memories},
-			toolruntime.MemoryWriteTool{Memories: n.Memories, Logs: n.MemoryLogs},
+			toolruntime.MemoryReadTool{Memories: n.Memories, Retriever: n.MemoryRetriever},
+			toolruntime.MemoryWriteTool{Memories: n.Memories, Logs: n.MemoryLogs, Retriever: n.MemoryRetriever},
 		)
 	}
 	if len(cfg.ToolIDs) == 0 {
@@ -1376,4 +1383,66 @@ func dedupeLower(values []string) []string {
 		result = append(result, value)
 	}
 	return result
+}
+
+func (n AgentNode) injectWorkingMemory(ctx context.Context, rc *engine.RunContext, blocks []runtimeagent.ContextBlock) []runtimeagent.ContextBlock {
+	if n.WorkingMemory == nil || rc.ConversationID == nil {
+		return blocks
+	}
+	wm, err := n.WorkingMemory.Get(ctx, rc.OwnerID, *rc.ConversationID)
+	if err != nil || wm == nil || wm.IsEmpty() {
+		return blocks
+	}
+	content := wm.ToContextBlock()
+	if content == "" {
+		return blocks
+	}
+	wmBlock := runtimeagent.ContextBlock{
+		Name:    "working_memory",
+		Role:    "system",
+		Content: content,
+		Pinned:  false,
+	}
+	return append([]runtimeagent.ContextBlock{wmBlock}, blocks...)
+}
+
+func (n AgentNode) updateWorkingMemory(ctx context.Context, rc *engine.RunContext, result *runtimeagent.RunResult) {
+	if n.WorkingMemory == nil || rc.ConversationID == nil || result == nil {
+		return
+	}
+	wm, err := n.WorkingMemory.Get(ctx, rc.OwnerID, *rc.ConversationID)
+	if err != nil {
+		return
+	}
+	if wm == nil {
+		wm = &memory.WorkingMemory{
+			OwnerID:        rc.OwnerID,
+			ConversationID: *rc.ConversationID,
+		}
+	}
+	wm.RoundNumber++
+	if result.FinalAnswer != "" {
+		wm.ContextSummary = truncateString(result.FinalAnswer, 200)
+	}
+	if result.StopReason != "" && result.StopReason != runtimeagent.StopReasonFinalAnswer {
+		wm.ContextSummary = "Agent stopped: " + result.StopReason
+	}
+	_ = n.WorkingMemory.Save(ctx, wm)
+}
+
+func truncateString(s string, maxLen int) string {
+	runes := []rune(s)
+	if len(runes) <= maxLen {
+		return s
+	}
+	return string(runes[:maxLen]) + "..."
+}
+
+func (n AgentNode) checkExtractionTrigger(ctx context.Context, rc *engine.RunContext, result *runtimeagent.RunResult) {
+	if n.OnExtractTrigger == nil || rc.ConversationID == nil || result == nil {
+		return
+	}
+	if result.Iterations > 3 || result.StopReason != "" {
+		n.OnExtractTrigger(ctx, rc.OwnerID, *rc.ConversationID)
+	}
 }

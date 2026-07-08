@@ -57,7 +57,10 @@ type MetadataProvider interface {
 
 func MetadataOf(tool RuntimeTool) ToolMetadata {
 	if tool == nil {
-		return ToolMetadata{RiskLevel: RiskLow, SideEffect: SideEffectNone}
+		return ToolMetadata{
+			RiskLevel:  RiskLow,
+			SideEffect: SideEffectNone,
+		}
 	}
 	if provider, ok := tool.(MetadataProvider); ok {
 		metadata := provider.Metadata()
@@ -69,7 +72,10 @@ func MetadataOf(tool RuntimeTool) ToolMetadata {
 		}
 		return metadata
 	}
-	return ToolMetadata{RiskLevel: RiskLow, SideEffect: SideEffectNone}
+	return ToolMetadata{
+		RiskLevel:  RiskLow,
+		SideEffect: SideEffectNone,
+	}
 }
 
 type Registry interface {

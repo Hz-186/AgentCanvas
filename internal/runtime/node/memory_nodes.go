@@ -14,12 +14,14 @@ import (
 )
 
 type MemoryReadNode struct {
-	Memories memory.Repository
+	Memories  memory.Repository
+	Retriever memory.SemanticRetriever
 }
 
 type memoryReadConfig struct {
 	MemoryTypes []string `json:"memory_types"`
 	Limit       int      `json:"limit"`
+	Query       string   `json:"query"`
 }
 
 func (MemoryReadNode) Type() string { return "memory_read" }
@@ -44,6 +46,18 @@ func (n MemoryReadNode) Run(ctx context.Context, rc *engine.RunContext, input en
 		return nil, err
 	}
 	emitRuntimeEvent(ctx, rc, runtimeevent.Event{Type: runtimeevent.MemoryReadStarted, RunID: rc.RunID})
+
+	query := strings.TrimSpace(cfg.Query)
+	if query != "" && n.Retriever != nil {
+		ids, err := n.Retriever.Search(ctx, rc.OwnerID, query, cfg.MemoryTypes, cfg.Limit)
+		if err == nil && len(ids) > 0 {
+			items, lines, fetchedIDs := fetchMemoriesByIDs(ctx, n.Memories, rc.OwnerID, ids)
+			_ = n.Memories.MarkUsed(ctx, rc.OwnerID, fetchedIDs)
+			emitRuntimeEvent(ctx, rc, runtimeevent.Event{Type: runtimeevent.MemoryReadFinished, RunID: rc.RunID, Payload: map[string]any{"count": len(items), "query": query}})
+			return engine.NodeOutput{"memories": items, "memory_context": strings.Join(lines, "\n"), "count": len(items), "query": query}, nil
+		}
+	}
+
 	items, err := n.Memories.ListForRead(ctx, rc.OwnerID, cfg.MemoryTypes, rc.ConversationID, cfg.Limit)
 	if err != nil {
 		return nil, err
@@ -59,9 +73,26 @@ func (n MemoryReadNode) Run(ctx context.Context, rc *engine.RunContext, input en
 	return engine.NodeOutput{"memories": items, "memory_context": strings.Join(lines, "\n")}, nil
 }
 
+func fetchMemoriesByIDs(ctx context.Context, repo memory.Repository, ownerID int64, ids []int64) ([]memory.Memory, []string, []int64) {
+	items := make([]memory.Memory, 0, len(ids))
+	lines := make([]string, 0, len(ids))
+	fetchedIDs := make([]int64, 0, len(ids))
+	for _, id := range ids {
+		item, err := repo.FindByID(ctx, ownerID, id)
+		if err != nil {
+			continue
+		}
+		items = append(items, *item)
+		lines = append(lines, item.Content)
+		fetchedIDs = append(fetchedIDs, id)
+	}
+	return items, lines, fetchedIDs
+}
+
 type MemoryWriteNode struct {
-	Memories memory.Repository
-	Logs     memory.WriteLogRepository
+	Memories  memory.Repository
+	Logs      memory.WriteLogRepository
+	Retriever memory.SemanticRetriever
 }
 
 type memoryWriteConfig struct {
@@ -140,6 +171,14 @@ func (n MemoryWriteNode) Run(ctx context.Context, rc *engine.RunContext, input e
 	}
 	if err != nil {
 		return nil, err
+	}
+	if item.MemoryLevel == "" {
+		item.MemoryLevel = memory.LevelLongTerm
+	}
+	if n.Retriever != nil {
+		if err := n.Retriever.Index(ctx, *item); err != nil {
+			return nil, err
+		}
 	}
 	afterJSON, _ := json.Marshal(item)
 	if n.Logs != nil {

@@ -147,19 +147,20 @@ type ContextTrace struct {
 }
 
 type TokenAudit struct {
-	System     int `json:"system,omitempty"`
-	Profile    int `json:"profile,omitempty"`
-	RulesL0    int `json:"rules_l0,omitempty"`
-	RulesL1    int `json:"rules_l1,omitempty"`
-	RulesL2    int `json:"rules_l2,omitempty"`
-	RulesL3    int `json:"rules_l3,omitempty"`
-	RulesL4    int `json:"rules_l4,omitempty"`
-	ToolSchema int `json:"tool_schema,omitempty"`
-	History    int `json:"history,omitempty"`
-	Memory     int `json:"memory,omitempty"`
-	Retrieval  int `json:"retrieval,omitempty"`
-	Task       int `json:"task,omitempty"`
-	Total      int `json:"total,omitempty"`
+	System        int `json:"system,omitempty"`
+	Profile       int `json:"profile,omitempty"`
+	RulesL0       int `json:"rules_l0,omitempty"`
+	RulesL1       int `json:"rules_l1,omitempty"`
+	RulesL2       int `json:"rules_l2,omitempty"`
+	RulesL3       int `json:"rules_l3,omitempty"`
+	RulesL4       int `json:"rules_l4,omitempty"`
+	ToolSchema    int `json:"tool_schema,omitempty"`
+	History       int `json:"history,omitempty"`
+	Memory        int `json:"memory,omitempty"`
+	WorkingMemory int `json:"working_memory,omitempty"`
+	Retrieval     int `json:"retrieval,omitempty"`
+	Task          int `json:"task,omitempty"`
+	Total         int `json:"total,omitempty"`
 }
 
 type ContextBlockTrace struct {

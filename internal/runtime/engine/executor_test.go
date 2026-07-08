@@ -129,7 +129,7 @@ func TestExecutorRunsAgentLoopNode(t *testing.T) {
 	if chat.toolRequest.Model != "demo-agent" {
 		t.Fatalf("agent model = %q", chat.toolRequest.Model)
 	}
-	if len(chat.toolRequest.Messages) != 2 || chat.toolRequest.Messages[0].Content != "你是 Agent Loop 节点。" || chat.toolRequest.Messages[1].Content != "执行 Agent Loop 节点" {
+	if len(chat.toolRequest.Messages) < 2 || chat.toolRequest.Messages[0].Content != "你是 Agent Loop 节点。" || chat.toolRequest.Messages[len(chat.toolRequest.Messages)-1].Content != "执行 Agent Loop 节点" {
 		t.Fatalf("agent messages = %+v", chat.toolRequest.Messages)
 	}
 	if messages.content != "Agent Loop 已完成" {
@@ -177,7 +177,7 @@ func TestAgentLoopNodeUsesProfileDefaults(t *testing.T) {
 	if chat.toolRequest.Model != "profile-model" {
 		t.Fatalf("model = %q", chat.toolRequest.Model)
 	}
-	if len(chat.toolRequest.Messages) != 2 || chat.toolRequest.Messages[0].Content != "来自 Profile 的系统提示" || chat.toolRequest.Messages[1].Content != "读取 Profile 默认值" {
+	if len(chat.toolRequest.Messages) < 2 || chat.toolRequest.Messages[0].Content != "来自 Profile 的系统提示" || chat.toolRequest.Messages[len(chat.toolRequest.Messages)-1].Content != "读取 Profile 默认值" {
 		t.Fatalf("messages = %+v", chat.toolRequest.Messages)
 	}
 	if len(chat.toolRequest.Tools) != 1 || chat.toolRequest.Tools[0].Function.Name != "request_human_approval" {
@@ -298,7 +298,7 @@ func TestExecutorRunsLegacyAgentLoopNode(t *testing.T) {
 	if chat.toolRequest.Model != "demo-agent" {
 		t.Fatalf("agent model = %q", chat.toolRequest.Model)
 	}
-	if len(chat.toolRequest.Messages) != 2 || chat.toolRequest.Messages[0].Content != "legacy" || chat.toolRequest.Messages[1].Content != "旧节点继续运行" {
+	if len(chat.toolRequest.Messages) < 2 || chat.toolRequest.Messages[0].Content != "legacy" || chat.toolRequest.Messages[len(chat.toolRequest.Messages)-1].Content != "旧节点继续运行" {
 		t.Fatalf("agent messages = %+v", chat.toolRequest.Messages)
 	}
 }

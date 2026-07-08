@@ -37,23 +37,26 @@ type AgentProfileLoader interface {
 }
 
 type Deps struct {
-	Retriever       retrieval.Retriever
-	LLM             llm.ChatClient
-	Providers       ProviderConfigLoader
-	Messages        MessageWriter
-	MessageHistory  MessageHistoryReader
-	Memories        memory.Repository
-	MemoryWriteLogs memory.WriteLogRepository
-	Tools           tool.DefinitionRepository
-	ToolPacks       tool.PackRepository
-	MCPServers      tool.MCPRepository
-	ToolInvocations tool.InvocationRepository
-	ToolCalling     llm.ToolCallingClient
-	ToolRegistry    toolruntime.Registry
-	WorkflowCaller  toolruntime.WorkflowCaller
-	Profiles        AgentProfileLoader
-	Teams           workflow.TeamRepository
-	Sandbox         sandbox.Runner
+	Retriever               retrieval.Retriever
+	LLM                     llm.ChatClient
+	Providers               ProviderConfigLoader
+	Messages                MessageWriter
+	MessageHistory          MessageHistoryReader
+	Memories                memory.Repository
+	MemoryWriteLogs         memory.WriteLogRepository
+	MemoryRetriever         memory.SemanticRetriever
+	WorkingMemory           memory.WorkingMemoryRepository
+	MemoryExtractionTrigger func(ctx context.Context, ownerID int64, conversationID int64)
+	Tools                   tool.DefinitionRepository
+	ToolPacks               tool.PackRepository
+	MCPServers              tool.MCPRepository
+	ToolInvocations         tool.InvocationRepository
+	ToolCalling             llm.ToolCallingClient
+	ToolRegistry            toolruntime.Registry
+	WorkflowCaller          toolruntime.WorkflowCaller
+	Profiles                AgentProfileLoader
+	Teams                   workflow.TeamRepository
+	Sandbox                 sandbox.Runner
 }
 
 func DefaultNodes(deps Deps) []engine.Node {
@@ -72,7 +75,7 @@ func DefaultNodes(deps Deps) []engine.Node {
 		defaultRunner := sandbox.NewDockerRunner()
 		sandboxRunner = defaultRunner
 	}
-	agentNode := AgentNode{LLM: toolCalling, Providers: deps.Providers, Tools: toolRegistry, ToolPacks: deps.ToolPacks, MCPServers: deps.MCPServers, Retriever: deps.Retriever, Memories: deps.Memories, MemoryLogs: deps.MemoryWriteLogs, WorkflowCaller: deps.WorkflowCaller, Profiles: deps.Profiles, Sandbox: sandboxRunner, MessageHistory: deps.MessageHistory}
+	agentNode := AgentNode{LLM: toolCalling, Providers: deps.Providers, Tools: toolRegistry, ToolPacks: deps.ToolPacks, MCPServers: deps.MCPServers, Retriever: deps.Retriever, MemoryRetriever: deps.MemoryRetriever, Memories: deps.Memories, MemoryLogs: deps.MemoryWriteLogs, WorkingMemory: deps.WorkingMemory, WorkflowCaller: deps.WorkflowCaller, Profiles: deps.Profiles, Sandbox: sandboxRunner, MessageHistory: deps.MessageHistory, OnExtractTrigger: deps.MemoryExtractionTrigger}
 	return []engine.Node{
 		BeginNode{},
 		RetrievalNode{Retriever: deps.Retriever},
@@ -84,8 +87,8 @@ func DefaultNodes(deps Deps) []engine.Node {
 		TeamCallNode{Teams: deps.Teams, Caller: deps.WorkflowCaller},
 		CodeSandboxNode{Runner: sandboxRunner},
 		MessageNode{Writer: deps.Messages},
-		MemoryReadNode{Memories: deps.Memories},
-		MemoryWriteNode{Memories: deps.Memories, Logs: deps.MemoryWriteLogs},
+		MemoryReadNode{Memories: deps.Memories, Retriever: deps.MemoryRetriever},
+		MemoryWriteNode{Memories: deps.Memories, Logs: deps.MemoryWriteLogs, Retriever: deps.MemoryRetriever},
 		HTTPToolNode{Tools: deps.Tools, Invocations: deps.ToolInvocations},
 		MCPToolNode{Servers: deps.MCPServers},
 		SwitchNode{},

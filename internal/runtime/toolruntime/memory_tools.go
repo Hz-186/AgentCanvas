@@ -12,12 +12,14 @@ import (
 )
 
 type MemoryReadTool struct {
-	Memories memory.Repository
+	Memories  memory.Repository
+	Retriever memory.SemanticRetriever
 }
 
 type memoryReadInput struct {
 	MemoryTypes []string `json:"memory_types"`
 	Limit       int      `json:"limit"`
+	Query       string   `json:"query"`
 }
 
 func (MemoryReadTool) Name() string { return "read_memory" }
@@ -27,7 +29,7 @@ func (MemoryReadTool) Description() string {
 }
 
 func (MemoryReadTool) Parameters() json.RawMessage {
-	return json.RawMessage(`{"type":"object","properties":{"memory_types":{"type":"array","items":{"type":"string"},"description":"Memory types to read. Common values: profile_memory, summary_memory, episodic_memory, task_memory."},"limit":{"type":"number","description":"Maximum memories to read. Default 5, maximum 20."}},"additionalProperties":false}`)
+	return json.RawMessage(`{"type":"object","properties":{"memory_types":{"type":"array","items":{"type":"string"},"description":"Memory types to read. Common values: profile_memory, summary_memory, episodic_memory, task_memory."},"limit":{"type":"number","description":"Maximum memories to read. Default 5, maximum 20."},"query":{"type":"string","description":"Semantic search query to find relevant memories. When provided, results are ranked by relevance to this query."}},"additionalProperties":false}`)
 }
 
 func (MemoryReadTool) Metadata() ToolMetadata {
@@ -51,6 +53,15 @@ func (t MemoryReadTool) Execute(ctx context.Context, rc ToolRunContext, input js
 	if limit > 20 {
 		limit = 20
 	}
+
+	query := strings.TrimSpace(parsed.Query)
+	if query != "" && t.Retriever != nil {
+		ids, err := t.Retriever.Search(ctx, rc.OwnerID, query, parsed.MemoryTypes, limit)
+		if err == nil && len(ids) > 0 {
+			return t.fetchByIDs(ctx, rc, ids, query)
+		}
+	}
+
 	items, err := t.Memories.ListForRead(ctx, rc.OwnerID, parsed.MemoryTypes, rc.ConversationID, limit)
 	if err != nil {
 		return &ToolResult{ContentText: err.Error(), IsError: true}, err
@@ -61,7 +72,11 @@ func (t MemoryReadTool) Execute(ctx context.Context, rc ToolRunContext, input js
 		ids = append(ids, item.ID)
 		lines = append(lines, item.Content)
 	}
-	_ = t.Memories.MarkUsed(ctx, rc.OwnerID, ids)
+	fetchedIDs := make([]int64, 0, len(items))
+	for _, item := range items {
+		fetchedIDs = append(fetchedIDs, item.ID)
+	}
+	_ = t.Memories.MarkUsed(ctx, rc.OwnerID, fetchedIDs)
 	return ResultFromValue(map[string]any{
 		"memories":       items,
 		"memory_context": strings.Join(lines, "\n"),
@@ -69,9 +84,30 @@ func (t MemoryReadTool) Execute(ctx context.Context, rc ToolRunContext, input js
 	})
 }
 
+func (t MemoryReadTool) fetchByIDs(ctx context.Context, rc ToolRunContext, ids []int64, query string) (*ToolResult, error) {
+	items := make([]memory.Memory, 0, len(ids))
+	lines := make([]string, 0, len(ids))
+	for _, id := range ids {
+		item, err := t.Memories.FindByID(ctx, rc.OwnerID, id)
+		if err != nil {
+			continue
+		}
+		items = append(items, *item)
+		lines = append(lines, item.Content)
+	}
+	_ = t.Memories.MarkUsed(ctx, rc.OwnerID, ids)
+	return ResultFromValue(map[string]any{
+		"memories":       items,
+		"memory_context": strings.Join(lines, "\n"),
+		"count":          len(items),
+		"query":          query,
+	})
+}
+
 type MemoryWriteTool struct {
-	Memories memory.Repository
-	Logs     memory.WriteLogRepository
+	Memories  memory.Repository
+	Logs      memory.WriteLogRepository
+	Retriever memory.SemanticRetriever
 }
 
 type memoryWriteInput struct {
@@ -143,6 +179,14 @@ func (t MemoryWriteTool) Execute(ctx context.Context, rc ToolRunContext, input j
 	}
 	if err != nil {
 		return &ToolResult{ContentText: err.Error(), IsError: true}, err
+	}
+	if item.MemoryLevel == "" {
+		item.MemoryLevel = memory.LevelLongTerm
+	}
+	if t.Retriever != nil {
+		if err := t.Retriever.Index(ctx, *item); err != nil {
+			return &ToolResult{ContentText: err.Error(), IsError: true}, err
+		}
 	}
 	afterJSON, _ := json.Marshal(item)
 	if t.Logs != nil {

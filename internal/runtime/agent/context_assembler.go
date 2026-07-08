@@ -129,7 +129,7 @@ func (a ContextAssembler) Build(req RunRequest) ([]llm.ChatMessage, ContextTrace
 				remaining = maxChars
 			}
 			if len(content) > remaining {
-				content = content[:remaining]
+				content = truncateRunes(content, remaining)
 				trace.Truncated = append(trace.Truncated, name)
 				blockTrace.Status = "truncated"
 				blockTrace.SavedTokens = originalTokens - estimateContextTokens(content)
@@ -153,6 +153,23 @@ func (a ContextAssembler) Build(req RunRequest) ([]llm.ChatMessage, ContextTrace
 	trace.UsedTokens = usedTokens
 	trace.TokenAudit.Total = trace.EstimatedTokens
 	return messages, trace
+}
+
+func truncateRunes(content string, maxBytes int) string {
+	if maxBytes <= 0 || len(content) <= maxBytes {
+		return content
+	}
+	used := 0
+	var b strings.Builder
+	for _, r := range content {
+		size := len(string(r))
+		if used+size > maxBytes {
+			break
+		}
+		b.WriteRune(r)
+		used += size
+	}
+	return b.String()
 }
 
 func compressContextBlocks(blocks []ContextBlock) ([]ContextBlock, []ContextBlockTrace) {
@@ -186,37 +203,32 @@ func summarizeHistoryBlocks(blocks []ContextBlock, keepRecent int) ([]ContextBlo
 			Turn:    turn + 1,
 		})
 	}
-	selectionBudget := originalTokens / 3
-	if selectionBudget < 1 {
-		selectionBudget = 1
+	compressionBudget := originalTokens / 3
+	if compressionBudget < 1 {
+		compressionBudget = 1
 	}
-	selection := contextcompress.Select(items, contextcompress.Options{
-		Budget:             selectionBudget,
-		Alpha:              0.08,
-		DiversityLambda:    0.35,
-		MinReferenceLength: 4,
-		MaxNeighborScan:    96,
-	})
-	selected := make(map[int]bool, len(selection.Selected))
-	for _, item := range selection.Selected {
+	compressOpts := contextcompress.DefaultOptions()
+	compressOpts.Budget = compressionBudget
+	compressOpts.SummaryBudget = compressionBudget
+	compression := contextcompress.Compress(items, compressOpts)
+	selected := make(map[int]bool, len(compression.Kept))
+	for _, item := range compression.Kept {
 		selected[item.Item.ID] = true
 	}
 	summarized := make(map[int]bool, summarizedCount)
-	summaryParts := make([]string, 0, summarizedCount-len(selected))
 	summarizedTokens := 0
 	for _, index := range candidateIndexes {
 		if selected[index] {
 			continue
 		}
 		content := strings.TrimSpace(blocks[index].Content)
-		summaryParts = append(summaryParts, "- "+firstContextLine(content, 160))
 		summarized[index] = true
 		summarizedTokens += estimateContextTokens(content)
 	}
-	if len(summaryParts) == 0 {
+	if compression.Summary == "" || len(summarized) == 0 {
 		return blocks, nil
 	}
-	summary := "Earlier conversation summary:\n" + strings.Join(summaryParts, "\n")
+	summary := compression.Summary
 	result := make([]ContextBlock, 0, len(blocks)-summarizedCount+1)
 	inserted := false
 	for i, block := range blocks {
@@ -290,6 +302,8 @@ func (a *TokenAudit) add(name string, tokens int) {
 		a.ToolSchema += tokens
 	case "history":
 		a.History += tokens
+	case "working_memory":
+		a.WorkingMemory += tokens
 	case "memory":
 		a.Memory += tokens
 	case "retrieval":
@@ -320,6 +334,8 @@ func tokenAuditCategory(name string) string {
 		return "tool_schema"
 	case strings.Contains(name, "history") || strings.Contains(name, "conversation"):
 		return "history"
+	case strings.Contains(name, "working_memory"):
+		return "working_memory"
 	case strings.Contains(name, "memory"):
 		return "memory"
 	case strings.Contains(name, "retrieval") || strings.Contains(name, "knowledge") || strings.Contains(name, "citation"):
