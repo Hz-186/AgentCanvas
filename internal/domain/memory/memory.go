@@ -13,25 +13,38 @@ const (
 )
 
 const (
+	LevelWorking   = "working"
+	LevelShortTerm = "short_term"
+	LevelLongTerm  = "long_term"
+)
+
+const (
 	WriteActionCreate = "create"
 	WriteActionUpdate = "update"
 )
 
 type Memory struct {
-	ID             int64           `json:"id" gorm:"primaryKey;column:id"`
-	OwnerID        int64           `json:"owner_id" gorm:"column:owner_id"`
-	ConversationID *int64          `json:"conversation_id" gorm:"column:conversation_id"`
-	MemoryType     string          `json:"memory_type" gorm:"column:memory_type"`
-	Title          string          `json:"title" gorm:"column:title"`
-	Content        string          `json:"content" gorm:"column:content"`
-	Importance     float64         `json:"importance" gorm:"column:importance"`
-	Source         string          `json:"source" gorm:"column:source"`
-	MetadataJSON   json.RawMessage `json:"metadata_json" gorm:"column:metadata_json"`
-	LastUsedAt     *time.Time      `json:"last_used_at" gorm:"column:last_used_at"`
-	ExpiresAt      *time.Time      `json:"expires_at" gorm:"column:expires_at"`
-	CreatedAt      time.Time       `json:"created_at" gorm:"column:created_at"`
-	UpdatedAt      time.Time       `json:"updated_at" gorm:"column:updated_at"`
-	DeletedAt      *time.Time      `json:"-" gorm:"column:deleted_at"`
+	ID                 int64           `json:"id" gorm:"primaryKey;column:id"`
+	ParentID           *int64          `json:"parent_id" gorm:"column:parent_id"`
+	ConflictFlag       bool            `json:"conflict_flag" gorm:"column:conflict_flag"`
+	OwnerID            int64           `json:"owner_id" gorm:"column:owner_id"`
+	ConversationID     *int64          `json:"conversation_id" gorm:"column:conversation_id"`
+	SessionID          *string         `json:"session_id" gorm:"column:session_id"`
+	MemoryType         string          `json:"memory_type" gorm:"column:memory_type"`
+	MemoryLevel        string          `json:"memory_level" gorm:"column:memory_level;default:long_term"`
+	Title              string          `json:"title" gorm:"column:title"`
+	Content            string          `json:"content" gorm:"column:content"`
+	Importance         float64         `json:"importance" gorm:"column:importance"`
+	AccessCount        int             `json:"access_count" gorm:"column:access_count;default:0"`
+	ConsolidationCount int             `json:"consolidation_count" gorm:"column:consolidation_count;default:0"`
+	Source             string          `json:"source" gorm:"column:source"`
+	MetadataJSON       json.RawMessage `json:"metadata_json" gorm:"column:metadata_json"`
+	Embedding          []byte          `json:"-" gorm:"column:embedding"`
+	LastUsedAt         *time.Time      `json:"last_used_at" gorm:"column:last_used_at"`
+	ExpiresAt          *time.Time      `json:"expires_at" gorm:"column:expires_at"`
+	CreatedAt          time.Time       `json:"created_at" gorm:"column:created_at"`
+	UpdatedAt          time.Time       `json:"updated_at" gorm:"column:updated_at"`
+	DeletedAt          *time.Time      `json:"-" gorm:"column:deleted_at"`
 }
 
 func (Memory) TableName() string { return "memories" }
