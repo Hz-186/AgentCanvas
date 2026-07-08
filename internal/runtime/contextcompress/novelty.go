@@ -1,11 +1,18 @@
 package contextcompress
 
-import "math"
+import (
+	"math"
+	"strings"
+)
 
-type messageSpan struct {
-	itemIndex int
-	start     int
-	end       int
+type itemProfile struct {
+	feature textFeatures
+	key     string
+}
+
+type corpusProfile struct {
+	idf   map[string]float64
+	items []itemProfile
 }
 
 func scoreItems(items []Item, opts Options) []ScoredItem {
@@ -14,71 +21,98 @@ func scoreItems(items []Item, opts Options) []ScoredItem {
 	if len(items) == 0 {
 		return scores
 	}
-	text, spans, posToSpan := buildCorpus(items)
-	idx := newSuffixIndex(text)
-	literalCounts := make([]int, len(items))
-	lengths := make([]int, len(items))
-	for _, span := range spans {
-		lengths[span.itemIndex] = span.end - span.start
-		for pos := span.start; pos < span.end; {
-			match := idx.longestPreviousPrefix(pos, span.end-pos, opts.MaxNeighborScan)
-			if match >= opts.MinReferenceLength {
-				pos += match
-				continue
-			}
-			if posToSpan[pos] >= 0 {
-				literalCounts[span.itemIndex]++
-			}
-			pos++
-		}
-	}
+	profile := buildCorpusProfile(items, opts)
 	lastTurn := 0
 	for _, item := range items {
 		if item.Turn > lastTurn {
 			lastTurn = item.Turn
 		}
 	}
+	seenTerms := make(map[string]float64)
+	seenExact := make(map[string]bool)
 	for i, item := range items {
-		length := lengths[i]
+		feature := profile.items[i].feature
+		total := 0.0
+		repeated := 0.0
+		for token, count := range feature.counts {
+			weight := count * profile.idf[token]
+			total += weight
+			if previous := seenTerms[token]; previous > 0 {
+				repeated += math.Min(count, previous) * profile.idf[token]
+			}
+		}
 		novelty := 1.0
-		if length > 0 {
-			novelty = float64(literalCounts[i]) / float64(length)
+		if total > 0 {
+			novelty = 1 - repeated/total
+			if novelty < 0 {
+				novelty = 0
+			}
+		}
+		if profile.items[i].key != "" && seenExact[profile.items[i].key] && novelty > 0.08 {
+			novelty = 0.08
+		}
+		if item.Pinned && novelty < 0.45 {
+			novelty = 0.45
 		}
 		age := lastTurn - item.Turn
 		if age < 0 {
 			age = 0
 		}
 		decay := expDecay(opts.Alpha, age)
-		weight := novelty * decay
+		importance := itemImportance(item)
+		weight := (novelty + feature.keySignal) * decay * importance
+		if item.Pinned {
+			weight += importance
+		}
 		scores[i] = ScoredItem{Item: item, Novelty: novelty, TimeDecay: decay, Weight: weight}
+		for token, count := range feature.counts {
+			if count > seenTerms[token] {
+				seenTerms[token] = count
+			}
+		}
+		if profile.items[i].key != "" {
+			seenExact[profile.items[i].key] = true
+		}
 	}
 	return scores
 }
 
-func buildCorpus(items []Item) (string, []messageSpan, []int) {
-	total := 0
-	for _, item := range items {
-		total += len(item.Content) + 1
-	}
-	data := make([]byte, 0, total)
-	spans := make([]messageSpan, 0, len(items))
-	posToSpan := make([]int, 0, total)
+func buildCorpusProfile(items []Item, opts Options) corpusProfile {
+	df := make(map[string]int)
+	docTokens := make([][]string, len(items))
 	for i, item := range items {
-		start := len(data)
-		data = append(data, item.Content...)
-		end := len(data)
-		spans = append(spans, messageSpan{itemIndex: i, start: start, end: end})
-		for p := start; p < end; p++ {
-			posToSpan = append(posToSpan, i)
+		tokens := tokenizeText(item.Content)
+		docTokens[i] = tokens
+		seen := make(map[string]bool, len(tokens))
+		for _, token := range tokens {
+			if !seen[token] {
+				df[token]++
+				seen[token] = true
+			}
 		}
-		data = append(data, 0)
-		posToSpan = append(posToSpan, -1)
 	}
-	return string(data), spans, posToSpan
+	idf := make(map[string]float64, len(df))
+	n := float64(len(items))
+	for token, count := range df {
+		idf[token] = math.Log((n+1)/(float64(count)+0.5)) + 1
+	}
+	profiles := make([]itemProfile, len(items))
+	for i, item := range items {
+		feature := buildFeatures(item.Content, idf, opts.MinHashSize)
+		if len(feature.tokens) == 0 && len(docTokens[i]) > 0 {
+			feature.tokens = docTokens[i]
+		}
+		profiles[i] = itemProfile{feature: feature, key: normalizedExactKey(item.Content)}
+	}
+	return corpusProfile{idf: idf, items: profiles}
+}
+
+func normalizedExactKey(content string) string {
+	return strings.ToLower(strings.Join(strings.Fields(content), " "))
 }
 
 func expDecay(alpha float64, age int) float64 {
-	if age <= 0 {
+	if age <= 0 || alpha <= 0 {
 		return 1
 	}
 	return math.Exp(-alpha * float64(age))

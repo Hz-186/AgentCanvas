@@ -42,15 +42,15 @@ func Select(items []Item, opts Options) Selection {
 			budget += itemCost(item)
 		}
 	}
-	sim := buildSimilarityMatrix(items)
+	profile := buildCorpusProfile(items, opts)
 	selected := make([]bool, len(items))
-	coverage := make([]float64, len(items))
 	used := 0
 	version := 0
 	h := make(candidateHeap, 0, len(items))
 	for i := range items {
-		gain := marginalGain(i, scores, selected, coverage, sim, opts.DiversityLambda)
-		heap.Push(&h, candidate{index: i, gain: gain, ratio: gain / float64(itemCost(items[i])), version: version})
+		gain := marginalGain(i, scores, selected, profile, opts.DiversityLambda)
+		cost := itemCost(items[i])
+		h = append(h, candidate{index: i, gain: gain, ratio: gain / float64(cost), version: version})
 	}
 	heap.Init(&h)
 	for h.Len() > 0 {
@@ -59,26 +59,21 @@ func Select(items []Item, opts Options) Selection {
 			continue
 		}
 		cost := itemCost(items[top.index])
-		if used+cost > budget {
+		if used+cost > budget && !items[top.index].Pinned {
 			continue
 		}
-		gain := marginalGain(top.index, scores, selected, coverage, sim, opts.DiversityLambda)
+		gain := marginalGain(top.index, scores, selected, profile, opts.DiversityLambda)
 		ratio := gain / float64(cost)
-		if top.version != version || ratio+1e-12 < top.ratio {
+		if top.version != version || ratio+relativeEpsilon(ratio) < top.ratio {
 			heap.Push(&h, candidate{index: top.index, gain: gain, ratio: ratio, version: version})
 			continue
 		}
-		if gain <= 0 {
+		if gain <= 0 && !items[top.index].Pinned {
 			break
 		}
 		selected[top.index] = true
 		used += cost
 		version++
-		for j := range coverage {
-			if sim[top.index][j] > coverage[j] {
-				coverage[j] = sim[top.index][j]
-			}
-		}
 	}
 	result := Selection{Scores: scores}
 	for i, score := range scores {
@@ -91,23 +86,43 @@ func Select(items []Item, opts Options) Selection {
 	return result
 }
 
-func marginalGain(index int, scores []ScoredItem, selected []bool, coverage []float64, sim [][]float64, lambda float64) float64 {
+func marginalGain(index int, scores []ScoredItem, selected []bool, profile corpusProfile, lambda float64) float64 {
 	if selected[index] {
 		return 0
 	}
 	gain := scores[index].Weight
+	if scores[index].Item.Pinned {
+		return gain + 1
+	}
 	if lambda <= 0 {
 		return gain
 	}
-	for j := range scores {
-		if sim[index][j] > coverage[j] {
-			gain += lambda * scores[j].Weight * (sim[index][j] - coverage[j])
+	redundancy := 0.0
+	for i, ok := range selected {
+		if !ok {
+			continue
+		}
+		sim := approximateSimilarity(profile.items[index].feature, profile.items[i].feature, profile.idf)
+		if sim > redundancy {
+			redundancy = sim
 		}
 	}
-	return gain
+	return gain * (1 - lambda*redundancy)
+}
+
+func relativeEpsilon(value float64) float64 {
+	if value < 0 {
+		value = -value
+	}
+	if value < 1 {
+		value = 1
+	}
+	return value * 1e-9
 }
 
 func buildSimilarityMatrix(items []Item) [][]float64 {
+	opts := DefaultOptions()
+	profile := buildCorpusProfile(items, opts)
 	sim := make([][]float64, len(items))
 	for i := range sim {
 		sim[i] = make([]float64, len(items))
@@ -115,7 +130,7 @@ func buildSimilarityMatrix(items []Item) [][]float64 {
 	}
 	for i := 0; i < len(items); i++ {
 		for j := i + 1; j < len(items); j++ {
-			value := longestCommonSubstringSimilarity(items[i].Content, items[j].Content)
+			value := approximateSimilarity(profile.items[i].feature, profile.items[j].feature, profile.idf)
 			sim[i][j] = value
 			sim[j][i] = value
 		}
