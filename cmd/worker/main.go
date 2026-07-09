@@ -10,20 +10,11 @@ import (
 	"time"
 
 	ingestionusecase "agentcanvas/internal/application/ingestion_usecase"
-	"agentcanvas/internal/domain/retrieval"
+	"agentcanvas/internal/infrastructure"
 	chunkerinfra "agentcanvas/internal/infrastructure/chunker"
-	cryptoinfra "agentcanvas/internal/infrastructure/crypto"
-	esinfra "agentcanvas/internal/infrastructure/elasticsearch"
 	"agentcanvas/internal/infrastructure/llm"
-	minioinfra "agentcanvas/internal/infrastructure/minio"
 	mysqlinfra "agentcanvas/internal/infrastructure/mysql"
 	parserinfra "agentcanvas/internal/infrastructure/parser"
-	queueinfra "agentcanvas/internal/infrastructure/queue"
-	redisinfra "agentcanvas/internal/infrastructure/redis"
-	compositeretrieval "agentcanvas/internal/infrastructure/retrieval/composite"
-	esretrieval "agentcanvas/internal/infrastructure/retrieval/elasticsearch"
-	milvusretrieval "agentcanvas/internal/infrastructure/retrieval/milvus"
-	"agentcanvas/internal/infrastructure/vectorstore"
 	"agentcanvas/internal/pkg/config"
 	"agentcanvas/internal/pkg/logger"
 )
@@ -46,48 +37,21 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	db, err := mysqlinfra.New(cfg.MySQL)
+	infraDeps, err := infrastructure.InitInfrastructure(ctx, cfg, infrastructure.InitOptions{InitializeQueue: true, PingRedisQueue: true})
 	if err != nil {
-		appLogger.Error("init mysql failed", "error", err)
+		appLogger.Error("init infrastructure failed", "error", err)
 		os.Exit(1)
 	}
-	minioClient, err := minioinfra.New(cfg.MinIO)
-	if err != nil {
-		appLogger.Error("init minio failed", "error", err)
-		os.Exit(1)
-	}
-	if err := minioinfra.EnsureBucket(ctx, minioClient, cfg.MinIO.Bucket); err != nil {
-		appLogger.Error("ensure minio bucket failed", "error", err)
-		os.Exit(1)
-	}
-	esClient, err := esinfra.New(cfg.Elasticsearch)
-	if err != nil {
-		appLogger.Error("init elasticsearch failed", "error", err)
-		os.Exit(1)
-	}
-	esStore := esretrieval.NewStore(esClient, cfg.Elasticsearch)
-	var indexer retrieval.Indexer = esStore
-	if cfg.Milvus.Enabled {
-		milvusVector := vectorstore.NewMilvusStore(cfg.Milvus.Address, cfg.Milvus.Token, vectorstore.HNSWConfig{M: cfg.Milvus.M, EFConstruction: cfg.Milvus.EFConstruction, EFSearch: cfg.Milvus.EFSearch, MetricType: cfg.Milvus.MetricType})
-		milvusStore := milvusretrieval.NewStore(milvusVector, cfg.Milvus.Collection, cfg.Milvus.Dimensions, vectorstore.HNSWConfig{M: cfg.Milvus.M, EFConstruction: cfg.Milvus.EFConstruction, EFSearch: cfg.Milvus.EFSearch, MetricType: cfg.Milvus.MetricType})
-		indexer = compositeretrieval.New(esStore, milvusStore)
-	}
-	if err := indexer.EnsureIndex(ctx); err != nil {
-		appLogger.Error("ensure elasticsearch chunk index failed", "error", err)
-		os.Exit(1)
-	}
+	db := infraDeps.DB
+	indexer := infraDeps.RetrievalStore
 
 	knowledgeRepo := mysqlinfra.NewKnowledgeBaseRepository(db)
 	documentRepo := mysqlinfra.NewDocumentRepository(db)
 	chunkRepo := mysqlinfra.NewChunkRepository(db)
 	ingestionJobRepo := mysqlinfra.NewIngestionJobRepository(db)
 	providerRepo := mysqlinfra.NewProviderRepository(db)
-	fileStorage := minioinfra.NewFileStorage(minioClient, cfg.MinIO.Bucket)
-	secretBox, err := cryptoinfra.NewSecretBox(cfg.Security.SecretEncryptKey)
-	if err != nil {
-		appLogger.Error("init secret box failed", "error", err)
-		os.Exit(1)
-	}
+	fileStorage := infraDeps.FileStorage
+	secretBox := infraDeps.SecretBox
 	parserRegistry := parserinfra.NewDefaultRegistry()
 	if cfg.OCR.Enabled {
 		parserRegistry = parserinfra.NewDefaultRegistryWithOCR(parserinfra.NewHTTPOCRClient(cfg.OCR.Endpoint, cfg.OCR.Token, time.Duration(cfg.OCR.TimeoutSeconds)*time.Second))
@@ -107,21 +71,7 @@ func main() {
 		secretBox,
 		cfg.Elasticsearch.ChunkIndex,
 	)
-	var jobQueue queueinfra.JobQueue
-	if cfg.Queue.Backend == "redis_stream" {
-		redisClient := redisinfra.New(cfg.Redis)
-		if err := redisinfra.Ping(ctx, redisClient); err != nil {
-			appLogger.Error("init redis stream queue failed", "error", err)
-			os.Exit(1)
-		}
-		jobQueue, err = queueinfra.NewConfiguredJobQueue(ctx, cfg, redisClient)
-	} else {
-		jobQueue, err = queueinfra.NewConfiguredJobQueue(ctx, cfg, nil)
-	}
-	if err != nil {
-		appLogger.Error("init job queue failed", "backend", cfg.Queue.Backend, "error", err)
-		os.Exit(1)
-	}
+	jobQueue := infraDeps.JobQueue
 
 	hostname, _ := os.Hostname()
 	workerID := fmt.Sprintf("%s-%d", hostname, os.Getpid())
