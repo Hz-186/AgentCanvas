@@ -13,7 +13,7 @@ CREATE TABLE IF NOT EXISTS workflows (
     INDEX idx_status (status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
-CREATE TABLE IF NOT EXISTS workflow_flow_versions (
+CREATE TABLE IF NOT EXISTS workflow_versions (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
     owner_id BIGINT NOT NULL,
     workflow_id BIGINT NOT NULL,
