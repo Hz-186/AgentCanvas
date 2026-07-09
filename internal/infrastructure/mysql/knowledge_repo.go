@@ -21,39 +21,24 @@ func (r *KnowledgeBaseRepository) Create(ctx context.Context, kb *knowledge.Know
 	now := time.Now().UTC()
 	kb.CreatedAt = now
 	kb.UpdatedAt = now
-	return r.db.WithContext(ctx).Create(kb).Error
+	return newBaseRepository[knowledge.KnowledgeBase](r.db).create(ctx, kb)
 }
 
 func (r *KnowledgeBaseRepository) ListByOwner(ctx context.Context, ownerID int64) ([]knowledge.KnowledgeBase, error) {
-	var items []knowledge.KnowledgeBase
-	err := r.db.WithContext(ctx).
-		Where("owner_id = ? AND deleted_at IS NULL", ownerID).
-		Order("id DESC").
-		Find(&items).Error
-	return items, err
+	return newBaseRepository[knowledge.KnowledgeBase](r.db).listActiveByOwner(ctx, ownerID, "id DESC")
 }
 
 func (r *KnowledgeBaseRepository) FindByID(ctx context.Context, ownerID, id int64) (*knowledge.KnowledgeBase, error) {
-	var kb knowledge.KnowledgeBase
-	err := r.db.WithContext(ctx).
-		Where("id = ? AND owner_id = ? AND deleted_at IS NULL", id, ownerID).
-		First(&kb).Error
-	if err != nil {
-		return nil, err
-	}
-	return &kb, nil
+	return newBaseRepository[knowledge.KnowledgeBase](r.db).findActiveByID(ctx, ownerID, id)
 }
 
 func (r *KnowledgeBaseRepository) Update(ctx context.Context, kb *knowledge.KnowledgeBase) error {
 	kb.UpdatedAt = time.Now().UTC()
-	return r.db.WithContext(ctx).Save(kb).Error
+	return newBaseRepository[knowledge.KnowledgeBase](r.db).save(ctx, kb)
 }
 
 func (r *KnowledgeBaseRepository) SoftDelete(ctx context.Context, ownerID, id int64) error {
-	now := time.Now().UTC()
-	return r.db.WithContext(ctx).Model(&knowledge.KnowledgeBase{}).
-		Where("id = ? AND owner_id = ? AND deleted_at IS NULL", id, ownerID).
-		Updates(map[string]any{"deleted_at": now, "updated_at": now}).Error
+	return newBaseRepository[knowledge.KnowledgeBase](r.db).softDelete(ctx, &knowledge.KnowledgeBase{}, ownerID, id)
 }
 
 func (r *KnowledgeBaseRepository) AdjustCounts(ctx context.Context, ownerID, id int64, documentDelta, chunkDelta int) error {

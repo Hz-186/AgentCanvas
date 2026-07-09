@@ -1,10 +1,14 @@
 package workflow
 
-import "time"
+import (
+	"time"
+
+	"agentcanvas/internal/domain"
+)
 
 const (
-	StatusDisabled = iota
-	StatusActive
+	StatusDisabled = domain.StatusDisabled
+	StatusActive   = domain.StatusActive
 )
 
 type Workflow struct {

@@ -480,7 +480,7 @@ func (h *ToolHandler) RefreshMCPServer(c *gin.Context) {
 		writeAppError(c, err)
 		return
 	}
-	client := mcpClientFromServer(item)
+	client := toolruntime.NewMCPClientFromServer(item)
 	discovered, err := client.Discover(c.Request.Context())
 	now := time.Now().UTC()
 	if err != nil {
@@ -557,13 +557,6 @@ func normalizeMCPServerRequest(item *tool.MCPServer) error {
 		item.EnvJSON = json.RawMessage("{}")
 	}
 	return nil
-}
-
-func mcpClientFromServer(item *tool.MCPServer) *toolruntime.MCPClient {
-	if item.Transport == tool.MCPTransportStdio {
-		return toolruntime.NewMCPStdioClient(item.Name, item.Command, item.ArgsSlice(), item.EnvMap())
-	}
-	return toolruntime.NewMCPClient(item.Name, item.EndpointURL)
 }
 
 func hashJSON(raw json.RawMessage) string {

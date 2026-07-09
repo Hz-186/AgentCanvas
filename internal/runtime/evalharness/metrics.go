@@ -1,6 +1,9 @@
 package evalharness
 
-import "math"
+import (
+	"math"
+	"strings"
+)
 
 type RAGCase struct {
 	Query             string   `json:"query"`
@@ -47,7 +50,9 @@ type AgentMetrics struct {
 func ScoreRAG(tc RAGCase, hits []RetrievalHit, citations []string) RAGMetrics {
 	expected := set(tc.ExpectedDocIDs)
 	requiredCitations := set(tc.RequiredCitations)
-	metrics := RAGMetrics{CandidateSize: len(hits)}
+	metrics := RAGMetrics{
+		CandidateSize: len(hits),
+	}
 	if len(expected) > 0 && len(hits) > 0 {
 		found := 0
 		firstRank := 0
@@ -92,7 +97,7 @@ func ScoreRAG(tc RAGCase, hits []RetrievalHit, citations []string) RAGMetrics {
 
 func ScoreAgent(tc AgentCase, trace AgentTrace) AgentMetrics {
 	metrics := AgentMetrics{TokenSaved: trace.TokenSaved, LatencyMS: trace.LatencyMS}
-	metrics.ToolCallAccuracy = coverage(tc.RequiredTools, trace.UsedTools)
+	metrics.ToolCallAccuracy = Coverage(tc.RequiredTools, trace.UsedTools)
 	if trace.SchemaCompliant {
 		metrics.SchemaCompliance = 1
 	}
@@ -106,23 +111,25 @@ func ScoreAgent(tc AgentCase, trace AgentTrace) AgentMetrics {
 	return metrics
 }
 
-func coverage(required, actual []string) float64 {
-	if len(required) == 0 {
+func Coverage(required, actual []string) float64 {
+	requiredSet := set(required)
+	if len(requiredSet) == 0 {
 		return 1
 	}
 	actualSet := set(actual)
 	matched := 0
-	for _, item := range required {
+	for item := range requiredSet {
 		if actualSet[item] {
 			matched++
 		}
 	}
-	return float64(matched) / float64(len(required))
+	return float64(matched) / float64(len(requiredSet))
 }
 
 func set(items []string) map[string]bool {
 	out := map[string]bool{}
 	for _, item := range items {
+		item = strings.TrimSpace(item)
 		if item != "" {
 			out[item] = true
 		}

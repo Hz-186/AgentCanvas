@@ -67,11 +67,7 @@ func NewRouter(deps RouterDeps) *gin.Engine {
 			protected.GET("/auth/me", deps.AuthHandler.Me)
 
 			protected.GET("/provider-catalog", deps.ProviderHandler.ListCatalog)
-			protected.GET("/model-providers", deps.ProviderHandler.List)
-			protected.POST("/model-providers", deps.ProviderHandler.Create)
-			protected.GET("/model-providers/:id", deps.ProviderHandler.Get)
-			protected.PATCH("/model-providers/:id", deps.ProviderHandler.Update)
-			protected.DELETE("/model-providers/:id", deps.ProviderHandler.Delete)
+			registerCRUD(protected, "/model-providers", ":id", deps.ProviderHandler.Create, deps.ProviderHandler.List, deps.ProviderHandler.Get, deps.ProviderHandler.Update, deps.ProviderHandler.Delete)
 			protected.POST("/model-providers/:id/test", deps.ProviderHandler.Test)
 
 			protected.GET("/api-tokens", deps.AuthHandler.ListAPITokens)
@@ -80,44 +76,20 @@ func NewRouter(deps RouterDeps) *gin.Engine {
 
 			protected.GET("/audit-logs", deps.AuditHandler.List)
 
-			protected.GET("/memories", deps.MemoryHandler.List)
-			protected.POST("/memories", deps.MemoryHandler.Create)
-			protected.GET("/memories/:id", deps.MemoryHandler.Get)
-			protected.PATCH("/memories/:id", deps.MemoryHandler.Update)
-			protected.DELETE("/memories/:id", deps.MemoryHandler.Delete)
+			registerCRUD(protected, "/memories", ":id", deps.MemoryHandler.Create, deps.MemoryHandler.List, deps.MemoryHandler.Get, deps.MemoryHandler.Update, deps.MemoryHandler.Delete)
 
-			protected.GET("/tool-definitions", deps.ToolHandler.List)
-			protected.POST("/tool-definitions", deps.ToolHandler.Create)
-			protected.GET("/tool-definitions/:id", deps.ToolHandler.Get)
-			protected.PATCH("/tool-definitions/:id", deps.ToolHandler.Update)
-			protected.DELETE("/tool-definitions/:id", deps.ToolHandler.Delete)
+			registerCRUD(protected, "/tool-definitions", ":id", deps.ToolHandler.Create, deps.ToolHandler.List, deps.ToolHandler.Get, deps.ToolHandler.Update, deps.ToolHandler.Delete)
 			protected.POST("/tool-definitions/:id/test", deps.ToolHandler.Test)
-			protected.POST("/tool-policies", deps.ToolHandler.CreatePolicy)
-			protected.GET("/tool-policies", deps.ToolHandler.ListPolicies)
-			protected.GET("/tool-policies/:id", deps.ToolHandler.GetPolicy)
-			protected.PATCH("/tool-policies/:id", deps.ToolHandler.UpdatePolicy)
-			protected.DELETE("/tool-policies/:id", deps.ToolHandler.DeletePolicy)
-			protected.POST("/tool-packs", deps.ToolHandler.CreatePack)
-			protected.GET("/tool-packs", deps.ToolHandler.ListPacks)
-			protected.GET("/tool-packs/:id", deps.ToolHandler.GetPack)
-			protected.PATCH("/tool-packs/:id", deps.ToolHandler.UpdatePack)
-			protected.DELETE("/tool-packs/:id", deps.ToolHandler.DeletePack)
+			registerCRUD(protected, "/tool-policies", ":id", deps.ToolHandler.CreatePolicy, deps.ToolHandler.ListPolicies, deps.ToolHandler.GetPolicy, deps.ToolHandler.UpdatePolicy, deps.ToolHandler.DeletePolicy)
+			registerCRUD(protected, "/tool-packs", ":id", deps.ToolHandler.CreatePack, deps.ToolHandler.ListPacks, deps.ToolHandler.GetPack, deps.ToolHandler.UpdatePack, deps.ToolHandler.DeletePack)
 			protected.POST("/tool-packs/:id/items", deps.ToolHandler.AddPackItem)
 			protected.DELETE("/tool-packs/:id/items", deps.ToolHandler.RemovePackItem)
 			protected.GET("/tool-packs/:id/items", deps.ToolHandler.ListPackItems)
-			protected.POST("/mcp-servers", deps.ToolHandler.CreateMCPServer)
-			protected.GET("/mcp-servers", deps.ToolHandler.ListMCPServers)
-			protected.GET("/mcp-servers/:id", deps.ToolHandler.GetMCPServer)
-			protected.PATCH("/mcp-servers/:id", deps.ToolHandler.UpdateMCPServer)
-			protected.DELETE("/mcp-servers/:id", deps.ToolHandler.DeleteMCPServer)
+			registerCRUD(protected, "/mcp-servers", ":id", deps.ToolHandler.CreateMCPServer, deps.ToolHandler.ListMCPServers, deps.ToolHandler.GetMCPServer, deps.ToolHandler.UpdateMCPServer, deps.ToolHandler.DeleteMCPServer)
 			protected.POST("/mcp-servers/:id/refresh", deps.ToolHandler.RefreshMCPServer)
 			protected.GET("/mcp-servers/:id/tools", deps.ToolHandler.ListMCPTools)
 
-			protected.POST("/knowledge-bases", deps.KnowledgeHandler.Create)
-			protected.GET("/knowledge-bases", deps.KnowledgeHandler.List)
-			protected.GET("/knowledge-bases/:id", deps.KnowledgeHandler.Get)
-			protected.PATCH("/knowledge-bases/:id", deps.KnowledgeHandler.Update)
-			protected.DELETE("/knowledge-bases/:id", deps.KnowledgeHandler.Delete)
+			registerCRUD(protected, "/knowledge-bases", ":id", deps.KnowledgeHandler.Create, deps.KnowledgeHandler.List, deps.KnowledgeHandler.Get, deps.KnowledgeHandler.Update, deps.KnowledgeHandler.Delete)
 			protected.POST("/knowledge-bases/:id/reindex", deps.KnowledgeHandler.Reindex)
 			protected.POST("/knowledge-bases/:id/documents", deps.KnowledgeHandler.UploadDocument)
 			protected.GET("/knowledge-bases/:id/documents", deps.KnowledgeHandler.ListDocuments)
@@ -130,11 +102,7 @@ func NewRouter(deps RouterDeps) *gin.Engine {
 
 			protected.GET("/ingestion-jobs/:id", deps.KnowledgeHandler.GetIngestionJob)
 
-			protected.POST("/dialogs", deps.DialogHandler.Create)
-			protected.GET("/dialogs", deps.DialogHandler.List)
-			protected.GET("/dialogs/:dialog_id", deps.DialogHandler.Get)
-			protected.PATCH("/dialogs/:dialog_id", deps.DialogHandler.Update)
-			protected.DELETE("/dialogs/:dialog_id", deps.DialogHandler.Delete)
+			registerCRUD(protected, "/dialogs", ":dialog_id", deps.DialogHandler.Create, deps.DialogHandler.List, deps.DialogHandler.Get, deps.DialogHandler.Update, deps.DialogHandler.Delete)
 			protected.POST("/dialogs/:dialog_id/rag/chat", deps.ChatHandler.Chat)
 			protected.POST("/dialogs/:dialog_id/rag/chat/stream", deps.ChatHandler.StreamChat)
 			protected.GET("/dialogs/:dialog_id/conversations", deps.ChatHandler.ListConversations)
@@ -142,11 +110,7 @@ func NewRouter(deps RouterDeps) *gin.Engine {
 			protected.GET("/dialogs/:dialog_id/conversations/:id/messages", deps.ChatHandler.ListMessages)
 			protected.DELETE("/dialogs/:dialog_id/conversations/:id", deps.ChatHandler.DeleteConversation)
 
-			protected.POST("/workflows", deps.WorkflowHandler.Create)
-			protected.GET("/workflows", deps.WorkflowHandler.List)
-			protected.GET("/workflows/:id", deps.WorkflowHandler.Get)
-			protected.PATCH("/workflows/:id", deps.WorkflowHandler.Update)
-			protected.DELETE("/workflows/:id", deps.WorkflowHandler.Delete)
+			registerCRUD(protected, "/workflows", ":id", deps.WorkflowHandler.Create, deps.WorkflowHandler.List, deps.WorkflowHandler.Get, deps.WorkflowHandler.Update, deps.WorkflowHandler.Delete)
 			protected.GET("/workflows/:id/profile", deps.WorkflowHandler.GetProfile)
 			protected.PATCH("/workflows/:id/profile", deps.WorkflowHandler.UpdateProfile)
 			protected.POST("/workflows/:id/eval-datasets", deps.WorkflowHandler.CreateEvalDataset)
@@ -190,6 +154,15 @@ func NewRouter(deps RouterDeps) *gin.Engine {
 	registerWebUI(r)
 
 	return r
+}
+
+func registerCRUD(rg *gin.RouterGroup, basePath string, idSegment string, create, list, get, update, delete gin.HandlerFunc) {
+	rg.POST(basePath, create)
+	rg.GET(basePath, list)
+	itemPath := strings.TrimRight(basePath, "/") + "/" + strings.TrimLeft(idSegment, "/")
+	rg.GET(itemPath, get)
+	rg.PATCH(itemPath, update)
+	rg.DELETE(itemPath, delete)
 }
 
 func registerWebUI(r *gin.Engine) {

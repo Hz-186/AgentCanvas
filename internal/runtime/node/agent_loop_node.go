@@ -153,14 +153,6 @@ func (AgentLoopNode) Validate(config json.RawMessage) error {
 	return validateAgentRuntimeConfig(cfg, "agent_loop", false)
 }
 
-func parseLegacyAgentLoopConfig(config json.RawMessage) (agentRuntimeConfig, error) {
-	var cfg agentRuntimeConfig
-	if err := json.Unmarshal(config, &cfg); err != nil {
-		return cfg, fmt.Errorf("%w: invalid agent_loop config", agenterrors.ErrInvalidInput)
-	}
-	return cfg, nil
-}
-
 func parseAgentNodeConfig(config json.RawMessage) (agentRuntimeConfig, error) {
 	var flat agentRuntimeConfig
 	if !hasNestedAgentModel(config) {
@@ -472,33 +464,35 @@ func (n AgentNode) runAgent(ctx context.Context, rc *engine.RunContext, input en
 			return pausedForCheckpointMismatch(resume.Checkpoint, mismatch), nil
 		}
 		resumeRequest, buildErr := runtimeagent.BuildResumeRequest(runtimeagent.ResumeRequest{
-			OwnerID:            rc.OwnerID,
-			WorkflowID:         rc.WorkflowID,
-			RunID:              rc.RunID,
-			NodeID:             rc.CurrentNodeID,
-			CallDepth:          rc.CallDepth,
-			WorkflowCallChain:  append([]int64(nil), rc.WorkflowCallChain...),
-			ConversationID:     rc.ConversationID,
-			Provider:           loaded.Config,
-			Model:              loaded.Model,
-			Mode:               mode,
-			Plan:               plan,
-			SystemPrompt:       systemPrompt,
-			Task:               task,
-			ReflectionEnabled:  cfg.ReflectionEnabled,
-			Temperature:        cfg.Temperature,
-			MaxIterations:      cfg.MaxIterations,
-			MaxToolCalls:       cfg.MaxToolCalls,
-			MaxExecutionTimeMS: cfg.MaxExecutionTimeMS,
-			MaxInputChars:      cfg.MaxInputChars,
-			MaxInputTokens:     cfg.MaxInputTokens,
-			RuleTrace:          ruleTrace,
-			ContextBlocks:      contextBlocks,
-			ToolPolicy:         runRequest.ToolPolicy,
-			Tools:              tools,
-			Checkpoint:         resume.Checkpoint,
-			Approved:           resume.Approved,
-			RejectionNote:      resume.RejectionNote,
+			RunRequest: runtimeagent.RunRequest{
+				OwnerID:            rc.OwnerID,
+				WorkflowID:         rc.WorkflowID,
+				RunID:              rc.RunID,
+				NodeID:             rc.CurrentNodeID,
+				CallDepth:          rc.CallDepth,
+				WorkflowCallChain:  append([]int64(nil), rc.WorkflowCallChain...),
+				ConversationID:     rc.ConversationID,
+				Provider:           loaded.Config,
+				Model:              loaded.Model,
+				Mode:               mode,
+				Plan:               plan,
+				SystemPrompt:       systemPrompt,
+				Task:               task,
+				ReflectionEnabled:  cfg.ReflectionEnabled,
+				Temperature:        cfg.Temperature,
+				MaxIterations:      cfg.MaxIterations,
+				MaxToolCalls:       cfg.MaxToolCalls,
+				MaxExecutionTimeMS: cfg.MaxExecutionTimeMS,
+				MaxInputChars:      cfg.MaxInputChars,
+				MaxInputTokens:     cfg.MaxInputTokens,
+				RuleTrace:          ruleTrace,
+				ContextBlocks:      contextBlocks,
+				ToolPolicy:         runRequest.ToolPolicy,
+				Tools:              tools,
+			},
+			Checkpoint:    resume.Checkpoint,
+			Approved:      resume.Approved,
+			RejectionNote: resume.RejectionNote,
 		})
 		if buildErr != nil {
 			return nil, buildErr
@@ -997,7 +991,7 @@ func (n AgentNode) loadMCPTools(ctx context.Context, ownerID int64, serverIDs []
 		if server.Status != tool.MCPStatusActive {
 			continue
 		}
-		client := mcpClientFromDomainServer(server)
+		client := toolruntime.NewMCPClientFromServer(server)
 		defs := cachedMCPToolDefs(ctx, n.MCPServers, ownerID, serverID)
 		if len(defs) == 0 {
 			var err error

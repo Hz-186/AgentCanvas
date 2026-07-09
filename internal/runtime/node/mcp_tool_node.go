@@ -65,7 +65,7 @@ func (n MCPToolNode) Run(ctx context.Context, rc *engine.RunContext, input engin
 		resolvedInput = json.RawMessage(`{}`)
 	}
 	resolvedInput = []byte(engine.ResolveTemplate(string(resolvedInput), rc))
-	client := mcpClientFromDomainServer(server)
+	client := toolruntime.NewMCPClientFromServer(server)
 	result, err := client.CallTool(ctx, strings.TrimSpace(cfg.ToolName), resolvedInput)
 	if err != nil {
 		return nil, err
@@ -83,11 +83,4 @@ func (n MCPToolNode) Run(ctx context.Context, rc *engine.RunContext, input engin
 		output["metadata"] = result.Metadata
 	}
 	return output, nil
-}
-
-func mcpClientFromDomainServer(server *tool.MCPServer) *toolruntime.MCPClient {
-	if server.Transport == tool.MCPTransportStdio {
-		return toolruntime.NewMCPStdioClient(server.Name, server.Command, server.ArgsSlice(), server.EnvMap())
-	}
-	return toolruntime.NewMCPClient(server.Name, server.EndpointURL)
 }

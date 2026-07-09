@@ -20,10 +20,28 @@ import (
 	runtimeagent "agentcanvas/internal/runtime/agent"
 	"agentcanvas/internal/runtime/engine"
 	runtimenode "agentcanvas/internal/runtime/node"
+	"agentcanvas/internal/runtime/sandbox"
 	"agentcanvas/internal/runtime/toolruntime"
 
 	"gorm.io/gorm"
 )
+
+func mustDefaultWorkflowNodes(t *testing.T, deps runtimenode.Deps) []engine.Node {
+	t.Helper()
+	if deps.ToolCalling == nil {
+		if client, ok := deps.LLM.(llm.ToolCallingClient); ok {
+			deps.ToolCalling = client
+		}
+	}
+	if deps.Sandbox == nil {
+		deps.Sandbox = sandbox.NewDockerRunner()
+	}
+	nodes, err := runtimenode.DefaultNodes(deps)
+	if err != nil {
+		t.Fatalf("DefaultNodes() error = %v", err)
+	}
+	return nodes
+}
 
 func TestCreateFlowVersionReusesEquivalentLatestVersion(t *testing.T) {
 	versions := &fakeFlowVersionRepo{items: []*workflow.WorkflowVersion{
@@ -563,8 +581,8 @@ func TestRunEvalDatasetExecutesCasesAndScoresOutput(t *testing.T) {
 		events:     &fakeRunEventRepo{},
 		nodeLogs:   &fakeNodeLogRepo{},
 		evals:      evals,
-		executor:   engine.NewExecutor(runtimenode.DefaultNodes(runtimenode.Deps{})),
-		validator:  flow.NewValidator(engine.NewExecutor(runtimenode.DefaultNodes(runtimenode.Deps{}))),
+		executor:   engine.NewExecutor(mustDefaultWorkflowNodes(t, runtimenode.Deps{LLM: &fakeResumeLLM{}})),
+		validator:  flow.NewValidator(engine.NewExecutor(mustDefaultWorkflowNodes(t, runtimenode.Deps{LLM: &fakeResumeLLM{}}))),
 		runCancels: newRunCancelRegistry(),
 	}
 

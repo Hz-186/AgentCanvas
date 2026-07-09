@@ -2,6 +2,7 @@ package node
 
 import (
 	"context"
+	"fmt"
 
 	"agentcanvas/internal/domain/conversation"
 	"agentcanvas/internal/domain/memory"
@@ -59,33 +60,24 @@ type Deps struct {
 	Sandbox                 sandbox.Runner
 }
 
-func DefaultNodes(deps Deps) []engine.Node {
-	toolCalling := deps.ToolCalling
-	if toolCalling == nil {
-		if client, ok := deps.LLM.(llm.ToolCallingClient); ok {
-			toolCalling = client
-		}
+func DefaultNodes(deps Deps) ([]engine.Node, error) {
+	if deps.ToolCalling == nil {
+		return nil, fmt.Errorf("tool calling client is required")
 	}
-	toolRegistry := deps.ToolRegistry
-	if toolRegistry == nil && deps.Tools != nil {
-		toolRegistry = toolruntime.BasicRegistry{Tools: deps.Tools, Invocations: deps.ToolInvocations}
+	if deps.Sandbox == nil {
+		return nil, fmt.Errorf("sandbox runner is required")
 	}
-	sandboxRunner := deps.Sandbox
-	if sandboxRunner == nil {
-		defaultRunner := sandbox.NewDockerRunner()
-		sandboxRunner = defaultRunner
-	}
-	agentNode := AgentNode{LLM: toolCalling, Providers: deps.Providers, Tools: toolRegistry, ToolPacks: deps.ToolPacks, MCPServers: deps.MCPServers, Retriever: deps.Retriever, MemoryRetriever: deps.MemoryRetriever, Memories: deps.Memories, MemoryLogs: deps.MemoryWriteLogs, WorkingMemory: deps.WorkingMemory, WorkflowCaller: deps.WorkflowCaller, Profiles: deps.Profiles, Sandbox: sandboxRunner, MessageHistory: deps.MessageHistory, OnExtractTrigger: deps.MemoryExtractionTrigger}
+	agentNode := AgentNode{LLM: deps.ToolCalling, Providers: deps.Providers, Tools: deps.ToolRegistry, ToolPacks: deps.ToolPacks, MCPServers: deps.MCPServers, Retriever: deps.Retriever, MemoryRetriever: deps.MemoryRetriever, Memories: deps.Memories, MemoryLogs: deps.MemoryWriteLogs, WorkingMemory: deps.WorkingMemory, WorkflowCaller: deps.WorkflowCaller, Profiles: deps.Profiles, Sandbox: deps.Sandbox, MessageHistory: deps.MessageHistory, OnExtractTrigger: deps.MemoryExtractionTrigger}
 	return []engine.Node{
 		BeginNode{},
 		RetrievalNode{Retriever: deps.Retriever},
 		PromptNode{},
 		LLMNode{Client: deps.LLM, Providers: deps.Providers, History: deps.MessageHistory},
 		AgentLoopNode{AgentNode: agentNode},
-		AgentCallNode{Caller: deps.WorkflowCaller},
-		WorkflowCallNode{Caller: deps.WorkflowCaller},
+		NewAgentCallNode(deps.WorkflowCaller),
+		NewWorkflowCallNode(deps.WorkflowCaller),
 		TeamCallNode{Teams: deps.Teams, Caller: deps.WorkflowCaller},
-		CodeSandboxNode{Runner: sandboxRunner},
+		CodeSandboxNode{Runner: deps.Sandbox},
 		MessageNode{Writer: deps.Messages},
 		MemoryReadNode{Memories: deps.Memories, Retriever: deps.MemoryRetriever},
 		MemoryWriteNode{Memories: deps.Memories, Logs: deps.MemoryWriteLogs, Retriever: deps.MemoryRetriever},
@@ -94,5 +86,5 @@ func DefaultNodes(deps Deps) []engine.Node {
 		SwitchNode{},
 		JSONOutputNode{},
 		GuardrailNode{},
-	}
+	}, nil
 }

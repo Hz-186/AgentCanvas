@@ -35,16 +35,18 @@ func TestBuildResumeRequestApproved(t *testing.T) {
 		Metadata:        map[string]any{"iteration": 1.0, "tool_calls": 0.0},
 	}
 	req := ResumeRequest{
-		OwnerID:       1,
-		WorkflowID:    2,
-		RunID:         3,
-		NodeID:        "agent",
-		Model:         "gpt-4",
-		Mode:          "react",
-		Approved:      true,
-		Checkpoint:    cp,
-		MaxIterations: 5,
-		MaxToolCalls:  10,
+		RunRequest: RunRequest{
+			OwnerID:       1,
+			WorkflowID:    2,
+			RunID:         3,
+			NodeID:        "agent",
+			Model:         "gpt-4",
+			Mode:          "react",
+			MaxIterations: 5,
+			MaxToolCalls:  10,
+		},
+		Approved:   true,
+		Checkpoint: cp,
 	}
 	runReq, err := BuildResumeRequest(req)
 	if err != nil {
@@ -67,16 +69,18 @@ func TestBuildResumeRequestRejected(t *testing.T) {
 		PendingToolCall: &llm.ToolCall{ID: "call_1", Name: "danger", Arguments: json.RawMessage(`{}`)},
 	}
 	req := ResumeRequest{
-		OwnerID:       1,
-		WorkflowID:    2,
-		RunID:         3,
-		NodeID:        "agent",
-		Model:         "gpt-4",
+		RunRequest: RunRequest{
+			OwnerID:       1,
+			WorkflowID:    2,
+			RunID:         3,
+			NodeID:        "agent",
+			Model:         "gpt-4",
+			MaxIterations: 5,
+			MaxToolCalls:  10,
+		},
 		Approved:      false,
 		RejectionNote: "not allowed",
 		Checkpoint:    cp,
-		MaxIterations: 5,
-		MaxToolCalls:  10,
 	}
 	runReq, err := BuildResumeRequest(req)
 	if err != nil {

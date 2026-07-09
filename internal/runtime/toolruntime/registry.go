@@ -15,13 +15,11 @@ import (
 type BasicRegistry struct {
 	Tools       tool.DefinitionRepository
 	Invocations tool.InvocationRepository
-	Builtins    []RuntimeTool
 }
 
 func (r BasicRegistry) LoadForAgent(ctx context.Context, ownerID int64, toolIDs []int64) ([]RuntimeTool, error) {
-	loaded := make([]RuntimeTool, 0, len(r.Builtins)+len(toolIDs))
-	loaded = append(loaded, r.Builtins...)
-	seenNames := make(map[string]bool, len(loaded)+len(toolIDs))
+	loaded := make([]RuntimeTool, 0, len(toolIDs))
+	seenNames := make(map[string]bool, len(toolIDs))
 	for _, item := range loaded {
 		seenNames[item.Name()] = true
 	}

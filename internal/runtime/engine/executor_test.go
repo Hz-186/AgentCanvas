@@ -16,8 +16,26 @@ import (
 	"agentcanvas/internal/runtime/engine"
 	runtimeevent "agentcanvas/internal/runtime/event"
 	runtimenode "agentcanvas/internal/runtime/node"
+	"agentcanvas/internal/runtime/sandbox"
 	"agentcanvas/internal/runtime/toolruntime"
 )
+
+func mustDefaultNodes(t *testing.T, deps runtimenode.Deps) []engine.Node {
+	t.Helper()
+	if deps.ToolCalling == nil {
+		if client, ok := deps.LLM.(llm.ToolCallingClient); ok {
+			deps.ToolCalling = client
+		}
+	}
+	if deps.Sandbox == nil {
+		deps.Sandbox = sandbox.NewDockerRunner()
+	}
+	nodes, err := runtimenode.DefaultNodes(deps)
+	if err != nil {
+		t.Fatalf("DefaultNodes() error = %v", err)
+	}
+	return nodes
+}
 
 func TestExecutorRunsLinearFlow(t *testing.T) {
 	executor := engine.NewExecutor([]engine.Node{runtimenode.BeginNode{}, runtimenode.PromptNode{}, runtimenode.MessageNode{}})
@@ -49,7 +67,7 @@ func TestExecutorRunsFullPhase4Flow(t *testing.T) {
 	chat := &fakeChatClient{}
 	messages := &fakeMessageWriter{}
 	events := &collectingEmitter{}
-	executor := engine.NewExecutor(runtimenode.DefaultNodes(runtimenode.Deps{Retriever: retriever, LLM: chat, Providers: fakeProviderLoader{}, Messages: messages}))
+	executor := engine.NewExecutor(mustDefaultNodes(t, runtimenode.Deps{Retriever: retriever, LLM: chat, Providers: fakeProviderLoader{}, Messages: messages}))
 	dsl := &flow.DSL{
 		SchemaVersion: flow.SchemaVersionV1,
 		FlowID:        "flow_phase4",
@@ -93,7 +111,7 @@ func TestExecutorRunsFullPhase4Flow(t *testing.T) {
 func TestExecutorRunsAgentLoopNode(t *testing.T) {
 	chat := &fakeChatClient{toolContent: "Agent Loop 已完成"}
 	messages := &fakeMessageWriter{}
-	executor := engine.NewExecutor(runtimenode.DefaultNodes(runtimenode.Deps{LLM: chat, Providers: fakeProviderLoader{}, Messages: messages}))
+	executor := engine.NewExecutor(mustDefaultNodes(t, runtimenode.Deps{LLM: chat, Providers: fakeProviderLoader{}, Messages: messages}))
 	dsl := &flow.DSL{
 		SchemaVersion: flow.SchemaVersionV1,
 		FlowID:        "flow_agent_loop",
@@ -152,7 +170,7 @@ func TestAgentLoopNodeUsesProfileDefaults(t *testing.T) {
 		MaxExecutionTimeMS: 150000,
 		MemoryEnabled:      false,
 	}}
-	executor := engine.NewExecutor(runtimenode.DefaultNodes(runtimenode.Deps{LLM: chat, Providers: fakeProviderLoader{}, Profiles: profiles}))
+	executor := engine.NewExecutor(mustDefaultNodes(t, runtimenode.Deps{LLM: chat, Providers: fakeProviderLoader{}, Profiles: profiles}))
 	if err := executor.ValidateNodeConfig("agent_loop", []byte(`{"task_template":"{{sys.query}}"}`)); err != nil {
 		t.Fatalf("ValidateNodeConfig() error = %v", err)
 	}
@@ -208,7 +226,7 @@ func TestAgentLoopNodeExpandsProfileToolPacks(t *testing.T) {
 		OutputSchemaJSON:       json.RawMessage(`{}`),
 	}}
 	registry := &fakeRuntimeToolRegistry{}
-	executor := engine.NewExecutor(runtimenode.DefaultNodes(runtimenode.Deps{
+	executor := engine.NewExecutor(mustDefaultNodes(t, runtimenode.Deps{
 		LLM:          chat,
 		Providers:    fakeProviderLoader{},
 		Profiles:     profiles,
@@ -252,7 +270,7 @@ func TestAgentLoopNodeValidatesProfileOutputSchema(t *testing.T) {
 		MaxExecutionTimeMS: 150000,
 		OutputSchemaJSON:   json.RawMessage(`{"type":"object","required":["answer"],"properties":{"answer":{"type":"string"}}}`),
 	}}
-	executor := engine.NewExecutor(runtimenode.DefaultNodes(runtimenode.Deps{LLM: chat, Providers: fakeProviderLoader{}, Profiles: profiles}))
+	executor := engine.NewExecutor(mustDefaultNodes(t, runtimenode.Deps{LLM: chat, Providers: fakeProviderLoader{}, Profiles: profiles}))
 	dsl := &flow.DSL{
 		SchemaVersion: flow.SchemaVersionV1,
 		FlowID:        "flow_agent_profile_schema",
@@ -276,7 +294,7 @@ func TestAgentLoopNodeValidatesProfileOutputSchema(t *testing.T) {
 
 func TestExecutorRunsLegacyAgentLoopNode(t *testing.T) {
 	chat := &fakeChatClient{toolContent: "Legacy Agent Loop 已兼容"}
-	executor := engine.NewExecutor(runtimenode.DefaultNodes(runtimenode.Deps{LLM: chat, Providers: fakeProviderLoader{}}))
+	executor := engine.NewExecutor(mustDefaultNodes(t, runtimenode.Deps{LLM: chat, Providers: fakeProviderLoader{}}))
 	dsl := &flow.DSL{
 		SchemaVersion: flow.SchemaVersionV1,
 		FlowID:        "flow_agent_loop",

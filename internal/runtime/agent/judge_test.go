@@ -2,31 +2,33 @@ package agent
 
 import (
 	"testing"
+
+	"agentcanvas/internal/runtime/evalharness"
 )
 
 func TestScoreToolsExact(t *testing.T) {
-	score := scoreTools([]string{"search_knowledge", "call_workflow"}, []string{"search_knowledge", "call_workflow"})
+	score := evalharness.Coverage([]string{"search_knowledge", "call_workflow"}, []string{"search_knowledge", "call_workflow"})
 	if score != 1.0 {
 		t.Fatalf("expected 1.0, got %.2f", score)
 	}
 }
 
 func TestScoreToolsPartial(t *testing.T) {
-	score := scoreTools([]string{"search_knowledge", "write_memory"}, []string{"search_knowledge"})
+	score := evalharness.Coverage([]string{"search_knowledge", "write_memory"}, []string{"search_knowledge"})
 	if score != 0.5 {
 		t.Fatalf("expected 0.5, got %.2f", score)
 	}
 }
 
 func TestScoreToolsNone(t *testing.T) {
-	score := scoreTools([]string{"search_knowledge"}, []string{})
+	score := evalharness.Coverage([]string{"search_knowledge"}, []string{})
 	if score != 0.0 {
 		t.Fatalf("expected 0.0, got %.2f", score)
 	}
 }
 
 func TestScoreToolsNoExpected(t *testing.T) {
-	score := scoreTools([]string{}, []string{"tool_a"})
+	score := evalharness.Coverage([]string{}, []string{"tool_a"})
 	if score != 1.0 {
 		t.Fatalf("expected 1.0 for no expected tools, got %.2f", score)
 	}

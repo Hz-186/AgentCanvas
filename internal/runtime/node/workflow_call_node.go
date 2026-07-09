@@ -12,13 +12,13 @@ import (
 	agenterrors "agentcanvas/internal/pkg/errors"
 )
 
-type WorkflowCallNode struct {
-	Caller toolruntime.WorkflowCaller
+type CallWorkflowNode struct {
+	Caller   toolruntime.WorkflowCaller
+	typeName string
 }
 
-type AgentCallNode struct {
-	Caller toolruntime.WorkflowCaller
-}
+type WorkflowCallNode = CallWorkflowNode
+type AgentCallNode = CallWorkflowNode
 
 type workflowCallConfig struct {
 	WorkflowID    int64          `json:"workflow_id"`
@@ -27,16 +27,23 @@ type workflowCallConfig struct {
 	MaxDepth      int            `json:"max_depth"`
 }
 
-func (WorkflowCallNode) Type() string { return "workflow_call" }
-
-func (WorkflowCallNode) Validate(config json.RawMessage) error {
-	return validateWorkflowCallConfig(config, "workflow_call")
+func NewWorkflowCallNode(caller toolruntime.WorkflowCaller) CallWorkflowNode {
+	return CallWorkflowNode{Caller: caller, typeName: "workflow_call"}
 }
 
-func (AgentCallNode) Type() string { return "agent_call" }
+func NewAgentCallNode(caller toolruntime.WorkflowCaller) CallWorkflowNode {
+	return CallWorkflowNode{Caller: caller, typeName: "agent_call"}
+}
 
-func (AgentCallNode) Validate(config json.RawMessage) error {
-	return validateWorkflowCallConfig(config, "agent_call")
+func (n CallWorkflowNode) Type() string {
+	if n.typeName == "" {
+		return "workflow_call"
+	}
+	return n.typeName
+}
+
+func (n CallWorkflowNode) Validate(config json.RawMessage) error {
+	return validateWorkflowCallConfig(config, n.Type())
 }
 
 func validateWorkflowCallConfig(config json.RawMessage, nodeType string) error {
@@ -53,11 +60,7 @@ func validateWorkflowCallConfig(config json.RawMessage, nodeType string) error {
 	return nil
 }
 
-func (n WorkflowCallNode) Run(ctx context.Context, rc *engine.RunContext, input engine.NodeInput, config json.RawMessage) (engine.NodeOutput, error) {
-	return runWorkflowCallNode(ctx, rc, input, config, n.Caller, n.Type())
-}
-
-func (n AgentCallNode) Run(ctx context.Context, rc *engine.RunContext, input engine.NodeInput, config json.RawMessage) (engine.NodeOutput, error) {
+func (n CallWorkflowNode) Run(ctx context.Context, rc *engine.RunContext, input engine.NodeInput, config json.RawMessage) (engine.NodeOutput, error) {
 	return runWorkflowCallNode(ctx, rc, input, config, n.Caller, n.Type())
 }
 

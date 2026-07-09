@@ -3,7 +3,7 @@ package audit
 import "time"
 
 type Log struct {
-	ID           int64     `json:"id" gorm:"primary_key;column:id"`
+	ID           int64     `json:"id" gorm:"primaryKey;column:id"`
 	OwnerID      int64     `json:"owner_id" gorm:"column:owner_id"`
 	ActorID      int64     `json:"actor_id" gorm:"column:actor_id"`
 	Action       string    `json:"action" gorm:"column:action"`

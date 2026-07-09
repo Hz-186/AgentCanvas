@@ -2,7 +2,7 @@ package knowledge
 
 import "context"
 
-type KnowledgeBaseRepository interface {
+type BaseRepository interface {
 	Create(ctx context.Context, kb *KnowledgeBase) error
 	ListByOwner(ctx context.Context, ownerID int64) ([]KnowledgeBase, error)
 	FindByID(ctx context.Context, ownerID, id int64) (*KnowledgeBase, error)
@@ -10,6 +10,8 @@ type KnowledgeBaseRepository interface {
 	SoftDelete(ctx context.Context, ownerID, id int64) error
 	AdjustCounts(ctx context.Context, ownerID, id int64, documentDelta, chunkDelta int) error
 }
+
+type KnowledgeBaseRepository = BaseRepository
 
 type DocumentRepository interface {
 	Create(ctx context.Context, doc *Document) error

@@ -16,22 +16,14 @@ import (
 	retrievalusecase "agentcanvas/internal/application/retrieval_usecase"
 	toolusecase "agentcanvas/internal/application/tool_usecase"
 	agentusecase "agentcanvas/internal/application/workflow_usecase"
-	"agentcanvas/internal/domain/retrieval"
+	"agentcanvas/internal/infrastructure"
 	cataloginfra "agentcanvas/internal/infrastructure/catalog"
 	cryptoinfra "agentcanvas/internal/infrastructure/crypto"
-	esinfra "agentcanvas/internal/infrastructure/elasticsearch"
 	jobinfra "agentcanvas/internal/infrastructure/job"
 	"agentcanvas/internal/infrastructure/llm"
-	minioinfra "agentcanvas/internal/infrastructure/minio"
 	mysqlinfra "agentcanvas/internal/infrastructure/mysql"
 	oauthinfra "agentcanvas/internal/infrastructure/oauth"
-	queueinfra "agentcanvas/internal/infrastructure/queue"
 	redisinfra "agentcanvas/internal/infrastructure/redis"
-	retrievalinfra "agentcanvas/internal/infrastructure/retrieval"
-	compositeretrieval "agentcanvas/internal/infrastructure/retrieval/composite"
-	esretrieval "agentcanvas/internal/infrastructure/retrieval/elasticsearch"
-	milvusretrieval "agentcanvas/internal/infrastructure/retrieval/milvus"
-	"agentcanvas/internal/infrastructure/vectorstore"
 	httpserver "agentcanvas/internal/interface/http"
 	"agentcanvas/internal/interface/http/handler"
 	"agentcanvas/internal/pkg/config"
@@ -46,51 +38,21 @@ type App struct {
 }
 
 func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, error) {
-	db, err := mysqlinfra.New(cfg.MySQL)
+	infraDeps, err := infrastructure.InitInfrastructure(ctx, cfg, infrastructure.InitOptions{IncludeMemoryRetrieval: true, InitializeQueue: true})
 	if err != nil {
-		return nil, fmt.Errorf("init mysql: %w", err)
+		return nil, err
 	}
-
-	redisClient := redisinfra.New(cfg.Redis)
-
-	minioClient, err := minioinfra.New(cfg.MinIO)
-	if err != nil {
-		return nil, fmt.Errorf("init minio: %w", err)
+	if infraDeps.MemoryRetrievalIndexErr != nil {
+		log.Warn("memory elasticsearch index initialization failed", "error", infraDeps.MemoryRetrievalIndexErr)
 	}
-	if err := minioinfra.EnsureBucket(ctx, minioClient, cfg.MinIO.Bucket); err != nil {
-		return nil, fmt.Errorf("ensure minio bucket: %w", err)
-	}
-
-	esClient, err := esinfra.New(cfg.Elasticsearch)
-	if err != nil {
-		return nil, fmt.Errorf("init elasticsearch: %w", err)
-	}
-	esStore := esretrieval.NewStore(esClient, cfg.Elasticsearch)
-	memoryRetrievalStore := retrievalinfra.NewMemoryStore(esClient)
-	var retrievalStore interface {
-		EnsureIndex(context.Context) error
-		IndexChunks(context.Context, []retrieval.ChunkIndexDocument) error
-		SetDocumentEnabled(context.Context, int64, int64, bool) error
-		DeleteByDocument(context.Context, int64, int64) error
-		DeleteByKnowledgeBase(context.Context, int64, int64) error
-		Search(context.Context, retrieval.RetrievalRequest) (*retrieval.RetrievalResponse, error)
-	} = esStore
-	if cfg.Milvus.Enabled {
-		milvusVector := vectorstore.NewMilvusStore(cfg.Milvus.Address, cfg.Milvus.Token, milvusHNSW(cfg))
-		milvusStore := milvusretrieval.NewStore(milvusVector, cfg.Milvus.Collection, cfg.Milvus.Dimensions, milvusHNSW(cfg))
-		retrievalStore = compositeretrieval.New(esStore, milvusStore)
-	}
-	if err := retrievalStore.EnsureIndex(ctx); err != nil {
-		return nil, fmt.Errorf("ensure elasticsearch chunk index: %w", err)
-	}
-	if err := memoryRetrievalStore.EnsureIndex(ctx); err != nil {
-		log.Warn("memory elasticsearch index initialization failed", "error", err)
-	}
-
-	secretBox, err := cryptoinfra.NewSecretBox(cfg.Security.SecretEncryptKey)
-	if err != nil {
-		return nil, fmt.Errorf("init secret box: %w", err)
-	}
+	db := infraDeps.DB
+	redisClient := infraDeps.Redis
+	minioClient := infraDeps.MinIOClient
+	esClient := infraDeps.ElasticsearchClient
+	retrievalStore := infraDeps.RetrievalStore
+	memoryRetrievalStore := infraDeps.MemoryRetrievalStore
+	secretBox := infraDeps.SecretBox
+	fileStorage := infraDeps.FileStorage
 
 	providerCatalog, err := cataloginfra.NewLoader()
 	if err != nil {
@@ -133,7 +95,6 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 	toolPolicyRepo := mysqlinfra.NewToolPolicyRepository(db)
 	toolPackRepo := mysqlinfra.NewToolPackRepository(db)
 	mcpRepo := mysqlinfra.NewMCPRepository(db)
-	fileStorage := minioinfra.NewFileStorage(minioClient, cfg.MinIO.Bucket)
 
 	jwtService := cryptoinfra.NewJWTService(cfg.Security.JWTSecret, cfg.Security.AccessTokenTTL())
 	tokenHasher := cryptoinfra.NewTokenHasher(cfg.Security.RefreshTokenPepper)
@@ -151,16 +112,16 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 	memoryService := memoryusecase.NewServiceWithCacheAndRetriever(memoryRepo, memoryCache, memoryRetrievalStore)
 	toolService := toolusecase.NewService(toolDefinitionRepo)
 	knowledgeService := knowledgeusecase.NewService(knowledgeRepo, documentRepo, chunkRepo, ingestionJobRepo, retrievalLogRepo, auditRepo, fileStorage, retrievalService, retrievalStore)
-	jobQueue, err := queueinfra.NewConfiguredJobQueue(ctx, cfg, redisClient)
-	if err != nil {
-		return nil, fmt.Errorf("init job queue: %w", err)
-	}
+	jobQueue := infraDeps.JobQueue
 	if jobQueue != nil {
 		knowledgeService.WithJobQueue(jobQueue)
 	}
 	dialogService := dialogusecase.NewService(dialogRepo)
 	chatService := chatusecase.NewService(providerRepo, dialogRepo, knowledgeRepo, conversationRepo, messageRepo, usageRepo, retrievalService, chatClient, secretBox)
-	workflowService := agentusecase.NewService(workflowRepo, workflowProfileRepo, flowVersionRepo, runRepo, runEventRepo, nodeLogRepo, runStepRepo, workflowEvalRepo, approvalRepo, workflowTeamRepo, memoryRepo, memoryWriteLogRepo, memoryRetrievalStore, workingMemoryRepo, extractionJobRepo, mergeLogRepo, toolDefinitionRepo, toolPackRepo, mcpRepo, toolInvocationRepo, providerRepo, messageRepo, retrievalService, chatClient, secretBox)
+	workflowService, err := agentusecase.NewService(workflowRepo, workflowProfileRepo, flowVersionRepo, runRepo, runEventRepo, nodeLogRepo, runStepRepo, workflowEvalRepo, approvalRepo, workflowTeamRepo, memoryRepo, memoryWriteLogRepo, memoryRetrievalStore, workingMemoryRepo, extractionJobRepo, mergeLogRepo, toolDefinitionRepo, toolPackRepo, mcpRepo, toolInvocationRepo, providerRepo, messageRepo, retrievalService, chatClient, secretBox)
+	if err != nil {
+		return nil, fmt.Errorf("init workflow service: %w", err)
+	}
 
 	healthHandler := handler.NewHealthHandler(db, redisClient, minioClient, esClient, cfg.MinIO.Bucket)
 	authHandler := handler.NewAuthHandler(authService)
@@ -200,8 +161,4 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 	})
 
 	return &App{Config: cfg, Logger: log, Router: router}, nil
-}
-
-func milvusHNSW(cfg *config.Config) vectorstore.HNSWConfig {
-	return vectorstore.HNSWConfig{M: cfg.Milvus.M, EFConstruction: cfg.Milvus.EFConstruction, EFSearch: cfg.Milvus.EFSearch, MetricType: cfg.Milvus.MetricType}
 }

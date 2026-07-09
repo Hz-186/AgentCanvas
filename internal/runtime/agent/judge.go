@@ -8,6 +8,8 @@ import (
 
 	"agentcanvas/internal/domain/conversation"
 	"agentcanvas/internal/infrastructure/llm"
+	"agentcanvas/internal/pkg/strutil"
+	"agentcanvas/internal/runtime/evalharness"
 )
 
 type LLMJudge struct {
@@ -32,7 +34,7 @@ type EvalCriterion struct {
 }
 
 func (j *LLMJudge) Score(ctx context.Context, provider llm.ChatProviderConfig, task, expected, actual string, expectedTools []string, actualTools []string, temperature *float64) (*EvalScore, error) {
-	toolScore := scoreTools(expectedTools, actualTools)
+	toolScore := evalharness.Coverage(expectedTools, actualTools)
 	contentScore := scoreContent(expected, actual)
 
 	criteria := []EvalCriterion{
@@ -109,23 +111,6 @@ Return JSON: {"score": 0.X, "explanation": "brief reason"}`, task, truncate(expe
 	}, nil
 }
 
-func scoreTools(expected, actual []string) float64 {
-	if len(expected) == 0 {
-		return 1.0
-	}
-	actualSet := make(map[string]bool, len(actual))
-	for _, t := range actual {
-		actualSet[strings.TrimSpace(t)] = true
-	}
-	matched := 0
-	for _, t := range expected {
-		if actualSet[strings.TrimSpace(t)] {
-			matched++
-		}
-	}
-	return float64(matched) / float64(len(expected))
-}
-
 func scoreContent(expected, actual string) float64 {
 	if expected == "" {
 		return 1.0
@@ -156,8 +141,5 @@ func countWordOverlap(a, b string) int {
 }
 
 func truncate(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen] + "..."
+	return strutil.TruncateString(s, maxLen)
 }

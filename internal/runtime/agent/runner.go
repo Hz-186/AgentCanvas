@@ -11,6 +11,7 @@ import (
 
 	"agentcanvas/internal/domain/conversation"
 	"agentcanvas/internal/infrastructure/llm"
+	"agentcanvas/internal/pkg/strutil"
 	"agentcanvas/internal/runtime/harness/hooks"
 	"agentcanvas/internal/runtime/toolruntime"
 )
@@ -471,7 +472,11 @@ func checkpointFromMessages(req RunRequest, messages []llm.ChatMessage, contextT
 }
 
 func toolMessage(toolCallID, content string) llm.ChatMessage {
-	return llm.ChatMessage{Role: conversation.RoleTool, ToolCallID: toolCallID, Content: content}
+	return llm.ChatMessage{
+		Role:       conversation.RoleTool,
+		ToolCallID: toolCallID,
+		Content:    content,
+	}
 }
 
 func addUsage(left, right llm.Usage) llm.Usage {
@@ -496,28 +501,6 @@ func toolResultContent(result *toolruntime.ToolResult, toolErr error) string {
 	return content
 }
 
-func compactToolObservation(content string, raw json.RawMessage, maxBytes int) (string, json.RawMessage, bool) {
-	redactedRaw := redactToolObservation(raw)
-	if len(redactedRaw) > 0 && string(redactedRaw) != string(raw) && strings.TrimSpace(content) == strings.TrimSpace(string(raw)) {
-		content = string(redactedRaw)
-	}
-	raw = redactedRaw
-	if maxBytes <= 0 {
-		return content, raw, false
-	}
-	compactContent, contentCompressed := compactStringWithFlag(content, maxBytes)
-	compactJSON, jsonCompressed := compactRawJSONWithFlag(raw, maxBytes)
-	return compactContent, compactJSON, contentCompressed || jsonCompressed
-}
-
-func redactToolObservation(raw json.RawMessage) json.RawMessage {
-	return RedactSensitiveFields(raw, defaultSensitiveToolFields())
-}
-
-func defaultSensitiveToolFields() []string {
-	return []string{"api_key", "apikey", "authorization", "access_token", "refresh_token", "token", "password", "secret"}
-}
-
 func toolExecutionContext(ctx context.Context, metadata toolruntime.ToolMetadata, policy ToolPolicy) (context.Context, context.CancelFunc, error) {
 	if err := validateAllowedHosts(metadata.AllowedHosts, policy.AllowedHosts); err != nil {
 		return ctx, nil, err
@@ -536,14 +519,6 @@ func effectiveTimeoutMS(metadata toolruntime.ToolMetadata, policy ToolPolicy) in
 		timeoutMS = policy.MaxToolTimeoutMS
 	}
 	return timeoutMS
-}
-
-func effectiveMaxOutputBytes(metadata toolruntime.ToolMetadata, policy ToolPolicy) int {
-	maxBytes := metadata.MaxOutputBytes
-	if policy.MaxToolOutputBytes > 0 && (maxBytes <= 0 || policy.MaxToolOutputBytes < maxBytes) {
-		maxBytes = policy.MaxToolOutputBytes
-	}
-	return maxBytes
 }
 
 func validateAllowedHosts(toolHosts []string, policyHosts []string) error {
@@ -660,49 +635,6 @@ func finishWithContext(result *RunResult, err error, now time.Time) *RunResult {
 	return finish(result, now)
 }
 
-func requiredApproval(toolCallID, toolName string, arguments json.RawMessage, metadata toolruntime.ToolMetadata, policy ToolPolicy) *Approval {
-	risk := strings.TrimSpace(metadata.RiskLevel)
-	if risk == "" {
-		risk = toolruntime.RiskLow
-	}
-	required := metadata.RequiresApproval
-	for _, item := range policy.RequireApprovalForRisk {
-		if strings.EqualFold(strings.TrimSpace(item), risk) {
-			required = true
-			break
-		}
-	}
-	if !required {
-		return nil
-	}
-	reason := fmt.Sprintf("tool %s requires human approval because risk level is %s", toolName, risk)
-	if strings.EqualFold(toolName, "request_human_approval") {
-		var args struct {
-			Action string `json:"action"`
-			Reason string `json:"reason"`
-		}
-		if err := json.Unmarshal(arguments, &args); err == nil {
-			parts := make([]string, 0, 2)
-			if strings.TrimSpace(args.Action) != "" {
-				parts = append(parts, "action: "+strings.TrimSpace(args.Action))
-			}
-			if strings.TrimSpace(args.Reason) != "" {
-				parts = append(parts, "reason: "+strings.TrimSpace(args.Reason))
-			}
-			if len(parts) > 0 {
-				reason = strings.Join(parts, "; ")
-			}
-		}
-	}
-	return &Approval{
-		ToolCallID: toolCallID,
-		ToolName:   toolName,
-		RiskLevel:  risk,
-		Reason:     reason,
-		Metadata:   metadata,
-	}
-}
-
 func finish(result *RunResult, now time.Time) *RunResult {
 	result.FinishedAt = now
 	result.LatencyMS = int(result.FinishedAt.Sub(result.StartedAt).Milliseconds())
@@ -737,32 +669,15 @@ func CompactSteps(steps []RunStep, maxContentBytes int) []RunStep {
 }
 
 func compactString(value string, maxBytes int) string {
-	compact, _ := compactStringWithFlag(value, maxBytes)
-	return compact
+	return strutil.TruncateWithSuffix(value, maxBytes, "...[truncated]")
 }
 
 func compactStringWithFlag(value string, maxBytes int) (string, bool) {
-	if len(value) <= maxBytes {
-		return value, false
-	}
-	return value[:maxBytes] + "...[truncated]", true
-}
-
-func compactRawJSON(raw json.RawMessage, maxBytes int) json.RawMessage {
-	compact, _ := compactRawJSONWithFlag(raw, maxBytes)
-	return compact
+	return strutil.TruncateWithSuffixFlag(value, maxBytes, "...[truncated]")
 }
 
 func compactRawJSONWithFlag(raw json.RawMessage, maxBytes int) (json.RawMessage, bool) {
-	if len(raw) <= maxBytes {
-		return raw, false
-	}
-	return json.RawMessage(strconvQuote(compactString(string(raw), maxBytes))), true
-}
-
-func strconvQuote(value string) string {
-	data, _ := json.Marshal(value)
-	return string(data)
+	return strutil.TruncateRawJSONWithSuffix(raw, maxBytes, "...[truncated]")
 }
 
 func findUnresolvedToolCalls(messages []llm.ChatMessage, toolByName map[string]toolruntime.RuntimeTool) []llm.ToolCall {

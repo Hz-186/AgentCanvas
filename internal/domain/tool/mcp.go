@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"time"
 
+	"agentcanvas/internal/domain"
+
 	"gorm.io/gorm"
 )
 
@@ -13,8 +15,8 @@ const (
 )
 
 const (
-	MCPStatusDisabled = iota
-	MCPStatusActive
+	MCPStatusDisabled = domain.StatusDisabled
+	MCPStatusActive   = domain.StatusActive
 )
 
 type MCPServer struct {

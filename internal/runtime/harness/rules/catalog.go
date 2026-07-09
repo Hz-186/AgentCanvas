@@ -1,7 +1,6 @@
 package rules
 
 import (
-	"fmt"
 	"strings"
 )
 
@@ -115,19 +114,4 @@ func ResolveForAgent(systemPrompt, task, mode, risk string, toolNames, tags []st
 		return registry.LoadWithAudit(ctx, audit, policy)
 	}
 	return registry.Load(ctx)
-}
-
-func ToContextBlocks(items []Rule) []string {
-	if len(items) == 0 {
-		return nil
-	}
-	blocks := make([]string, 0, len(items))
-	for _, item := range items {
-		content := strings.TrimSpace(item.Content)
-		if content == "" {
-			continue
-		}
-		blocks = append(blocks, fmt.Sprintf("%s|%s|%s", item.ID, item.Level, content))
-	}
-	return blocks
 }

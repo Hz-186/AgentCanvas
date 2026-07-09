@@ -1,10 +1,14 @@
 package dialog
 
-import "time"
+import (
+	"time"
+
+	"agentcanvas/internal/domain"
+)
 
 const (
-	StatusDisabled = iota
-	StatusActive
+	StatusDisabled = domain.StatusDisabled
+	StatusActive   = domain.StatusActive
 )
 
 type Dialog struct {

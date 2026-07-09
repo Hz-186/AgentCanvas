@@ -5,38 +5,13 @@ import (
 
 	"agentcanvas/internal/domain/conversation"
 	"agentcanvas/internal/infrastructure/llm"
-	"agentcanvas/internal/runtime/harness/rules"
-	"agentcanvas/internal/runtime/toolruntime"
 )
 
 type ResumeRequest struct {
-	OwnerID            int64
-	WorkflowID         int64
-	RunID              int64
-	NodeID             string
-	CallDepth          int
-	WorkflowCallChain  []int64
-	ConversationID     *int64
-	Provider           llm.ChatProviderConfig
-	Model              string
-	Mode               string
-	Plan               *Plan
-	SystemPrompt       string
-	Task               string
-	ReflectionEnabled  bool
-	Temperature        *float64
-	MaxIterations      int
-	MaxToolCalls       int
-	MaxExecutionTimeMS int
-	MaxInputChars      int
-	MaxInputTokens     int
-	RuleTrace          rules.Trace
-	ContextBlocks      []ContextBlock
-	ToolPolicy         ToolPolicy
-	Tools              []toolruntime.RuntimeTool
-	Checkpoint         *Checkpoint
-	Approved           bool
-	RejectionNote      string
+	RunRequest
+	Checkpoint    *Checkpoint
+	Approved      bool
+	RejectionNote string
 }
 
 func BuildResumeRequest(req ResumeRequest) (*RunRequest, error) {
@@ -94,6 +69,7 @@ func BuildResumeRequest(req ResumeRequest) (*RunRequest, error) {
 		RuleTrace:          req.RuleTrace,
 		ContextBlocks:      contextBlocks,
 		ToolPolicy:         req.ToolPolicy,
+		ToolHookChain:      req.ToolHookChain,
 		Tools:              req.Tools,
 		ResumeMessages:     messages,
 		ResumeIteration:    iteration,

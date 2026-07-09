@@ -57,7 +57,7 @@ func TestWorkflowCallNodeRunsChildAgent(t *testing.T) {
 
 func TestAgentCallNodeRunsChildAgentWithAgentCallNodeType(t *testing.T) {
 	caller := &fakeNodeAgentCaller{}
-	node := AgentCallNode{Caller: caller}
+	node := NewAgentCallNode(caller)
 	rc := &engine.RunContext{
 		OwnerID:           1,
 		WorkflowID:        2,
@@ -82,7 +82,7 @@ func TestAgentCallNodeRunsChildAgentWithAgentCallNodeType(t *testing.T) {
 }
 
 func TestAgentCallNodeValidate(t *testing.T) {
-	node := AgentCallNode{}
+	node := NewAgentCallNode(nil)
 	if err := node.Validate(json.RawMessage(`{"workflow_id":0}`)); err == nil {
 		t.Fatal("expected missing workflow_id to fail")
 	}

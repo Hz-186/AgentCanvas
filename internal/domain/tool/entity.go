@@ -3,6 +3,8 @@ package tool
 import (
 	"encoding/json"
 	"time"
+
+	"agentcanvas/internal/domain"
 )
 
 const (
@@ -10,8 +12,8 @@ const (
 )
 
 const (
-	StatusDisabled = iota
-	StatusActive
+	StatusDisabled = domain.StatusDisabled
+	StatusActive   = domain.StatusActive
 )
 
 const ( // result

@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"agentcanvas/internal/domain/tool"
 )
 
 const (
@@ -70,6 +72,13 @@ func NewMCPStdioClient(name, command string, args []string, env map[string]strin
 			Timeout: 60 * time.Second,
 		},
 	}
+}
+
+func NewMCPClientFromServer(server *tool.MCPServer) *MCPClient {
+	if server.Transport == tool.MCPTransportStdio {
+		return NewMCPStdioClient(server.Name, server.Command, server.ArgsSlice(), server.EnvMap())
+	}
+	return NewMCPClient(server.Name, server.EndpointURL)
 }
 
 func (c *MCPClient) Discover(ctx context.Context) ([]MCPToolDef, error) {

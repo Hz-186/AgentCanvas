@@ -1,6 +1,10 @@
 package provider
 
-import "time"
+import (
+	"time"
+
+	"agentcanvas/internal/domain"
+)
 
 const (
 	TypeOpenAICompatible = "openai_compatible"
@@ -12,8 +16,8 @@ const (
 )
 
 const (
-	StatusDisabled = iota
-	StatusActive
+	StatusDisabled = domain.StatusDisabled
+	StatusActive   = domain.StatusActive
 )
 
 type ModelProvider struct {

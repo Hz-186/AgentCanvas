@@ -20,37 +20,22 @@ func (r *ProviderRepository) Create(ctx context.Context, p *provider.ModelProvid
 	now := time.Now().UTC()
 	p.CreatedAt = now
 	p.UpdatedAt = now
-	return r.db.WithContext(ctx).Create(p).Error
+	return newBaseRepository[provider.ModelProvider](r.db).create(ctx, p)
 }
 
 func (r *ProviderRepository) ListByOwner(ctx context.Context, ownerID int64) ([]provider.ModelProvider, error) {
-	var providers []provider.ModelProvider
-	err := r.db.WithContext(ctx).
-		Where("owner_id = ? AND deleted_at IS NULL", ownerID).
-		Order("id DESC").
-		Find(&providers).Error
-	return providers, err
+	return newBaseRepository[provider.ModelProvider](r.db).listActiveByOwner(ctx, ownerID, "id DESC")
 }
 
 func (r *ProviderRepository) FindByID(ctx context.Context, ownerID, id int64) (*provider.ModelProvider, error) {
-	var p provider.ModelProvider
-	err := r.db.WithContext(ctx).
-		Where("id = ? AND owner_id = ? AND deleted_at IS NULL", id, ownerID).
-		First(&p).Error
-	if err != nil {
-		return nil, err
-	}
-	return &p, nil
+	return newBaseRepository[provider.ModelProvider](r.db).findActiveByID(ctx, ownerID, id)
 }
 
 func (r *ProviderRepository) Update(ctx context.Context, p *provider.ModelProvider) error {
 	p.UpdatedAt = time.Now().UTC()
-	return r.db.WithContext(ctx).Save(p).Error
+	return newBaseRepository[provider.ModelProvider](r.db).save(ctx, p)
 }
 
 func (r *ProviderRepository) SoftDelete(ctx context.Context, ownerID, id int64) error {
-	now := time.Now().UTC()
-	return r.db.WithContext(ctx).Model(&provider.ModelProvider{}).
-		Where("id = ? AND owner_id = ? AND deleted_at IS NULL", id, ownerID).
-		Updates(map[string]any{"deleted_at": now, "updated_at": now}).Error
+	return newBaseRepository[provider.ModelProvider](r.db).softDelete(ctx, &provider.ModelProvider{}, ownerID, id)
 }

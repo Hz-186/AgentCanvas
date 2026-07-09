@@ -26,6 +26,7 @@ import (
 	"agentcanvas/internal/runtime/evalharness"
 	runtimeevent "agentcanvas/internal/runtime/event"
 	runtimenode "agentcanvas/internal/runtime/node"
+	"agentcanvas/internal/runtime/sandbox"
 	"agentcanvas/internal/runtime/toolruntime"
 
 	agenterrors "agentcanvas/internal/pkg/errors"
@@ -128,7 +129,15 @@ func NewService(
 	retriever retrieval.Retriever,
 	llmClient llm.ChatClient,
 	secrets *cryptoinfra.SecretBox,
-) *Service {
+) (*Service, error) {
+	toolCalling, ok := llmClient.(llm.ToolCallingClient)
+	if !ok {
+		return nil, runtimeagent.ErrNoToolCallingClient
+	}
+	var registry toolruntime.Registry
+	if tools != nil {
+		registry = toolruntime.BasicRegistry{Tools: tools, Invocations: toolInvocations}
+	}
 	s := &Service{
 		workflows:       workflows,
 		profiles:        profiles,
@@ -147,6 +156,7 @@ func NewService(
 		tools:           tools,
 		toolPacks:       toolPacks,
 		mcpServers:      mcpServers,
+		toolRegistry:    registry,
 		toolInvocations: toolInvocations,
 		providers:       providers,
 		messages:        messages,
@@ -157,32 +167,35 @@ func NewService(
 	if extractionJobs != nil && mergeLogs != nil {
 		s.extractions = memoryusecase.NewExtractionService(memories, extractionJobs, mergeLogs)
 	}
-	s.executor = engine.NewExecutor(
-		runtimenode.DefaultNodes(
-			runtimenode.Deps{
-				Retriever:               retriever,
-				LLM:                     llmClient,
-				Providers:               s,
-				Messages:                s,
-				MessageHistory:          messages,
-				Memories:                memories,
-				MemoryWriteLogs:         memoryLogs,
-				MemoryRetriever:         memoryRetriever,
-				WorkingMemory:           workingMemory,
-				MemoryExtractionTrigger: s.triggerMemoryExtraction,
-				Tools:                   tools,
-				ToolPacks:               toolPacks,
-				MCPServers:              mcpServers,
-				ToolInvocations:         toolInvocations,
-				WorkflowCaller:          s,
-				Profiles:                s,
-				Teams:                   teams,
-			},
-		),
-	)
+	nodes, err := runtimenode.DefaultNodes(runtimenode.Deps{
+		Retriever:               retriever,
+		LLM:                     llmClient,
+		Providers:               s,
+		Messages:                s,
+		MessageHistory:          messages,
+		Memories:                memories,
+		MemoryWriteLogs:         memoryLogs,
+		MemoryRetriever:         memoryRetriever,
+		WorkingMemory:           workingMemory,
+		MemoryExtractionTrigger: s.triggerMemoryExtraction,
+		Tools:                   tools,
+		ToolPacks:               toolPacks,
+		MCPServers:              mcpServers,
+		ToolInvocations:         toolInvocations,
+		ToolCalling:             toolCalling,
+		ToolRegistry:            registry,
+		WorkflowCaller:          s,
+		Profiles:                s,
+		Teams:                   teams,
+		Sandbox:                 sandbox.NewDockerRunner(),
+	})
+	if err != nil {
+		return nil, err
+	}
+	s.executor = engine.NewExecutor(nodes)
 	s.validator = flow.NewValidator(s.executor)
 	s.runCancels = newRunCancelRegistry()
-	return s
+	return s, nil
 }
 
 func (s *Service) triggerMemoryExtraction(ctx context.Context, ownerID int64, conversationID int64) {
@@ -501,404 +514,6 @@ func (s *Service) UpdateWorkflowProfile(ctx context.Context, ownerID, workflowID
 	return profile, nil
 }
 
-func (s *Service) CreateEvalDataset(
-	ctx context.Context,
-	ownerID, workflowID int64,
-	req CreateEvalDatasetRequest,
-) (*workflow.EvalDataset, error) {
-	if s.evals == nil {
-		return nil, fmt.Errorf("%w: eval repository is not configured", agenterrors.ErrInvalidInput)
-	}
-	if _, err := s.GetWorkflow(ctx, ownerID, workflowID); err != nil {
-		return nil, err
-	}
-	name := strings.TrimSpace(req.Name)
-	if name == "" {
-		return nil, fmt.Errorf("%w: eval dataset name is required", agenterrors.ErrInvalidInput)
-	}
-	item := &workflow.EvalDataset{
-		OwnerID:     ownerID,
-		WorkflowID:  workflowID,
-		Name:        name,
-		Description: strings.TrimSpace(req.Description),
-		Status:      workflow.EvalDatasetStatusActive,
-	}
-	if err := s.evals.CreateDataset(ctx, item); err != nil {
-		return nil, err
-	}
-	return item, nil
-}
-
-func (s *Service) ListEvalDatasets(ctx context.Context, ownerID, workflowID int64) ([]workflow.EvalDataset, error) {
-	if s.evals == nil {
-		return nil, fmt.Errorf("%w: eval repository is not configured", agenterrors.ErrInvalidInput)
-	}
-	if _, err := s.GetWorkflow(ctx, ownerID, workflowID); err != nil {
-		return nil, err
-	}
-	return s.evals.ListDatasetsByWorkflow(ctx, ownerID, workflowID)
-}
-
-func (s *Service) CreateEvalCase(
-	ctx context.Context,
-	ownerID, datasetID int64,
-	req CreateEvalCaseRequest,
-) (*workflow.EvalCase, error) {
-	if s.evals == nil {
-		return nil, fmt.Errorf("%w: eval repository is not configured", agenterrors.ErrInvalidInput)
-	}
-	dataset, err := s.evals.FindDatasetByID(ctx, ownerID, datasetID)
-	if err != nil {
-		return nil, mapNotFound(err)
-	}
-	name := strings.TrimSpace(req.Name)
-	if name == "" {
-		return nil, fmt.Errorf("%w: eval case name is required", agenterrors.ErrInvalidInput)
-	}
-	inputJSON, err := normalizeRawJSONObject(req.InputJSON, "input_json")
-	if err != nil {
-		return nil, err
-	}
-	expectedJSON, err := normalizeOptionalRawJSON(req.ExpectedJSON, "expected_json")
-	if err != nil {
-		return nil, err
-	}
-	tagsJSON, err := normalizeOptionalRawJSON(req.TagsJSON, "tags_json")
-	if err != nil {
-		return nil, err
-	}
-	requiredToolsJSON, err := normalizeOptionalRawJSON(req.RequiredToolsJSON, "required_tools_json")
-	if err != nil {
-		return nil, err
-	}
-	item := &workflow.EvalCase{
-		OwnerID:           ownerID,
-		DatasetID:         dataset.ID,
-		Name:              name,
-		InputJSON:         inputJSON,
-		ExpectedJSON:      expectedJSON,
-		TagsJSON:          tagsJSON,
-		RequiredToolsJSON: requiredToolsJSON,
-	}
-	if err := s.evals.CreateCase(ctx, item); err != nil {
-		return nil, err
-	}
-	return item, nil
-}
-
-func (s *Service) ListEvalCases(
-	ctx context.Context,
-	ownerID, datasetID int64,
-) ([]workflow.EvalCase, error) {
-	if s.evals == nil {
-		return nil, fmt.Errorf("%w: eval repository is not configured", agenterrors.ErrInvalidInput)
-	}
-	if _, err := s.evals.FindDatasetByID(ctx, ownerID, datasetID); err != nil {
-		return nil, mapNotFound(err)
-	}
-	return s.evals.ListCasesByDataset(ctx, ownerID, datasetID)
-}
-
-func (s *Service) RunEvalDataset(ctx context.Context, ownerID, datasetID int64, req RunEvalDatasetRequest) (*workflow.EvalRun, []workflow.EvalResult, error) {
-	if s.evals == nil {
-		return nil, nil, fmt.Errorf("%w: eval repository is not configured", agenterrors.ErrInvalidInput)
-	}
-	dataset, err := s.evals.FindDatasetByID(ctx, ownerID, datasetID)
-	if err != nil {
-		return nil, nil, mapNotFound(err)
-	}
-	cases, err := s.evals.ListCasesByDataset(ctx, ownerID, datasetID)
-	if err != nil {
-		return nil, nil, err
-	}
-	started := time.Now().UTC()
-	evalRun := &workflow.EvalRun{
-		OwnerID:       ownerID,
-		WorkflowID:    dataset.WorkflowID,
-		DatasetID:     dataset.ID,
-		FlowVersionID: req.FlowVersionID,
-		Status:        workflow.EvalRunStatusRunning,
-		TotalCases:    len(cases),
-		StartedAt:     started,
-	}
-	if err := s.evals.CreateEvalRun(ctx, evalRun); err != nil {
-		return nil, nil, err
-	}
-	results := make([]workflow.EvalResult, 0, len(cases))
-	for _, evalCase := range cases {
-		caseStarted := time.Now().UTC()
-		input := map[string]any{}
-		if err := json.Unmarshal(evalCase.InputJSON, &input); err != nil {
-			result := failedEvalResult(
-				ownerID,
-				evalRun.ID,
-				evalCase.ID,
-				nil, nil,
-				"invalid input_json: "+err.Error(),
-				int(time.Since(caseStarted).Milliseconds()),
-			)
-			_ = s.evals.CreateEvalResult(ctx, result)
-			results = append(results, *result)
-			continue
-		}
-		agentRun, output, runErr := s.RunWorkflow(ctx,
-			ownerID,
-			dataset.WorkflowID,
-			RunWorkflowRequest{
-				FlowVersionID: req.FlowVersionID,
-				Input:         input,
-			},
-		)
-		var agentRunID *int64
-		if agentRun != nil {
-			agentRunID = &agentRun.ID
-		}
-		outputJSON, _ := json.Marshal(output)
-		if runErr != nil {
-			result := failedEvalResult(
-				ownerID,
-				evalRun.ID,
-				evalCase.ID,
-				agentRunID,
-				outputJSON,
-				runErr.Error(),
-				int(time.Since(caseStarted).Milliseconds()),
-			)
-			if err := s.evals.CreateEvalResult(ctx, result); err != nil {
-				return evalRun, results, err
-			}
-			results = append(results, *result)
-			continue
-		}
-		scoreResult := scoreEvalOutputDetailed(output, evalCase.ExpectedJSON, evalCase.RequiredToolsJSON)
-		score, reason := scoreResult.Score, scoreResult.Reason
-		status := "failed"
-		if score >= 1 {
-			status = "passed"
-		}
-		metricsJSON, _ := json.Marshal(scoreResult.Metrics)
-		result := &workflow.EvalResult{
-			OwnerID:       ownerID,
-			EvalRunID:     evalRun.ID,
-			EvalCaseID:    evalCase.ID,
-			WorkflowRunID: agentRunID,
-			Status:        status,
-			Score:         score,
-			Reason:        reason,
-			OutputJSON:    outputJSON,
-			MetricsJSON:   metricsJSON,
-			LatencyMS:     int(time.Since(caseStarted).Milliseconds()),
-			CreatedAt:     time.Now().UTC(),
-		}
-		if err := s.evals.CreateEvalResult(ctx, result); err != nil {
-			return evalRun, results, err
-		}
-		results = append(results, *result)
-	}
-	passed := 0
-	for _, result := range results {
-		if result.Status == "passed" {
-			passed++
-		}
-	}
-	finished := time.Now().UTC()
-	evalRun.PassedCases = passed
-	evalRun.FailedCases = len(results) - passed
-	if len(results) > 0 {
-		evalRun.SuccessRate = float64(passed) / float64(len(results))
-	}
-	evalRun.Status = workflow.EvalRunStatusCompleted
-	evalRun.FinishedAt = &finished
-	evalRun.SummaryJSON, _ = json.Marshal(map[string]any{
-		"total_cases":  evalRun.TotalCases,
-		"passed_cases": evalRun.PassedCases,
-		"failed_cases": evalRun.FailedCases,
-		"success_rate": evalRun.SuccessRate,
-		"metrics":      summarizeEvalMetrics(results),
-	})
-	if err := s.evals.UpdateEvalRun(ctx, evalRun); err != nil {
-		return evalRun, results, err
-	}
-	return evalRun, results, nil
-}
-
-func (s *Service) ListEvalRuns(ctx context.Context, ownerID, datasetID int64) ([]workflow.EvalRun, error) {
-	if s.evals == nil {
-		return nil, fmt.Errorf("%w: eval repository is not configured", agenterrors.ErrInvalidInput)
-	}
-	if _, err := s.evals.FindDatasetByID(ctx, ownerID, datasetID); err != nil {
-		return nil, mapNotFound(err)
-	}
-	return s.evals.ListEvalRunsByDataset(ctx, ownerID, datasetID)
-}
-
-func (s *Service) GetEvalTrend(ctx context.Context, ownerID, datasetID int64) (*EvalTrend, error) {
-	if s.evals == nil {
-		return nil, fmt.Errorf("%w: eval repository is not configured", agenterrors.ErrInvalidInput)
-	}
-	dataset, err := s.evals.FindDatasetByID(ctx, ownerID, datasetID)
-	if err != nil {
-		return nil, mapNotFound(err)
-	}
-	runs, err := s.evals.ListEvalRunsByDataset(ctx, ownerID, datasetID)
-	if err != nil {
-		return nil, err
-	}
-	sort.SliceStable(runs, func(i, j int) bool {
-		if runs[i].StartedAt.Equal(runs[j].StartedAt) {
-			return runs[i].ID < runs[j].ID
-		}
-		return runs[i].StartedAt.Before(runs[j].StartedAt)
-	})
-	points := make([]EvalTrendPoint, 0, len(runs))
-	for _, run := range runs {
-		points = append(points, EvalTrendPoint{
-			EvalRunID:     run.ID,
-			FlowVersionID: run.FlowVersionID,
-			Status:        run.Status,
-			TotalCases:    run.TotalCases,
-			PassedCases:   run.PassedCases,
-			FailedCases:   run.FailedCases,
-			SuccessRate:   run.SuccessRate,
-			Metrics:       evalRunSummaryMetrics(run.SummaryJSON),
-			StartedAt:     run.StartedAt,
-			FinishedAt:    run.FinishedAt,
-		})
-	}
-	trend := &EvalTrend{
-		DatasetID:    dataset.ID,
-		WorkflowID:   dataset.WorkflowID,
-		Points:       points,
-		Delta:        map[string]any{},
-		TrendSummary: map[string]any{"run_count": len(points)},
-	}
-	if len(points) == 0 {
-		return trend, nil
-	}
-	latest := points[len(points)-1]
-	best := latest
-	for _, point := range points {
-		if point.SuccessRate > best.SuccessRate || (point.SuccessRate == best.SuccessRate && point.StartedAt.After(best.StartedAt)) {
-			best = point
-		}
-	}
-	trend.Latest = &latest
-	trend.Best = &best
-	trend.Delta = buildEvalTrendDelta(points[0], latest)
-	trend.TrendSummary = map[string]any{
-		"run_count":              len(points),
-		"latest_eval_run_id":     latest.EvalRunID,
-		"latest_flow_version_id": latest.FlowVersionID,
-		"latest_success_rate":    latest.SuccessRate,
-		"best_eval_run_id":       best.EvalRunID,
-		"best_flow_version_id":   best.FlowVersionID,
-		"best_success_rate":      best.SuccessRate,
-		"success_rate_delta":     latest.SuccessRate - points[0].SuccessRate,
-	}
-	return trend, nil
-}
-
-func (s *Service) ListEvalResults(ctx context.Context, ownerID, evalRunID int64) ([]workflow.EvalResult, error) {
-	if s.evals == nil {
-		return nil, fmt.Errorf("%w: eval repository is not configured", agenterrors.ErrInvalidInput)
-	}
-	if _, err := s.evals.FindEvalRunByID(ctx, ownerID, evalRunID); err != nil {
-		return nil, mapNotFound(err)
-	}
-	return s.evals.ListEvalResultsByRun(ctx, ownerID, evalRunID)
-}
-
-func (s *Service) CreateTeam(ctx context.Context, ownerID int64, req CreateTeamRequest) (*workflow.Team, error) {
-	if s.teams == nil {
-		return nil, fmt.Errorf("%w: team repository is not configured", agenterrors.ErrInvalidInput)
-	}
-	name := strings.TrimSpace(req.Name)
-	if ownerID <= 0 || name == "" || req.SupervisorWorkflowID <= 0 {
-		return nil, agenterrors.ErrInvalidInput
-	}
-	if _, err := s.GetWorkflow(ctx, ownerID, req.SupervisorWorkflowID); err != nil {
-		return nil, err
-	}
-	strategy := strings.TrimSpace(req.HandoffStrategy)
-	if strategy == "" {
-		strategy = "supervisor"
-	}
-	if strategy != "supervisor" && strategy != "handoff" {
-		return nil, fmt.Errorf("%w: handoff_strategy must be supervisor or handoff", agenterrors.ErrInvalidInput)
-	}
-	maxDepth := req.MaxDepth
-	if maxDepth <= 0 {
-		maxDepth = 3
-	}
-	if maxDepth > 5 {
-		return nil, fmt.Errorf("%w: max_depth must be <= 5", agenterrors.ErrInvalidInput)
-	}
-	item := &workflow.Team{
-		OwnerID:              ownerID,
-		Name:                 name,
-		SupervisorWorkflowID: req.SupervisorWorkflowID,
-		HandoffStrategy:      strategy,
-		MaxDepth:             maxDepth,
-	}
-	if err := s.teams.CreateTeam(ctx, item); err != nil {
-		return nil, err
-	}
-	return item, nil
-}
-
-func (s *Service) ListTeams(ctx context.Context, ownerID int64) ([]workflow.Team, error) {
-	if s.teams == nil {
-		return nil, fmt.Errorf("%w: team repository is not configured", agenterrors.ErrInvalidInput)
-	}
-	return s.teams.ListTeams(ctx, ownerID)
-}
-
-func (s *Service) AddTeamMember(ctx context.Context, ownerID, teamID int64, req AddTeamMemberRequest) (*workflow.TeamMember, error) {
-	if s.teams == nil {
-		return nil, fmt.Errorf("%w: team repository is not configured", agenterrors.ErrInvalidInput)
-	}
-	if _, err := s.teams.FindTeamByID(ctx, ownerID, teamID); err != nil {
-		return nil, mapNotFound(err)
-	}
-	if _, err := s.GetWorkflow(ctx, ownerID, req.WorkflowID); err != nil {
-		return nil, err
-	}
-	item := &workflow.TeamMember{
-		OwnerID:    ownerID,
-		TeamID:     teamID,
-		WorkflowID: req.WorkflowID,
-		Role:       strings.TrimSpace(req.Role),
-	}
-	if err := s.teams.AddMember(ctx, item); err != nil {
-		return nil, err
-	}
-	return item, nil
-}
-
-func (s *Service) ListTeamMembers(ctx context.Context, ownerID, teamID int64) ([]workflow.TeamMember, error) {
-	if s.teams == nil {
-		return nil, fmt.Errorf("%w: team repository is not configured", agenterrors.ErrInvalidInput)
-	}
-	if _, err := s.teams.FindTeamByID(ctx, ownerID, teamID); err != nil {
-		return nil, mapNotFound(err)
-	}
-	return s.teams.ListMembers(ctx, ownerID, teamID)
-}
-
-func (s *Service) RemoveTeamMember(ctx context.Context, ownerID, teamID, workflowID int64) error {
-	if s.teams == nil {
-		return fmt.Errorf("%w: team repository is not configured", agenterrors.ErrInvalidInput)
-	}
-	return s.teams.RemoveMember(ctx, ownerID, teamID, workflowID)
-}
-
-func (s *Service) DeleteTeam(ctx context.Context, ownerID, teamID int64) error {
-	if s.teams == nil {
-		return fmt.Errorf("%w: team repository is not configured", agenterrors.ErrInvalidInput)
-	}
-	return s.teams.DeleteTeam(ctx, ownerID, teamID)
-}
-
 func (s *Service) DeleteWorkflow(ctx context.Context, ownerID, id int64) error {
 	if _, err := s.GetWorkflow(ctx, ownerID, id); err != nil {
 		return err
@@ -1037,6 +652,7 @@ func (s *Service) CallWorkflow(ctx context.Context, req toolruntime.WorkflowCall
 	if maxDepth <= 0 {
 		maxDepth = 3
 	}
+	callChain := normalizeWorkflowCallChain(req.WorkflowCallChain, req.CallerWorkflowID)
 	if req.CallDepth >= maxDepth {
 		s.recordBlockedWorkflowCall(ctx, req, "max_workflow_call_depth_exceeded", maxDepth)
 		return nil, fmt.Errorf("%w: max workflow call depth exceeded", agenterrors.ErrForbidden)
@@ -1044,10 +660,9 @@ func (s *Service) CallWorkflow(ctx context.Context, req toolruntime.WorkflowCall
 	if req.OwnerID <= 0 || req.WorkflowID <= 0 || req.Input == nil {
 		return nil, agenterrors.ErrInvalidInput
 	}
-	callChain := normalizeWorkflowCallChain(req.WorkflowCallChain, req.CallerWorkflowID)
-	if containsWorkflowID(callChain, req.WorkflowID) {
+	if err := runtimeagent.CheckCallChain(callChain, req.WorkflowID, 0, req.CallDepth); err != nil {
 		s.recordBlockedWorkflowCall(ctx, req, "workflow_call_cycle_detected", maxDepth)
-		return nil, fmt.Errorf("%w: workflow call cycle detected in workflow_call_chain", agenterrors.ErrForbidden)
+		return nil, fmt.Errorf("%w: %v", agenterrors.ErrForbidden, err)
 	}
 	var parentRunID *int64
 	if req.ParentRunID > 0 {
@@ -1446,434 +1061,6 @@ func (s *Service) run(
 	return run, output, execErr
 }
 
-func (s *Service) ListApprovalRequests(ctx context.Context, ownerID int64, status string) ([]workflow.ApprovalRequest, error) {
-	if s.approvals == nil {
-		return nil, fmt.Errorf("%w: approval repository is not configured", agenterrors.ErrInvalidInput)
-	}
-	return s.approvals.ListApprovalRequests(ctx, ownerID, strings.TrimSpace(status))
-}
-
-func (s *Service) ApproveRequest(ctx context.Context, ownerID, approvalID int64, req DecideApprovalRequest) (*workflow.ApprovalRequest, error) {
-	return s.decideApproval(ctx, ownerID, approvalID, workflow.ApprovalStatusApproved, req.Note)
-}
-
-func (s *Service) RejectRequest(ctx context.Context, ownerID, approvalID int64, req DecideApprovalRequest) (*workflow.ApprovalRequest, error) {
-	return s.decideApproval(ctx, ownerID, approvalID, workflow.ApprovalStatusRejected, req.Note)
-}
-
-func (s *Service) ResumeRun(ctx context.Context, ownerID, runID int64) (*workflow.Run, error) {
-	if s.approvals == nil {
-		return nil, fmt.Errorf("%w: approval repository is not configured", agenterrors.ErrInvalidInput)
-	}
-	item, err := s.GetRun(ctx, ownerID, runID)
-	if err != nil {
-		return nil, err
-	}
-	if item.Status != workflow.RunStatusWaitingHuman && item.Status != workflow.RunStatusPaused {
-		return nil, fmt.Errorf("%w: run is not waiting for resume", agenterrors.ErrInvalidInput)
-	}
-	checkpoint, err := s.approvals.FindLatestCheckpointByRun(ctx, ownerID, runID)
-	if err != nil {
-		return nil, mapNotFound(err)
-	}
-	approval, err := s.approvals.FindPendingApprovalByRun(ctx, ownerID, runID)
-	if err == nil && approval.Status == workflow.ApprovalStatusPending {
-		return nil, fmt.Errorf("%w: approval request is still pending", agenterrors.ErrInvalidInput)
-	}
-	if len(checkpoint.MessagesJSON) == 0 {
-		return nil, fmt.Errorf("%w: checkpoint messages are missing", agenterrors.ErrInvalidInput)
-	}
-	item.Status = workflow.RunStatusResuming
-	if err := s.runs.Update(ctx, item); err != nil {
-		return nil, err
-	}
-	return s.resumeRunFromCheckpoint(ctx, item, checkpoint)
-}
-
-func (s *Service) decideApproval(ctx context.Context, ownerID, approvalID int64, status, note string) (*workflow.ApprovalRequest, error) {
-	if s.approvals == nil {
-		return nil, fmt.Errorf("%w: approval repository is not configured", agenterrors.ErrInvalidInput)
-	}
-	item, err := s.approvals.FindApprovalRequestByID(ctx, ownerID, approvalID)
-	if err != nil {
-		return nil, mapNotFound(err)
-	}
-	if item.Status != workflow.ApprovalStatusPending {
-		return nil, fmt.Errorf("%w: approval request is already decided", agenterrors.ErrInvalidInput)
-	}
-	now := time.Now().UTC()
-	item.Status = status
-	item.DecisionNote = strings.TrimSpace(note)
-	item.DecidedAt = &now
-	if err := s.approvals.UpdateApprovalRequest(ctx, item); err != nil {
-		return nil, err
-	}
-	return item, nil
-}
-
-func (s *Service) persistRunCheckpointArtifacts(
-	ctx context.Context,
-	run *workflow.Run,
-	output engine.NodeOutput,
-	checkpointStatus string,
-) error {
-	if s.approvals == nil || run == nil || output == nil {
-		return nil
-	}
-	approval, ok := output["approval"].(*runtimeagent.Approval)
-	if !ok {
-		if raw, exists := output["approval"]; exists {
-			bytes, _ := json.Marshal(raw)
-			var decoded runtimeagent.Approval
-			if err := json.Unmarshal(bytes, &decoded); err == nil {
-				approval = &decoded
-			}
-		}
-	}
-	checkpoint, ok := output["checkpoint"].(*runtimeagent.Checkpoint)
-	if !ok {
-		if raw, exists := output["checkpoint"]; exists {
-			bytes, _ := json.Marshal(raw)
-			var decoded runtimeagent.Checkpoint
-			if err := json.Unmarshal(bytes, &decoded); err == nil {
-				checkpoint = &decoded
-			}
-		}
-	}
-	if approval != nil {
-		requestJSON, _ := json.Marshal(approval)
-		item := &workflow.ApprovalRequest{
-			OwnerID:     run.OwnerID,
-			WorkflowID:  run.WorkflowID,
-			RunID:       run.ID,
-			NodeID:      checkpointNodeID(checkpoint),
-			ToolCallID:  approval.ToolCallID,
-			ToolName:    approval.ToolName,
-			RiskLevel:   approval.RiskLevel,
-			Reason:      approval.Reason,
-			RequestJSON: requestJSON,
-			Status:      workflow.ApprovalStatusPending,
-		}
-		if item.NodeID == "" {
-			item.NodeID = "agent"
-		}
-		if err := s.approvals.CreateApprovalRequest(ctx, item); err != nil {
-			return err
-		}
-	}
-	if checkpoint != nil {
-		messagesJSON, _ := json.Marshal(checkpoint.Messages)
-		stepsJSON, _ := json.Marshal(output["steps"])
-		pendingJSON, _ := json.Marshal(checkpoint.PendingToolCall)
-		contextJSON, _ := json.Marshal(checkpointContextEnvelope{Context: checkpoint.Context, Metadata: checkpoint.Metadata})
-		item := &workflow.WorkflowCheckpoint{
-			OwnerID:             run.OwnerID,
-			WorkflowID:          run.WorkflowID,
-			RunID:               run.ID,
-			NodeID:              checkpointNodeID(checkpoint),
-			Status:              checkpointStatus,
-			MessagesJSON:        messagesJSON,
-			MessagesSummary:     checkpoint.MessagesSummary,
-			StepsJSON:           stepsJSON,
-			PendingToolCallJSON: pendingJSON,
-			ContextJSON:         contextJSON,
-			ToolRegistryHash:    checkpointToolRegistryHash(checkpoint),
-			ToolPolicyHash:      checkpointToolPolicyHash(checkpoint),
-		}
-		if item.NodeID == "" {
-			item.NodeID = "agent"
-		}
-		if err := s.approvals.CreateCheckpoint(ctx, item); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func checkpointNodeID(checkpoint *runtimeagent.Checkpoint) string {
-	if checkpoint == nil || checkpoint.Metadata == nil {
-		return ""
-	}
-	nodeID, _ := checkpoint.Metadata["node_id"].(string)
-	return nodeID
-}
-
-func checkpointToolRegistryHash(checkpoint *runtimeagent.Checkpoint) string {
-	if checkpoint == nil {
-		return ""
-	}
-	if len(checkpoint.ToolNames) > 0 {
-		return stableJSONHash(checkpoint.ToolNames)
-	}
-	if checkpoint.Metadata != nil {
-		if hash, _ := checkpoint.Metadata["tool_registry_hash"].(string); hash != "" {
-			return hash
-		}
-	}
-	return stableJSONHash(checkpoint.ToolNames)
-}
-
-func checkpointToolPolicyHash(checkpoint *runtimeagent.Checkpoint) string {
-	if checkpoint == nil {
-		return ""
-	}
-	if checkpoint.Metadata != nil {
-		if hash, _ := checkpoint.Metadata["tool_policy_hash"].(string); hash != "" && isZeroToolPolicy(checkpoint.ToolPolicy) {
-			return hash
-		}
-	}
-	return stableJSONHash(checkpoint.ToolPolicy)
-}
-
-func isZeroToolPolicy(policy runtimeagent.ToolPolicy) bool {
-	return len(policy.RequireApprovalForRisk) == 0 && policy.MaxToolTimeoutMS == 0 && policy.MaxToolOutputBytes == 0 && len(policy.AllowedHosts) == 0
-}
-
-func (s *Service) resumeRunFromCheckpoint(ctx context.Context, run *workflow.Run, stored *workflow.WorkflowCheckpoint) (*workflow.Run, error) {
-	if run == nil || stored == nil {
-		return nil, agenterrors.ErrInvalidInput
-	}
-	decision, err := s.latestApprovalDecision(ctx, run.OwnerID, run.ID)
-	if err != nil {
-		return nil, err
-	}
-	checkpoint, err := decodeRuntimeCheckpoint(stored, decision)
-	if err != nil {
-		return nil, err
-	}
-	if checkpoint.PendingToolCall != nil && decision == nil {
-		return nil, fmt.Errorf("%w: approval decision is missing", agenterrors.ErrInvalidInput)
-	}
-	version, err := s.GetWorkflowVersion(ctx, run.OwnerID, run.FlowVersionID)
-	if err != nil {
-		return nil, err
-	}
-	dsl, err := flow.ParseDSL(version.DSLJSON)
-	if err != nil {
-		return nil, fmt.Errorf("%w: invalid dsl_json", agenterrors.ErrInvalidInput)
-	}
-	nodeSpec, err := findCheckpointAgentNode(dsl, stored.NodeID)
-	if err != nil {
-		return nil, err
-	}
-	input := map[string]any{}
-	if len(run.InputJSON) > 0 {
-		_ = json.Unmarshal(run.InputJSON, &input)
-	}
-	callChain := []int64{run.WorkflowID}
-	if len(run.CallChainJSON) > 0 {
-		_ = json.Unmarshal(run.CallChainJSON, &callChain)
-	}
-	node := s.resumeAgentLoopNode()
-	rc := &engine.RunContext{
-		OwnerID:           run.OwnerID,
-		WorkflowID:        run.WorkflowID,
-		FlowVersionID:     run.FlowVersionID,
-		RunID:             run.ID,
-		ParentRunID:       run.ParentRunID,
-		CallDepth:         run.CallDepth,
-		WorkflowCallChain: append([]int64(nil), callChain...),
-		ConversationID:    run.ConversationID,
-		Input:             input,
-		NodeInputs:        map[string]engine.NodeInput{},
-		NodeOutputs:       map[string]engine.NodeOutput{},
-		NodeErrors:        map[string]string{},
-		NodeLatencies:     map[string]int{},
-		ExecutedNodes:     map[string]bool{},
-		CurrentNodeID:     nodeSpec.ID,
-		CurrentNodeType:   nodeSpec.Type,
-		AgentSteps:        s,
-		Events: &eventEmitter{
-			repo:    s.events,
-			ownerID: run.OwnerID,
-			runID:   run.ID,
-		},
-	}
-	started := time.Now().UTC()
-	execCtx, cancel := context.WithCancel(ctx)
-	s.runCancels.Register(run.ID, cancel)
-	defer func() {
-		cancel()
-		s.runCancels.Unregister(run.ID)
-	}()
-	output, execErr := node.Resume(execCtx, rc, engine.NodeInput(input), nodeSpec.Config, runtimenode.AgentResumeOptions{
-		Checkpoint:    checkpoint,
-		Approved:      decision != nil && decision.Status == workflow.ApprovalStatusApproved,
-		RejectionNote: approvalDecisionNote(decision),
-	})
-	finished := time.Now().UTC()
-	run.FinishedAt = &finished
-	run.LatencyMS += int(finished.Sub(started).Milliseconds())
-	if output != nil {
-		run.OutputJSON, _ = json.Marshal(output)
-		rc.NodeOutputs[nodeSpec.ID] = output
-		rc.ExecutedNodes[nodeSpec.ID] = true
-		rc.NodeLatencies[nodeSpec.ID] = int(finished.Sub(started).Milliseconds())
-	}
-	if errors.Is(execErr, context.Canceled) || execCtx.Err() == context.Canceled {
-		run.Status = workflow.RunStatusCancelled
-		run.ErrorMessage = context.Canceled.Error()
-	} else if execErr != nil {
-		run.Status = workflow.RunStatusFailed
-		run.ErrorMessage = execErr.Error()
-	} else if status := runStatusFromOutput(output); status != "" {
-		run.Status = status
-		run.ErrorMessage = ""
-	} else {
-		run.Status = workflow.RunStatusSucceeded
-		run.ErrorMessage = ""
-	}
-	if run.Status == workflow.RunStatusWaitingHuman {
-		if err := s.persistRunCheckpointArtifacts(ctx, run, output, workflow.RunStatusWaitingHuman); err != nil {
-			return run, err
-		}
-	}
-	if run.Status == workflow.RunStatusPaused {
-		if err := s.persistRunCheckpointArtifacts(ctx, run, output, workflow.RunStatusPaused); err != nil {
-			return run, err
-		}
-	}
-	if err := s.runs.Update(ctx, run); err != nil {
-		return run, err
-	}
-	_ = s.writeNodeLogs(ctx, run.OwnerID, run.ID, dsl, rc)
-	return run, execErr
-}
-
-func (s *Service) resumeAgentLoopNode() runtimenode.AgentLoopNode {
-	toolCalling, _ := s.llm.(llm.ToolCallingClient)
-	registry := s.toolRegistry
-	if registry == nil && s.tools != nil {
-		registry = toolruntime.BasicRegistry{Tools: s.tools, Invocations: s.toolInvocations}
-	}
-	return runtimenode.AgentLoopNode{AgentNode: runtimenode.AgentNode{
-		LLM:              toolCalling,
-		Providers:        s,
-		Tools:            registry,
-		ToolPacks:        s.toolPacks,
-		Retriever:        s.retriever,
-		MemoryRetriever:  s.memoryRetriever,
-		Memories:         s.memories,
-		MemoryLogs:       s.memoryLogs,
-		WorkingMemory:    s.workingMemory,
-		OnExtractTrigger: s.triggerMemoryExtraction,
-		WorkflowCaller:   s,
-		Profiles:         s,
-		MessageHistory:   s.messages,
-	}}
-}
-
-func decodeRuntimeCheckpoint(stored *workflow.WorkflowCheckpoint, decision *workflow.ApprovalRequest) (*runtimeagent.Checkpoint, error) {
-	var messages []llm.ChatMessage
-	if err := json.Unmarshal(stored.MessagesJSON, &messages); err != nil {
-		return nil, fmt.Errorf("%w: invalid checkpoint messages", agenterrors.ErrInvalidInput)
-	}
-	var pending *llm.ToolCall
-	if len(stored.PendingToolCallJSON) > 0 && string(stored.PendingToolCallJSON) != "null" {
-		var call llm.ToolCall
-		if err := json.Unmarshal(stored.PendingToolCallJSON, &call); err != nil {
-			return nil, fmt.Errorf("%w: invalid checkpoint pending tool call", agenterrors.ErrInvalidInput)
-		}
-		pending = &call
-	}
-	var contextTrace runtimeagent.ContextTrace
-	metadata := map[string]any{}
-	if len(stored.ContextJSON) > 0 {
-		contextTrace, metadata = decodeCheckpointContext(stored.ContextJSON)
-	}
-	metadata["node_id"] = stored.NodeID
-	metadata["approval_status"] = approvalDecisionStatus(decision)
-	metadata["approval_note"] = approvalDecisionNote(decision)
-	metadata["checkpoint_id"] = stored.ID
-	metadata["checkpoint_state"] = stored.Status
-	metadata["tool_registry_hash"] = stored.ToolRegistryHash
-	metadata["tool_policy_hash"] = stored.ToolPolicyHash
-	return &runtimeagent.Checkpoint{
-		Messages:        messages,
-		MessagesSummary: stored.MessagesSummary,
-		PendingToolCall: pending,
-		Context:         contextTrace,
-		Metadata:        metadata,
-	}, nil
-}
-
-type checkpointContextEnvelope struct {
-	Context  runtimeagent.ContextTrace `json:"context"`
-	Metadata map[string]any            `json:"metadata,omitempty"`
-}
-
-func decodeCheckpointContext(raw json.RawMessage) (runtimeagent.ContextTrace, map[string]any) {
-	var root map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &root); err == nil {
-		if _, ok := root["context"]; ok {
-			var envelope checkpointContextEnvelope
-			_ = json.Unmarshal(raw, &envelope)
-			if envelope.Metadata == nil {
-				envelope.Metadata = map[string]any{}
-			}
-			return envelope.Context, envelope.Metadata
-		}
-	}
-	var trace runtimeagent.ContextTrace
-	_ = json.Unmarshal(raw, &trace)
-	return trace, map[string]any{}
-}
-
-func findCheckpointAgentNode(dsl *flow.DSL, nodeID string) (*flow.Node, error) {
-	if dsl == nil {
-		return nil, fmt.Errorf("%w: flow version is missing", agenterrors.ErrInvalidInput)
-	}
-	var fallback *flow.Node
-	for i := range dsl.Nodes {
-		node := &dsl.Nodes[i]
-		if node.Type != "agent_loop" {
-			continue
-		}
-		if fallback == nil {
-			fallback = node
-		}
-		if node.ID == nodeID {
-			return node, nil
-		}
-	}
-	if nodeID == "" && fallback != nil {
-		return fallback, nil
-	}
-	return nil, fmt.Errorf("%w: checkpoint node %s is not an agent_loop node", agenterrors.ErrInvalidInput, nodeID)
-}
-
-func (s *Service) latestApprovalDecision(ctx context.Context, ownerID, runID int64) (*workflow.ApprovalRequest, error) {
-	items, err := s.approvals.ListApprovalRequests(ctx, ownerID, "")
-	if err != nil {
-		return nil, err
-	}
-	for _, item := range items {
-		if item.RunID != runID {
-			continue
-		}
-		if item.Status == workflow.ApprovalStatusPending {
-			return nil, fmt.Errorf("%w: approval request is still pending", agenterrors.ErrInvalidInput)
-		}
-		clone := item
-		return &clone, nil
-	}
-	return nil, nil
-}
-
-func approvalDecisionStatus(decision *workflow.ApprovalRequest) string {
-	if decision == nil {
-		return ""
-	}
-	return decision.Status
-}
-
-func approvalDecisionNote(decision *workflow.ApprovalRequest) string {
-	if decision == nil {
-		return ""
-	}
-	return decision.DecisionNote
-}
-
 func (s *Service) RecordAgentStep(ctx context.Context, rc *engine.RunContext, step engine.AgentStepRecord) error {
 	if s.runSteps == nil || rc == nil {
 		return nil
@@ -2224,28 +1411,17 @@ func scoreEvalOutputDetailed(output engine.NodeOutput, expectedJSON, requiredToo
 		var required []string
 		if err := json.Unmarshal(requiredToolsJSON, &required); err == nil && len(required) > 0 {
 			called := extractToolNames(output)
-			matched := 0
-			for _, name := range required {
-				name = strings.TrimSpace(name)
-				if name == "" {
-					continue
-				}
-				if requiredToolCalled(called, name) {
-					matched++
-				} else {
-					metrics["tool_call_accuracy"] = float64(matched) / float64(len(required))
-					metrics["required_tools"] = required
-					metrics["actual_tools"] = sortedToolNames(called)
-					return evalScoreResult{
-						Score:   0,
-						Reason:  "required tool was not called: " + name,
-						Metrics: metrics,
-					}
-				}
-			}
-			metrics["tool_call_accuracy"] = float64(matched) / float64(len(required))
+			requiredToolsOK, missingTool := mustHaveAllTools(required, called)
+			metrics["tool_call_accuracy"] = evalharness.Coverage(required, toolNamesWithAliases(called))
 			metrics["required_tools"] = required
 			metrics["actual_tools"] = sortedToolNames(called)
+			if !requiredToolsOK {
+				return evalScoreResult{
+					Score:   0,
+					Reason:  "required tool was not called: " + missingTool,
+					Metrics: metrics,
+				}
+			}
 		}
 	}
 	if _, exists := metrics["tool_call_accuracy"]; !exists {
@@ -2817,6 +1993,19 @@ func sortedToolNames(called map[string]bool) []string {
 	return names
 }
 
+func mustHaveAllTools(required []string, called map[string]bool) (bool, string) {
+	for _, name := range required {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		if !requiredToolCalled(called, name) {
+			return false, name
+		}
+	}
+	return true, ""
+}
+
 func requiredToolCalled(called map[string]bool, required string) bool {
 	required = strings.TrimSpace(required)
 	if required == "" {
@@ -2831,6 +2020,18 @@ func requiredToolCalled(called map[string]bool, required string) bool {
 		}
 	}
 	return false
+}
+
+func toolNamesWithAliases(called map[string]bool) []string {
+	names := sortedToolNames(called)
+	for _, name := range names {
+		for _, alias := range toolNameAliases(name) {
+			if strings.TrimSpace(alias) != "" && !called[alias] {
+				names = append(names, strings.TrimSpace(alias))
+			}
+		}
+	}
+	return names
 }
 
 func toolNameAliases(name string) []string {

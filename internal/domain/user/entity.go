@@ -1,6 +1,10 @@
 package user
 
-import "time"
+import (
+	"time"
+
+	"agentcanvas/internal/domain"
+)
 
 const (
 	LoginTypePassword = "password"
@@ -9,12 +13,12 @@ const (
 )
 
 const (
-	StatusDisabled = iota
-	StatusActive
+	StatusDisabled = domain.StatusDisabled
+	StatusActive   = domain.StatusActive
 )
 
 type User struct {
-	ID           int64      `json:"id" gorm:"primary_key;column:id"`
+	ID           int64      `json:"id" gorm:"primaryKey;column:id"`
 	Username     string     `json:"username" gorm:"column:username"`
 	Email        string     `json:"email" gorm:"column:email"`
 	PasswordHash string     `json:"-" gorm:"column:password_hash"`

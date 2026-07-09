@@ -5,6 +5,8 @@ import (
 	"fmt"
 
 	"agentcanvas/internal/infrastructure/llm"
+	"agentcanvas/internal/pkg/strutil"
+	"agentcanvas/internal/runtime/harness/hooks"
 	"agentcanvas/internal/runtime/toolruntime"
 )
 
@@ -54,31 +56,9 @@ func CheckCallChain(callChain []int64, targetWorkflowID int64, maxDepth int, cur
 }
 
 func CompactToolOutput(content string, maxBytes int) string {
-	if maxBytes <= 0 {
-		return content
-	}
-	if len(content) <= maxBytes {
-		return content
-	}
-	return content[:maxBytes] + "...[compressed]"
+	return strutil.TruncateWithSuffix(content, maxBytes, "...[compressed]")
 }
 
 func RedactSensitiveFields(raw json.RawMessage, fields []string) json.RawMessage {
-	if len(fields) == 0 || len(raw) == 0 {
-		return raw
-	}
-	var m map[string]any
-	if err := json.Unmarshal(raw, &m); err != nil {
-		return raw
-	}
-	for _, field := range fields {
-		if _, ok := m[field]; ok {
-			m[field] = "[REDACTED]"
-		}
-	}
-	out, err := json.Marshal(m)
-	if err != nil {
-		return raw
-	}
-	return json.RawMessage(out)
+	return hooks.RedactSensitiveFields(raw, fields)
 }

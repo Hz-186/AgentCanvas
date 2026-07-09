@@ -3,6 +3,7 @@ package handler
 import (
 	providerusecase "agentcanvas/internal/application/provider_usecase"
 	"agentcanvas/internal/domain/provider"
+	agenterrors "agentcanvas/internal/pkg/errors"
 	"agentcanvas/internal/pkg/response"
 	"net/http"
 
@@ -26,7 +27,7 @@ func (h *ProviderHandler) ListCatalog(c *gin.Context) {
 func (h *ProviderHandler) List(c *gin.Context) {
 	ownerID, ok := currentUserID(c)
 	if !ok {
-		response.Error(c, http.StatusUnauthorized, 44001, "unauthorized")
+		response.Error(c, http.StatusUnauthorized, agenterrors.CodeUnauthorized, agenterrors.ErrUnauthorized.Error())
 		return
 	}
 	items, err := h.service.List(c.Request.Context(), ownerID)
@@ -40,7 +41,7 @@ func (h *ProviderHandler) List(c *gin.Context) {
 func (h *ProviderHandler) Create(c *gin.Context) {
 	ownerID, ok := currentUserID(c)
 	if !ok {
-		response.Error(c, http.StatusUnauthorized, 44001, "unauthorized")
+		response.Error(c, http.StatusUnauthorized, agenterrors.CodeUnauthorized, agenterrors.ErrUnauthorized.Error())
 		return
 	}
 	var req providerusecase.CreateProviderRequest
@@ -59,7 +60,7 @@ func (h *ProviderHandler) Create(c *gin.Context) {
 func (h *ProviderHandler) Get(c *gin.Context) {
 	ownerID, ok := currentUserID(c)
 	if !ok {
-		response.Error(c, http.StatusUnauthorized, 44001, "unauthorized")
+		response.Error(c, http.StatusUnauthorized, agenterrors.CodeUnauthorized, agenterrors.ErrUnauthorized.Error())
 		return
 	}
 	id, err := parseInt64Param(c, "id")
@@ -78,7 +79,7 @@ func (h *ProviderHandler) Get(c *gin.Context) {
 func (h *ProviderHandler) Update(c *gin.Context) {
 	ownerID, ok := currentUserID(c)
 	if !ok {
-		response.Error(c, http.StatusUnauthorized, 44001, "unauthorized")
+		response.Error(c, http.StatusUnauthorized, agenterrors.CodeUnauthorized, agenterrors.ErrUnauthorized.Error())
 		return
 	}
 	id, err := parseInt64Param(c, "id")
@@ -102,7 +103,7 @@ func (h *ProviderHandler) Update(c *gin.Context) {
 func (h *ProviderHandler) Delete(c *gin.Context) {
 	ownerID, ok := currentUserID(c)
 	if !ok {
-		response.Error(c, http.StatusUnauthorized, 44001, "unauthorized")
+		response.Error(c, http.StatusUnauthorized, agenterrors.CodeUnauthorized, agenterrors.ErrUnauthorized.Error())
 		return
 	}
 	id, err := parseInt64Param(c, "id")
@@ -120,7 +121,7 @@ func (h *ProviderHandler) Delete(c *gin.Context) {
 func (h *ProviderHandler) Test(c *gin.Context) {
 	ownerID, ok := currentUserID(c)
 	if !ok {
-		response.Error(c, http.StatusUnauthorized, 44001, "unauthorized")
+		response.Error(c, http.StatusUnauthorized, agenterrors.CodeUnauthorized, agenterrors.ErrUnauthorized.Error())
 		return
 	}
 	id, err := parseInt64Param(c, "id")

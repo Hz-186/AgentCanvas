@@ -1,6 +1,10 @@
 package knowledge
 
-import "time"
+import (
+	"time"
+
+	"agentcanvas/internal/domain"
+)
 
 const (
 	RetrievalBackendElasticsearch = "elasticsearch"
@@ -12,8 +16,8 @@ const (
 )
 
 const (
-	KnowledgeBaseStatusDisabled = iota
-	KnowledgeBaseStatusActive
+	KnowledgeBaseStatusDisabled = domain.StatusDisabled
+	KnowledgeBaseStatusActive   = domain.StatusActive
 )
 
 type KnowledgeBase struct {

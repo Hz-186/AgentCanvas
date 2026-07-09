@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"agentcanvas/internal/pkg/strutil"
 	"agentcanvas/internal/runtime/toolruntime"
 )
 
@@ -185,17 +186,7 @@ func (ObservationPostToolUseHook) AfterToolUse(ctx context.Context, req PostTool
 }
 
 func requiredApproval(req PreToolUseRequest) *Approval {
-	risk := strings.TrimSpace(req.Metadata.RiskLevel)
-	if risk == "" {
-		risk = toolruntime.RiskLow
-	}
-	required := req.Metadata.RequiresApproval
-	for _, item := range req.Policy.RequireApprovalForRisk {
-		if strings.EqualFold(strings.TrimSpace(item), risk) {
-			required = true
-			break
-		}
-	}
+	risk, required := ShouldRequireApprovalForRisk(req.Metadata.RiskLevel, req.Metadata.RequiresApproval, req.Policy.RequireApprovalForRisk)
 	if !required {
 		return nil
 	}
@@ -219,6 +210,21 @@ func requiredApproval(req PreToolUseRequest) *Approval {
 		}
 	}
 	return &Approval{ToolCallID: req.ToolCallID, ToolName: req.ToolName, RiskLevel: risk, Reason: reason, Metadata: req.Metadata}
+}
+
+func ShouldRequireApprovalForRisk(riskLevel string, requiresApproval bool, policyRisks []string) (string, bool) {
+	risk := strings.TrimSpace(riskLevel)
+	if risk == "" {
+		risk = toolruntime.RiskLow
+	}
+	required := requiresApproval
+	for _, item := range policyRisks {
+		if strings.EqualFold(strings.TrimSpace(item), risk) {
+			required = true
+			break
+		}
+	}
+	return risk, required
 }
 
 func effectiveTimeoutMS(metadata toolruntime.ToolMetadata, policy ToolPolicy) int {
@@ -362,25 +368,13 @@ func RedactSensitiveFields(raw json.RawMessage, fields []string) json.RawMessage
 }
 
 func compactStringWithFlag(value string, maxBytes int) (string, bool) {
-	if len(value) <= maxBytes {
-		return value, false
-	}
-	return value[:maxBytes] + "...[truncated]", true
+	return strutil.TruncateWithSuffixFlag(value, maxBytes, "...[truncated]")
 }
 
 func compactRawJSONWithFlag(raw json.RawMessage, maxBytes int) (json.RawMessage, bool) {
-	if len(raw) <= maxBytes {
-		return raw, false
-	}
-	return json.RawMessage(strconvQuote(compactString(string(raw), maxBytes))), true
+	return strutil.TruncateRawJSONWithSuffix(raw, maxBytes, "...[truncated]")
 }
 
 func compactString(value string, maxBytes int) string {
-	compact, _ := compactStringWithFlag(value, maxBytes)
-	return compact
-}
-
-func strconvQuote(value string) string {
-	data, _ := json.Marshal(value)
-	return string(data)
+	return strutil.TruncateWithSuffix(value, maxBytes, "...[truncated]")
 }
