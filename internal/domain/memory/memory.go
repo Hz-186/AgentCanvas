@@ -10,6 +10,7 @@ const (
 	TypeSummary  = "summary_memory"
 	TypeEpisodic = "episodic_memory"
 	TypeTask     = "task_memory"
+	TypeArchival = "archival_memory"
 )
 
 const (

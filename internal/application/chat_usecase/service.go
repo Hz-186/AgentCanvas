@@ -3,10 +3,13 @@ package chat_usecase
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
 
+	"agentcanvas/internal/application/memory_usecase"
 	"agentcanvas/internal/domain/conversation"
 	"agentcanvas/internal/domain/dialog"
 	"agentcanvas/internal/domain/knowledge"
@@ -15,8 +18,10 @@ import (
 	"agentcanvas/internal/domain/usage"
 	cryptoinfra "agentcanvas/internal/infrastructure/crypto"
 	"agentcanvas/internal/infrastructure/llm"
+	queueinfra "agentcanvas/internal/infrastructure/queue"
 	agenterrors "agentcanvas/internal/pkg/errors"
 
+	"github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
 )
 
@@ -38,6 +43,9 @@ type Service struct {
 	secrets       *cryptoinfra.SecretBox
 	packer        *ContextPacker
 	prompts       *PromptBuilder
+	dreamQueue    queueinfra.JobQueue
+	redisClient   *redis.Client
+	dreamCfg      memory_usecase.DreamConfig
 }
 
 type ChatRequest struct {
@@ -89,7 +97,14 @@ func NewService(
 	}
 }
 
+func (s *Service) ConfigureDream(queue queueinfra.JobQueue, redisClient *redis.Client, dreamCfg memory_usecase.DreamConfig) {
+	s.dreamQueue = queue
+	s.redisClient = redisClient
+	s.dreamCfg = dreamCfg
+}
+
 func (s *Service) Chat(ctx context.Context, ownerID, dialogID int64, req ChatRequest) (*ChatResponse, error) {
+	ctx = llm.WithOwnerID(ctx, ownerID)
 	prepared, err := s.prepare(ctx, ownerID, dialogID, req)
 	if err != nil {
 		return nil, err
@@ -117,6 +132,7 @@ func (s *Service) Chat(ctx context.Context, ownerID, dialogID int64, req ChatReq
 }
 
 func (s *Service) StreamChat(ctx context.Context, ownerID, dialogID int64, req ChatRequest, emit func(StreamEvent) error) error {
+	ctx = llm.WithOwnerID(ctx, ownerID)
 	prepared, err := s.prepare(ctx, ownerID, dialogID, req)
 	if err != nil {
 		return err
@@ -196,7 +212,22 @@ func (s *Service) DeleteConversation(ctx context.Context, ownerID, dialogID, id 
 	if _, err := s.GetConversation(ctx, ownerID, dialogID, id); err != nil {
 		return err
 	}
+	s.publishDream(ctx, ownerID, id)
 	return s.conversations.SoftDelete(ctx, ownerID, id)
+}
+
+func (s *Service) publishDream(ctx context.Context, ownerID, conversationID int64) {
+	if s.dreamQueue == nil || !s.dreamCfg.Enabled || ownerID <= 0 || conversationID <= 0 {
+		return
+	}
+	if s.redisClient != nil {
+		key := "dream:pending:" + strconv.FormatInt(conversationID, 10)
+		locked, err := s.redisClient.SetNX(ctx, key, 1, time.Minute).Result()
+		if err != nil || !locked {
+			return
+		}
+	}
+	_ = s.dreamQueue.Publish(ctx, queueinfra.Job{ID: fmt.Sprintf("dream-%d-%d-%d", ownerID, conversationID, time.Now().UnixNano()), Type: memory_usecase.DreamJobType, Payload: map[string]any{"owner_id": ownerID, "conversation_id": conversationID}})
 }
 
 type preparedChat struct {

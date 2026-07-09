@@ -44,6 +44,7 @@ func (n LLMNode) Run(ctx context.Context, rc *engine.RunContext, input engine.No
 	if n.Client == nil || n.Providers == nil {
 		return nil, fmt.Errorf("llm dependencies are not configured")
 	}
+	ctx = llm.WithOwnerID(ctx, rc.OwnerID)
 	var cfg llmConfig
 	if err := json.Unmarshal(config, &cfg); err != nil {
 		return nil, err

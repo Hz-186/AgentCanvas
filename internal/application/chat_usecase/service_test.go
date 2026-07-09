@@ -266,6 +266,9 @@ func (r *fakeMessageRepo) ListByConversation(_ context.Context, ownerID, convers
 	}
 	return items, nil
 }
+func (r *fakeMessageRepo) ListActiveByConversation(_ context.Context, ownerID, conversationID int64) ([]conversation.Message, error) {
+	return r.ListByConversation(context.Background(), ownerID, conversationID)
+}
 func (r *fakeMessageRepo) CreateReferences(_ context.Context, refs []conversation.MessageReference) error {
 	r.refs = append(r.refs, refs...)
 	return nil

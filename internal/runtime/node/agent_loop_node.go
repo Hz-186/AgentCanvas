@@ -10,10 +10,13 @@ import (
 	"strings"
 	"time"
 
+	"agentcanvas/internal/domain/audit"
 	"agentcanvas/internal/domain/memory"
 	"agentcanvas/internal/domain/retrieval"
+	"agentcanvas/internal/domain/skill"
 	"agentcanvas/internal/domain/tool"
 	"agentcanvas/internal/domain/workflow"
+	"agentcanvas/internal/infrastructure/vectorstore"
 	runtimeagent "agentcanvas/internal/runtime/agent"
 	"agentcanvas/internal/runtime/engine"
 	runtimeevent "agentcanvas/internal/runtime/event"
@@ -26,20 +29,25 @@ import (
 )
 
 type AgentNode struct {
-	LLM             llm.ToolCallingClient
-	Providers       ProviderConfigLoader
-	Tools           toolruntime.Registry
-	ToolPacks       tool.PackRepository
-	MCPServers      tool.MCPRepository
-	Retriever       retrieval.Retriever
-	MemoryRetriever memory.SemanticRetriever
-	Memories        memory.Repository
-	MemoryLogs      memory.WriteLogRepository
-	WorkingMemory   memory.WorkingMemoryRepository
-	WorkflowCaller  toolruntime.WorkflowCaller
-	Profiles        AgentProfileLoader
-	Sandbox         sandbox.Runner
-	MessageHistory  MessageHistoryReader
+	LLM              llm.ToolCallingClient
+	Providers        ProviderConfigLoader
+	Tools            toolruntime.Registry
+	ToolPacks        tool.PackRepository
+	Skills           skill.Repository
+	Audits           audit.Repository
+	MCPServers       tool.MCPRepository
+	Retriever        retrieval.Retriever
+	MemoryRetriever  memory.SemanticRetriever
+	Memories         memory.Repository
+	MemoryLogs       memory.WriteLogRepository
+	WorkingMemory    memory.WorkingMemoryRepository
+	WorkflowCaller   toolruntime.WorkflowCaller
+	Profiles         AgentProfileLoader
+	Sandbox          sandbox.Runner
+	MessageHistory   MessageHistoryReader
+	ArchivalVecStore vectorstore.Store
+	Embedder         llm.EmbeddingClient
+	WorkspaceRoot    string
 
 	OnExtractTrigger func(ctx context.Context, ownerID int64, conversationID int64)
 }
@@ -61,6 +69,8 @@ type agentRuntimeConfig struct {
 	SystemPrompt            string          `json:"system_prompt"`
 	TaskTemplate            string          `json:"task_template"`
 	ToolIDs                 []int64         `json:"tool_ids"`
+	SkillIDs                []int64         `json:"skill_ids"`
+	SkillLoadingMode        string          `json:"skill_loading_mode"`
 	KnowledgeIDs            []int64         `json:"knowledge_ids"`
 	KnowledgeTopK           int             `json:"knowledge_top_k"`
 	KnowledgeMode           string          `json:"knowledge_mode"`
@@ -104,6 +114,8 @@ type agentNodeConfig struct {
 	} `json:"model"`
 	Tools struct {
 		ToolIDs              []int64 `json:"tool_ids"`
+		SkillIDs             []int64 `json:"skill_ids"`
+		SkillLoadingMode     string  `json:"skill_loading_mode"`
 		KnowledgeIDs         []int64 `json:"knowledge_ids"`
 		KnowledgeTopK        int     `json:"knowledge_top_k"`
 		KnowledgeMode        string  `json:"knowledge_mode"`
@@ -349,7 +361,15 @@ func (n AgentLoopNode) Resume(ctx context.Context, rc *engine.RunContext, input 
 	return n.AgentNode.runAgent(ctx, rc, input, cfg, n.Type(), true, &opts)
 }
 
-func (n AgentNode) runAgent(ctx context.Context, rc *engine.RunContext, input engine.NodeInput, cfg agentRuntimeConfig, nodeType string, useProfileDefaults bool, resume *AgentResumeOptions) (engine.NodeOutput, error) {
+func (n AgentNode) runAgent(
+	ctx context.Context,
+	rc *engine.RunContext,
+	input engine.NodeInput,
+	cfg agentRuntimeConfig,
+	nodeType string,
+	useProfileDefaults bool,
+	resume *AgentResumeOptions,
+) (engine.NodeOutput, error) {
 	if n.LLM == nil || n.Providers == nil {
 		return nil, fmt.Errorf("%s dependencies are not configured", nodeType)
 	}
@@ -374,6 +394,7 @@ func (n AgentNode) runAgent(ctx context.Context, rc *engine.RunContext, input en
 	if err != nil {
 		return nil, err
 	}
+	skillBlocks := n.buildSkillContextBlocks(ctx, rc.OwnerID, cfg)
 	task := resolveAgentTask(cfg.TaskTemplate, rc, input)
 	if task == "" {
 		return nil, fmt.Errorf("%w: %s task is required", agenterrors.ErrInvalidInput, nodeType)
@@ -382,7 +403,8 @@ func (n AgentNode) runAgent(ctx context.Context, rc *engine.RunContext, input en
 	mode := agentMode(cfg.Mode)
 	conversationBlocks := buildConversationContext(ctx, n, rc, cfg.MaxInputChars)
 	ruleBlocks, ruleTrace := buildRuleContextBlocks(systemPrompt, task, mode, cfg, tools, conversationBlocks)
-	contextBlocks := append(ruleBlocks, conversationBlocks...)
+	contextBlocks := append(ruleBlocks, skillBlocks...)
+	contextBlocks = append(contextBlocks, conversationBlocks...)
 	contextBlocks = n.injectWorkingMemory(ctx, rc, contextBlocks)
 	var plan *runtimeagent.Plan
 	if mode == "plan_execute" && task != "" {
@@ -408,6 +430,7 @@ func (n AgentNode) runAgent(ctx context.Context, rc *engine.RunContext, input en
 			"model":       loaded.Model,
 			"mode":        agentMode(cfg.Mode),
 			"tool_count":  len(tools),
+			"skill_count": len(cfg.SkillIDs),
 		},
 	})
 	runner := runtimeagent.Runner{
@@ -535,12 +558,16 @@ func (n AgentNode) runAgent(ctx context.Context, rc *engine.RunContext, input en
 		"latency_ms":    result.LatencyMS,
 		"context_trace": result.Context,
 	}
-	if len(cfg.OutputSchemaJSON) > 0 && string(bytes.TrimSpace(cfg.OutputSchemaJSON)) != "{}" && string(bytes.TrimSpace(cfg.OutputSchemaJSON)) != "null" {
+	if len(cfg.OutputSchemaJSON) > 0 &&
+		string(bytes.TrimSpace(cfg.OutputSchemaJSON)) != "{}" &&
+		string(bytes.TrimSpace(cfg.OutputSchemaJSON)) != "null" {
 		var parsed any
 		schemaErr := parseAndValidateStructuredOutput(cfg.OutputSchemaJSON, result.FinalAnswer, &parsed)
 		if schemaErr != nil {
 			schemaErrText := schemaErr.Error()
-			repaired, repairErr := n.repairStructuredOutput(ctx, loaded.Config, loaded.Model, cfg.Temperature, task, result.FinalAnswer, cfg.OutputSchemaJSON, schemaErr)
+			repaired, repairErr := n.repairStructuredOutput(
+				ctx, loaded.Config, loaded.Model, cfg.Temperature, task, result.FinalAnswer, cfg.OutputSchemaJSON, schemaErr,
+			)
 			if repairErr == nil {
 				var repairedParsed any
 				if repairedErr := parseAndValidateStructuredOutput(cfg.OutputSchemaJSON, repaired, &repairedParsed); repairedErr == nil {
@@ -585,7 +612,9 @@ func (n AgentNode) runAgent(ctx context.Context, rc *engine.RunContext, input en
 	return output, nil
 }
 
-func (n AgentNode) applyProfileDefaults(ctx context.Context, rc *engine.RunContext, cfg agentRuntimeConfig) (agentRuntimeConfig, error) {
+func (n AgentNode) applyProfileDefaults(
+	ctx context.Context, rc *engine.RunContext, cfg agentRuntimeConfig,
+) (agentRuntimeConfig, error) {
 	if n.Profiles == nil || rc == nil || rc.WorkflowID <= 0 {
 		return cfg, nil
 	}
@@ -629,6 +658,14 @@ func (n AgentNode) applyProfileDefaults(ctx context.Context, rc *engine.RunConte
 		if ids := profile.DefaultToolIDsSlice(); len(ids) > 0 {
 			cfg.ToolIDs = ids
 		}
+	}
+	if len(cfg.SkillIDs) == 0 {
+		if ids := profile.DefaultSkillIDsSlice(); len(ids) > 0 {
+			cfg.SkillIDs = ids
+		}
+	}
+	if strings.TrimSpace(cfg.SkillLoadingMode) == "" {
+		cfg.SkillLoadingMode = "metadata_only"
 	}
 	if packIDs := profile.DefaultToolPackIDsSlice(); len(packIDs) > 0 && n.ToolPacks != nil {
 		cfg.ToolIDs = mergeInt64IDs(cfg.ToolIDs, n.toolIDsFromPacks(ctx, rc.OwnerID, packIDs))
@@ -918,6 +955,22 @@ func agentStepRecord(step runtimeagent.RunStep, nodeID string) engine.AgentStepR
 func (n AgentNode) loadTools(ctx context.Context, ownerID int64, cfg agentRuntimeConfig) ([]toolruntime.RuntimeTool, error) {
 	tools := make([]toolruntime.RuntimeTool, 0, len(cfg.ToolIDs)+2)
 	tools = append(tools, toolruntime.HumanApprovalTool{})
+	loadedSkills, err := n.loadSkillDefinitions(ctx, ownerID, cfg.SkillIDs)
+	if err != nil {
+		return nil, err
+	}
+	if len(loadedSkills) > 0 && n.Skills != nil {
+		tools = append(tools, toolruntime.SkillLoadTool{
+			Repository:      n.Skills,
+			Audits:          n.Audits,
+			AllowedSkillIDs: skillIDsFromItems(loadedSkills),
+			WorkspaceRoot:   n.WorkspaceRoot,
+			MaxContentBytes: cfg.MaxToolOutputBytes,
+		})
+		if strings.TrimSpace(cfg.SkillLoadingMode) == "search" || len(loadedSkills) > 10 {
+			tools = append(tools, toolruntime.SkillSearchTool{Skills: loadedSkills, Audits: n.Audits, Limit: 3})
+		}
+	}
 	if len(cfg.KnowledgeIDs) > 0 {
 		if n.Retriever == nil {
 			return nil, fmt.Errorf("agent_loop retriever is not configured")
@@ -976,6 +1029,80 @@ func (n AgentNode) loadTools(ctx context.Context, ownerID int64, cfg agentRuntim
 		return nil, err
 	}
 	return append(tools, loaded...), nil
+}
+
+func (n AgentNode) loadSkillDefinitions(ctx context.Context, ownerID int64, ids []int64) ([]skill.Skill, error) {
+	if n.Skills == nil || len(ids) == 0 {
+		return nil, nil
+	}
+	items, err := n.Skills.ListByIDs(ctx, ownerID, ids)
+	if err != nil {
+		return nil, err
+	}
+	byID := make(map[int64]skill.Skill, len(items))
+	for _, item := range items {
+		if item.Status != skill.StatusActive || item.DeletedAt != nil {
+			continue
+		}
+		byID[item.ID] = item
+	}
+	ordered := make([]skill.Skill, 0, len(ids))
+	for _, id := range ids {
+		if item, ok := byID[id]; ok {
+			ordered = append(ordered, item)
+		}
+	}
+	return ordered, nil
+}
+
+func (n AgentNode) buildSkillContextBlocks(ctx context.Context, ownerID int64, cfg agentRuntimeConfig) []runtimeagent.ContextBlock {
+	items, err := n.loadSkillDefinitions(ctx, ownerID, cfg.SkillIDs)
+	if err != nil || len(items) == 0 {
+		return nil
+	}
+	mode := strings.TrimSpace(cfg.SkillLoadingMode)
+	if mode == "" {
+		mode = "metadata_only"
+	}
+	lines := make([]string, 0, len(items)*4+1)
+	lines = append(lines, "Available skills:")
+	for index, item := range items {
+		if index >= 20 {
+			break
+		}
+		description := strings.TrimSpace(item.Description)
+		maxDescription := 500
+		if mode == "search" || len(items) > 10 {
+			maxDescription = 160
+		}
+		if len(description) > maxDescription {
+			description = truncateString(description, maxDescription)
+		}
+		lines = append(lines,
+			fmt.Sprintf("- name: %s", item.Name),
+			fmt.Sprintf("  id: %d", item.ID),
+			fmt.Sprintf("  description: %s", description),
+		)
+		if mode == "search" || len(items) > 10 {
+			lines = append(lines, "  guidance: use skill_search to shortlist candidates, then load_skill for full instructions.")
+		} else {
+			lines = append(lines, fmt.Sprintf("  load: use load_skill with skill_id=%d when the task matches this skill.", item.ID))
+		}
+	}
+	return []runtimeagent.ContextBlock{{
+		Name:    "skills_metadata",
+		Role:    "system",
+		Content: strings.Join(lines, "\n"),
+		Pinned:  false,
+	}}
+}
+
+func skillIDsFromItems(items []skill.Skill) []int64 {
+	ids := make([]int64, 0, len(items))
+	for _, item := range items {
+		ids = append(ids, item.ID)
+	}
+	return ids
 }
 
 func (n AgentNode) loadMCPTools(ctx context.Context, ownerID int64, serverIDs []int64) ([]toolruntime.RuntimeTool, error) {
@@ -1166,7 +1293,14 @@ func parseAndValidateStructuredOutput(schema json.RawMessage, content string, pa
 	return nil
 }
 
-func (n AgentNode) repairStructuredOutput(ctx context.Context, provider llm.ChatProviderConfig, model string, temperature *float64, task, finalAnswer string, schema json.RawMessage, validationErr error) (string, error) {
+func (n AgentNode) repairStructuredOutput(
+	ctx context.Context,
+	provider llm.ChatProviderConfig,
+	model string, temperature *float64,
+	task, finalAnswer string,
+	schema json.RawMessage,
+	validationErr error,
+) (string, error) {
 	if n.LLM == nil {
 		return "", fmt.Errorf("llm client is not configured")
 	}
@@ -1222,7 +1356,12 @@ func buildConversationContext(ctx context.Context, n AgentNode, rc *engine.RunCo
 	return blocks
 }
 
-func buildRuleContextBlocks(systemPrompt, task, mode string, cfg agentRuntimeConfig, tools []toolruntime.RuntimeTool, conversation []runtimeagent.ContextBlock) ([]runtimeagent.ContextBlock, rules.Trace) {
+func buildRuleContextBlocks(
+	systemPrompt, task, mode string,
+	cfg agentRuntimeConfig,
+	tools []toolruntime.RuntimeTool,
+	conversation []runtimeagent.ContextBlock,
+) ([]runtimeagent.ContextBlock, rules.Trace) {
 	risk := highestToolRisk(tools)
 	if risk == "" {
 		risk = highestConfiguredRisk(cfg.RequireApprovalForRisk)
@@ -1233,7 +1372,9 @@ func buildRuleContextBlocks(systemPrompt, task, mode string, cfg agentRuntimeCon
 	if cfg.MaxInputTokens > 0 {
 		budget = cfg.MaxInputTokens / 10
 	}
-	selected, trace := rules.ResolveForAgent(systemPrompt, task, mode, risk, toolNames, tags, budget, nil, rules.AuditPolicy{})
+	selected, trace := rules.ResolveForAgent(
+		systemPrompt, task, mode, risk, toolNames, tags, budget, nil, rules.AuditPolicy{},
+	)
 	blocks := make([]runtimeagent.ContextBlock, 0, len(selected))
 	for _, item := range selected {
 		content := strings.TrimSpace(item.Content)
@@ -1379,7 +1520,9 @@ func dedupeLower(values []string) []string {
 	return result
 }
 
-func (n AgentNode) injectWorkingMemory(ctx context.Context, rc *engine.RunContext, blocks []runtimeagent.ContextBlock) []runtimeagent.ContextBlock {
+func (n AgentNode) injectWorkingMemory(
+	ctx context.Context, rc *engine.RunContext, blocks []runtimeagent.ContextBlock,
+) []runtimeagent.ContextBlock {
 	if n.WorkingMemory == nil || rc.ConversationID == nil {
 		return blocks
 	}

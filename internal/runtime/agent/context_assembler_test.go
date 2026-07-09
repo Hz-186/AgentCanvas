@@ -157,6 +157,23 @@ func TestContextAssemblerBuildsTokenAuditByCategory(t *testing.T) {
 	}
 }
 
+func TestContextAssemblerSortsCoreMemoryBeforeHistoryAndRetrieval(t *testing.T) {
+	messages, _ := ContextAssembler{MaxChars: 5000}.Build(RunRequest{
+		Task: "task",
+		ContextBlocks: []ContextBlock{
+			{Name: "retrieval:kb", Role: "system", Content: "retrieval"},
+			{Name: "conversation", Role: "user", Content: "history"},
+			{Name: "core_memory", Role: "system", Content: "core"},
+		},
+	})
+	if len(messages) < 4 {
+		t.Fatalf("unexpected messages: %+v", messages)
+	}
+	if messages[0].Content != "core" || messages[1].Content != "history" || messages[2].Content != "retrieval" {
+		t.Fatalf("unexpected sorted order: %+v", messages)
+	}
+}
+
 func TestContextAssemblerCarriesRuleTrace(t *testing.T) {
 	_, trace := ContextAssembler{MaxChars: 5000}.Build(RunRequest{
 		Task: "answer the task",

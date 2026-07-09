@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
+	"strings"
 	"time"
 
 	auditusecase "agentcanvas/internal/application/audit_usecase"
@@ -14,6 +16,7 @@ import (
 	memoryusecase "agentcanvas/internal/application/memory_usecase"
 	providerusecase "agentcanvas/internal/application/provider_usecase"
 	retrievalusecase "agentcanvas/internal/application/retrieval_usecase"
+	skillusecase "agentcanvas/internal/application/skill_usecase"
 	toolusecase "agentcanvas/internal/application/tool_usecase"
 	agentusecase "agentcanvas/internal/application/workflow_usecase"
 	"agentcanvas/internal/infrastructure"
@@ -24,6 +27,7 @@ import (
 	mysqlinfra "agentcanvas/internal/infrastructure/mysql"
 	oauthinfra "agentcanvas/internal/infrastructure/oauth"
 	redisinfra "agentcanvas/internal/infrastructure/redis"
+	"agentcanvas/internal/infrastructure/vectorstore"
 	httpserver "agentcanvas/internal/interface/http"
 	"agentcanvas/internal/interface/http/handler"
 	"agentcanvas/internal/pkg/config"
@@ -95,6 +99,7 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 	toolPolicyRepo := mysqlinfra.NewToolPolicyRepository(db)
 	toolPackRepo := mysqlinfra.NewToolPackRepository(db)
 	mcpRepo := mysqlinfra.NewMCPRepository(db)
+	skillRepo := mysqlinfra.NewSkillRepository(db)
 
 	jwtService := cryptoinfra.NewJWTService(cfg.Security.JWTSecret, cfg.Security.AccessTokenTTL())
 	tokenHasher := cryptoinfra.NewTokenHasher(cfg.Security.RefreshTokenPepper)
@@ -102,8 +107,57 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 	githubClient := oauthinfra.NewGitHubClient(cfg.OAuth.GitHub.ClientID, cfg.OAuth.GitHub.ClientSecret, cfg.OAuth.GitHub.RedirectURL, cfg.OAuth.GitHub.Scopes)
 
 	authService := authusecase.NewService(userRepo, oauthRepo, sessionRepo, apiTokenRepo, auditRepo, passwordHasher, jwtService, tokenHasher, redisClient, githubClient, cfg.Security.RefreshTokenTTL())
-	chatClient := llm.NewOpenAICompatibleChatClient()
+	baseChatClient := llm.NewOpenAICompatibleChatClient()
+	var chatClient llm.ChatClient = baseChatClient
 	embeddingClient := llm.NewOpenAICompatibleEmbeddingClient()
+	var archivalVecStore vectorstore.Store
+	if cfg.Milvus.Enabled {
+		archivalVecStore = vectorstore.NewMilvusStore(cfg.Milvus.Address, cfg.Milvus.Token, vectorstore.HNSWConfig{M: cfg.Milvus.M, EFConstruction: cfg.Milvus.EFConstruction, EFSearch: cfg.Milvus.EFSearch, MetricType: cfg.Milvus.MetricType})
+	}
+	if cfg.LLMCache.Enabled {
+		cacheTTL := time.Duration(cfg.LLMCache.TTLSeconds) * time.Second
+		l2Enabled := cfg.LLMCache.L2Enabled
+		var l2Store vectorstore.Store
+		if l2Enabled {
+			if err := redisinfra.ProbeRediSearch(ctx, redisClient); err != nil {
+				log.Warn("redisearch unavailable, semantic llm cache disabled", "error", err)
+				l2Enabled = false
+			} else {
+				l2Store = vectorstore.NewRedisStackStore(redisClient).WithDefaultTTL(cacheTTL)
+			}
+		}
+		resolveEmbedding := func(ctx context.Context, ownerID int64) (llm.EmbeddingProviderConfig, string, error) {
+			if ownerID <= 0 || cfg.LLMCache.EmbeddingProviderID <= 0 {
+				return llm.EmbeddingProviderConfig{}, "", fmt.Errorf("embedding provider is not configured")
+			}
+			provider, err := providerRepo.FindByID(ctx, ownerID, cfg.LLMCache.EmbeddingProviderID)
+			if err != nil {
+				return llm.EmbeddingProviderConfig{}, "", err
+			}
+			apiKey, err := secretBox.Decrypt(provider.EncryptedAPIKey)
+			if err != nil {
+				return llm.EmbeddingProviderConfig{}, "", err
+			}
+			model := strings.TrimSpace(cfg.LLMCache.EmbeddingModel)
+			if model == "" {
+				model = strings.TrimSpace(provider.DefaultEmbeddingModel)
+			}
+			if model == "" {
+				return llm.EmbeddingProviderConfig{}, "", fmt.Errorf("embedding model is not configured")
+			}
+			return llm.EmbeddingProviderConfig{ProviderType: provider.ProviderType, BaseURL: provider.BaseURL, APIKey: apiKey}, model, nil
+		}
+		chatClient = llm.NewCachedChatClient(baseChatClient, baseChatClient, llm.CachedChatClientOptions{
+			Redis:        redisClient,
+			L2Store:      l2Store,
+			Embedder:     embeddingClient,
+			ResolveEmbed: resolveEmbedding,
+			TTL:          cacheTTL,
+			L1Enabled:    cfg.LLMCache.L1Enabled,
+			L2Enabled:    l2Enabled,
+			Similarity:   cfg.LLMCache.SimilarityThreshold,
+		})
+	}
 	reranker := llm.NewChatReranker(chatClient)
 	retrievalService := retrievalusecase.NewService(knowledgeRepo, providerRepo, retrievalStore, embeddingClient, reranker, secretBox)
 
@@ -111,17 +165,22 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 	auditService := auditusecase.NewService(auditRepo)
 	memoryService := memoryusecase.NewServiceWithCacheAndRetriever(memoryRepo, memoryCache, memoryRetrievalStore)
 	toolService := toolusecase.NewService(toolDefinitionRepo)
+	workspaceRoot, _ := os.Getwd()
+	skillService := skillusecase.NewService(skillRepo, workspaceRoot)
 	knowledgeService := knowledgeusecase.NewService(knowledgeRepo, documentRepo, chunkRepo, ingestionJobRepo, retrievalLogRepo, auditRepo, fileStorage, retrievalService, retrievalStore)
 	jobQueue := infraDeps.JobQueue
+	dreamCfg := memoryusecase.NewDreamConfig(cfg.MemoryDream)
 	if jobQueue != nil {
 		knowledgeService.WithJobQueue(jobQueue)
 	}
 	dialogService := dialogusecase.NewService(dialogRepo)
 	chatService := chatusecase.NewService(providerRepo, dialogRepo, knowledgeRepo, conversationRepo, messageRepo, usageRepo, retrievalService, chatClient, secretBox)
-	workflowService, err := agentusecase.NewService(workflowRepo, workflowProfileRepo, flowVersionRepo, runRepo, runEventRepo, nodeLogRepo, runStepRepo, workflowEvalRepo, approvalRepo, workflowTeamRepo, memoryRepo, memoryWriteLogRepo, memoryRetrievalStore, workingMemoryRepo, extractionJobRepo, mergeLogRepo, toolDefinitionRepo, toolPackRepo, mcpRepo, toolInvocationRepo, providerRepo, messageRepo, retrievalService, chatClient, secretBox)
+	chatService.ConfigureDream(jobQueue, redisClient, dreamCfg)
+	workflowService, err := agentusecase.NewService(workflowRepo, workflowProfileRepo, flowVersionRepo, runRepo, runEventRepo, nodeLogRepo, runStepRepo, workflowEvalRepo, approvalRepo, auditRepo, workflowTeamRepo, memoryRepo, memoryWriteLogRepo, memoryRetrievalStore, workingMemoryRepo, extractionJobRepo, mergeLogRepo, toolDefinitionRepo, toolPackRepo, skillRepo, mcpRepo, toolInvocationRepo, providerRepo, messageRepo, retrievalService, chatClient, embeddingClient, archivalVecStore, secretBox)
 	if err != nil {
 		return nil, fmt.Errorf("init workflow service: %w", err)
 	}
+	workflowService.ConfigureDream(jobQueue, redisClient, dreamCfg)
 
 	healthHandler := handler.NewHealthHandler(db, redisClient, minioClient, esClient, cfg.MinIO.Bucket)
 	authHandler := handler.NewAuthHandler(authService)
@@ -130,6 +189,7 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 	auditHandler := handler.NewAuditHandler(auditService)
 	memoryHandler := handler.NewMemoryHandler(memoryService)
 	toolHandler := handler.NewToolHandler(toolService, toolPolicyRepo, toolPackRepo, mcpRepo)
+	skillHandler := handler.NewSkillHandler(skillService, auditRepo)
 	knowledgeHandler := handler.NewKnowledgeHandler(knowledgeService)
 	documentHandler := handler.NewDocumentHandler(knowledgeService)
 	dialogHandler := handler.NewDialogHandler(dialogService)
@@ -150,6 +210,7 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 		ProviderHandler:  providerHandler,
 		MemoryHandler:    memoryHandler,
 		ToolHandler:      toolHandler,
+		SkillHandler:     skillHandler,
 		AuditHandler:     auditHandler,
 		KnowledgeHandler: knowledgeHandler,
 		DocumentHandler:  documentHandler,

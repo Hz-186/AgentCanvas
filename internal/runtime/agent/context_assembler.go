@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"sort"
 	"strings"
 
 	"agentcanvas/internal/domain/conversation"
@@ -85,6 +86,9 @@ func (a ContextAssembler) Build(req RunRequest) ([]llm.ChatMessage, ContextTrace
 		}
 		blocks = append(blocks, block)
 	}
+	sort.SliceStable(blocks, func(i, j int) bool {
+		return blockSortPriority(blocks[i].Name) < blockSortPriority(blocks[j].Name)
+	})
 	blocks = append(blocks, ContextBlock{
 		Name:    "task",
 		Role:    conversation.RoleUser,
@@ -153,6 +157,25 @@ func (a ContextAssembler) Build(req RunRequest) ([]llm.ChatMessage, ContextTrace
 	trace.UsedTokens = usedTokens
 	trace.TokenAudit.Total = trace.EstimatedTokens
 	return messages, trace
+}
+
+func blockSortPriority(name string) int {
+	switch tokenAuditCategory(name) {
+	case "system", "rules_l0", "rules_l1", "rules_l2", "rules_l3", "rules_l4":
+		return 0
+	case "tool_schema":
+		return 1
+	case "memory":
+		return 2
+	case "history", "working_memory":
+		return 3
+	case "retrieval":
+		return 4
+	case "task":
+		return 5
+	default:
+		return 3
+	}
 }
 
 func truncateRunes(content string, maxBytes int) string {
@@ -336,6 +359,8 @@ func tokenAuditCategory(name string) string {
 		return "history"
 	case strings.Contains(name, "working_memory"):
 		return "working_memory"
+	case strings.Contains(name, "skills"):
+		return "profile"
 	case strings.Contains(name, "memory"):
 		return "memory"
 	case strings.Contains(name, "retrieval") || strings.Contains(name, "knowledge") || strings.Contains(name, "citation"):

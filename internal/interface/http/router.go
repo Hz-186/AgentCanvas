@@ -24,6 +24,7 @@ type RouterDeps struct {
 	ProviderHandler  *handler.ProviderHandler
 	MemoryHandler    *handler.MemoryHandler
 	ToolHandler      *handler.ToolHandler
+	SkillHandler     *handler.SkillHandler
 	AuditHandler     *handler.AuditHandler
 	KnowledgeHandler *handler.KnowledgeHandler
 	DocumentHandler  *handler.DocumentHandler
@@ -80,6 +81,8 @@ func NewRouter(deps RouterDeps) *gin.Engine {
 
 			registerCRUD(protected, "/tool-definitions", ":id", deps.ToolHandler.Create, deps.ToolHandler.List, deps.ToolHandler.Get, deps.ToolHandler.Update, deps.ToolHandler.Delete)
 			protected.POST("/tool-definitions/:id/test", deps.ToolHandler.Test)
+			registerCRUD(protected, "/skills", ":id", deps.SkillHandler.Create, deps.SkillHandler.List, deps.SkillHandler.Get, deps.SkillHandler.Update, deps.SkillHandler.Delete)
+			protected.POST("/skills/:id/validate", deps.SkillHandler.Validate)
 			registerCRUD(protected, "/tool-policies", ":id", deps.ToolHandler.CreatePolicy, deps.ToolHandler.ListPolicies, deps.ToolHandler.GetPolicy, deps.ToolHandler.UpdatePolicy, deps.ToolHandler.DeletePolicy)
 			registerCRUD(protected, "/tool-packs", ":id", deps.ToolHandler.CreatePack, deps.ToolHandler.ListPacks, deps.ToolHandler.GetPack, deps.ToolHandler.UpdatePack, deps.ToolHandler.DeletePack)
 			protected.POST("/tool-packs/:id/items", deps.ToolHandler.AddPackItem)

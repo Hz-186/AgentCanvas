@@ -25,6 +25,7 @@ type Profile struct {
 	AllowCodeExecution          bool            `json:"allow_code_execution" gorm:"column:allow_code_execution"`
 	DefaultToolPackIDs          json.RawMessage `json:"default_tool_pack_ids" gorm:"column:default_tool_pack_ids"`
 	DefaultToolIDs              json.RawMessage `json:"default_tool_ids" gorm:"column:default_tool_ids"`
+	DefaultSkillIDs             json.RawMessage `json:"default_skill_ids" gorm:"column:default_skill_ids"`
 	DefaultMCPServerIDs         json.RawMessage `json:"default_mcp_server_ids" gorm:"column:default_mcp_server_ids"`
 	DefaultKnowledgeIDs         json.RawMessage `json:"default_knowledge_ids" gorm:"column:default_knowledge_ids"`
 	DefaultKnowledgeTopK        int             `json:"default_knowledge_top_k" gorm:"column:default_knowledge_top_k"`
@@ -52,6 +53,10 @@ func (p *Profile) DefaultToolPackIDsSlice() []int64 {
 	return decodeInt64Slice(p.DefaultToolPackIDs)
 }
 
+func (p *Profile) DefaultSkillIDsSlice() []int64 {
+	return decodeInt64Slice(p.DefaultSkillIDs)
+}
+
 func (p *Profile) DefaultMCPServerIDsSlice() []int64 {
 	return decodeInt64Slice(p.DefaultMCPServerIDs)
 }
@@ -75,6 +80,7 @@ func (p *Profile) BeforeUpdate(tx *gorm.DB) error {
 func (p *Profile) normalizeJSON() error {
 	p.DefaultToolPackIDs = normalizeJSONField(p.DefaultToolPackIDs)
 	p.DefaultToolIDs = normalizeJSONField(p.DefaultToolIDs)
+	p.DefaultSkillIDs = normalizeJSONField(p.DefaultSkillIDs)
 	p.DefaultMCPServerIDs = normalizeJSONField(p.DefaultMCPServerIDs)
 	p.DefaultKnowledgeIDs = normalizeJSONField(p.DefaultKnowledgeIDs)
 	p.DefaultCallWorkflowIDs = normalizeJSONField(p.DefaultCallWorkflowIDs)

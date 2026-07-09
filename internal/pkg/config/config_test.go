@@ -8,6 +8,12 @@ func TestQueueConfigDefaults(t *testing.T) {
 	if cfg.Queue.Backend != "mysql" || cfg.Queue.RedisStream == "" || cfg.Queue.RedisGroup == "" || cfg.Queue.RedisConsumer == "" {
 		t.Fatalf("unexpected queue defaults: %+v", cfg.Queue)
 	}
+	if cfg.LLMCache.SimilarityThreshold != 0.96 || cfg.LLMCache.TTLSeconds != 86400 {
+		t.Fatalf("unexpected llm cache defaults: %+v", cfg.LLMCache)
+	}
+	if cfg.MemoryDream.TriggerEveryNTurns != 5 || cfg.MemoryDream.IdleTimeoutSeconds != 180 {
+		t.Fatalf("unexpected memory dream defaults: %+v", cfg.MemoryDream)
+	}
 	if cfg.NATS.URL == "" || cfg.NATS.Stream == "" || cfg.NATS.Subject == "" || cfg.NATS.Durable == "" || cfg.NATS.AckWaitSeconds == 0 {
 		t.Fatalf("unexpected nats defaults: %+v", cfg.NATS)
 	}

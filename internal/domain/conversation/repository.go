@@ -15,6 +15,7 @@ type Repository interface {
 type MessageRepository interface {
 	Create(ctx context.Context, message *Message) error
 	ListByConversation(ctx context.Context, ownerID, conversationID int64) ([]Message, error)
+	ListActiveByConversation(ctx context.Context, ownerID, conversationID int64) ([]Message, error)
 	CreateReferences(ctx context.Context, refs []MessageReference) error
 	ListReferencesByMessage(ctx context.Context, ownerID, messageID int64) ([]MessageReference, error)
 }

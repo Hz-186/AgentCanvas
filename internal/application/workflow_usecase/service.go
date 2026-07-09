@@ -11,16 +11,20 @@ import (
 	"strings"
 	"time"
 
+	"agentcanvas/internal/domain/audit"
 	memoryusecase "agentcanvas/internal/application/memory_usecase"
 	"agentcanvas/internal/domain/conversation"
 	"agentcanvas/internal/domain/flow"
 	"agentcanvas/internal/domain/memory"
 	providerdomain "agentcanvas/internal/domain/provider"
 	"agentcanvas/internal/domain/retrieval"
+	"agentcanvas/internal/domain/skill"
 	"agentcanvas/internal/domain/tool"
 	"agentcanvas/internal/domain/workflow"
 	cryptoinfra "agentcanvas/internal/infrastructure/crypto"
 	"agentcanvas/internal/infrastructure/llm"
+	queueinfra "agentcanvas/internal/infrastructure/queue"
+	"agentcanvas/internal/infrastructure/vectorstore"
 	runtimeagent "agentcanvas/internal/runtime/agent"
 	"agentcanvas/internal/runtime/engine"
 	"agentcanvas/internal/runtime/evalharness"
@@ -31,38 +35,46 @@ import (
 
 	agenterrors "agentcanvas/internal/pkg/errors"
 
+	"github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
 )
 
 type Service struct {
-	workflows       workflow.Repository
-	profiles        workflow.ProfileRepository
-	versions        workflow.WorkflowVersionRepository
-	runs            workflow.RunRepository
-	events          workflow.RunEventRepository
-	nodeLogs        workflow.NodeLogRepository
-	runSteps        workflow.RunStepRepository
-	evals           workflow.EvalDatasetRepository
-	approvals       workflow.ApprovalRepository
-	teams           workflow.TeamRepository
-	memories        memory.Repository
-	memoryLogs      memory.WriteLogRepository
-	memoryRetriever memory.SemanticRetriever
-	workingMemory   memory.WorkingMemoryRepository
-	extractions     *memoryusecase.ExtractionService
-	tools           tool.DefinitionRepository
-	toolPacks       tool.PackRepository
-	mcpServers      tool.MCPRepository
-	toolRegistry    toolruntime.Registry
-	toolInvocations tool.InvocationRepository
-	providers       providerdomain.Repository
-	messages        conversation.MessageRepository
-	retriever       retrieval.Retriever
-	llm             llm.ChatClient
-	secrets         *cryptoinfra.SecretBox
-	executor        *engine.Executor
-	validator       *flow.Validator
-	runCancels      *runCancelRegistry
+	workflows        workflow.Repository
+	profiles         workflow.ProfileRepository
+	versions         workflow.WorkflowVersionRepository
+	runs             workflow.RunRepository
+	events           workflow.RunEventRepository
+	nodeLogs         workflow.NodeLogRepository
+	runSteps         workflow.RunStepRepository
+	evals            workflow.EvalDatasetRepository
+	approvals        workflow.ApprovalRepository
+	audits           audit.Repository
+	teams            workflow.TeamRepository
+	memories         memory.Repository
+	memoryLogs       memory.WriteLogRepository
+	memoryRetriever  memory.SemanticRetriever
+	workingMemory    memory.WorkingMemoryRepository
+	extractions      *memoryusecase.ExtractionService
+	tools            tool.DefinitionRepository
+	toolPacks        tool.PackRepository
+	skills           skill.Repository
+	mcpServers       tool.MCPRepository
+	toolRegistry     toolruntime.Registry
+	toolInvocations  tool.InvocationRepository
+	providers        providerdomain.Repository
+	messages         conversation.MessageRepository
+	retriever        retrieval.Retriever
+	llm              llm.ChatClient
+	embedder         llm.EmbeddingClient
+	archivalVecStore vectorstore.Store
+	secrets          *cryptoinfra.SecretBox
+	executor         *engine.Executor
+	validator        *flow.Validator
+	runCancels       *runCancelRegistry
+	dreamQueue       queueinfra.JobQueue
+	redisClient      *redis.Client
+	dreamCfg         memoryusecase.DreamConfig
 }
 
 // RunTrace is a complete tracing snapshot of a workflow execution (Run).
@@ -113,6 +125,7 @@ func NewService(
 	runSteps workflow.RunStepRepository,
 	evals workflow.EvalDatasetRepository,
 	approvals workflow.ApprovalRepository,
+	audits audit.Repository,
 	teams workflow.TeamRepository,
 	memories memory.Repository,
 	memoryLogs memory.WriteLogRepository,
@@ -122,12 +135,15 @@ func NewService(
 	mergeLogs memory.MergeLogRepository,
 	tools tool.DefinitionRepository,
 	toolPacks tool.PackRepository,
+	skills skill.Repository,
 	mcpServers tool.MCPRepository,
 	toolInvocations tool.InvocationRepository,
 	providers providerdomain.Repository,
 	messages conversation.MessageRepository,
 	retriever retrieval.Retriever,
 	llmClient llm.ChatClient,
+	embedder llm.EmbeddingClient,
+	archivalVecStore vectorstore.Store,
 	secrets *cryptoinfra.SecretBox,
 ) (*Service, error) {
 	toolCalling, ok := llmClient.(llm.ToolCallingClient)
@@ -139,30 +155,34 @@ func NewService(
 		registry = toolruntime.BasicRegistry{Tools: tools, Invocations: toolInvocations}
 	}
 	s := &Service{
-		workflows:       workflows,
-		profiles:        profiles,
-		versions:        versions,
-		runs:            runs,
-		events:          events,
-		nodeLogs:        nodeLogs,
-		runSteps:        runSteps,
-		evals:           evals,
-		approvals:       approvals,
-		teams:           teams,
-		memories:        memories,
-		memoryLogs:      memoryLogs,
-		memoryRetriever: memoryRetriever,
-		workingMemory:   workingMemory,
-		tools:           tools,
-		toolPacks:       toolPacks,
-		mcpServers:      mcpServers,
-		toolRegistry:    registry,
-		toolInvocations: toolInvocations,
-		providers:       providers,
-		messages:        messages,
-		retriever:       retriever,
-		llm:             llmClient,
-		secrets:         secrets,
+		workflows:        workflows,
+		profiles:         profiles,
+		versions:         versions,
+		runs:             runs,
+		events:           events,
+		nodeLogs:         nodeLogs,
+		runSteps:         runSteps,
+		evals:            evals,
+		approvals:        approvals,
+		audits:           audits,
+		teams:            teams,
+		memories:         memories,
+		memoryLogs:       memoryLogs,
+		memoryRetriever:  memoryRetriever,
+		workingMemory:    workingMemory,
+		tools:            tools,
+		toolPacks:        toolPacks,
+		skills:           skills,
+		mcpServers:       mcpServers,
+		toolRegistry:     registry,
+		toolInvocations:  toolInvocations,
+		providers:        providers,
+		messages:         messages,
+		retriever:        retriever,
+		llm:              llmClient,
+		embedder:         embedder,
+		archivalVecStore: archivalVecStore,
+		secrets:          secrets,
 	}
 	if extractionJobs != nil && mergeLogs != nil {
 		s.extractions = memoryusecase.NewExtractionService(memories, extractionJobs, mergeLogs)
@@ -170,6 +190,7 @@ func NewService(
 	nodes, err := runtimenode.DefaultNodes(runtimenode.Deps{
 		Retriever:               retriever,
 		LLM:                     llmClient,
+		Embedder:                embedder,
 		Providers:               s,
 		Messages:                s,
 		MessageHistory:          messages,
@@ -180,14 +201,17 @@ func NewService(
 		MemoryExtractionTrigger: s.triggerMemoryExtraction,
 		Tools:                   tools,
 		ToolPacks:               toolPacks,
+		Skills:                  skills,
 		MCPServers:              mcpServers,
 		ToolInvocations:         toolInvocations,
 		ToolCalling:             toolCalling,
 		ToolRegistry:            registry,
 		WorkflowCaller:          s,
 		Profiles:                s,
+		Audits:                  audits,
 		Teams:                   teams,
 		Sandbox:                 sandbox.NewDockerRunner(),
+		ArchivalVecStore:        archivalVecStore,
 	})
 	if err != nil {
 		return nil, err
@@ -200,9 +224,33 @@ func NewService(
 
 func (s *Service) triggerMemoryExtraction(ctx context.Context, ownerID int64, conversationID int64) {
 	if s.extractions == nil || ownerID <= 0 || conversationID <= 0 {
+		if ownerID > 0 && conversationID > 0 {
+			s.publishDream(ctx, ownerID, conversationID)
+		}
 		return
 	}
 	_, _ = s.extractions.StartExtraction(ctx, ownerID, conversationID, nil)
+	s.publishDream(ctx, ownerID, conversationID)
+}
+
+func (s *Service) ConfigureDream(queue queueinfra.JobQueue, redisClient *redis.Client, dreamCfg memoryusecase.DreamConfig) {
+	s.dreamQueue = queue
+	s.redisClient = redisClient
+	s.dreamCfg = dreamCfg
+}
+
+func (s *Service) publishDream(ctx context.Context, ownerID, conversationID int64) {
+	if s.dreamQueue == nil || !s.dreamCfg.Enabled || ownerID <= 0 || conversationID <= 0 {
+		return
+	}
+	if s.redisClient != nil {
+		key := fmt.Sprintf("dream:pending:%d", conversationID)
+		locked, err := s.redisClient.SetNX(ctx, key, 1, time.Minute).Result()
+		if err != nil || !locked {
+			return
+		}
+	}
+	_ = s.dreamQueue.Publish(ctx, queueinfra.Job{ID: fmt.Sprintf("dream-%d-%d-%d", ownerID, conversationID, time.Now().UnixNano()), Type: memoryusecase.DreamJobType, Payload: map[string]any{"owner_id": ownerID, "conversation_id": conversationID}})
 }
 
 type runOptions struct {
@@ -240,6 +288,7 @@ type UpdateWorkflowProfileRequest struct {
 	AllowCodeExecution          *bool            `json:"allow_code_execution"`
 	DefaultToolPackIDs          *[]int64         `json:"default_tool_pack_ids"`
 	DefaultToolIDs              *[]int64         `json:"default_tool_ids"`
+	DefaultSkillIDs             *[]int64         `json:"default_skill_ids"`
 	DefaultMCPServerIDs         *[]int64         `json:"default_mcp_server_ids"`
 	DefaultKnowledgeIDs         *[]int64         `json:"default_knowledge_ids"`
 	DefaultKnowledgeTopK        *int             `json:"default_knowledge_top_k"`
@@ -425,6 +474,9 @@ func (s *Service) UpdateWorkflowProfile(ctx context.Context, ownerID, workflowID
 	}
 	if req.DefaultToolIDs != nil {
 		profile.DefaultToolIDs = mustMarshalJSON(normalizePositiveIDs(*req.DefaultToolIDs))
+	}
+	if req.DefaultSkillIDs != nil {
+		profile.DefaultSkillIDs = mustMarshalJSON(normalizePositiveIDs(*req.DefaultSkillIDs))
 	}
 	if req.DefaultMCPServerIDs != nil {
 		profile.DefaultMCPServerIDs = mustMarshalJSON(normalizePositiveIDs(*req.DefaultMCPServerIDs))
@@ -919,6 +971,12 @@ func (s *Service) LoadChatProviderConfig(ctx context.Context, ownerID, providerI
 			BaseURL:      provider.BaseURL,
 			APIKey:       apiKey,
 		},
+		EmbeddingConfig: llm.EmbeddingProviderConfig{
+			ProviderType: provider.ProviderType,
+			BaseURL:      provider.BaseURL,
+			APIKey:       apiKey,
+		},
+		EmbeddingModel: strings.TrimSpace(provider.DefaultEmbeddingModel),
 	}, nil
 }
 
@@ -2180,6 +2238,7 @@ func defaultWorkflowProfile(ownerID, workflowID int64, name, description string)
 		MaxExecutionTimeMS:          120000,
 		DefaultToolPackIDs:          json.RawMessage("[]"),
 		DefaultToolIDs:              json.RawMessage("[]"),
+		DefaultSkillIDs:             json.RawMessage("[]"),
 		DefaultMCPServerIDs:         json.RawMessage("[]"),
 		DefaultKnowledgeIDs:         json.RawMessage("[]"),
 		DefaultCallWorkflowIDs:      json.RawMessage("[]"),

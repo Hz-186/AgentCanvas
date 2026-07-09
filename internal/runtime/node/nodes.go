@@ -3,13 +3,17 @@ package node
 import (
 	"context"
 	"fmt"
+	"os"
 
 	"agentcanvas/internal/domain/conversation"
 	"agentcanvas/internal/domain/memory"
 	"agentcanvas/internal/domain/retrieval"
+	"agentcanvas/internal/domain/audit"
+	"agentcanvas/internal/domain/skill"
 	"agentcanvas/internal/domain/tool"
 	"agentcanvas/internal/domain/workflow"
 	"agentcanvas/internal/infrastructure/llm"
+	"agentcanvas/internal/infrastructure/vectorstore"
 	"agentcanvas/internal/runtime/engine"
 	"agentcanvas/internal/runtime/sandbox"
 	"agentcanvas/internal/runtime/toolruntime"
@@ -20,9 +24,11 @@ type ProviderConfigLoader interface {
 }
 
 type LoadedProvider struct {
-	ProviderID int64
-	Model      string
-	Config     llm.ChatProviderConfig
+	ProviderID      int64
+	Model           string
+	Config          llm.ChatProviderConfig
+	EmbeddingConfig llm.EmbeddingProviderConfig
+	EmbeddingModel  string
 }
 
 type MessageWriter interface {
@@ -31,6 +37,7 @@ type MessageWriter interface {
 
 type MessageHistoryReader interface {
 	ListByConversation(ctx context.Context, ownerID, conversationID int64) ([]conversation.Message, error)
+	ListActiveByConversation(ctx context.Context, ownerID, conversationID int64) ([]conversation.Message, error)
 }
 
 type AgentProfileLoader interface {
@@ -50,6 +57,8 @@ type Deps struct {
 	MemoryExtractionTrigger func(ctx context.Context, ownerID int64, conversationID int64)
 	Tools                   tool.DefinitionRepository
 	ToolPacks               tool.PackRepository
+	Skills                  skill.Repository
+	Audits                  audit.Repository
 	MCPServers              tool.MCPRepository
 	ToolInvocations         tool.InvocationRepository
 	ToolCalling             llm.ToolCallingClient
@@ -58,6 +67,8 @@ type Deps struct {
 	Profiles                AgentProfileLoader
 	Teams                   workflow.TeamRepository
 	Sandbox                 sandbox.Runner
+	ArchivalVecStore        vectorstore.Store
+	Embedder                llm.EmbeddingClient
 }
 
 func DefaultNodes(deps Deps) ([]engine.Node, error) {
@@ -67,7 +78,8 @@ func DefaultNodes(deps Deps) ([]engine.Node, error) {
 	if deps.Sandbox == nil {
 		return nil, fmt.Errorf("sandbox runner is required")
 	}
-	agentNode := AgentNode{LLM: deps.ToolCalling, Providers: deps.Providers, Tools: deps.ToolRegistry, ToolPacks: deps.ToolPacks, MCPServers: deps.MCPServers, Retriever: deps.Retriever, MemoryRetriever: deps.MemoryRetriever, Memories: deps.Memories, MemoryLogs: deps.MemoryWriteLogs, WorkingMemory: deps.WorkingMemory, WorkflowCaller: deps.WorkflowCaller, Profiles: deps.Profiles, Sandbox: deps.Sandbox, MessageHistory: deps.MessageHistory, OnExtractTrigger: deps.MemoryExtractionTrigger}
+	workspaceRoot, _ := os.Getwd()
+	agentNode := AgentNode{LLM: deps.ToolCalling, Providers: deps.Providers, Tools: deps.ToolRegistry, ToolPacks: deps.ToolPacks, Skills: deps.Skills, Audits: deps.Audits, MCPServers: deps.MCPServers, Retriever: deps.Retriever, MemoryRetriever: deps.MemoryRetriever, Memories: deps.Memories, MemoryLogs: deps.MemoryWriteLogs, WorkingMemory: deps.WorkingMemory, WorkflowCaller: deps.WorkflowCaller, Profiles: deps.Profiles, Sandbox: deps.Sandbox, MessageHistory: deps.MessageHistory, ArchivalVecStore: deps.ArchivalVecStore, Embedder: deps.Embedder, WorkspaceRoot: workspaceRoot, OnExtractTrigger: deps.MemoryExtractionTrigger}
 	return []engine.Node{
 		BeginNode{},
 		RetrievalNode{Retriever: deps.Retriever},

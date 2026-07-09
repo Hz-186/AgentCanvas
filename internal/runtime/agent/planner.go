@@ -38,7 +38,9 @@ func (p Planner) maxStepsVal() int {
 	return p.MaxSteps
 }
 
-func (p Planner) GeneratePlan(ctx context.Context, provider llm.ChatProviderConfig, model, task string, temperature *float64) (*Plan, error) {
+func (p Planner) GeneratePlan(
+	ctx context.Context, provider llm.ChatProviderConfig, model, task string, temperature *float64,
+) (*Plan, error) {
 	if p.LLM == nil {
 		return nil, fmt.Errorf("planner requires a tool calling client")
 	}
@@ -48,8 +50,10 @@ Return the plan as a JSON object with a "steps" array. Each step has "number", "
 Do NOT use tool calls in this response — output only the JSON plan.`, p.maxStepsVal(), task)
 
 	resp, err := p.LLM.ChatWithTools(ctx, provider, llm.ToolChatRequest{
-		Model:       model,
-		Messages:    []llm.ChatMessage{{Role: conversation.RoleUser, Content: prompt}},
+		Model: model,
+		Messages: []llm.ChatMessage{
+			{Role: conversation.RoleUser, Content: prompt},
+		},
 		Tools:       nil,
 		Temperature: temperature,
 	})

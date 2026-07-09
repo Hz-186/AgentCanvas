@@ -42,6 +42,25 @@ func (r *MessageRepository) ListByConversation(ctx context.Context, ownerID, con
 	return messages, err
 }
 
+func (r *MessageRepository) ListActiveByConversation(ctx context.Context, ownerID, conversationID int64) ([]conversation.Message, error) {
+	var messages []conversation.Message
+	err := r.db.WithContext(ctx).
+		Where("owner_id = ? AND conversation_id = ? AND archived_at IS NULL", ownerID, conversationID).
+		Order("id ASC").
+		Find(&messages).Error
+	return messages, err
+}
+
+func (r *MessageRepository) ArchiveConversationMessages(ctx context.Context, ownerID, conversationID int64, archivedAt time.Time) (int64, error) {
+	if archivedAt.IsZero() {
+		archivedAt = time.Now().UTC()
+	}
+	result := r.db.WithContext(ctx).Model(&conversation.Message{}).
+		Where("owner_id = ? AND conversation_id = ? AND archived_at IS NULL", ownerID, conversationID).
+		Updates(map[string]any{"archived_at": archivedAt})
+	return result.RowsAffected, result.Error
+}
+
 func (r *MessageRepository) CreateReferences(ctx context.Context, refs []conversation.MessageReference) error {
 	if len(refs) == 0 {
 		return nil

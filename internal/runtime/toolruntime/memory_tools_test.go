@@ -47,7 +47,26 @@ func (r *fakeMemoryRepo) FindByID(ctx context.Context, ownerID, id int64) (*memo
 }
 
 func (r *fakeMemoryRepo) List(ctx context.Context, ownerID int64, memoryTypes []string, conversationID *int64, limit, offset int) ([]memory.Memory, error) {
-	return nil, nil
+	items := make([]memory.Memory, 0, len(r.items))
+	for _, item := range r.items {
+		if item.OwnerID != ownerID {
+			continue
+		}
+		if len(memoryTypes) > 0 {
+			matched := false
+			for _, memoryType := range memoryTypes {
+				if item.MemoryType == memoryType {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				continue
+			}
+		}
+		items = append(items, *item)
+	}
+	return items, nil
 }
 
 func (r *fakeMemoryRepo) ListForRead(ctx context.Context, ownerID int64, memoryTypes []string, conversationID *int64, limit int) ([]memory.Memory, error) {
@@ -218,5 +237,38 @@ func TestMemoryReadToolFallsBackWhenSearchFails(t *testing.T) {
 	}
 	if repo.readReq.limit != 3 {
 		t.Fatalf("expected fallback to ListForRead, got %+v", repo.readReq)
+	}
+}
+
+func TestSearchArchivalMemoryToolFallsBackToMemoryScan(t *testing.T) {
+	repo := &fakeMemoryRepo{}
+	_ = repo.Create(context.Background(), &memory.Memory{ID: 1, OwnerID: 1, MemoryType: memory.TypeArchival, Content: "User once approved a budget exception for vendor X"})
+	_ = repo.Create(context.Background(), &memory.Memory{ID: 2, OwnerID: 1, MemoryType: memory.TypeArchival, Content: "Unrelated cold memory"})
+	tool := SearchArchivalMemoryTool{Memories: repo}
+	result, err := tool.Execute(context.Background(), ToolRunContext{OwnerID: 1}, json.RawMessage(`{"query":"budget exception","limit":3}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var output map[string]any
+	if err := json.Unmarshal(result.ContentJSON, &output); err != nil {
+		t.Fatal(err)
+	}
+	if output["count"].(float64) != 1 {
+		t.Fatalf("expected one archival result, got %+v", output)
+	}
+}
+
+func TestInsertArchivalMemoryToolCreatesArchivalMemory(t *testing.T) {
+	repo := &fakeMemoryRepo{}
+	tool := InsertArchivalMemoryTool{Memories: repo}
+	result, err := tool.Execute(context.Background(), ToolRunContext{OwnerID: 1}, json.RawMessage(`{"content":"Durable archival fact"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(repo.items) != 1 || repo.items[1].MemoryType != memory.TypeArchival {
+		t.Fatalf("expected archival memory to be created, got %+v", repo.items)
+	}
+	if result == nil || len(result.ContentJSON) == 0 {
+		t.Fatal("expected tool result payload")
 	}
 }

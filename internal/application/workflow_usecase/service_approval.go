@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -256,7 +257,8 @@ func (s *Service) resumeRunFromCheckpoint(ctx context.Context, run *workflow.Run
 }
 
 func (s *Service) resumeAgentLoopNode() runtimenode.AgentLoopNode {
-	return runtimenode.AgentLoopNode{AgentNode: runtimenode.AgentNode{LLM: s.llm.(llm.ToolCallingClient), Providers: s, Tools: s.toolRegistry, ToolPacks: s.toolPacks, Retriever: s.retriever, MemoryRetriever: s.memoryRetriever, Memories: s.memories, MemoryLogs: s.memoryLogs, WorkingMemory: s.workingMemory, OnExtractTrigger: s.triggerMemoryExtraction, WorkflowCaller: s, Profiles: s, MessageHistory: s.messages}}
+	workspaceRoot, _ := os.Getwd()
+	return runtimenode.AgentLoopNode{AgentNode: runtimenode.AgentNode{LLM: s.llm.(llm.ToolCallingClient), Providers: s, Tools: s.toolRegistry, ToolPacks: s.toolPacks, Skills: s.skills, Audits: s.audits, Retriever: s.retriever, MemoryRetriever: s.memoryRetriever, Memories: s.memories, MemoryLogs: s.memoryLogs, WorkingMemory: s.workingMemory, OnExtractTrigger: s.triggerMemoryExtraction, WorkflowCaller: s, Profiles: s, MessageHistory: s.messages, ArchivalVecStore: s.archivalVecStore, Embedder: s.embedder, WorkspaceRoot: workspaceRoot}}
 }
 
 func decodeRuntimeCheckpoint(stored *workflow.WorkflowCheckpoint, decision *workflow.ApprovalRequest) (*runtimeagent.Checkpoint, error) {
