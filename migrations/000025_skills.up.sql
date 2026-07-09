@@ -1,0 +1,23 @@
+CREATE TABLE skills (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    owner_id BIGINT NOT NULL,
+    name VARCHAR(128) NOT NULL,
+    description TEXT NOT NULL,
+    skill_type VARCHAR(32) NOT NULL DEFAULT 'instruction',
+    source_type VARCHAR(32) NOT NULL DEFAULT 'inline',
+    entry_file VARCHAR(255) NOT NULL DEFAULT 'SKILL.md',
+    content_md MEDIUMTEXT NULL,
+    bundle_path VARCHAR(1024) NULL,
+    tags_json JSON NULL,
+    status INT NOT NULL DEFAULT 1,
+    version INT NOT NULL DEFAULT 1,
+    checksum VARCHAR(128) NOT NULL DEFAULT '',
+    last_validated_at DATETIME NULL,
+    last_validation_error TEXT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    deleted_at DATETIME NULL,
+    UNIQUE KEY uk_skills_owner_name_version (owner_id, name, version),
+    KEY idx_skills_owner_status_updated (owner_id, status, updated_at),
+    KEY idx_skills_owner_deleted (owner_id, deleted_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
