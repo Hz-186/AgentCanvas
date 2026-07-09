@@ -17,6 +17,7 @@ export function AgentLoopNode({ data, selected }: NodeProps<CanvasNode>) {
   const config = data.config as Record<string, unknown>;
   const mode = agentModeFromConfig(config);
   const toolCount = numberArray(config.tool_ids).length;
+  const skillCount = numberArray(config.skill_ids).length;
   const kbCount = numberArray(config.knowledge_ids).length;
   const mcpCount = numberArray(config.mcp_server_ids).length;
   const subAgentCount = numberArray(config.call_workflow_ids).length;
@@ -48,6 +49,7 @@ export function AgentLoopNode({ data, selected }: NodeProps<CanvasNode>) {
       </div>
       <div className="agent-node-footer">
         <span>{totalTools} tools</span>
+        <span>{skillCount} skills</span>
         <span>{Number(config.max_iterations ?? 8)} loops</span>
         {config.reflection_enabled ? <span><ShieldCheck size={12} />reflect</span> : null}
       </div>

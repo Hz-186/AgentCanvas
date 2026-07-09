@@ -20,6 +20,24 @@ queue:
   redis_group: agentcanvas-workers
   redis_consumer: worker
 
+llm_cache:
+  enabled: true
+  l1_enabled: true
+  l2_enabled: true
+  similarity_threshold: 0.96
+  ttl_seconds: 86400
+  embedding_provider_id: 1
+  embedding_model: text-embedding-v3
+
+memory_dream:
+  enabled: true
+  trigger_every_n_turns: 5
+  idle_timeout_seconds: 180
+  llm_provider_type: openai_compatible
+  llm_base_url: ""
+  llm_api_key: ""
+  llm_model: deepseek-chat
+
 nats:
   url: nats://nats:4222
   stream: AGENTCANVAS_INGESTION

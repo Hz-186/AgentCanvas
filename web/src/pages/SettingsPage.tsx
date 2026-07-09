@@ -1,8 +1,8 @@
 import { FormEvent, useEffect, useMemo, useState } from 'react';
-import { BrainCircuit, Boxes, Globe2, KeyRound, PlugZap, Plus, ShieldCheck, Trash2, Zap } from 'lucide-react';
+import { BrainCircuit, Boxes, Globe2, KeyRound, PlugZap, Plus, ShieldCheck, Sparkles, Trash2, Zap } from 'lucide-react';
 import { settingsApi } from '../api/resources';
 import { Button, EmptyState, Field, IconButton, Modal, Panel, Select, StatusBadge, TextArea, TextInput, Toast } from '../components/ui';
-import type { ApiToken, AuditLog, MCPServer, MCPToolCache, Memory, ModelProvider, ProviderCatalog, ProviderType, ToolDefinition, ToolPack, ToolPackItem, ToolPolicy } from '../types/api';
+import type { ApiToken, AuditLog, MCPServer, MCPToolCache, Memory, ModelProvider, ProviderCatalog, ProviderType, Skill, ToolDefinition, ToolPack, ToolPackItem, ToolPolicy } from '../types/api';
 import { formatDate, friendlyErrorMessage, parseJsonObject } from '../utils/format';
 
 const providerTypes: ProviderType[] = ['openai_compatible', 'deepseek', 'qwen', 'ollama', 'azure_openai', 'local'];
@@ -161,6 +161,7 @@ export function SettingsPage() {
   const [audits, setAudits] = useState<AuditLog[]>([]);
   const [memories, setMemories] = useState<Memory[]>([]);
   const [tools, setTools] = useState<ToolDefinition[]>([]);
+  const [skills, setSkills] = useState<Skill[]>([]);
   const [toolPolicies, setToolPolicies] = useState<ToolPolicy[]>([]);
   const [toolPacks, setToolPacks] = useState<ToolPack[]>([]);
   const [packItems, setPackItems] = useState<ToolPackItem[]>([]);
@@ -170,6 +171,7 @@ export function SettingsPage() {
   const [tokenOpen, setTokenOpen] = useState(false);
   const [memoryOpen, setMemoryOpen] = useState(false);
   const [toolOpen, setToolOpen] = useState(false);
+  const [skillOpen, setSkillOpen] = useState(false);
   const [policyOpen, setPolicyOpen] = useState(false);
   const [packOpen, setPackOpen] = useState(false);
   const [mcpOpen, setMcpOpen] = useState(false);
@@ -187,6 +189,12 @@ export function SettingsPage() {
   const [toolName, setToolName] = useState('');
   const [toolDescription, setToolDescription] = useState('');
   const [toolConfig, setToolConfig] = useState('{\n  "url": "https://api.example.com/search",\n  "method": "GET",\n  "timeout_ms": 5000,\n  "max_response_bytes": 524288\n}');
+  const [skillName, setSkillName] = useState('');
+  const [skillDescription, setSkillDescription] = useState('');
+  const [skillSourceType, setSkillSourceType] = useState<'inline' | 'local_path'>('inline');
+  const [skillContent, setSkillContent] = useState('## When To Use\n\nUse this skill when ...\n\n## Steps\n\n1. Inspect the current context.\n2. Decide whether this workflow applies.\n3. Execute the steps using available tools.\n\n## Safety\n\nDo not perform write or external actions without explicit approval.');
+  const [skillBundlePath, setSkillBundlePath] = useState('');
+  const [skillTags, setSkillTags] = useState('');
   const [policyName, setPolicyName] = useState('');
   const [policyRisks, setPolicyRisks] = useState<string[]>(['high']);
   const [policyAllowedHosts, setPolicyAllowedHosts] = useState('');
@@ -207,13 +215,14 @@ export function SettingsPage() {
   const [error, setError] = useState('');
 
   async function load() {
-    const [providerResp, catalogResp, tokenResp, auditResp, memoryResp, toolResp, policyResp, packResp, mcpResp] = await Promise.allSettled([
+    const [providerResp, catalogResp, tokenResp, auditResp, memoryResp, toolResp, skillResp, policyResp, packResp, mcpResp] = await Promise.allSettled([
       settingsApi.providers.list(),
       settingsApi.providers.catalog(),
       settingsApi.tokens.list(),
       settingsApi.audits.list(),
       settingsApi.memories.list(),
       settingsApi.tools.list(),
+      settingsApi.skills.list(),
       settingsApi.tools.listPolicies(),
       settingsApi.tools.listPacks(),
       settingsApi.tools.listMCPServers(),
@@ -224,6 +233,7 @@ export function SettingsPage() {
     if (auditResp.status === 'fulfilled') setAudits(auditResp.value);
     if (memoryResp.status === 'fulfilled') setMemories(memoryResp.value);
     if (toolResp.status === 'fulfilled') setTools(toolResp.value);
+    if (skillResp.status === 'fulfilled') setSkills(skillResp.value);
     if (policyResp.status === 'fulfilled') setToolPolicies(policyResp.value);
     if (packResp.status === 'fulfilled') {
       setToolPacks(packResp.value);
@@ -234,7 +244,7 @@ export function SettingsPage() {
       setSelectedMcpId((current) => current || mcpResp.value[0]?.id || 0);
     }
 
-    const failed = [providerResp, catalogResp, tokenResp, auditResp, memoryResp, toolResp, policyResp, packResp, mcpResp].find((item) => item.status === 'rejected');
+    const failed = [providerResp, catalogResp, tokenResp, auditResp, memoryResp, toolResp, skillResp, policyResp, packResp, mcpResp].find((item) => item.status === 'rejected');
     setError(failed && failed.status === 'rejected' ? friendlyErrorMessage(failed.reason, '部分设置暂时不可用') : '');
   }
 
@@ -414,6 +424,49 @@ export function SettingsPage() {
       await load();
     } catch (err) {
       setError(friendlyErrorMessage(err, '删除 HTTP Tool 失败'));
+    }
+  }
+
+  async function createSkill(event: FormEvent) {
+    event.preventDefault();
+    try {
+      await settingsApi.skills.create({
+        name: skillName,
+        description: skillDescription,
+        source_type: skillSourceType,
+        content_md: skillSourceType === 'inline' ? skillContent : undefined,
+        bundle_path: skillSourceType === 'local_path' ? skillBundlePath : undefined,
+        tags: skillTags.split(',').map((item) => item.trim()).filter(Boolean),
+      });
+      setSkillOpen(false);
+      setSkillName('');
+      setSkillDescription('');
+      setSkillBundlePath('');
+      setSkillTags('');
+      setMessage('Skill 已创建');
+      await load();
+    } catch (err) {
+      setError(friendlyErrorMessage(err, '创建 Skill 失败'));
+    }
+  }
+
+  async function removeSkill(id: number) {
+    try {
+      await settingsApi.skills.remove(id);
+      setMessage('Skill 已删除');
+      await load();
+    } catch (err) {
+      setError(friendlyErrorMessage(err, '删除 Skill 失败'));
+    }
+  }
+
+  async function validateSkill(id: number) {
+    try {
+      const result = await settingsApi.skills.validate(id);
+      setMessage(result.valid ? 'Skill 校验通过' : `Skill 校验失败：${result.error ?? '未知错误'}`);
+      await load();
+    } catch (err) {
+      setError(friendlyErrorMessage(err, '校验 Skill 失败'));
     }
   }
 
@@ -629,6 +682,29 @@ export function SettingsPage() {
                 </div>
                 <p className="muted truncate">{String(tool.config_json?.method ?? 'GET')} · {String(tool.config_json?.url ?? '')}</p>
                 <IconButton label="删除 HTTP Tool" onClick={() => void removeTool(tool.id)}><Trash2 size={16} /></IconButton>
+              </article>
+            ))}
+          </div>
+        </Panel>
+
+        <Panel title="Skills" eyebrow="能力" action={<Button tone="primary" onClick={() => setSkillOpen(true)}><Sparkles size={16} />新增</Button>}>
+          <div className="stack">
+            {skills.length === 0 ? (
+              <EmptyState title="还没有 Skill" description="新增 Skill 后，Agent 可以在运行时按需加载这些说明。" />
+            ) : skills.map((item) => (
+              <article className="card" key={item.id}>
+                <div className="card-title">
+                  <h3 className="truncate">{item.name}</h3>
+                  <StatusBadge tone={item.last_validation_error ? 'bad' : item.status === 1 ? 'good' : 'neutral'}>{item.last_validation_error ? 'validation failed' : item.status === 1 ? 'active' : 'disabled'}</StatusBadge>
+                </div>
+                <p className="muted truncate">{item.description}</p>
+                <p className="muted truncate">{item.source_type} · {item.entry_file}</p>
+                <p className="muted truncate">{Array.isArray(item.tags_json) ? item.tags_json.join(', ') : '无标签'} · {item.last_validated_at ? formatDate(item.last_validated_at) : '未校验'}</p>
+                {item.last_validation_error ? <p className="error-text clamp-2">{item.last_validation_error}</p> : null}
+                <div className="row-wrap">
+                  <Button onClick={() => void validateSkill(item.id)}><Zap size={16} />校验</Button>
+                  <IconButton label="删除 Skill" onClick={() => void removeSkill(item.id)}><Trash2 size={16} /></IconButton>
+                </div>
               </article>
             ))}
           </div>
@@ -898,6 +974,35 @@ export function SettingsPage() {
             <TextArea value={toolConfig} onChange={(event) => setToolConfig(event.target.value)} required />
           </Field>
           <pre className="code-box">{toolConfig}</pre>
+        </form>
+      </Modal>
+
+      <Modal
+        open={skillOpen}
+        title="新增 Skill"
+        onClose={() => setSkillOpen(false)}
+        footer={
+          <>
+            <Button type="button" onClick={() => setSkillOpen(false)}>取消</Button>
+            <Button form="create-skill-form" tone="primary">保存</Button>
+          </>
+        }
+      >
+        <form id="create-skill-form" className="form-stack" onSubmit={(event) => void createSkill(event)}>
+          <Field label="名称"><TextInput value={skillName} onChange={(event) => setSkillName(event.target.value)} required /></Field>
+          <Field label="描述"><TextArea value={skillDescription} onChange={(event) => setSkillDescription(event.target.value)} required /></Field>
+          <Field label="Source Type">
+            <Select value={skillSourceType} onChange={(event) => setSkillSourceType(event.target.value as 'inline' | 'local_path')}>
+              <option value="inline">inline</option>
+              <option value="local_path">local_path</option>
+            </Select>
+          </Field>
+          {skillSourceType === 'inline' ? (
+            <Field label="SKILL.md 内容"><TextArea value={skillContent} onChange={(event) => setSkillContent(event.target.value)} required /></Field>
+          ) : (
+            <Field label="Bundle Path"><TextInput value={skillBundlePath} onChange={(event) => setSkillBundlePath(event.target.value)} required /></Field>
+          )}
+          <Field label="Tags" hint="多个标签用英文逗号分隔"><TextInput value={skillTags} onChange={(event) => setSkillTags(event.target.value)} placeholder="review, repo, safety" /></Field>
         </form>
       </Modal>
 

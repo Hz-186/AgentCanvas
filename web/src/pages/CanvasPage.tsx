@@ -22,7 +22,7 @@ import {
 } from 'lucide-react';
 import { workflowApi, knowledgeApi, settingsApi } from '../api/resources';
 import { Button, EmptyState, Field, Panel, Segmented, Select, StatusBadge, TextArea, TextInput, Toast } from '../components/ui';
-import type { Workflow, WorkflowProfile, WorkflowTeam, WorkflowTeamMember, ApprovalRequest, EvalCase, EvalDataset, EvalResult, EvalRun, EvalTrend, FlowVersion, KnowledgeBase, MCPServer, MemoryWriteLog, ModelProvider, Run, RunStep, RunTrace, ToolDefinition, ToolInvocation, ToolPack } from '../types/api';
+import type { Workflow, WorkflowProfile, WorkflowTeam, WorkflowTeamMember, ApprovalRequest, EvalCase, EvalDataset, EvalResult, EvalRun, EvalTrend, FlowVersion, KnowledgeBase, MCPServer, MemoryWriteLog, ModelProvider, Run, RunStep, RunTrace, Skill, ToolDefinition, ToolInvocation, ToolPack } from '../types/api';
 import type { NodeType } from '../types/flow';
 import type { RuntimeEvent } from '../types/events';
 import { friendlyErrorMessage, parseJsonObject, prettyJson } from '../utils/format';
@@ -116,6 +116,7 @@ export function CanvasPage() {
   const [callableWorkflows, setCallableWorkflows] = useState<Workflow[]>([]);
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([]);
   const [tools, setTools] = useState<ToolDefinition[]>([]);
+  const [skills, setSkills] = useState<Skill[]>([]);
   const [toolPacks, setToolPacks] = useState<ToolPack[]>([]);
   const [mcpServers, setMcpServers] = useState<MCPServer[]>([]);
   const [mode, setMode] = useState<'config' | 'profile' | 'team' | 'approvals' | 'eval' | 'debug' | 'dsl'>('config');
@@ -192,13 +193,14 @@ export function CanvasPage() {
   useEffect(() => {
     let cancelled = false;
     async function load() {
-      const [workflowResp, profileResp, workflowsResp, providersResp, kbResp, toolResp, toolPackResp, mcpResp, approvalResp, evalDatasetResp, teamResp] = await Promise.all([
+      const [workflowResp, profileResp, workflowsResp, providersResp, kbResp, toolResp, skillResp, toolPackResp, mcpResp, approvalResp, evalDatasetResp, teamResp] = await Promise.all([
         workflowApi.get(workflowId),
         workflowApi.getProfile(workflowId),
         workflowApi.list(),
         settingsApi.providers.list(),
         knowledgeApi.list(),
         settingsApi.tools.list(),
+        settingsApi.skills.list(),
         settingsApi.tools.listPacks(),
         settingsApi.tools.listMCPServers(),
         workflowApi.listApprovalRequests('pending'),
@@ -213,6 +215,7 @@ export function CanvasPage() {
       setProviders(providersResp);
       setKnowledgeBases(kbResp);
       setTools(toolResp);
+      setSkills(skillResp);
       setToolPacks(toolPackResp);
       setMcpServers(mcpResp);
       setApprovalRequests(approvalResp.filter((item) => item.workflow_id === workflowId));
@@ -522,6 +525,7 @@ export function CanvasPage() {
         allow_code_execution: profile.allow_code_execution,
         default_tool_pack_ids: profile.default_tool_pack_ids ?? [],
         default_tool_ids: profile.default_tool_ids ?? [],
+        default_skill_ids: profile.default_skill_ids ?? [],
         default_mcp_server_ids: profile.default_mcp_server_ids ?? [],
         default_knowledge_ids: profile.default_knowledge_ids ?? [],
         default_knowledge_top_k: profile.default_knowledge_top_k ?? 5,
@@ -929,6 +933,7 @@ export function CanvasPage() {
                   config={config}
                   providers={providers}
                   tools={tools}
+                  skills={skills}
                   knowledgeBases={knowledgeBases}
                   mcpServers={mcpServers}
                   callableWorkflows={callableWorkflows}
@@ -1148,6 +1153,15 @@ export function CanvasPage() {
                   onChange={(event) => setProfile({ ...profile, default_tool_ids: Array.from(event.target.selectedOptions).map((option) => Number(option.value)) })}
                 >
                   {tools.map((tool) => <option key={tool.id} value={tool.id}>{tool.name}</option>)}
+                </Select>
+              </Field>
+              <Field label="默认 Skills">
+                <Select
+                  multiple
+                  value={numberArray(profile.default_skill_ids).map(String)}
+                  onChange={(event) => setProfile({ ...profile, default_skill_ids: Array.from(event.target.selectedOptions).map((option) => Number(option.value)) })}
+                >
+                  {skills.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
                 </Select>
               </Field>
               <Field label="默认 MCP Server">

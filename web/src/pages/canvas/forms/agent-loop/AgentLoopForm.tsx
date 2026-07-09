@@ -1,19 +1,20 @@
 import { useMemo, useState, type ReactNode } from 'react';
 import { Bot, ChevronDown, ChevronRight, Crosshair, Database, FileJson, GitBranch, Layers, ListChecks, MessageSquare, PlugZap, Plus, ShieldCheck, Sparkles, Trash2, Wrench } from 'lucide-react';
 import { Button, Field, Select, StatusBadge, TextArea, TextInput } from '../../../../components/ui';
-import type { KnowledgeBase, MCPServer, ModelProvider, ToolDefinition, Workflow } from '../../../../types/api';
+import type { KnowledgeBase, MCPServer, ModelProvider, Skill, ToolDefinition, Workflow } from '../../../../types/api';
 import { prettyJson } from '../../../../utils/format';
 import { agentModeFromConfig, patchAgentMode, stringArray } from '../../config';
 import type { AgentMode } from '../../types';
 import { useAgentFormValues } from './useAgentFormValues';
 import { useWatchAgentFormChange } from './useWatchAgentFormChange';
 
-type ModuleId = 'mode' | 'model' | 'prompt' | 'tools' | 'knowledge' | 'mcp' | 'sub_agents' | 'memory' | 'planning' | 'reflection' | 'policy' | 'output';
+type ModuleId = 'mode' | 'model' | 'prompt' | 'tools' | 'skills' | 'knowledge' | 'mcp' | 'sub_agents' | 'memory' | 'planning' | 'reflection' | 'policy' | 'output';
 
 interface AgentLoopFormProps {
   config: Record<string, unknown>;
   providers: ModelProvider[];
   tools: ToolDefinition[];
+  skills: Skill[];
   knowledgeBases: KnowledgeBase[];
   mcpServers: MCPServer[];
   callableWorkflows: Workflow[];
@@ -79,7 +80,7 @@ function ModuleCard({
   );
 }
 
-function CardSelectList<T extends { id: number; name: string }>({
+function CardSelectList<T extends { id: number; name: string; description?: string; last_validation_error?: string }>({
   items,
   selectedIds,
   emptyLabel,
@@ -92,7 +93,15 @@ function CardSelectList<T extends { id: number; name: string }>({
   onChange: (ids: number[]) => void;
   onLocate?: (id: number) => void;
 }) {
-  const selected = selectedIds.map((id) => ({ id, name: items.find((item) => item.id === id)?.name ?? `#${id}` }));
+  const selected = selectedIds.map((id) => {
+    const item = items.find((entry) => entry.id === id);
+    return {
+      id,
+      name: item?.name ?? `#${id}`,
+      description: item?.description ?? '',
+      validationError: item?.last_validation_error ?? '',
+    };
+  });
   return (
     <div className="module-card-list">
       {selected.length === 0 ? <p className="muted">{emptyLabel}</p> : null}
@@ -100,7 +109,8 @@ function CardSelectList<T extends { id: number; name: string }>({
         <article className="module-mini-card" key={item.id}>
           <div className="min-w-0">
             <strong className="truncate">{item.name}</strong>
-            <span>#{item.id}</span>
+            <span>{item.description || `#${item.id}`}</span>
+            {item.validationError ? <span className="module-error-text">{item.validationError}</span> : null}
           </div>
           <div className="module-mini-actions">
             {onLocate ? <button type="button" title="生成并定位独立节点" onClick={() => onLocate(item.id)}><Crosshair size={14} /></button> : null}
@@ -119,7 +129,7 @@ function CardSelectList<T extends { id: number; name: string }>({
   );
 }
 
-export function AgentLoopForm({ config, providers, tools, knowledgeBases, mcpServers, callableWorkflows, updateConfig, updateJSON, addReferencedNode }: AgentLoopFormProps) {
+export function AgentLoopForm({ config, providers, tools, skills, knowledgeBases, mcpServers, callableWorkflows, updateConfig, updateJSON, addReferencedNode }: AgentLoopFormProps) {
   const values = useAgentFormValues(config);
   const onChange = useWatchAgentFormChange(updateConfig);
   const [expandedModules, setExpandedModules] = useState<Set<ModuleId>>(() => new Set(['mode', 'model', 'tools']));
@@ -128,6 +138,7 @@ export function AgentLoopForm({ config, providers, tools, knowledgeBases, mcpSer
   const mode = values.mode;
   const modeMeta = modeOptions.find((item) => item.value === mode) ?? modeOptions[0];
   const toolIds = values.toolIds;
+  const skillIds = values.skillIds;
   const knowledgeIds = values.knowledgeIds;
   const mcpIds = values.mcpServerIds;
   const subAgentIds = values.callWorkflowIds;
@@ -138,6 +149,7 @@ export function AgentLoopForm({ config, providers, tools, knowledgeBases, mcpSer
     model: expandedModules.has('model'),
     prompt: expandedModules.has('prompt'),
     tools: expandedModules.has('tools'),
+    skills: expandedModules.has('skills'),
     knowledge: expandedModules.has('knowledge'),
     mcp: expandedModules.has('mcp'),
     sub_agents: expandedModules.has('sub_agents'),
@@ -220,6 +232,16 @@ export function AgentLoopForm({ config, providers, tools, knowledgeBases, mcpSer
           <Select value={config.code_execution_enabled ? 'enabled' : 'disabled'} onChange={(event) => onChange({ code_execution_enabled: event.target.value === 'enabled' })}>
             <option value="disabled">Disabled</option>
             <option value="enabled">Enabled</option>
+          </Select>
+        </Field>
+      </ModuleCard>
+
+      <ModuleCard id="skills" title="Skills" summary={selectedNames(skills, skillIds)} icon={<Sparkles size={16} />} status={<StatusBadge tone={moduleTone(skillIds.length > 0)}>{skillIds.length}</StatusBadge>} expanded={moduleOpen.skills} onToggle={toggleModule}>
+        <CardSelectList items={skills} selectedIds={skillIds} emptyLabel="还没有可用 Skill。" onChange={(ids) => onChange({ skill_ids: ids })} />
+        <Field label="加载模式">
+          <Select value={values.skillLoadingMode} onChange={(event) => onChange({ skill_loading_mode: event.target.value })}>
+            <option value="metadata_only">Metadata Only</option>
+            <option value="search">Search</option>
           </Select>
         </Field>
       </ModuleCard>
@@ -317,12 +339,13 @@ export function AgentLoopForm({ config, providers, tools, knowledgeBases, mcpSer
         {schemaError ? <p className="module-error-text">{schemaError}</p> : null}
       </ModuleCard>
 
-      <Button className="agent-module-add" onClick={() => setExpandedModules(new Set(['mode', 'model', 'prompt', 'tools', 'knowledge', 'mcp', 'sub_agents', 'memory', 'planning', 'reflection', 'policy', 'output']))}>
+      <Button className="agent-module-add" onClick={() => setExpandedModules(new Set(['mode', 'model', 'prompt', 'tools', 'skills', 'knowledge', 'mcp', 'sub_agents', 'memory', 'planning', 'reflection', 'policy', 'output']))}>
         <Plus size={15} />
         展开全部模块
       </Button>
       <div className="agent-module-summary">
         <StatusBadge tone="info">{totalCallable} callable</StatusBadge>
+        <StatusBadge tone={skillIds.length > 0 ? 'good' : 'neutral'}>{skillIds.length} skills</StatusBadge>
         <StatusBadge tone={modeMeta.group === 'recommended' ? 'good' : 'warn'}>{modeMeta.group}</StatusBadge>
       </div>
     </div>

@@ -68,6 +68,8 @@ export function defaultConfig(type: NodeType): CanvasNodeData['config'] {
       system_prompt: '你是一个严谨的 Agent。必要时调用可用工具，看到工具结果后再继续推理并给出最终答案。',
       task_template: '{{sys.query}}',
       tool_ids: [],
+      skill_ids: [],
+      skill_loading_mode: 'metadata_only',
       knowledge_ids: [],
       mcp_server_ids: [],
       knowledge_top_k: 5,
@@ -131,10 +133,11 @@ export function nodeSummaryItems(data: CanvasNodeData) {
   const config = data.config as Record<string, unknown>;
   if (data.nodeType === 'agent_loop') {
     const tools = numberArray(config.tool_ids).length;
+    const skills = numberArray(config.skill_ids).length;
     const kb = numberArray(config.knowledge_ids).length;
     const mcp = numberArray(config.mcp_server_ids).length;
     const callable = numberArray(config.call_workflow_ids).length;
-    return [agentModeFromConfig(config), String(config.model || 'inherit'), `${tools + kb + mcp + callable} tools`, `${Number(config.max_iterations ?? 8)} loops`];
+    return [agentModeFromConfig(config), String(config.model || 'inherit'), `${tools + kb + mcp + callable} tools`, `${skills} skills`, `${Number(config.max_iterations ?? 8)} loops`];
   }
   if (data.nodeType === 'knowledge_retrieval') return [`Top ${Number(config.top_k ?? 5)}`, String(config.mode ?? 'keyword'), `${numberArray(config.kb_ids).length} KB`];
   if (data.nodeType === 'llm') return [String(config.model || 'default'), `T ${Number(config.temperature ?? 0.7)}`, config.stream === false ? 'sync' : 'stream'];

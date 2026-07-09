@@ -48,6 +48,8 @@ export interface AgentLoopConfig {
   system_prompt?: string;
   task_template?: string;
   tool_ids?: number[];
+  skill_ids?: number[];
+  skill_loading_mode?: 'metadata_only' | 'search';
   knowledge_ids?: number[];
   knowledge_top_k?: number;
   knowledge_mode?: 'keyword' | 'vector' | 'hybrid';

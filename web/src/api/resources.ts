@@ -49,6 +49,10 @@ import type {
   ToolPack,
   ToolPackItem,
   ToolPolicy,
+  Skill,
+  CreateSkillRequest,
+  UpdateSkillRequest,
+  SkillValidationResult,
   UpdateWorkflowRequest,
   UpdateWorkflowProfileRequest,
   UpdateProviderRequest,
@@ -252,6 +256,13 @@ export const settingsApi = {
     removeMCPServer: (id: number) => api.delete<{ success: boolean }>(`/mcp-servers/${id}`),
     refreshMCPServer: (id: number) => api.post<{ server: MCPServer; tools: MCPToolCache[] }>(`/mcp-servers/${id}/refresh`),
     listMCPTools: (id: number) => api.get<MCPToolCache[]>(`/mcp-servers/${id}/tools`),
+  },
+  skills: {
+    list: () => api.get<Skill[]>('/skills'),
+    create: (body: CreateSkillRequest) => api.post<Skill>('/skills', body),
+    update: (id: number, body: UpdateSkillRequest) => api.patch<Skill>(`/skills/${id}`, body),
+    remove: (id: number) => api.delete<{ success: boolean }>(`/skills/${id}`),
+    validate: (id: number) => api.post<SkillValidationResult>(`/skills/${id}/validate`),
   },
 };
 

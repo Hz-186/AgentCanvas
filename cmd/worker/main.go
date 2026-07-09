@@ -2,19 +2,24 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
 	ingestionusecase "agentcanvas/internal/application/ingestion_usecase"
+	memoryusecase "agentcanvas/internal/application/memory_usecase"
 	"agentcanvas/internal/infrastructure"
 	chunkerinfra "agentcanvas/internal/infrastructure/chunker"
 	"agentcanvas/internal/infrastructure/llm"
 	mysqlinfra "agentcanvas/internal/infrastructure/mysql"
 	parserinfra "agentcanvas/internal/infrastructure/parser"
+	"agentcanvas/internal/infrastructure/queue"
+	"agentcanvas/internal/infrastructure/vectorstore"
 	"agentcanvas/internal/pkg/config"
 	"agentcanvas/internal/pkg/logger"
 )
@@ -50,6 +55,9 @@ func main() {
 	chunkRepo := mysqlinfra.NewChunkRepository(db)
 	ingestionJobRepo := mysqlinfra.NewIngestionJobRepository(db)
 	providerRepo := mysqlinfra.NewProviderRepository(db)
+	memoryRepo := mysqlinfra.NewMemoryRepository(db)
+	memoryLogRepo := mysqlinfra.NewMemoryWriteLogRepository(db)
+	messageRepo := mysqlinfra.NewMessageRepository(db)
 	fileStorage := infraDeps.FileStorage
 	secretBox := infraDeps.SecretBox
 	parserRegistry := parserinfra.NewDefaultRegistry()
@@ -72,9 +80,14 @@ func main() {
 		cfg.Elasticsearch.ChunkIndex,
 	)
 	jobQueue := infraDeps.JobQueue
+	var archivalVecStore vectorstore.Store
+	if cfg.Milvus.Enabled {
+		archivalVecStore = vectorstore.NewMilvusStore(cfg.Milvus.Address, cfg.Milvus.Token, vectorstore.HNSWConfig{M: cfg.Milvus.M, EFConstruction: cfg.Milvus.EFConstruction, EFSearch: cfg.Milvus.EFSearch, MetricType: cfg.Milvus.MetricType})
+	}
 
 	hostname, _ := os.Hostname()
 	workerID := fmt.Sprintf("%s-%d", hostname, os.Getpid())
+	dreamWorker := memoryusecase.NewDreamWorker(baseChatClient(), llm.NewOpenAICompatibleEmbeddingClient(), memoryRepo, memoryLogRepo, messageRepo, archivalVecStore, infraDeps.Redis, memoryusecase.NewDreamConfig(cfg.MemoryDream), workerID)
 	appLogger.Info("worker started", "worker_id", workerID)
 
 	ticker := time.NewTicker(2 * time.Second)
@@ -91,7 +104,7 @@ func main() {
 		var processed bool
 		var err error
 		if jobQueue != nil {
-			processed, err = service.ProcessNextFromQueue(ctx, jobQueue, workerID)
+			processed, err = processNextJob(ctx, jobQueue, workerID, service, dreamWorker)
 		} else {
 			processed, err = service.ProcessNext(ctx, workerID)
 		}
@@ -108,5 +121,70 @@ func main() {
 			return
 		case <-ticker.C:
 		}
+	}
+}
+
+func baseChatClient() llm.ChatClient {
+	return llm.NewOpenAICompatibleChatClient()
+}
+
+func processNextJob(ctx context.Context, jobQueue queue.JobQueue, workerID string, ingestion *ingestionusecase.Service, dreamWorker *memoryusecase.DreamWorker) (bool, error) {
+	claimed, err := jobQueue.Claim(ctx, queue.ClaimOptions{WorkerID: workerID, Limit: 1})
+	if err != nil || len(claimed) == 0 {
+		return false, err
+	}
+	job := claimed[0]
+	switch job.Type {
+	case memoryusecase.DreamJobType:
+		payload := memoryusecase.DreamPayload{OwnerID: payloadInt64(job.Payload, "owner_id"), ConversationID: payloadInt64(job.Payload, "conversation_id")}
+		if err := dreamWorker.HandleDreamJob(ctx, payload); err != nil {
+			_ = jobQueue.Nack(ctx, job.ID, time.Now().Add(time.Minute))
+			return true, err
+		}
+		return true, jobQueue.Ack(ctx, job.ID)
+	default:
+		processed, err := ingestion.ProcessNextFromQueue(ctx, singleJobQueue{jobQueue: jobQueue, claimed: job}, workerID)
+		return processed, err
+	}
+}
+
+type singleJobQueue struct {
+	jobQueue queue.JobQueue
+	claimed  queue.Job
+}
+
+func (q singleJobQueue) Publish(ctx context.Context, job queue.Job) error {
+	return q.jobQueue.Publish(ctx, job)
+}
+func (q singleJobQueue) Claim(context.Context, queue.ClaimOptions) ([]queue.Job, error) {
+	return []queue.Job{q.claimed}, nil
+}
+func (q singleJobQueue) Ack(ctx context.Context, jobID string) error {
+	return q.jobQueue.Ack(ctx, jobID)
+}
+func (q singleJobQueue) Nack(ctx context.Context, jobID string, retryAt time.Time) error {
+	return q.jobQueue.Nack(ctx, jobID, retryAt)
+}
+
+func payloadInt64(payload map[string]any, key string) int64 {
+	if payload == nil {
+		return 0
+	}
+	switch value := payload[key].(type) {
+	case int64:
+		return value
+	case int:
+		return int64(value)
+	case float64:
+		return int64(value)
+	case json.Number:
+		parsed, _ := value.Int64()
+		return parsed
+	case string:
+		parsed, _ := strconv.ParseInt(value, 10, 64)
+		return parsed
+	default:
+		parsed, _ := strconv.ParseInt(fmt.Sprint(value), 10, 64)
+		return parsed
 	}
 }

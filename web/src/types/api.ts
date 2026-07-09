@@ -222,6 +222,58 @@ export interface MCPToolCache {
   updated_at: string;
 }
 
+export interface Skill {
+  id: number;
+  owner_id: number;
+  name: string;
+  description: string;
+  skill_type: 'instruction' | 'bundle';
+  source_type: 'inline' | 'local_path';
+  entry_file: string;
+  content_md?: string;
+  bundle_path?: string;
+  tags_json?: string[] | unknown;
+  status: number;
+  version: number;
+  checksum: string;
+  last_validated_at?: string | null;
+  last_validation_error?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateSkillRequest {
+  name: string;
+  description: string;
+  skill_type?: 'instruction' | 'bundle';
+  source_type?: 'inline' | 'local_path';
+  entry_file?: string;
+  content_md?: string;
+  bundle_path?: string;
+  tags?: string[];
+  status?: number;
+}
+
+export interface UpdateSkillRequest {
+  name?: string;
+  description?: string;
+  skill_type?: 'instruction' | 'bundle';
+  source_type?: 'inline' | 'local_path';
+  entry_file?: string;
+  content_md?: string;
+  bundle_path?: string;
+  tags?: string[];
+  status?: number;
+}
+
+export interface SkillValidationResult {
+  valid: boolean;
+  error?: string;
+  checksum?: string;
+  validated_at: string;
+  skill: Skill;
+}
+
 // —— 知识库 ——
 export interface KnowledgeBase {
   id: number;
@@ -445,6 +497,7 @@ export interface WorkflowProfile {
   allow_code_execution: boolean;
   default_tool_pack_ids?: number[];
   default_tool_ids?: number[];
+  default_skill_ids?: number[];
   default_mcp_server_ids?: number[];
   default_knowledge_ids?: number[];
   default_knowledge_top_k?: number;
@@ -490,6 +543,7 @@ export type UpdateWorkflowProfileRequest = Partial<Pick<
   | 'allow_code_execution'
   | 'default_tool_pack_ids'
   | 'default_tool_ids'
+  | 'default_skill_ids'
   | 'default_mcp_server_ids'
   | 'default_knowledge_ids'
   | 'default_knowledge_top_k'
