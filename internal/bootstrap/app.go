@@ -42,7 +42,10 @@ type App struct {
 }
 
 func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, error) {
-	infraDeps, err := infrastructure.InitInfrastructure(ctx, cfg, infrastructure.InitOptions{IncludeMemoryRetrieval: true, InitializeQueue: true})
+	infraDeps, err := infrastructure.InitInfrastructure(
+		ctx, cfg, infrastructure.InitOptions{
+			IncludeMemoryRetrieval: true, InitializeQueue: true,
+		})
 	if err != nil {
 		return nil, err
 	}
@@ -104,15 +107,39 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 	jwtService := cryptoinfra.NewJWTService(cfg.Security.JWTSecret, cfg.Security.AccessTokenTTL())
 	tokenHasher := cryptoinfra.NewTokenHasher(cfg.Security.RefreshTokenPepper)
 	passwordHasher := cryptoinfra.NewPasswordHasher(0)
-	githubClient := oauthinfra.NewGitHubClient(cfg.OAuth.GitHub.ClientID, cfg.OAuth.GitHub.ClientSecret, cfg.OAuth.GitHub.RedirectURL, cfg.OAuth.GitHub.Scopes)
-
-	authService := authusecase.NewService(userRepo, oauthRepo, sessionRepo, apiTokenRepo, auditRepo, passwordHasher, jwtService, tokenHasher, redisClient, githubClient, cfg.Security.RefreshTokenTTL())
+	githubClient := oauthinfra.NewGitHubClient(
+		cfg.OAuth.GitHub.ClientID,
+		cfg.OAuth.GitHub.ClientSecret,
+		cfg.OAuth.GitHub.RedirectURL,
+		cfg.OAuth.GitHub.Scopes,
+	)
+	authService := authusecase.NewService(userRepo,
+		oauthRepo,
+		sessionRepo,
+		apiTokenRepo,
+		auditRepo,
+		passwordHasher,
+		jwtService,
+		tokenHasher,
+		redisClient,
+		githubClient,
+		cfg.Security.RefreshTokenTTL(),
+	)
 	baseChatClient := llm.NewOpenAICompatibleChatClient()
 	var chatClient llm.ChatClient = baseChatClient
 	embeddingClient := llm.NewOpenAICompatibleEmbeddingClient()
 	var archivalVecStore vectorstore.Store
 	if cfg.Milvus.Enabled {
-		archivalVecStore = vectorstore.NewMilvusStore(cfg.Milvus.Address, cfg.Milvus.Token, vectorstore.HNSWConfig{M: cfg.Milvus.M, EFConstruction: cfg.Milvus.EFConstruction, EFSearch: cfg.Milvus.EFSearch, MetricType: cfg.Milvus.MetricType})
+		archivalVecStore = vectorstore.NewMilvusStore(
+			cfg.Milvus.Address,
+			cfg.Milvus.Token,
+			vectorstore.HNSWConfig{
+				M:              cfg.Milvus.M,
+				EFConstruction: cfg.Milvus.EFConstruction,
+				EFSearch:       cfg.Milvus.EFSearch,
+				MetricType:     cfg.Milvus.MetricType,
+			},
+		)
 	}
 	if cfg.LLMCache.Enabled {
 		cacheTTL := time.Duration(cfg.LLMCache.TTLSeconds) * time.Second
@@ -145,7 +172,9 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 			if model == "" {
 				return llm.EmbeddingProviderConfig{}, "", fmt.Errorf("embedding model is not configured")
 			}
-			return llm.EmbeddingProviderConfig{ProviderType: provider.ProviderType, BaseURL: provider.BaseURL, APIKey: apiKey}, model, nil
+			return llm.EmbeddingProviderConfig{
+				ProviderType: provider.ProviderType, BaseURL: provider.BaseURL, APIKey: apiKey
+			}, model, nil
 		}
 		chatClient = llm.NewCachedChatClient(baseChatClient, baseChatClient, llm.CachedChatClientOptions{
 			Redis:        redisClient,
@@ -159,24 +188,76 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 		})
 	}
 	reranker := llm.NewChatReranker(chatClient)
-	retrievalService := retrievalusecase.NewService(knowledgeRepo, providerRepo, retrievalStore, embeddingClient, reranker, secretBox)
-
+	retrievalService := retrievalusecase.NewService(
+		knowledgeRepo, providerRepo, retrievalStore, embeddingClient, reranker, secretBox,
+	)
 	providerService := providerusecase.NewService(providerRepo, auditRepo, secretBox, llm.NewHTTPProviderTester())
 	auditService := auditusecase.NewService(auditRepo)
 	memoryService := memoryusecase.NewServiceWithCacheAndRetriever(memoryRepo, memoryCache, memoryRetrievalStore)
 	toolService := toolusecase.NewService(toolDefinitionRepo)
 	workspaceRoot, _ := os.Getwd()
 	skillService := skillusecase.NewService(skillRepo, workspaceRoot)
-	knowledgeService := knowledgeusecase.NewService(knowledgeRepo, documentRepo, chunkRepo, ingestionJobRepo, retrievalLogRepo, auditRepo, fileStorage, retrievalService, retrievalStore)
+	knowledgeService := knowledgeusecase.NewService(
+		knowledgeRepo,
+		documentRepo,
+		chunkRepo,
+		ingestionJobRepo,
+		retrievalLogRepo,
+		auditRepo,
+		fileStorage,
+		retrievalService,
+		retrievalStore,
+	)
 	jobQueue := infraDeps.JobQueue
 	dreamCfg := memoryusecase.NewDreamConfig(cfg.MemoryDream)
 	if jobQueue != nil {
 		knowledgeService.WithJobQueue(jobQueue)
 	}
 	dialogService := dialogusecase.NewService(dialogRepo)
-	chatService := chatusecase.NewService(providerRepo, dialogRepo, knowledgeRepo, conversationRepo, messageRepo, usageRepo, retrievalService, chatClient, secretBox)
+	chatService := chatusecase.NewService(
+		providerRepo,
+		dialogRepo,
+		knowledgeRepo,
+		conversationRepo,
+		messageRepo,
+		usageRepo,
+		retrievalService,
+		chatClient,
+		secretBox,
+	)
 	chatService.ConfigureDream(jobQueue, redisClient, dreamCfg)
-	workflowService, err := agentusecase.NewService(workflowRepo, workflowProfileRepo, flowVersionRepo, runRepo, runEventRepo, nodeLogRepo, runStepRepo, workflowEvalRepo, approvalRepo, auditRepo, workflowTeamRepo, memoryRepo, memoryWriteLogRepo, memoryRetrievalStore, workingMemoryRepo, extractionJobRepo, mergeLogRepo, toolDefinitionRepo, toolPackRepo, skillRepo, mcpRepo, toolInvocationRepo, providerRepo, messageRepo, retrievalService, chatClient, embeddingClient, archivalVecStore, secretBox)
+	workflowService, err := agentusecase.NewService(
+		workflowRepo,
+		workflowProfileRepo,
+		flowVersionRepo,
+		runRepo,
+		runEventRepo,
+		nodeLogRepo,
+		runStepRepo,
+		workflowEvalRepo,
+		approvalRepo,
+		auditRepo,
+		workflowTeamRepo,
+		memoryRepo,
+		memoryWriteLogRepo,
+		memoryRetrievalStore,
+		workingMemoryRepo,
+		extractionJobRepo,
+		mergeLogRepo,
+		toolDefinitionRepo,
+		toolPackRepo,
+		skillRepo,
+		mcpRepo,
+		toolInvocationRepo,
+		providerRepo,
+		conversationRepo,
+		messageRepo,
+		retrievalService,
+		chatClient,
+		embeddingClient,
+		archivalVecStore,
+		secretBox,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("init workflow service: %w", err)
 	}
