@@ -2319,6 +2319,125 @@ html[data-theme='dark'] .workflow-node-tags span {
   justify-content: space-between;
 }
 
+.context-rules-trace {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.context-rules-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(112px, 1fr));
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.context-rules-summary > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding: var(--space-3);
+  border-right: 1px solid var(--border);
+  background: var(--bg-surface-2);
+}
+
+.context-rules-summary > div:last-child {
+  border-right: 0;
+}
+
+.context-rules-summary span,
+.context-rules-loaded > span,
+.context-rule-round p > span {
+  color: var(--text-secondary);
+  font-size: var(--font-xs);
+}
+
+.context-rules-summary strong {
+  font-family: var(--font-mono);
+  font-size: var(--font-sm);
+  white-space: nowrap;
+}
+
+.context-rules-warning {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  color: var(--danger);
+  background: var(--danger-soft);
+  border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
+  border-radius: var(--radius-sm);
+  font-size: var(--font-sm);
+}
+
+.context-rules-version {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--text-secondary);
+  font-size: var(--font-xs);
+}
+
+.context-rules-loaded {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.context-rules-loaded > div,
+.context-rules-levels {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.context-rules-levels span {
+  padding: 3px 6px;
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  background: var(--bg-surface-2);
+  font-family: var(--font-mono);
+  font-size: var(--font-xs);
+}
+
+.context-rules-levels strong {
+  color: var(--text-primary);
+}
+
+.context-rules-rounds {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.context-rule-round {
+  display: grid;
+  gap: 5px;
+  padding: var(--space-2) var(--space-3);
+  border-left: 2px solid var(--accent);
+  background: var(--bg-surface-2);
+}
+
+.context-rule-round-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2);
+  font-size: var(--font-sm);
+}
+
+.context-rule-round-head span {
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: var(--font-xs);
+}
+
+.context-rule-round p {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr);
+  gap: var(--space-2);
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
+  font-size: var(--font-xs);
+}
+
 @media (max-width: 760px) {
   .chat-shell {
     grid-template-columns: minmax(0, 1fr);
@@ -2327,6 +2446,7 @@ html[data-theme='dark'] .workflow-node-tags span {
   .chat-settings-bar {
     grid-template-columns: minmax(0, 1fr);
   }
+
 }
 
 .min-w-0 {

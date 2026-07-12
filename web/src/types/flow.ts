@@ -61,7 +61,14 @@ export interface AgentLoopConfig {
   max_iterations?: number;
   max_tool_calls?: number;
   max_execution_time_ms?: number;
+	allow_inline_agents?: boolean;
+	max_parallel_sub_agents?: number;
   max_input_chars?: number;
+	max_input_tokens?: number;
+	context_window_tokens?: number;
+	reserved_output_tokens?: number;
+	context_safety_margin_tokens?: number;
+	max_rule_tokens?: number;
   temperature?: number;
   reflection_enabled?: boolean;
   require_approval_for_risk?: string[];

@@ -81,6 +81,8 @@ export function defaultConfig(type: NodeType): CanvasNodeData['config'] {
       max_iterations: 8,
       max_tool_calls: 16,
       max_execution_time_ms: 120000,
+		allow_inline_agents: true,
+		max_parallel_sub_agents: 8,
       max_input_chars: 96000,
       temperature: 0.2,
       reflection_enabled: false,

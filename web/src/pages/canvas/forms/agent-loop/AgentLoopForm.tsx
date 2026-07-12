@@ -266,6 +266,15 @@ export function AgentLoopForm({ config, providers, tools, skills, knowledgeBases
 
       <ModuleCard id="sub_agents" title="Sub Agents" summary={selectedNames(callableWorkflows, subAgentIds)} icon={<GitBranch size={16} />} status={<StatusBadge tone={moduleTone(subAgentIds.length > 0)}>{subAgentIds.length}</StatusBadge>} expanded={moduleOpen.sub_agents} onToggle={toggleModule}>
         <CardSelectList items={callableWorkflows} selectedIds={subAgentIds} emptyLabel="还没有可调用 Agent。" onChange={(ids) => onChange({ call_workflow_ids: ids })} onLocate={(id) => addReferencedNode?.('agent_loop', id)} />
+		<Field label="动态子 Agent">
+			<Select value={config.allow_inline_agents ? 'enabled' : 'disabled'} onChange={(event) => onChange({ allow_inline_agents: event.target.value === 'enabled' })}>
+				<option value="disabled">Disabled</option>
+				<option value="enabled">Enabled</option>
+			</Select>
+		</Field>
+		<Field label="最大并发子 Agent">
+			<TextInput type="number" min={1} max={64} value={Number(config.max_parallel_sub_agents ?? 8)} onChange={(event) => onChange({ max_parallel_sub_agents: Number(event.target.value) })} />
+		</Field>
         <Field label="Agent 调用深度">
           <TextInput type="number" min={1} max={5} value={Number(config.max_workflow_call_depth ?? 3)} onChange={(event) => onChange({ max_workflow_call_depth: Number(event.target.value) })} />
         </Field>

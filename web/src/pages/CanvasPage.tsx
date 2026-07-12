@@ -34,6 +34,7 @@ import type { CanvasNode, NodeRunStatus } from './canvas/types';
 import { FormSheet } from './canvas/form-sheet/FormSheet';
 import { AgentLoopForm } from './canvas/forms/agent-loop/AgentLoopForm';
 import { AgentTraceTimeline } from './canvas/debug/AgentTraceTimeline';
+import { ContextRulesTrace } from './canvas/debug/ContextRulesTrace';
 import { ToolInvocationList } from './canvas/debug/ToolInvocationList';
 import { ApprovalQueue } from './canvas/debug/ApprovalQueue';
 
@@ -1497,6 +1498,15 @@ export function CanvasPage() {
                       <StatusBadge tone="info">{String(runTraceSummary.status ?? 'trace')}</StatusBadge>
                     </div>
                     <pre className="code-box">{prettyJson(runTraceSummary)}</pre>
+                  </div>
+                ) : null}
+                {runOutput && Object.keys(objectRecord(runOutput.context_trace)).length > 0 ? (
+                  <div className="card">
+                    <div className="card-title">
+                      <h3>Rules / Context</h3>
+                      <StatusBadge tone="info">runtime</StatusBadge>
+                    </div>
+                    <ContextRulesTrace trace={runOutput.context_trace} />
                   </div>
                 ) : null}
                 {runSteps.length > 0 ? (
