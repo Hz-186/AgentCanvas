@@ -4,16 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
 
 	"agentcanvas/internal/domain/memory"
-
-	agenterrors "agentcanvas/internal/pkg/errors"
 )
 
 type MemoryReadTool struct {
 	Memories  memory.Repository
 	Retriever memory.SemanticRetriever
+	Archival  memory.ArchivalIndex
 }
 
 type memoryReadInput struct {
@@ -46,61 +44,14 @@ func (t MemoryReadTool) Execute(ctx context.Context, rc ToolRunContext, input js
 			return &ToolResult{ContentText: err.Error(), IsError: true}, err
 		}
 	}
-	limit := parsed.Limit
-	if limit <= 0 {
-		limit = 5
-	}
-	if limit > 20 {
-		limit = 20
-	}
-
-	query := strings.TrimSpace(parsed.Query)
-	if query != "" && t.Retriever != nil {
-		ids, err := t.Retriever.Search(ctx, rc.OwnerID, query, parsed.MemoryTypes, limit)
-		if err == nil && len(ids) > 0 {
-			return t.fetchByIDs(ctx, rc, ids, query)
-		}
-	}
-
-	items, err := t.Memories.ListForRead(ctx, rc.OwnerID, parsed.MemoryTypes, rc.ConversationID, limit)
+	result, err := (memory.RuntimeService{Memories: t.Memories, Retriever: t.Retriever, Archival: t.Archival}).Read(ctx, memory.ReadRequest{
+		OwnerID: rc.OwnerID, ConversationID: rc.ConversationID, MemoryTypes: parsed.MemoryTypes, Query: parsed.Query, Limit: parsed.Limit,
+	})
 	if err != nil {
 		return &ToolResult{ContentText: err.Error(), IsError: true}, err
 	}
-	ids := make([]int64, 0, len(items))
-	lines := make([]string, 0, len(items))
-	for _, item := range items {
-		ids = append(ids, item.ID)
-		lines = append(lines, item.Content)
-	}
-	fetchedIDs := make([]int64, 0, len(items))
-	for _, item := range items {
-		fetchedIDs = append(fetchedIDs, item.ID)
-	}
-	_ = t.Memories.MarkUsed(ctx, rc.OwnerID, fetchedIDs)
 	return ResultFromValue(map[string]any{
-		"memories":       items,
-		"memory_context": strings.Join(lines, "\n"),
-		"count":          len(items),
-	})
-}
-
-func (t MemoryReadTool) fetchByIDs(ctx context.Context, rc ToolRunContext, ids []int64, query string) (*ToolResult, error) {
-	items := make([]memory.Memory, 0, len(ids))
-	lines := make([]string, 0, len(ids))
-	for _, id := range ids {
-		item, err := t.Memories.FindByID(ctx, rc.OwnerID, id)
-		if err != nil {
-			continue
-		}
-		items = append(items, *item)
-		lines = append(lines, item.Content)
-	}
-	_ = t.Memories.MarkUsed(ctx, rc.OwnerID, ids)
-	return ResultFromValue(map[string]any{
-		"memories":       items,
-		"memory_context": strings.Join(lines, "\n"),
-		"count":          len(items),
-		"query":          query,
+		"memories": result.Memories, "memory_context": result.MemoryContext, "count": result.Count, "query": result.Query,
 	})
 }
 
@@ -108,6 +59,7 @@ type MemoryWriteTool struct {
 	Memories  memory.Repository
 	Logs      memory.WriteLogRepository
 	Retriever memory.SemanticRetriever
+	Archival  memory.ArchivalIndex
 }
 
 type memoryWriteInput struct {
@@ -141,68 +93,14 @@ func (t MemoryWriteTool) Execute(ctx context.Context, rc ToolRunContext, input j
 	if err := json.Unmarshal(input, &parsed); err != nil {
 		return &ToolResult{ContentText: err.Error(), IsError: true}, err
 	}
-	content := strings.TrimSpace(parsed.Content)
-	if content == "" || strings.TrimSpace(parsed.MemoryType) == "" {
-		return &ToolResult{ContentText: "memory_type and content are required", IsError: true}, fmt.Errorf("%w: memory_type and content are required", agenterrors.ErrInvalidInput)
-	}
-	action := memory.WriteActionCreate
-	var beforeJSON json.RawMessage
-	item := &memory.Memory{}
-	if parsed.MemoryID > 0 {
-		existing, err := t.Memories.FindByID(ctx, rc.OwnerID, parsed.MemoryID)
-		if err != nil {
-			return &ToolResult{ContentText: err.Error(), IsError: true}, err
-		}
-		beforeJSON, _ = json.Marshal(existing)
-		item = existing
-		action = memory.WriteActionUpdate
-	} else {
-		item.OwnerID = rc.OwnerID
-		item.ConversationID = rc.ConversationID
-	}
-	item.MemoryType = strings.TrimSpace(parsed.MemoryType)
-	item.Title = strings.TrimSpace(parsed.Title)
-	item.Content = content
-	item.Importance = parsed.Importance
-	if item.Importance <= 0 {
-		item.Importance = 0.5
-	}
-	if item.Importance > 1 {
-		item.Importance = 1
-	}
-	item.Source = "agent_tool"
-	var err error
-	if action == memory.WriteActionCreate {
-		err = t.Memories.Create(ctx, item)
-	} else {
-		err = t.Memories.Update(ctx, item)
-	}
+	result, err := (memory.RuntimeService{Memories: t.Memories, Logs: t.Logs, Retriever: t.Retriever, Archival: t.Archival}).Write(ctx, memory.WriteRequest{
+		OwnerID: rc.OwnerID, ConversationID: rc.ConversationID, RunID: rc.RunID, MemoryID: parsed.MemoryID,
+		MemoryType: parsed.MemoryType, Title: parsed.Title, Content: parsed.Content, Importance: parsed.Importance, Reason: parsed.Reason, Source: "agent_tool",
+	})
 	if err != nil {
 		return &ToolResult{ContentText: err.Error(), IsError: true}, err
 	}
-	if item.MemoryLevel == "" {
-		item.MemoryLevel = memory.LevelLongTerm
-	}
-	if t.Retriever != nil {
-		if err := t.Retriever.Index(ctx, *item); err != nil {
-			return &ToolResult{ContentText: err.Error(), IsError: true}, err
-		}
-	}
-	afterJSON, _ := json.Marshal(item)
-	if t.Logs != nil {
-		_ = t.Logs.Create(ctx, &memory.WriteLog{
-			OwnerID:    rc.OwnerID,
-			MemoryID:   item.ID,
-			RunID:      rc.RunID,
-			Action:     action,
-			BeforeJSON: beforeJSON,
-			AfterJSON:  afterJSON,
-			Reason:     strings.TrimSpace(parsed.Reason),
-		})
-	}
 	return ResultFromValue(map[string]any{
-		"memory_id": item.ID,
-		"action":    action,
-		"content":   item.Content,
+		"memory_id": result.Memory.ID, "action": result.Action, "content": result.Memory.Content,
 	})
 }

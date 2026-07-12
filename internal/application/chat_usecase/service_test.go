@@ -233,6 +233,15 @@ func (r *fakeConversationRepo) ListByDialog(_ context.Context, ownerID, dialogID
 	}
 	return items, nil
 }
+func (r *fakeConversationRepo) ListByWorkflow(_ context.Context, ownerID, workflowID int64) ([]conversation.Conversation, error) {
+	var items []conversation.Conversation
+	for _, item := range r.items {
+		if item.OwnerID == ownerID && item.WorkflowID != nil && *item.WorkflowID == workflowID {
+			items = append(items, item)
+		}
+	}
+	return items, nil
+}
 func (r *fakeConversationRepo) FindByID(_ context.Context, ownerID, id int64) (*conversation.Conversation, error) {
 	for i := range r.items {
 		if r.items[i].OwnerID == ownerID && r.items[i].ID == id {
@@ -268,6 +277,15 @@ func (r *fakeMessageRepo) ListByConversation(_ context.Context, ownerID, convers
 }
 func (r *fakeMessageRepo) ListActiveByConversation(_ context.Context, ownerID, conversationID int64) ([]conversation.Message, error) {
 	return r.ListByConversation(context.Background(), ownerID, conversationID)
+}
+func (r *fakeMessageRepo) ListByRun(_ context.Context, ownerID, runID int64) ([]conversation.Message, error) {
+	var items []conversation.Message
+	for _, item := range r.items {
+		if item.OwnerID == ownerID && item.RunID != nil && *item.RunID == runID {
+			items = append(items, item)
+		}
+	}
+	return items, nil
 }
 func (r *fakeMessageRepo) CreateReferences(_ context.Context, refs []conversation.MessageReference) error {
 	r.refs = append(r.refs, refs...)

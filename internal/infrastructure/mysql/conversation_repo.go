@@ -57,6 +57,18 @@ func (r *ConversationRepository) ListByDialog(ctx context.Context, ownerID, dial
 	return items, err
 }
 
+func (r *ConversationRepository) ListByWorkflow(ctx context.Context, ownerID, workflowID int64) ([]conversation.Conversation, error) {
+	var items []conversation.Conversation
+	err := r.db.WithContext(ctx).
+		Where("owner_id = ? AND workflow_id = ? AND source = ? AND deleted_at IS NULL", ownerID, workflowID, conversation.SourceWorkflow).
+		Order("last_message_at DESC, id DESC").
+		Find(&items).Error
+	for i := range items {
+		hydrateConversation(&items[i])
+	}
+	return items, err
+}
+
 func (r *ConversationRepository) FindByID(ctx context.Context, ownerID, id int64) (*conversation.Conversation, error) {
 	var item conversation.Conversation
 	err := r.db.WithContext(ctx).

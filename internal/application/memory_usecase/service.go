@@ -75,9 +75,7 @@ func (s *Service) Create(ctx context.Context, ownerID int64, req CreateMemoryReq
 	if err := s.indexMemory(ctx, item); err != nil {
 		return nil, err
 	}
-	if err := s.invalidateCache(ctx, ownerID); err != nil {
-		return nil, err
-	}
+	s.invalidateCache(ctx, ownerID)
 	return item, nil
 }
 
@@ -146,9 +144,7 @@ func (s *Service) Update(ctx context.Context, ownerID, id int64, req UpdateMemor
 	if err := s.indexMemory(ctx, item); err != nil {
 		return nil, err
 	}
-	if err := s.invalidateCache(ctx, ownerID); err != nil {
-		return nil, err
-	}
+	s.invalidateCache(ctx, ownerID)
 	return item, nil
 }
 
@@ -161,7 +157,8 @@ func (s *Service) Delete(ctx context.Context, ownerID, id int64) error {
 			return err
 		}
 	}
-	return s.invalidateCache(ctx, ownerID)
+	s.invalidateCache(ctx, ownerID)
+	return nil
 }
 
 func (s *Service) indexMemory(ctx context.Context, item *memory.Memory) error {
@@ -182,9 +179,8 @@ func (s *Service) listCacheKey(memoryTypes []string, conversationID *int64, limi
 	return fmt.Sprintf("list:%s:%s:%d:%d", strings.Join(memoryTypes, ","), cid, limit, offset)
 }
 
-func (s *Service) invalidateCache(ctx context.Context, ownerID int64) error {
+func (s *Service) invalidateCache(ctx context.Context, ownerID int64) {
 	if s.cache != nil {
-		return s.cache.InvalidateOwner(ctx, ownerID)
+		_ = s.cache.InvalidateOwner(ctx, ownerID)
 	}
-	return nil
 }

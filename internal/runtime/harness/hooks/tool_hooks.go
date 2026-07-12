@@ -28,13 +28,13 @@ type Approval struct {
 	Metadata   toolruntime.ToolMetadata `json:"metadata"`
 }
 
-// the record of hook
+// the record of hook everytime
 type Trace struct {
-	Stage      string `json:"stage"`
-	Hook       string `json:"hook"`
-	Decision   string `json:"decision"`
+	Stage      string `json:"stage"`    // pre_tool_use or post_tool_use
+	Hook       string `json:"hook"`     // policy or observation
+	Decision   string `json:"decision"` // allowed/denied/approval_required/recorded/compressed
 	Reason     string `json:"reason,omitempty"`
-	Compressed bool   `json:"compressed,omitempty"`
+	Compressed bool   `json:"compressed,omitempty"` // yes or no
 }
 
 type PreToolUseRequest struct {
@@ -45,6 +45,8 @@ type PreToolUseRequest struct {
 	Policy     ToolPolicy
 }
 
+// Before invoking a tool, the executor will construct
+// this object and pass it into the hook chain.
 type PreToolUseResult struct {
 	Context  context.Context
 	Cancel   context.CancelFunc
@@ -142,20 +144,54 @@ type PolicyPreToolUseHook struct{}
 func (PolicyPreToolUseHook) BeforeToolUse(ctx context.Context, req PreToolUseRequest) PreToolUseResult {
 	if reason := dangerousToolArgumentReason(req); reason != "" {
 		err := fmt.Errorf("dangerous tool invocation blocked: %s", reason)
-		return PreToolUseResult{Context: ctx, Denied: err, Traces: []Trace{{Stage: "pre_tool_use", Hook: "policy", Decision: "denied", Reason: err.Error()}}}
+		return PreToolUseResult{
+			Context: ctx,
+			Denied:  err,
+			Traces: []Trace{
+				{Stage: "pre_tool_use", Hook: "policy", Decision: "denied", Reason: err.Error()},
+			},
+		}
 	}
 	if approval := requiredApproval(req); approval != nil {
-		return PreToolUseResult{Context: ctx, Approval: approval, Traces: []Trace{{Stage: "pre_tool_use", Hook: "policy", Decision: "approval_required", Reason: approval.Reason}}}
+		return PreToolUseResult{
+			Context:  ctx,
+			Approval: approval,
+			Traces: []Trace{
+				{Stage: "pre_tool_use", Hook: "policy", Decision: "approval_required", Reason: approval.Reason},
+			},
+		}
 	}
 	if err := validateAllowedHosts(req.Metadata.AllowedHosts, req.Policy.AllowedHosts); err != nil {
-		return PreToolUseResult{Context: ctx, Denied: err, Traces: []Trace{{Stage: "pre_tool_use", Hook: "policy", Decision: "denied", Reason: err.Error()}}}
+		return PreToolUseResult{
+			Context: ctx,
+			Denied:  err,
+			Traces: []Trace{
+				{Stage: "pre_tool_use", Hook: "policy", Decision: "denied", Reason: err.Error()},
+			},
+		}
 	}
 	timeoutMS := effectiveTimeoutMS(req.Metadata, req.Policy)
 	if timeoutMS <= 0 {
-		return PreToolUseResult{Context: ctx, Traces: []Trace{{Stage: "pre_tool_use", Hook: "policy", Decision: "allowed"}}}
+		return PreToolUseResult{
+			Context: ctx,
+			Traces: []Trace{
+				{Stage: "pre_tool_use", Hook: "policy", Decision: "allowed"},
+			},
+		}
 	}
 	execCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutMS)*time.Millisecond)
-	return PreToolUseResult{Context: execCtx, Cancel: cancel, Traces: []Trace{{Stage: "pre_tool_use", Hook: "policy", Decision: "allowed", Reason: fmt.Sprintf("timeout_ms=%d", timeoutMS)}}}
+	return PreToolUseResult{
+		Context: execCtx,
+		Cancel:  cancel,
+		Traces: []Trace{
+			{
+				Stage:    "pre_tool_use",
+				Hook:     "policy",
+				Decision: "allowed",
+				Reason:   fmt.Sprintf("timeout_ms=%d", timeoutMS),
+			},
+		},
+	}
 }
 
 type ObservationPostToolUseHook struct{}
@@ -168,12 +204,23 @@ func (ObservationPostToolUseHook) AfterToolUse(ctx context.Context, req PostTool
 	}
 	raw := RedactSensitiveFields(req.OutputJSON, fields)
 	content := req.Content
-	if len(raw) > 0 && string(raw) != string(req.OutputJSON) && strings.TrimSpace(content) == strings.TrimSpace(string(req.OutputJSON)) {
+	if len(raw) > 0 && string(raw) != string(req.OutputJSON) &&
+		strings.TrimSpace(content) == strings.TrimSpace(string(req.OutputJSON)) {
 		content = string(raw)
 	}
 	maxBytes := effectiveMaxOutputBytes(req.Metadata, req.Policy)
 	if maxBytes <= 0 {
-		return PostToolUseResult{Content: content, OutputJSON: raw, Traces: []Trace{{Stage: "post_tool_use", Hook: "observation", Decision: "recorded"}}}
+		return PostToolUseResult{
+			Content:    content,
+			OutputJSON: raw,
+			Traces: []Trace{
+				{
+					Stage:    "post_tool_use",
+					Hook:     "observation",
+					Decision: "recorded",
+				},
+			},
+		}
 	}
 	compactContent, contentCompressed := compactStringWithFlag(content, maxBytes)
 	compactJSON, jsonCompressed := compactRawJSONWithFlag(raw, maxBytes)
@@ -182,7 +229,19 @@ func (ObservationPostToolUseHook) AfterToolUse(ctx context.Context, req PostTool
 	if compressed {
 		decision = "compressed"
 	}
-	return PostToolUseResult{Content: compactContent, OutputJSON: compactJSON, Compressed: compressed, Traces: []Trace{{Stage: "post_tool_use", Hook: "observation", Decision: decision, Compressed: compressed}}}
+	return PostToolUseResult{
+		Content:    compactContent,
+		OutputJSON: compactJSON,
+		Compressed: compressed,
+		Traces: []Trace{
+			{
+				Stage:      "post_tool_use",
+				Hook:       "observation",
+				Decision:   decision,
+				Compressed: compressed,
+			},
+		},
+	}
 }
 
 func requiredApproval(req PreToolUseRequest) *Approval {
@@ -209,7 +268,13 @@ func requiredApproval(req PreToolUseRequest) *Approval {
 			}
 		}
 	}
-	return &Approval{ToolCallID: req.ToolCallID, ToolName: req.ToolName, RiskLevel: risk, Reason: reason, Metadata: req.Metadata}
+	return &Approval{
+		ToolCallID: req.ToolCallID,
+		ToolName:   req.ToolName,
+		RiskLevel:  risk,
+		Reason:     reason,
+		Metadata:   req.Metadata,
+	}
 }
 
 func ShouldRequireApprovalForRisk(riskLevel string, requiresApproval bool, policyRisks []string) (string, bool) {
@@ -265,7 +330,10 @@ func dangerousToolArgumentReason(req PreToolUseRequest) string {
 	if toolName == "" || len(req.Arguments) == 0 {
 		return ""
 	}
-	if !strings.Contains(toolName, "shell") && !strings.Contains(toolName, "sandbox") && !strings.Contains(toolName, "python") && !strings.Contains(toolName, "execute") {
+	if !strings.Contains(toolName, "shell") &&
+		!strings.Contains(toolName, "sandbox") &&
+		!strings.Contains(toolName, "python") &&
+		!strings.Contains(toolName, "execute") {
 		return ""
 	}
 	payload := strings.ToLower(string(req.Arguments))
@@ -344,7 +412,9 @@ func normalizeHost(host string) string {
 }
 
 func DefaultSensitiveFields() []string {
-	return []string{"api_key", "apikey", "authorization", "access_token", "refresh_token", "token", "password", "secret"}
+	return []string{
+		"api_key", "apikey", "authorization", "access_token", "refresh_token", "token", "password", "secret",
+	}
 }
 
 func RedactSensitiveFields(raw json.RawMessage, fields []string) json.RawMessage {
@@ -373,8 +443,4 @@ func compactStringWithFlag(value string, maxBytes int) (string, bool) {
 
 func compactRawJSONWithFlag(raw json.RawMessage, maxBytes int) (json.RawMessage, bool) {
 	return strutil.TruncateRawJSONWithSuffix(raw, maxBytes, "...[truncated]")
-}
-
-func compactString(value string, maxBytes int) string {
-	return strutil.TruncateWithSuffix(value, maxBytes, "...[truncated]")
 }

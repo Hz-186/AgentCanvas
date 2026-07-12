@@ -45,7 +45,9 @@ func (t WorkflowCallTool) Parameters() json.RawMessage {
 }
 
 func (WorkflowCallTool) Metadata() ToolMetadata {
-	return ToolMetadata{RiskLevel: RiskMedium, SideEffect: SideEffectExternalAction}
+	return ToolMetadata{
+		RiskLevel: RiskMedium, SideEffect: SideEffectExternalAction,
+	}
 }
 
 func (t WorkflowCallTool) Execute(ctx context.Context, rc ToolRunContext, input json.RawMessage) (*ToolResult, error) {
@@ -54,10 +56,15 @@ func (t WorkflowCallTool) Execute(ctx context.Context, rc ToolRunContext, input 
 	}
 	var parsed workflowCallToolInput
 	if err := json.Unmarshal(input, &parsed); err != nil {
-		return &ToolResult{ContentText: err.Error(), IsError: true}, err
+		return &ToolResult{
+			ContentText: err.Error(),
+			IsError:     true,
+		}, err
 	}
 	if parsed.WorkflowID <= 0 {
-		return &ToolResult{ContentText: "workflow_id is required", IsError: true}, fmt.Errorf("%w: workflow_id is required", agenterrors.ErrInvalidInput)
+		return &ToolResult{
+			ContentText: "workflow_id is required", IsError: true,
+		}, fmt.Errorf("%w: workflow_id is required", agenterrors.ErrInvalidInput)
 	}
 	if len(t.AllowedWorkflowIDs) > 0 && !slices.Contains(t.AllowedWorkflowIDs, parsed.WorkflowID) {
 		msg := fmt.Sprintf("agent %d is not in allowed call_workflow_ids", parsed.WorkflowID)

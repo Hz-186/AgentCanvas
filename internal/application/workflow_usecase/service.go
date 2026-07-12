@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"agentcanvas/internal/domain/audit"
 	memoryusecase "agentcanvas/internal/application/memory_usecase"
+	"agentcanvas/internal/domain/audit"
 	"agentcanvas/internal/domain/conversation"
 	"agentcanvas/internal/domain/flow"
 	"agentcanvas/internal/domain/memory"
@@ -63,6 +63,7 @@ type Service struct {
 	toolRegistry     toolruntime.Registry
 	toolInvocations  tool.InvocationRepository
 	providers        providerdomain.Repository
+	conversations    conversation.Repository
 	messages         conversation.MessageRepository
 	retriever        retrieval.Retriever
 	llm              llm.ChatClient
@@ -139,6 +140,7 @@ func NewService(
 	mcpServers tool.MCPRepository,
 	toolInvocations tool.InvocationRepository,
 	providers providerdomain.Repository,
+	conversations conversation.Repository,
 	messages conversation.MessageRepository,
 	retriever retrieval.Retriever,
 	llmClient llm.ChatClient,
@@ -177,6 +179,7 @@ func NewService(
 		toolRegistry:     registry,
 		toolInvocations:  toolInvocations,
 		providers:        providers,
+		conversations:    conversations,
 		messages:         messages,
 		retriever:        retriever,
 		llm:              llmClient,
@@ -549,8 +552,8 @@ func (s *Service) UpdateWorkflowProfile(ctx context.Context, ownerID, workflowID
 	}
 	if req.Mode != nil {
 		mode := strings.TrimSpace(*req.Mode)
-		if mode != "" && mode != "react" && mode != "plan_execute" && mode != "reflect" && mode != "supervisor" {
-			return nil, fmt.Errorf("%w: mode must be react, plan_execute, reflect, or supervisor", agenterrors.ErrInvalidInput)
+		if mode != "" && mode != "react" && mode != "plan_execute" {
+			return nil, fmt.Errorf("%w: mode must be react or plan_execute", agenterrors.ErrInvalidInput)
 		}
 		profile.Mode = mode
 	}

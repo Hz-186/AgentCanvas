@@ -31,6 +31,7 @@ type RouterDeps struct {
 	DialogHandler    *handler.DialogHandler
 	ChatHandler      *handler.ChatHandler
 	WorkflowHandler  *handler.WorkflowHandler
+	ResourceHandler  *handler.ResourceHandler
 	AuthService      *authusecase.Service
 	APITokens        authdomain.APITokenRepository
 }
@@ -66,6 +67,7 @@ func NewRouter(deps RouterDeps) *gin.Engine {
 		protected.Use(middleware.Auth(deps.AuthService, deps.APITokens))
 		{
 			protected.GET("/auth/me", deps.AuthHandler.Me)
+			protected.GET("/resource-summaries/:kind", deps.ResourceHandler.List)
 
 			protected.GET("/provider-catalog", deps.ProviderHandler.ListCatalog)
 			registerCRUD(protected, "/model-providers", ":id", deps.ProviderHandler.Create, deps.ProviderHandler.List, deps.ProviderHandler.Get, deps.ProviderHandler.Update, deps.ProviderHandler.Delete)
@@ -137,6 +139,12 @@ func NewRouter(deps RouterDeps) *gin.Engine {
 			protected.POST("/flow-versions/:id/validate", deps.WorkflowHandler.ValidateWorkflowVersion)
 			protected.POST("/workflows/:id/runs", deps.WorkflowHandler.Run)
 			protected.POST("/workflows/:id/runs/stream", deps.WorkflowHandler.StreamRun)
+			protected.POST("/workflows/:id/conversations", deps.WorkflowHandler.CreateConversation)
+			protected.GET("/workflows/:id/conversations", deps.WorkflowHandler.ListConversations)
+			protected.GET("/workflows/:id/conversations/:conversation_id", deps.WorkflowHandler.GetConversation)
+			protected.GET("/workflows/:id/conversations/:conversation_id/messages", deps.WorkflowHandler.ListConversationMessages)
+			protected.POST("/workflows/:id/conversations/:conversation_id/messages/stream", deps.WorkflowHandler.StreamConversationMessage)
+			protected.DELETE("/workflows/:id/conversations/:conversation_id", deps.WorkflowHandler.DeleteConversation)
 			protected.GET("/runs/:id", deps.WorkflowHandler.GetRun)
 			protected.GET("/runs/:id/events", deps.WorkflowHandler.ListRunEvents)
 			protected.GET("/runs/:id/children", deps.WorkflowHandler.ListChildRuns)

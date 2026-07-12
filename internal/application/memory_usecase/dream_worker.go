@@ -10,9 +10,8 @@ import (
 	"agentcanvas/internal/domain/conversation"
 	"agentcanvas/internal/domain/memory"
 	"agentcanvas/internal/infrastructure/llm"
+	memoryretrieval "agentcanvas/internal/infrastructure/retrieval"
 	"agentcanvas/internal/infrastructure/vectorstore"
-
-	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -20,8 +19,6 @@ type DreamPayload struct {
 	OwnerID        int64 `json:"owner_id"`
 	ConversationID int64 `json:"conversation_id"`
 }
-
-const dreamArchivalCollection = "agent_archival_memories"
 
 type DreamMessageRepository interface {
 	ListActiveByConversation(ctx context.Context, ownerID, conversationID int64) ([]conversation.Message, error)
@@ -167,19 +164,17 @@ func (w *DreamWorker) applyArchivalUpdates(ctx context.Context, payload DreamPay
 		if content == "" {
 			continue
 		}
-		stored := &memory.Memory{OwnerID: payload.OwnerID, ConversationID: &payload.ConversationID, MemoryType: memory.TypeArchival, MemoryLevel: memory.LevelLongTerm, Content: content, Importance: 0.8, Source: "dream_worker"}
-		if err := w.memories.Create(ctx, stored); err != nil {
+		var archival memory.ArchivalIndex
+		if w.vecStore != nil && w.embedder != nil && strings.TrimSpace(w.dreamCfg.EmbeddingModel) != "" {
+			archival = memoryretrieval.ArchivalMemoryIndex{Store: w.vecStore, Embedder: w.embedder, Provider: w.dreamCfg.EmbeddingProvider, Model: w.dreamCfg.EmbeddingModel}
+		}
+		_, err := (memory.RuntimeService{Memories: w.memories, Logs: w.memoryLogs, Archival: archival}).Write(ctx, memory.WriteRequest{
+			OwnerID: payload.OwnerID, ConversationID: &payload.ConversationID, MemoryType: memory.TypeArchival,
+			Content: content, Importance: 0.8, Source: "dream_worker", Reason: "dream archival consolidation",
+		})
+		if err != nil {
 			return err
 		}
-		if w.vecStore == nil || w.embedder == nil || strings.TrimSpace(w.dreamCfg.Model) == "" {
-			continue
-		}
-		resp, err := w.embedder.Embed(ctx, llm.EmbeddingProviderConfig(w.dreamCfg.Provider), llm.EmbeddingRequest{Model: w.dreamCfg.Model, Input: []string{content}})
-		if err != nil || resp == nil || len(resp.Embeddings) == 0 || len(resp.Embeddings[0]) == 0 {
-			continue
-		}
-		_ = w.vecStore.EnsureCollection(ctx, dreamArchivalCollection, len(resp.Embeddings[0]), vectorstore.DefaultHNSWConfig())
-		_ = w.vecStore.Upsert(ctx, dreamArchivalCollection, []vectorstore.VectorDocument{{ID: uuid.NewString(), Vector: resp.Embeddings[0], Metadata: map[string]any{"owner_id": payload.OwnerID, "conversation_id": payload.ConversationID, "memory_id": stored.ID, "content": content}}})
 	}
 	return nil
 }
