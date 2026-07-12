@@ -51,6 +51,15 @@ func (r *MessageRepository) ListActiveByConversation(ctx context.Context, ownerI
 	return messages, err
 }
 
+func (r *MessageRepository) ListByRun(ctx context.Context, ownerID, runID int64) ([]conversation.Message, error) {
+	var messages []conversation.Message
+	err := r.db.WithContext(ctx).
+		Where("owner_id = ? AND run_id = ?", ownerID, runID).
+		Order("id ASC").
+		Find(&messages).Error
+	return messages, err
+}
+
 func (r *MessageRepository) ArchiveConversationMessages(ctx context.Context, ownerID, conversationID int64, archivedAt time.Time) (int64, error) {
 	if archivedAt.IsZero() {
 		archivedAt = time.Now().UTC()

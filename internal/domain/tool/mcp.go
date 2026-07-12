@@ -27,7 +27,7 @@ type MCPServer struct {
 	EndpointURL  string          `json:"endpoint_url" gorm:"column:endpoint_url"` // like "https://mcp.example.com/sse"
 	Command      string          `json:"command" gorm:"column:command"`           // "npx"
 	ArgsJSON     json.RawMessage `json:"args_json" gorm:"column:args_json"`
-	EnvJSON      json.RawMessage `json:"env_json" gorm:"column:env_json"` // supplyment
+	EnvJSON      json.RawMessage `json:"env_json" gorm:"column:env_json"` // supplyment / API key
 	Status       int             `json:"status" gorm:"column:status"`
 	LastError    string          `json:"last_error" gorm:"column:last_error"`
 	DiscoveredAt *time.Time      `json:"discovered_at" gorm:"column:discovered_at"`
@@ -71,10 +71,10 @@ func (s *MCPServer) normalizeJSON() error {
 type MCPToolCache struct {
 	ID             int64           `json:"id" gorm:"primaryKey;column:id"`
 	OwnerID        int64           `json:"owner_id" gorm:"column:owner_id"`
-	ServerID       int64           `json:"server_id" gorm:"column:server_id"`
+	ServerID       int64           `json:"server_id" gorm:"column:server_id"` // which one
 	ToolName       string          `json:"tool_name" gorm:"column:tool_name"`
 	Description    string          `json:"description" gorm:"column:description"`
-	ParametersJSON json.RawMessage `json:"parameters_json" gorm:"column:parameters_json"`
+	ParametersJSON json.RawMessage `json:"parameters_json" gorm:"column:parameters_json"` // (JSON Schema)
 	SchemaHash     string          `json:"schema_hash" gorm:"column:schema_hash"`
 	CachedAt       time.Time       `json:"cached_at" gorm:"column:cached_at"`
 	CreatedAt      time.Time       `json:"created_at" gorm:"column:created_at"`

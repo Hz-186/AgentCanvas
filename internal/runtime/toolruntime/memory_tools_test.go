@@ -239,36 +239,3 @@ func TestMemoryReadToolFallsBackWhenSearchFails(t *testing.T) {
 		t.Fatalf("expected fallback to ListForRead, got %+v", repo.readReq)
 	}
 }
-
-func TestSearchArchivalMemoryToolFallsBackToMemoryScan(t *testing.T) {
-	repo := &fakeMemoryRepo{}
-	_ = repo.Create(context.Background(), &memory.Memory{ID: 1, OwnerID: 1, MemoryType: memory.TypeArchival, Content: "User once approved a budget exception for vendor X"})
-	_ = repo.Create(context.Background(), &memory.Memory{ID: 2, OwnerID: 1, MemoryType: memory.TypeArchival, Content: "Unrelated cold memory"})
-	tool := SearchArchivalMemoryTool{Memories: repo}
-	result, err := tool.Execute(context.Background(), ToolRunContext{OwnerID: 1}, json.RawMessage(`{"query":"budget exception","limit":3}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var output map[string]any
-	if err := json.Unmarshal(result.ContentJSON, &output); err != nil {
-		t.Fatal(err)
-	}
-	if output["count"].(float64) != 1 {
-		t.Fatalf("expected one archival result, got %+v", output)
-	}
-}
-
-func TestInsertArchivalMemoryToolCreatesArchivalMemory(t *testing.T) {
-	repo := &fakeMemoryRepo{}
-	tool := InsertArchivalMemoryTool{Memories: repo}
-	result, err := tool.Execute(context.Background(), ToolRunContext{OwnerID: 1}, json.RawMessage(`{"content":"Durable archival fact"}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(repo.items) != 1 || repo.items[1].MemoryType != memory.TypeArchival {
-		t.Fatalf("expected archival memory to be created, got %+v", repo.items)
-	}
-	if result == nil || len(result.ContentJSON) == 0 {
-		t.Fatal("expected tool result payload")
-	}
-}

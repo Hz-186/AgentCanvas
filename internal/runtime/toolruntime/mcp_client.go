@@ -21,15 +21,28 @@ const (
 	MCPTransportStdio = "stdio"
 )
 
+//	MCPClient In SSE mode, the MCP client might be like {
+//		"name": "My Weather Server",
+//		"sse_url": "https://weather-mcp.example.com/sse",
+//		"transport": "sse"
+//	}
+//
+//	In stdio mode, it might be like {
+//	 "name": "Local Python Tools",
+//	 "transport": "stdio",
+//	 "command": "python3",
+//	 "args": ["/home/user/mcp_servers/my_server.py"],
+//	 "env": {"API_KEY": "sk-xxx", "DEBUG": "1"}
+//	}
 type MCPClient struct {
 	Name       string
-	SSEURL     string
-	Transport  string
-	Command    string
-	Args       []string
-	Env        map[string]string
+	SSEURL     string            // only in SSE mode
+	Transport  string            // SSE or stdio
+	Command    string            // stdio mode: "python"、"node"
+	Args       []string          // stdio mode: ["server.py"]
+	Env        map[string]string // stdio mode: env
 	HTTPClient *http.Client
-	mu         sync.RWMutex
+	mu         sync.RWMutex // keep tools/cachedAt/lastError SAVE
 	tools      []MCPToolDef
 	cachedAt   time.Time
 	lastError  error
@@ -38,7 +51,7 @@ type MCPClient struct {
 type MCPToolDef struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description"`
-	Parameters  json.RawMessage `json:"parameters"`
+	Parameters  json.RawMessage `json:"parameters"` // JSON Schema
 }
 
 type MCPToolRuntime struct {
@@ -81,6 +94,7 @@ func NewMCPClientFromServer(server *tool.MCPServer) *MCPClient {
 	return NewMCPClient(server.Name, server.EndpointURL)
 }
 
+// Discover Double-Check Locking
 func (c *MCPClient) Discover(ctx context.Context) ([]MCPToolDef, error) {
 	c.mu.RLock()
 	if len(c.tools) > 0 && time.Since(c.cachedAt) < 5*time.Minute {
@@ -145,7 +159,9 @@ func (c *MCPClient) CallTool(ctx context.Context, toolName string, args json.Raw
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(c.SSEURL, "/")+"/tools/call", strings.NewReader(string(reqBody)))
+	req, err := http.NewRequestWithContext(
+		ctx, http.MethodPost, strings.TrimRight(c.SSEURL, "/")+"/tools/call", strings.NewReader(string(reqBody)),
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -162,9 +178,12 @@ func (c *MCPClient) CallTool(ctx context.Context, toolName string, args json.Raw
 	if resp.StatusCode >= 400 {
 		return nil, fmt.Errorf("mcp server error: status=%d body=%s", resp.StatusCode, string(body))
 	}
-	return &ToolResult{ContentJSON: json.RawMessage(body)}, nil
+	return &ToolResult{
+		ContentJSON: body,
+	}, nil
 }
 
+// fetchTools is part of Discover
 func (c *MCPClient) fetchTools(ctx context.Context) ([]MCPToolDef, error) {
 	if c.Transport == MCPTransportStdio {
 		return c.fetchStdioTools(ctx)
@@ -221,7 +240,10 @@ func (t *MCPToolRuntime) Name() string                { return t.def.Name }
 func (t *MCPToolRuntime) Description() string         { return t.def.Description }
 func (t *MCPToolRuntime) Parameters() json.RawMessage { return t.def.Parameters }
 func (t *MCPToolRuntime) Metadata() ToolMetadata {
-	metadata := ToolMetadata{RiskLevel: RiskMedium, SideEffect: SideEffectExternalAction}
+	metadata := ToolMetadata{
+		RiskLevel:  RiskMedium,
+		SideEffect: SideEffectExternalAction,
+	}
 	if t.client != nil && t.client.SSEURL != "" {
 		if endpoint, err := url.Parse(strings.TrimSpace(t.client.SSEURL)); err == nil && endpoint.Hostname() != "" {
 			metadata.AllowedHosts = []string{endpoint.Hostname()}

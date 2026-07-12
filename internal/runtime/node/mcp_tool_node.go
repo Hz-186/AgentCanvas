@@ -45,7 +45,9 @@ func (MCPToolNode) Validate(config json.RawMessage) error {
 	return nil
 }
 
-func (n MCPToolNode) Run(ctx context.Context, rc *engine.RunContext, input engine.NodeInput, config json.RawMessage) (engine.NodeOutput, error) {
+func (n MCPToolNode) Run(
+	ctx context.Context, rc *engine.RunContext, input engine.NodeInput, config json.RawMessage,
+) (engine.NodeOutput, error) {
 	if n.Servers == nil {
 		return nil, fmt.Errorf("mcp_tool server repository is not configured")
 	}

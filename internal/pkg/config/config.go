@@ -14,6 +14,7 @@ type Config struct {
 	Redis         RedisConfig         `yaml:"redis"`
 	Queue         QueueConfig         `yaml:"queue"`
 	LLMCache      LLMCacheConfig      `yaml:"llm_cache"`
+	ResourceCache ResourceCacheConfig `yaml:"resource_cache"`
 	MemoryDream   MemoryDreamConfig   `yaml:"memory_dream"`
 	NATS          NATSConfig          `yaml:"nats"`
 	MinIO         MinIOConfig         `yaml:"minio"`
@@ -60,14 +61,24 @@ type LLMCacheConfig struct {
 	EmbeddingModel      string  `yaml:"embedding_model"`
 }
 
+type ResourceCacheConfig struct {
+	Enabled    bool   `yaml:"enabled"`
+	KeyPrefix  string `yaml:"key_prefix"`
+	TTLSeconds int    `yaml:"ttl_seconds"`
+}
+
 type MemoryDreamConfig struct {
-	Enabled            bool   `yaml:"enabled"`
-	TriggerEveryNTurns int    `yaml:"trigger_every_n_turns"`
-	IdleTimeoutSeconds int    `yaml:"idle_timeout_seconds"`
-	LLMProviderType    string `yaml:"llm_provider_type"`
-	LLMBaseURL         string `yaml:"llm_base_url"`
-	LLMAPIKey          string `yaml:"llm_api_key"`
-	LLMModel           string `yaml:"llm_model"`
+	Enabled               bool   `yaml:"enabled"`
+	TriggerEveryNTurns    int    `yaml:"trigger_every_n_turns"`
+	IdleTimeoutSeconds    int    `yaml:"idle_timeout_seconds"`
+	LLMProviderType       string `yaml:"llm_provider_type"`
+	LLMBaseURL            string `yaml:"llm_base_url"`
+	LLMAPIKey             string `yaml:"llm_api_key"`
+	LLMModel              string `yaml:"llm_model"`
+	EmbeddingProviderType string `yaml:"embedding_provider_type"`
+	EmbeddingBaseURL      string `yaml:"embedding_base_url"`
+	EmbeddingAPIKey       string `yaml:"embedding_api_key"`
+	EmbeddingModel        string `yaml:"embedding_model"`
 }
 
 type NATSConfig struct {
@@ -198,6 +209,12 @@ func (c *Config) setDefaults() {
 	if c.LLMCache.TTLSeconds == 0 {
 		c.LLMCache.TTLSeconds = 86400
 	}
+	if c.ResourceCache.KeyPrefix == "" {
+		c.ResourceCache.KeyPrefix = "agentcanvas"
+	}
+	if c.ResourceCache.TTLSeconds == 0 {
+		c.ResourceCache.TTLSeconds = 60
+	}
 	if c.MemoryDream.TriggerEveryNTurns == 0 {
 		c.MemoryDream.TriggerEveryNTurns = 5
 	}
@@ -266,6 +283,9 @@ func (c *Config) Validate() error {
 	}
 	if c.OCR.Enabled && c.OCR.Endpoint == "" {
 		return fmt.Errorf("ocr.endpoint is required when ocr.enabled is true")
+	}
+	if c.ResourceCache.TTLSeconds < 1 {
+		return fmt.Errorf("resource_cache.ttl_seconds must be positive")
 	}
 	return nil
 }

@@ -16,6 +16,7 @@ import (
 type MemoryReadNode struct {
 	Memories  memory.Repository
 	Retriever memory.SemanticRetriever
+	Archival  memory.ArchivalIndex
 }
 
 type memoryReadConfig struct {
@@ -47,52 +48,21 @@ func (n MemoryReadNode) Run(ctx context.Context, rc *engine.RunContext, input en
 	}
 	emitRuntimeEvent(ctx, rc, runtimeevent.Event{Type: runtimeevent.MemoryReadStarted, RunID: rc.RunID})
 
-	query := strings.TrimSpace(cfg.Query)
-	if query != "" && n.Retriever != nil {
-		ids, err := n.Retriever.Search(ctx, rc.OwnerID, query, cfg.MemoryTypes, cfg.Limit)
-		if err == nil && len(ids) > 0 {
-			items, lines, fetchedIDs := fetchMemoriesByIDs(ctx, n.Memories, rc.OwnerID, ids)
-			_ = n.Memories.MarkUsed(ctx, rc.OwnerID, fetchedIDs)
-			emitRuntimeEvent(ctx, rc, runtimeevent.Event{Type: runtimeevent.MemoryReadFinished, RunID: rc.RunID, Payload: map[string]any{"count": len(items), "query": query}})
-			return engine.NodeOutput{"memories": items, "memory_context": strings.Join(lines, "\n"), "count": len(items), "query": query}, nil
-		}
-	}
-
-	items, err := n.Memories.ListForRead(ctx, rc.OwnerID, cfg.MemoryTypes, rc.ConversationID, cfg.Limit)
+	result, err := (memory.RuntimeService{Memories: n.Memories, Retriever: n.Retriever, Archival: n.Archival}).Read(ctx, memory.ReadRequest{
+		OwnerID: rc.OwnerID, ConversationID: rc.ConversationID, MemoryTypes: cfg.MemoryTypes, Query: cfg.Query, Limit: cfg.Limit,
+	})
 	if err != nil {
 		return nil, err
 	}
-	ids := make([]int64, 0, len(items))
-	lines := make([]string, 0, len(items))
-	for _, item := range items {
-		ids = append(ids, item.ID)
-		lines = append(lines, item.Content)
-	}
-	_ = n.Memories.MarkUsed(ctx, rc.OwnerID, ids)
-	emitRuntimeEvent(ctx, rc, runtimeevent.Event{Type: runtimeevent.MemoryReadFinished, RunID: rc.RunID, Payload: map[string]any{"count": len(items)}})
-	return engine.NodeOutput{"memories": items, "memory_context": strings.Join(lines, "\n")}, nil
-}
-
-func fetchMemoriesByIDs(ctx context.Context, repo memory.Repository, ownerID int64, ids []int64) ([]memory.Memory, []string, []int64) {
-	items := make([]memory.Memory, 0, len(ids))
-	lines := make([]string, 0, len(ids))
-	fetchedIDs := make([]int64, 0, len(ids))
-	for _, id := range ids {
-		item, err := repo.FindByID(ctx, ownerID, id)
-		if err != nil {
-			continue
-		}
-		items = append(items, *item)
-		lines = append(lines, item.Content)
-		fetchedIDs = append(fetchedIDs, id)
-	}
-	return items, lines, fetchedIDs
+	emitRuntimeEvent(ctx, rc, runtimeevent.Event{Type: runtimeevent.MemoryReadFinished, RunID: rc.RunID, Payload: map[string]any{"count": result.Count, "query": result.Query}})
+	return engine.NodeOutput{"memories": result.Memories, "memory_context": result.MemoryContext, "count": result.Count, "query": result.Query}, nil
 }
 
 type MemoryWriteNode struct {
 	Memories  memory.Repository
 	Logs      memory.WriteLogRepository
 	Retriever memory.SemanticRetriever
+	Archival  memory.ArchivalIndex
 }
 
 type memoryWriteConfig struct {
@@ -137,53 +107,14 @@ func (n MemoryWriteNode) Run(ctx context.Context, rc *engine.RunContext, input e
 		return nil, fmt.Errorf("%w: resolved memory content is empty", agenterrors.ErrInvalidInput)
 	}
 	emitRuntimeEvent(ctx, rc, runtimeevent.Event{Type: runtimeevent.MemoryWriteStarted, RunID: rc.RunID})
-	action := memory.WriteActionCreate
-	var beforeJSON json.RawMessage
-	item := &memory.Memory{}
-	if cfg.MemoryID > 0 {
-		existing, err := n.Memories.FindByID(ctx, rc.OwnerID, cfg.MemoryID)
-		if err != nil {
-			return nil, err
-		}
-		beforeJSON, _ = json.Marshal(existing)
-		item = existing
-		action = memory.WriteActionUpdate
-	} else {
-		item.OwnerID = rc.OwnerID
-		item.ConversationID = rc.ConversationID
-	}
-	item.MemoryType = strings.TrimSpace(cfg.MemoryType)
-	item.Title = strings.TrimSpace(engine.ResolveTemplate(cfg.Title, rc))
-	item.Content = content
-	item.Importance = cfg.Importance
-	if item.Importance == 0 {
-		item.Importance = 0.5
-	}
-	item.Source = strings.TrimSpace(cfg.Source)
-	if item.Source == "" {
-		item.Source = "agent"
-	}
-	var err error
-	if action == memory.WriteActionCreate {
-		err = n.Memories.Create(ctx, item)
-	} else {
-		err = n.Memories.Update(ctx, item)
-	}
+	result, err := (memory.RuntimeService{Memories: n.Memories, Logs: n.Logs, Retriever: n.Retriever, Archival: n.Archival}).Write(ctx, memory.WriteRequest{
+		OwnerID: rc.OwnerID, ConversationID: rc.ConversationID, RunID: rc.RunID, MemoryID: cfg.MemoryID,
+		MemoryType: cfg.MemoryType, Title: engine.ResolveTemplate(cfg.Title, rc), Content: content, Importance: cfg.Importance,
+		Reason: engine.ResolveTemplate(cfg.Reason, rc), Source: cfg.Source,
+	})
 	if err != nil {
 		return nil, err
 	}
-	if item.MemoryLevel == "" {
-		item.MemoryLevel = memory.LevelLongTerm
-	}
-	if n.Retriever != nil {
-		if err := n.Retriever.Index(ctx, *item); err != nil {
-			return nil, err
-		}
-	}
-	afterJSON, _ := json.Marshal(item)
-	if n.Logs != nil {
-		_ = n.Logs.Create(ctx, &memory.WriteLog{OwnerID: rc.OwnerID, MemoryID: item.ID, RunID: rc.RunID, Action: action, BeforeJSON: beforeJSON, AfterJSON: afterJSON, Reason: engine.ResolveTemplate(cfg.Reason, rc)})
-	}
-	emitRuntimeEvent(ctx, rc, runtimeevent.Event{Type: runtimeevent.MemoryWriteFinished, RunID: rc.RunID, Payload: map[string]any{"memory_id": item.ID, "action": action}})
-	return engine.NodeOutput{"memory_id": item.ID, "action": action, "content": item.Content}, nil
+	emitRuntimeEvent(ctx, rc, runtimeevent.Event{Type: runtimeevent.MemoryWriteFinished, RunID: rc.RunID, Payload: map[string]any{"memory_id": result.Memory.ID, "action": result.Action}})
+	return engine.NodeOutput{"memory_id": result.Memory.ID, "action": result.Action, "content": result.Memory.Content}, nil
 }
