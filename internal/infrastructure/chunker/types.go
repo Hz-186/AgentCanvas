@@ -9,7 +9,7 @@ import (
 )
 
 type Chunk struct {
-	Index        int
+	Index        int //
 	Content      string
 	TokenCount   int
 	CharCount    int

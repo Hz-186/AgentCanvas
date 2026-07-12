@@ -38,6 +38,7 @@ func (a ContextAssembler) Build(req RunRequest) ([]llm.ChatMessage, ContextTrace
 		MaxChars:       maxChars,
 		MaxInputTokens: maxTokens,
 		RuleTrace:      req.RuleTrace,
+		RuleSetVersion: req.RuleSetVersion,
 		Strategy:       "token_budget:pinned_recent_summary_dedupe",
 	}
 	blocks := make([]ContextBlock, 0, len(req.ContextBlocks)+2)
@@ -117,6 +118,12 @@ func (a ContextAssembler) Build(req RunRequest) ([]llm.ChatMessage, ContextTrace
 			OriginalChars: originalChars,
 		}
 		if used+len(content) > maxChars || usedTokens+originalTokens > maxTokens {
+			if isCoreRuleBlock(name) {
+				trace.CoreOverflow = true
+				blockTrace.Status = "core_overflow"
+				trace.Blocks = append(trace.Blocks, blockTrace)
+				continue
+			}
 			if !block.Pinned {
 				trace.Omitted = append(trace.Omitted, name)
 				blockTrace.Status = "omitted"
@@ -157,6 +164,11 @@ func (a ContextAssembler) Build(req RunRequest) ([]llm.ChatMessage, ContextTrace
 	trace.UsedTokens = usedTokens
 	trace.TokenAudit.Total = trace.EstimatedTokens
 	return messages, trace
+}
+
+func isCoreRuleBlock(name string) bool {
+	category := tokenAuditCategory(name)
+	return category == "rules_l0" || category == "rules_l1"
 }
 
 func blockSortPriority(name string) int {

@@ -45,9 +45,21 @@ func (p *PDFParser) Parse(ctx context.Context, filename string, reader io.Reader
 			pageNo := block.PageNo
 			var bbox *BBox
 			if block.BBox != nil {
-				bbox = &BBox{X: block.BBox.X, Y: block.BBox.Y, Width: block.BBox.Width, Height: block.BBox.Height}
+				bbox = &BBox{
+					X:      block.BBox.X,
+					Y:      block.BBox.Y,
+					Width:  block.BBox.Width,
+					Height: block.BBox.Height,
+				}
 			}
-			blocks = append(blocks, DocumentBlock{ID: block.ID, Type: block.Type, Text: block.Text, PageNo: &pageNo, BBox: bbox, Metadata: block.Metadata})
+			blocks = append(blocks, DocumentBlock{
+				ID:       block.ID,
+				Type:     block.Type,
+				Text:     block.Text,
+				PageNo:   &pageNo,
+				BBox:     bbox,
+				Metadata: block.Metadata,
+			})
 		}
 	}
 	return &ParsedDocument{Text: extracted.Text, FileType: "pdf", Blocks: blocks}, nil

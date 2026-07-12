@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"os"
 
+	"agentcanvas/internal/domain/audit"
 	"agentcanvas/internal/domain/conversation"
 	"agentcanvas/internal/domain/memory"
 	"agentcanvas/internal/domain/retrieval"
-	"agentcanvas/internal/domain/audit"
 	"agentcanvas/internal/domain/skill"
 	"agentcanvas/internal/domain/tool"
 	"agentcanvas/internal/domain/workflow"
@@ -64,6 +64,7 @@ type Deps struct {
 	ToolCalling             llm.ToolCallingClient
 	ToolRegistry            toolruntime.Registry
 	WorkflowCaller          toolruntime.WorkflowCaller
+	InlineAgentCaller       toolruntime.InlineAgentCaller
 	Profiles                AgentProfileLoader
 	Teams                   workflow.TeamRepository
 	Sandbox                 sandbox.Runner
@@ -79,7 +80,29 @@ func DefaultNodes(deps Deps) ([]engine.Node, error) {
 		return nil, fmt.Errorf("sandbox runner is required")
 	}
 	workspaceRoot, _ := os.Getwd()
-	agentNode := AgentNode{LLM: deps.ToolCalling, Providers: deps.Providers, Tools: deps.ToolRegistry, ToolPacks: deps.ToolPacks, Skills: deps.Skills, Audits: deps.Audits, MCPServers: deps.MCPServers, Retriever: deps.Retriever, MemoryRetriever: deps.MemoryRetriever, Memories: deps.Memories, MemoryLogs: deps.MemoryWriteLogs, WorkingMemory: deps.WorkingMemory, WorkflowCaller: deps.WorkflowCaller, Profiles: deps.Profiles, Sandbox: deps.Sandbox, MessageHistory: deps.MessageHistory, ArchivalVecStore: deps.ArchivalVecStore, Embedder: deps.Embedder, WorkspaceRoot: workspaceRoot, OnExtractTrigger: deps.MemoryExtractionTrigger}
+	agentNode := AgentNode{
+		LLM:               deps.ToolCalling,
+		Providers:         deps.Providers,
+		Tools:             deps.ToolRegistry,
+		ToolPacks:         deps.ToolPacks,
+		Skills:            deps.Skills,
+		Audits:            deps.Audits,
+		MCPServers:        deps.MCPServers,
+		Retriever:         deps.Retriever,
+		MemoryRetriever:   deps.MemoryRetriever,
+		Memories:          deps.Memories,
+		MemoryLogs:        deps.MemoryWriteLogs,
+		WorkingMemory:     deps.WorkingMemory,
+		WorkflowCaller:    deps.WorkflowCaller,
+		InlineAgentCaller: deps.InlineAgentCaller,
+		Profiles:          deps.Profiles,
+		Sandbox:           deps.Sandbox,
+		MessageHistory:    deps.MessageHistory,
+		ArchivalVecStore:  deps.ArchivalVecStore,
+		Embedder:          deps.Embedder,
+		WorkspaceRoot:     workspaceRoot,
+		OnExtractTrigger:  deps.MemoryExtractionTrigger,
+	}
 	return []engine.Node{
 		BeginNode{},
 		RetrievalNode{Retriever: deps.Retriever},

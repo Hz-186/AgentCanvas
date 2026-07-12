@@ -29,7 +29,11 @@ func (HumanApprovalTool) Parameters() json.RawMessage {
 }
 
 func (HumanApprovalTool) Metadata() ToolMetadata {
-	return ToolMetadata{RiskLevel: RiskHigh, RequiresApproval: true, SideEffect: SideEffectExternalAction}
+	return ToolMetadata{
+		RiskLevel:        RiskHigh,
+		RequiresApproval: true,
+		SideEffect:       SideEffectExternalAction,
+	}
 }
 
 func (HumanApprovalTool) Execute(ctx context.Context, rc ToolRunContext, input json.RawMessage) (*ToolResult, error) {

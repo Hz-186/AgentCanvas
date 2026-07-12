@@ -273,7 +273,6 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 		mcpRepo,
 		toolInvocationRepo,
 		providerRepo,
-		conversationRepo,
 		messageRepo,
 		retrievalService,
 		chatClient,

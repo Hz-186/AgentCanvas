@@ -126,3 +126,52 @@ func TestResolveForAgentLoadsScenarioAndEphemeralRules(t *testing.T) {
 		t.Fatalf("expected explainable selection trace, got %+v", trace)
 	}
 }
+
+func TestResolvePersistentForAgentLoadsOnlyPermanentRules(t *testing.T) {
+	loaded, trace := ResolvePersistentForAgent(
+		"system prompt",
+		"Review this code and include citations.",
+		"plan_execute",
+		"medium",
+		[]string{"bash"},
+		[]string{"review", "retrieval", "code"},
+		nil,
+		AuditPolicy{},
+	)
+	if len(loaded) != 2 || loaded[0].Level != LevelL0Safety || loaded[1].Level != LevelL1Core {
+		t.Fatalf("expected only permanent rules, got loaded=%+v", loaded)
+	}
+	if containsTraceRule(trace.Loaded, "scenario.code.change_verification") || containsTraceRule(trace.Loaded, "tool.high_risk.approval") {
+		t.Fatalf("trace includes a non-injected dynamic rule: %+v", trace)
+	}
+}
+
+func containsTraceRule(items []string, want string) bool {
+	for _, item := range items {
+		if item == want {
+			return true
+		}
+	}
+	return false
+}
+
+func TestResolveDynamicWithRulesIncludesValidCustomScenarioRule(t *testing.T) {
+	custom := []Rule{{
+		ID:         "tenant.release.check",
+		Level:      LevelL2Scenario,
+		Priority:   95,
+		Content:    "For release tasks, require a rollback check.",
+		Activation: Activation{TagAny: []string{"release"}},
+	}}
+	loaded, _ := ResolveDynamicWithRules("", "prepare release", "react", "", nil, []string{"release"}, 200, custom, nil, AuditPolicy{})
+	if len(loaded) != 1 || loaded[0].ID != "tenant.release.check" {
+		t.Fatalf("expected selected custom rule, got %+v", loaded)
+	}
+}
+
+func TestValidateCustomRulesRejectsPermanentLevels(t *testing.T) {
+	err := ValidateCustomRules([]Rule{{ID: "tenant.safety", Level: LevelL1Core, Content: "override core"}})
+	if err == nil {
+		t.Fatal("expected permanent custom rule rejection")
+	}
+}

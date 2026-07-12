@@ -29,6 +29,7 @@ import (
 	"agentcanvas/internal/runtime/engine"
 	"agentcanvas/internal/runtime/evalharness"
 	runtimeevent "agentcanvas/internal/runtime/event"
+	"agentcanvas/internal/runtime/harness/rules"
 	runtimenode "agentcanvas/internal/runtime/node"
 	"agentcanvas/internal/runtime/sandbox"
 	"agentcanvas/internal/runtime/toolruntime"
@@ -210,6 +211,7 @@ func NewService(
 		ToolCalling:             toolCalling,
 		ToolRegistry:            registry,
 		WorkflowCaller:          s,
+		InlineAgentCaller:       s,
 		Profiles:                s,
 		Audits:                  audits,
 		Teams:                   teams,
@@ -541,6 +543,9 @@ func (s *Service) UpdateWorkflowProfile(ctx context.Context, ownerID, workflowID
 		if err != nil {
 			return nil, err
 		}
+		if err := validateContextPolicyRules(contextPolicy); err != nil {
+			return nil, err
+		}
 		profile.ContextPolicyJSON = contextPolicy
 	}
 	if req.RiskLevel != nil {
@@ -745,6 +750,91 @@ func (s *Service) CallWorkflow(ctx context.Context, req toolruntime.WorkflowCall
 		LatencyMS:     run.LatencyMS,
 	}
 	return result, err
+}
+
+func (s *Service) CallInlineAgent(ctx context.Context, req toolruntime.InlineAgentCallRequest) (*toolruntime.InlineAgentCallResult, error) {
+	maxDepth := req.MaxDepth
+	if maxDepth <= 0 {
+		maxDepth = 2
+	}
+	if req.OwnerID <= 0 || req.ParentRunID <= 0 || req.CallerWorkflowID <= 0 || req.CallDepth >= maxDepth {
+		return nil, fmt.Errorf("%w: inline agent call is not allowed", agenterrors.ErrForbidden)
+	}
+	parent, err := s.GetRun(ctx, req.OwnerID, req.ParentRunID)
+	if err != nil {
+		return nil, err
+	}
+	if parent.WorkflowID != req.CallerWorkflowID || parent.CallDepth != req.CallDepth {
+		return nil, fmt.Errorf("%w: inline agent parent run context does not match", agenterrors.ErrForbidden)
+	}
+	definitionJSON, err := json.Marshal(req.Definition)
+	if err != nil {
+		return nil, err
+	}
+	definitionHash := sha256.Sum256(definitionJSON)
+	dsl := inlineAgentDSL(req.Definition, req.CallDepth+1 < maxDepth)
+	if err := s.validator.Validate(dsl); err != nil {
+		return nil, err
+	}
+	input := map[string]any{"query": req.Definition.Task}
+	inputJSON, _ := json.Marshal(input)
+	callChain := normalizeWorkflowCallChain(req.WorkflowCallChain, req.CallerWorkflowID)
+	callChainJSON, _ := json.Marshal(callChain)
+	now := time.Now().UTC()
+	run := &workflow.Run{OwnerID: req.OwnerID, WorkflowID: req.CallerWorkflowID, FlowVersionID: parent.FlowVersionID, ConversationID: req.ConversationID, ParentRunID: &req.ParentRunID, CallerNodeID: req.CallerNodeID, CallDepth: req.CallDepth + 1, CallChainJSON: callChainJSON, RunKind: workflow.RunKindInlineAgent, DefinitionJSON: definitionJSON, DefinitionHash: hex.EncodeToString(definitionHash[:]), Status: workflow.RunStatusRunning, InputJSON: inputJSON, StartedAt: now}
+	if err := s.runs.Create(ctx, run); err != nil {
+		return nil, err
+	}
+	execCtx, cancel := context.WithCancel(ctx)
+	s.runCancels.Register(run.ID, cancel)
+	defer func() { cancel(); s.runCancels.Unregister(run.ID) }()
+	rc := &engine.RunContext{OwnerID: req.OwnerID, WorkflowID: req.CallerWorkflowID, FlowVersionID: parent.FlowVersionID, RunID: run.ID, ParentRunID: &req.ParentRunID, CallDepth: req.CallDepth + 1, WorkflowCallChain: callChain, ConversationID: req.ConversationID, AgentSteps: s, Input: input, Events: &eventEmitter{repo: s.events, ownerID: req.OwnerID, runID: run.ID}}
+	output, execErr := s.executor.Execute(execCtx, rc, dsl)
+	finished := time.Now().UTC()
+	run.FinishedAt = &finished
+	run.LatencyMS = int(finished.Sub(run.StartedAt).Milliseconds())
+	if output != nil {
+		run.OutputJSON, _ = json.Marshal(output)
+	}
+	if errors.Is(execErr, context.Canceled) || execCtx.Err() == context.Canceled {
+		run.Status, run.ErrorMessage = workflow.RunStatusCancelled, context.Canceled.Error()
+	} else if execErr != nil {
+		run.Status, run.ErrorMessage = workflow.RunStatusFailed, execErr.Error()
+	} else if status := runStatusFromOutput(output); status != "" {
+		run.Status = status
+	} else {
+		run.Status = workflow.RunStatusSucceeded
+	}
+	if run.Status == workflow.RunStatusWaitingHuman || run.Status == workflow.RunStatusPaused {
+		if err := s.persistRunCheckpointArtifacts(ctx, run, output, run.Status); err != nil {
+			return nil, err
+		}
+	}
+	if err := s.runs.Update(ctx, run); err != nil {
+		return nil, err
+	}
+	_ = s.writeNodeLogs(ctx, req.OwnerID, run.ID, dsl, rc)
+	return &toolruntime.InlineAgentCallResult{RunID: run.ID, Status: run.Status, Output: map[string]any(output), Error: run.ErrorMessage, LatencyMS: run.LatencyMS}, execErr
+}
+
+func inlineAgentDSL(definition toolruntime.InlineAgentDefinition, allowChildren bool) *flow.DSL {
+	agentConfig, _ := json.Marshal(map[string]any{
+		"mode": definition.Mode, "provider_id": definition.ProviderID, "model": definition.Model,
+		"system_prompt": definition.SystemPrompt, "task_template": definition.Task,
+		"tool_ids": definition.ToolIDs, "skill_ids": definition.SkillIDs, "knowledge_ids": definition.KnowledgeIDs,
+		"mcp_server_ids": definition.MCPServerIDs, "max_iterations": definition.MaxIterations,
+		"max_tool_calls": definition.MaxToolCalls, "max_execution_time_ms": definition.MaxExecutionTimeMS,
+		"max_parallel_sub_agents": definition.MaxParallelChildren, "allow_inline_agents": allowChildren,
+		"max_workflow_call_depth":   definition.MaxDepth,
+		"require_approval_for_risk": definition.RequireApprovalForRisk, "max_tool_timeout_ms": definition.MaxToolTimeoutMS,
+		"max_tool_output_bytes": definition.MaxToolOutputBytes, "allowed_hosts": definition.AllowedHosts,
+		"code_execution_enabled":   definition.CodeExecutionEnabled,
+		"disable_profile_defaults": true,
+	})
+	return &flow.DSL{SchemaVersion: flow.SchemaVersionV1, FlowID: "inline-agent", Nodes: []flow.Node{
+		{ID: "begin", Type: "begin", Name: "Begin", Config: json.RawMessage(`{}`)},
+		{ID: "agent", Type: "agent_loop", Name: definition.Name, Config: agentConfig},
+	}, Edges: []flow.Edge{{From: "begin", To: "agent"}}}
 }
 
 func (s *Service) recordBlockedWorkflowCall(ctx context.Context, req toolruntime.WorkflowCallRequest, reason string, maxDepth int) {
@@ -1044,6 +1134,7 @@ func (s *Service) run(
 		OwnerID:        ownerID,
 		WorkflowID:     workflowID,
 		FlowVersionID:  version.ID,
+		RunKind:        workflow.RunKindWorkflow,
 		ConversationID: req.ConversationID,
 		ParentRunID:    opts.ParentRunID,
 		CallerNodeID:   opts.CallerNodeID,
@@ -1276,6 +1367,22 @@ func normalizeOptionalRawJSON(raw json.RawMessage, field string) (json.RawMessag
 	return normalized, nil
 }
 
+func validateContextPolicyRules(raw json.RawMessage) error {
+	if len(raw) == 0 || string(raw) == "{}" {
+		return nil
+	}
+	var policy struct {
+		Rules []rules.Rule `json:"rules"`
+	}
+	if err := json.Unmarshal(raw, &policy); err != nil {
+		return fmt.Errorf("%w: context_policy_json is invalid", agenterrors.ErrInvalidInput)
+	}
+	if err := rules.ValidateCustomRules(policy.Rules); err != nil {
+		return fmt.Errorf("%w: context_policy_json rules are invalid: %v", agenterrors.ErrInvalidInput, err)
+	}
+	return nil
+}
+
 func failedEvalResult(
 	ownerID, evalRunID, evalCaseID int64,
 	agentRunID *int64,
@@ -1315,6 +1422,11 @@ func summarizeEvalMetrics(results []workflow.EvalResult) map[string]any {
 		"avg_candidate_size":                   averageMetric(results, "candidate_size"),
 		"avg_total_tokens":                     averageMetric(results, "total_tokens"),
 		"avg_token_saved":                      averageMetric(results, "token_saved"),
+		"avg_rules_token_cost":                 averageMetric(results, "rules_token_cost"),
+		"avg_rules_dynamic_budget":             averageMetric(results, "rules_dynamic_budget"),
+		"avg_provider_prompt_tokens":           averageMetric(results, "provider_prompt_tokens"),
+		"avg_token_estimation_error":           averageMetric(results, "token_estimation_error"),
+		"avg_rule_round_count":                 averageMetric(results, "rule_round_count"),
 		"max_iteration_exceeded_rate":          averageMetric(results, "max_iteration_exceeded"),
 		"max_tool_calls_exceeded_rate":         averageMetric(results, "max_tool_calls_exceeded"),
 		"human_approval_waiting_rate":          averageMetric(results, "human_approval_waiting"),
@@ -1322,6 +1434,62 @@ func summarizeEvalMetrics(results []workflow.EvalResult) map[string]any {
 		"failed_cases_with_runtime_error_rate": runtimeErrorRate(results),
 	}
 	return summary
+}
+
+func summarizeRuleSetVersions(results []workflow.EvalResult) map[string]any {
+	type aggregate struct {
+		cases        int
+		passed       int
+		score        float64
+		rulesCost    float64
+		promptTokens float64
+		tokensSaved  float64
+	}
+	aggregates := map[string]*aggregate{}
+	for _, result := range results {
+		var metrics map[string]any
+		if len(result.MetricsJSON) == 0 || json.Unmarshal(result.MetricsJSON, &metrics) != nil {
+			continue
+		}
+		version, _ := metrics["rule_set_version"].(string)
+		if version == "" {
+			version = "builtin"
+		}
+		item := aggregates[version]
+		if item == nil {
+			item = &aggregate{}
+			aggregates[version] = item
+		}
+		item.cases++
+		if result.Status == "passed" || result.Score >= 1 {
+			item.passed++
+		}
+		item.score += result.Score
+		item.rulesCost += metricValue(metrics, "rules_token_cost")
+		item.promptTokens += metricValue(metrics, "provider_prompt_tokens")
+		item.tokensSaved += metricValue(metrics, "token_saved")
+	}
+	summary := make(map[string]any, len(aggregates))
+	for version, item := range aggregates {
+		if item.cases == 0 {
+			continue
+		}
+		count := float64(item.cases)
+		summary[version] = map[string]any{
+			"cases":                      item.cases,
+			"pass_rate":                  float64(item.passed) / count,
+			"avg_score":                  item.score / count,
+			"avg_rules_token_cost":       item.rulesCost / count,
+			"avg_provider_prompt_tokens": item.promptTokens / count,
+			"avg_token_saved":            item.tokensSaved / count,
+		}
+	}
+	return summary
+}
+
+func metricValue(metrics map[string]any, key string) float64 {
+	value, _ := evalMetricFloat(metrics[key])
+	return value
 }
 
 func evalRunSummaryMetrics(raw json.RawMessage) map[string]any {
@@ -1361,6 +1529,11 @@ func buildEvalTrendDelta(first, latest EvalTrendPoint) map[string]any {
 		"avg_candidate_size",
 		"avg_total_tokens",
 		"avg_token_saved",
+		"avg_rules_token_cost",
+		"avg_rules_dynamic_budget",
+		"avg_provider_prompt_tokens",
+		"avg_token_estimation_error",
+		"avg_rule_round_count",
 		"max_iteration_exceeded_rate",
 		"max_tool_calls_exceeded_rate",
 		"human_approval_waiting_rate",
@@ -1609,6 +1782,12 @@ func baseEvalMetrics(output engine.NodeOutput) map[string]any {
 		"reference_hit_rate":          1.0,
 		"max_tool_calls_exceeded":     stopReason == runtimeagent.StopReasonMaxToolCalls,
 		"reflection_repair_attempted": hasStepType(output, runtimeagent.StepTypeReflection),
+		"rules_token_cost":            nestedMetricFloatPath(output["context_trace"], "rule_trace", "estimated_used"),
+		"rules_dynamic_budget":        nestedMetricFloatPath(output["context_trace"], "rule_budget", "available_rule_tokens"),
+		"provider_prompt_tokens":      nestedMetricFloat(output["context_trace"], "provider_prompt_tokens"),
+		"token_estimation_error":      nestedMetricFloat(output["context_trace"], "token_estimation_error"),
+		"rule_round_count":            nestedMetricSliceLength(output["context_trace"], "rule_rounds"),
+		"rule_set_version":            nestedMetricString(output["context_trace"], "rule_set_version"),
 	}
 	return metrics
 }
@@ -2035,6 +2214,64 @@ func nestedMetricFloat(value any, key string) float64 {
 		return number
 	}
 	return 0
+}
+
+func nestedMetricFloatPath(value any, keys ...string) float64 {
+	current := nestedMetricObject(value)
+	for index, key := range keys {
+		value, ok := current[key]
+		if !ok {
+			return 0
+		}
+		if index == len(keys)-1 {
+			number, _ := evalMetricFloat(value)
+			return number
+		}
+		current = nestedMetricObject(value)
+	}
+	return 0
+}
+
+func nestedMetricSliceLength(value any, key string) int {
+	items, ok := nestedMetricObject(value)[key].([]any)
+	if ok {
+		return len(items)
+	}
+	bytes, _ := json.Marshal(value)
+	var decoded map[string]any
+	if json.Unmarshal(bytes, &decoded) != nil {
+		return 0
+	}
+	items, _ = decoded[key].([]any)
+	return len(items)
+}
+
+func nestedMetricString(value any, key string) string {
+	if text, ok := nestedMetricObject(value)[key].(string); ok {
+		return text
+	}
+	bytes, _ := json.Marshal(value)
+	var decoded map[string]any
+	if json.Unmarshal(bytes, &decoded) != nil {
+		return ""
+	}
+	text, _ := decoded[key].(string)
+	return text
+}
+
+func nestedMetricObject(value any) map[string]any {
+	if item, ok := value.(map[string]any); ok {
+		return item
+	}
+	bytes, err := json.Marshal(value)
+	if err != nil || string(bytes) == "null" {
+		return map[string]any{}
+	}
+	var decoded map[string]any
+	if json.Unmarshal(bytes, &decoded) != nil {
+		return map[string]any{}
+	}
+	return decoded
 }
 
 func stableJSONHash(value any) string {

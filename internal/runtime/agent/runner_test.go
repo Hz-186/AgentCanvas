@@ -4,10 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"agentcanvas/internal/domain/conversation"
 	"agentcanvas/internal/infrastructure/llm"
+	"agentcanvas/internal/runtime/harness/rules"
 	"agentcanvas/internal/runtime/toolruntime"
 )
 
@@ -33,6 +36,46 @@ type fakeRuntimeTool struct {
 	input       json.RawMessage
 	metadata    toolruntime.ToolMetadata
 	sawDeadline bool
+}
+
+type concurrentDelegationTool struct {
+	name  string
+	delay time.Duration
+	state *concurrencyState
+}
+
+type concurrencyState struct {
+	mu         sync.Mutex
+	running    int
+	maxRunning int
+}
+
+func (t concurrentDelegationTool) Name() string        { return t.name }
+func (t concurrentDelegationTool) Description() string { return "delegation tool" }
+func (t concurrentDelegationTool) Parameters() json.RawMessage {
+	return json.RawMessage(`{"type":"object"}`)
+}
+func (t concurrentDelegationTool) Metadata() toolruntime.ToolMetadata {
+	return toolruntime.ToolMetadata{ExecutionClass: toolruntime.ExecutionDelegation}
+}
+func (t concurrentDelegationTool) Execute(ctx context.Context, _ toolruntime.ToolRunContext, _ json.RawMessage) (*toolruntime.ToolResult, error) {
+	t.state.mu.Lock()
+	t.state.running++
+	if t.state.running > t.state.maxRunning {
+		t.state.maxRunning = t.state.running
+	}
+	t.state.mu.Unlock()
+	defer func() {
+		t.state.mu.Lock()
+		t.state.running--
+		t.state.mu.Unlock()
+	}()
+	select {
+	case <-time.After(t.delay):
+		return &toolruntime.ToolResult{ContentText: t.name}, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 func (t *fakeRuntimeTool) Name() string { return t.name }
@@ -113,6 +156,103 @@ func TestRunnerExecutesToolAndReturnsFinalAnswer(t *testing.T) {
 	}
 }
 
+func TestRunnerReplansRulesAfterToolUse(t *testing.T) {
+	client := &fakeToolClient{responses: []llm.ToolChatResponse{
+		{Message: llm.ChatMessage{Role: conversation.RoleAssistant, ToolCalls: []llm.ToolCall{{ID: "call_bash", Name: "bash", Arguments: json.RawMessage(`{"command":"true"}`)}}}},
+		{Message: llm.ChatMessage{Role: conversation.RoleAssistant, Content: "done"}},
+	}}
+	runner := &Runner{LLM: client}
+	result, err := runner.Run(context.Background(), RunRequest{
+		Model:          "test-model",
+		Task:           "verify the deployment",
+		MaxIterations:  2,
+		MaxInputTokens: 4000,
+		RuleRiskLevel:  "medium",
+		Tools:          []toolruntime.RuntimeTool{&fakeRuntimeTool{name: "bash", output: "ok", metadata: toolruntime.ToolMetadata{RiskLevel: toolruntime.RiskMedium}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(client.requests) != 2 {
+		t.Fatalf("expected two calls, got %d", len(client.requests))
+	}
+	if messageContains(client.requests[0].Messages, "High Risk Approval") {
+		t.Fatalf("tool rule must not be present in first call: %+v", client.requests[0].Messages)
+	}
+	if !messageContains(client.requests[1].Messages, "For high-risk or side-effecting tools") {
+		t.Fatalf("tool rule was not added after tool use: %+v", client.requests[1].Messages)
+	}
+	if len(result.Context.RuleRounds) != 2 || !containsRule(result.Context.RuleRounds[1].Loaded, "tool.high_risk.approval") {
+		t.Fatalf("expected trace to record late tool-rule injection: %+v", result.Context.RuleRounds)
+	}
+}
+
+func TestRunnerRecordsProviderPromptTokenCalibration(t *testing.T) {
+	client := &fakeToolClient{responses: []llm.ToolChatResponse{
+		{Message: llm.ChatMessage{Role: conversation.RoleAssistant, ToolCalls: []llm.ToolCall{{ID: "call_bash", Name: "bash", Arguments: json.RawMessage(`{"command":"true"}`)}}}, Usage: llm.Usage{PromptTokens: 120}},
+		{Message: llm.ChatMessage{Role: conversation.RoleAssistant, Content: "done"}, Usage: llm.Usage{PromptTokens: 180}},
+	}}
+	result, err := (&Runner{LLM: client}).Run(context.Background(), RunRequest{
+		Model:          "test-model",
+		Task:           "verify the deployment",
+		MaxIterations:  2,
+		MaxInputTokens: 4000,
+		Tools:          []toolruntime.RuntimeTool{&fakeRuntimeTool{name: "bash", output: "ok"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Context.ProviderPromptTokens != 300 || len(result.Context.RuleRounds) != 2 {
+		t.Fatalf("expected accumulated provider prompt usage, got %+v", result.Context)
+	}
+	if result.Context.RuleRounds[0].ProviderPromptTokens != 120 || result.Context.RuleRounds[1].ProviderPromptTokens != 180 {
+		t.Fatalf("expected per-round prompt usage, got %+v", result.Context.RuleRounds)
+	}
+}
+
+func TestMergeRuleTracesPreservesPermanentAndDynamicRules(t *testing.T) {
+	merged := mergeRuleTraces(
+		rules.Trace{Loaded: []string{"safety.output.boundary", "core.task.completion"}, EstimatedUsed: 10, LevelUsage: map[string]int{"l1_core": 10}},
+		rules.Trace{Loaded: []string{"scenario.code.change_verification"}, EstimatedUsed: 8, LevelUsage: map[string]int{"l2_scenario": 8}},
+	)
+	if !containsRule(merged.Loaded, "core.task.completion") || !containsRule(merged.Loaded, "scenario.code.change_verification") || merged.EstimatedUsed != 18 {
+		t.Fatalf("expected merged persistent and dynamic trace, got %+v", merged)
+	}
+}
+
+func TestCompactTranscriptForBudgetKeepsLatestToolExchange(t *testing.T) {
+	messages := []llm.ChatMessage{
+		{Role: conversation.RoleAssistant, ToolCalls: []llm.ToolCall{{ID: "old", Name: "search"}}},
+		{Role: conversation.RoleTool, ToolCallID: "old", Content: strings.Repeat("old ", 80)},
+		{Role: conversation.RoleAssistant, ToolCalls: []llm.ToolCall{{ID: "new", Name: "bash"}}},
+		{Role: conversation.RoleTool, ToolCallID: "new", Content: "latest observation"},
+	}
+	compacted, saved := compactTranscriptForBudget(messages, 20)
+	if saved == 0 || len(compacted) != 2 {
+		t.Fatalf("expected old exchange to be pruned, got saved=%d messages=%+v", saved, compacted)
+	}
+	if compacted[0].ToolCalls[0].ID != "new" || compacted[1].ToolCallID != "new" {
+		t.Fatalf("latest exchange was not preserved as a valid pair: %+v", compacted)
+	}
+}
+
+func TestCompactTranscriptForZeroBudgetDropsTranscript(t *testing.T) {
+	messages := []llm.ChatMessage{{Role: conversation.RoleAssistant, ToolCalls: []llm.ToolCall{{ID: "call", Name: "bash"}}}, {Role: conversation.RoleTool, ToolCallID: "call", Content: "observation"}}
+	compacted, saved := compactTranscriptForBudget(messages, 0)
+	if len(compacted) != 0 || saved == 0 {
+		t.Fatalf("expected transcript removal under zero budget, got saved=%d messages=%+v", saved, compacted)
+	}
+}
+
+func messageContains(messages []llm.ChatMessage, needle string) bool {
+	for _, message := range messages {
+		if strings.Contains(message.Content, needle) {
+			return true
+		}
+	}
+	return false
+}
+
 func TestRunnerStopsForHumanApprovalBeforeHighRiskTool(t *testing.T) {
 	client := &fakeToolClient{responses: []llm.ToolChatResponse{
 		{
@@ -160,6 +300,47 @@ func TestRunnerStopsForHumanApprovalBeforeHighRiskTool(t *testing.T) {
 	}
 	if len(tool.input) != 0 {
 		t.Fatalf("expected tool not to execute, got input %s", string(tool.input))
+	}
+}
+
+func TestRunnerApprovalResumeExecutesWholeBatchWithoutGrantingSiblings(t *testing.T) {
+	high := toolruntime.ToolMetadata{RiskLevel: toolruntime.RiskHigh, SideEffect: toolruntime.SideEffectExternalAction}
+	first := &fakeRuntimeTool{name: "first", output: "first result"}
+	approved := &fakeRuntimeTool{name: "approved", output: "approved result", metadata: high}
+	sibling := &fakeRuntimeTool{name: "sibling", output: "must wait", metadata: high}
+	calls := []llm.ToolCall{{ID: "call_1", Name: "first", Arguments: json.RawMessage(`{}`)}, {ID: "call_2", Name: "approved", Arguments: json.RawMessage(`{}`)}, {ID: "call_3", Name: "sibling", Arguments: json.RawMessage(`{}`)}}
+	initialClient := &fakeToolClient{responses: []llm.ToolChatResponse{{Message: llm.ChatMessage{Role: conversation.RoleAssistant, ToolCalls: calls}}}}
+	req := RunRequest{Model: "test-model", Task: "delegate", MaxIterations: 3, MaxToolCalls: 5, ToolPolicy: ToolPolicy{RequireApprovalForRisk: []string{toolruntime.RiskHigh}}, Tools: []toolruntime.RuntimeTool{first, approved, sibling}}
+	initial, err := NewRunner(initialClient).Run(context.Background(), req)
+	if err != nil || initial.Checkpoint == nil || initial.Checkpoint.PendingToolCall.ID != "call_2" {
+		t.Fatalf("expected approval for second call: result=%+v err=%v", initial, err)
+	}
+	if len(first.input) != 0 || len(approved.input) != 0 || len(sibling.input) != 0 {
+		t.Fatal("approval barrier must prevent the entire batch from starting")
+	}
+	resumeReq, err := BuildResumeRequest(ResumeRequest{RunRequest: req, Checkpoint: initial.Checkpoint, Approved: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resumeClient := &fakeToolClient{}
+	resumed, err := NewRunner(resumeClient).Run(context.Background(), *resumeReq)
+	if err != nil || resumed.Checkpoint == nil || resumed.Checkpoint.PendingToolCall.ID != "call_3" {
+		t.Fatalf("sibling high-risk call must require its own approval: result=%+v err=%v", resumed, err)
+	}
+	if len(first.input) != 0 || len(approved.input) != 0 || len(sibling.input) != 0 {
+		t.Fatal("batch must remain behind the approval barrier until every required approval is granted")
+	}
+	secondResumeReq, err := BuildResumeRequest(ResumeRequest{RunRequest: req, Checkpoint: resumed.Checkpoint, Approved: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	finalClient := &fakeToolClient{responses: []llm.ToolChatResponse{{Message: llm.ChatMessage{Role: conversation.RoleAssistant, Content: "done"}}}}
+	final, err := NewRunner(finalClient).Run(context.Background(), *secondResumeReq)
+	if err != nil || final.FinalAnswer != "done" {
+		t.Fatalf("expected fully approved batch to finish: result=%+v err=%v", final, err)
+	}
+	if len(first.input) == 0 || len(approved.input) == 0 || len(sibling.input) == 0 {
+		t.Fatalf("fully approved batch did not execute all calls first=%s approved=%s sibling=%s", first.input, approved.input, sibling.input)
 	}
 }
 
@@ -346,6 +527,69 @@ func TestRunnerMultipleToolsInOneResponse(t *testing.T) {
 	}
 	if result.ToolCalls != 2 {
 		t.Fatalf("expected 2 tool calls, got %d", result.ToolCalls)
+	}
+}
+
+func TestRunnerRunsDelegationsConcurrentlyWithStableResults(t *testing.T) {
+	client := &fakeToolClient{responses: []llm.ToolChatResponse{
+		{Message: llm.ChatMessage{Role: conversation.RoleAssistant, ToolCalls: []llm.ToolCall{
+			{ID: "call_1", Name: "worker_a", Arguments: json.RawMessage(`{}`)},
+			{ID: "call_2", Name: "worker_b", Arguments: json.RawMessage(`{}`)},
+			{ID: "call_3", Name: "worker_c", Arguments: json.RawMessage(`{}`)},
+		}}},
+		{Message: llm.ChatMessage{Role: conversation.RoleAssistant, Content: "done"}},
+	}}
+	state := &concurrencyState{}
+	tools := []toolruntime.RuntimeTool{
+		concurrentDelegationTool{name: "worker_a", delay: 60 * time.Millisecond, state: state},
+		concurrentDelegationTool{name: "worker_b", delay: 10 * time.Millisecond, state: state},
+		concurrentDelegationTool{name: "worker_c", delay: 30 * time.Millisecond, state: state},
+	}
+	result, err := NewRunner(client).Run(context.Background(), RunRequest{Model: "test-model", Task: "delegate", MaxIterations: 3, MaxToolCalls: 5, MaxParallelTools: 2, Tools: tools})
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.mu.Lock()
+	maxRunning := state.maxRunning
+	state.mu.Unlock()
+	if maxRunning != 2 {
+		t.Fatalf("expected concurrency limit 2, got %d", maxRunning)
+	}
+	if result.ToolCalls != 3 {
+		t.Fatalf("expected 3 tool calls, got %d", result.ToolCalls)
+	}
+	messages := client.requests[1].Messages
+	toolMessages := messages[len(messages)-3:]
+	for i, expected := range []string{"worker_a", "worker_b", "worker_c"} {
+		if toolMessages[i].Content != expected {
+			t.Fatalf("tool results lost model order: %+v", toolMessages)
+		}
+	}
+}
+
+func TestRunnerCancelsConcurrentDelegationsWithParentContext(t *testing.T) {
+	client := &fakeToolClient{responses: []llm.ToolChatResponse{{Message: llm.ChatMessage{Role: conversation.RoleAssistant, ToolCalls: []llm.ToolCall{
+		{ID: "call_1", Name: "worker_a", Arguments: json.RawMessage(`{}`)},
+		{ID: "call_2", Name: "worker_b", Arguments: json.RawMessage(`{}`)},
+	}}}}}
+	state := &concurrencyState{}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	result, err := NewRunner(client).Run(ctx, RunRequest{Model: "test-model", Task: "delegate", MaxIterations: 3, MaxToolCalls: 5, MaxParallelTools: 2, Tools: []toolruntime.RuntimeTool{
+		concurrentDelegationTool{name: "worker_a", delay: time.Second, state: state},
+		concurrentDelegationTool{name: "worker_b", delay: time.Second, state: state},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.StopReason != StopReasonTimeout {
+		t.Fatalf("expected parent timeout to stop concurrent delegations, got %+v", result)
+	}
+	state.mu.Lock()
+	running := state.running
+	state.mu.Unlock()
+	if running != 0 {
+		t.Fatalf("delegations still running after parent cancellation: %d", running)
 	}
 }
 

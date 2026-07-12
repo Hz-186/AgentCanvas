@@ -35,6 +35,11 @@ const (
 	SideEffectExternalAction = "external_action"
 )
 
+const (
+	ExecutionSerial     = "serial"
+	ExecutionDelegation = "delegation"
+)
+
 type ToolMetadata struct {
 	RiskLevel        string   `json:"risk_level"`
 	RequiresApproval bool     `json:"requires_approval"`
@@ -42,6 +47,7 @@ type ToolMetadata struct {
 	MaxOutputBytes   int      `json:"max_output_bytes,omitempty"`
 	SideEffect       string   `json:"side_effect,omitempty"`
 	AllowedHosts     []string `json:"allowed_hosts,omitempty"`
+	ExecutionClass   string   `json:"execution_class,omitempty"`
 }
 
 type RuntimeTool interface {
@@ -70,11 +76,15 @@ func MetadataOf(tool RuntimeTool) ToolMetadata {
 		if metadata.SideEffect == "" {
 			metadata.SideEffect = SideEffectNone
 		}
+		if metadata.ExecutionClass == "" {
+			metadata.ExecutionClass = ExecutionSerial
+		}
 		return metadata
 	}
 	return ToolMetadata{
-		RiskLevel:  RiskLow,
-		SideEffect: SideEffectNone,
+		RiskLevel:      RiskLow,
+		SideEffect:     SideEffectNone,
+		ExecutionClass: ExecutionSerial,
 	}
 }
 

@@ -23,6 +23,7 @@ const (
 	ReasonAuditLowHitRate       = "audit_low_hit_rate"
 	ReasonBelowScoreThreshold   = "below_score_threshold"
 	ReasonLevelCandidateTrimmed = "level_candidate_trimmed"
+	ReasonDeferredUntilToolUse  = "deferred_until_tool_use"
 )
 
 type Rule struct {
@@ -36,6 +37,9 @@ type Rule struct {
 	Priority    int               `json:"priority,omitempty"`
 	Metadata    map[string]string `json:"metadata,omitempty"`
 }
+
+// TokenCost exposes the stable cost used by planning and trace accounting.
+func (r Rule) TokenCost() int { return ruleCost(r) }
 
 type Activation struct {
 	ModeAny      []string `json:"mode_any,omitempty"`
@@ -66,6 +70,7 @@ type LoadContext struct {
 	LevelBudgets  map[RuleLevel]int
 	ScoreCutoff   float64
 	MaxCandidates int
+	ExcludeLevels map[RuleLevel]bool
 }
 
 type Trace struct {
@@ -91,6 +96,38 @@ type Trace struct {
 
 type Registry struct {
 	rules []Rule
+}
+
+// Rules returns a copy so callers can compose a request-scoped registry
+// without mutating the built-in catalog.
+func (r *Registry) Rules() []Rule {
+	if r == nil {
+		return nil
+	}
+	return append([]Rule(nil), r.rules...)
+}
+
+// ValidateCustomRules keeps permanent platform constraints out of tenant
+// configuration. L0/L1 are intentionally defined only by the built-in catalog.
+func ValidateCustomRules(items []Rule) error {
+	if len(items) > 50 {
+		return fmt.Errorf("at most 50 custom rules are allowed")
+	}
+	seen := map[string]bool{}
+	for _, item := range items {
+		id := strings.TrimSpace(item.ID)
+		if id == "" || strings.TrimSpace(item.Content) == "" {
+			return fmt.Errorf("custom rules require id and content")
+		}
+		if seen[id] {
+			return fmt.Errorf("duplicate custom rule id %q", id)
+		}
+		seen[id] = true
+		if item.Level == LevelL0Safety || item.Level == LevelL1Core {
+			return fmt.Errorf("custom rule %q cannot use permanent level %s", id, item.Level)
+		}
+	}
+	return nil
 }
 
 type ruleDecision struct {
@@ -137,6 +174,12 @@ func (r *Registry) Load(ctx LoadContext) ([]Rule, Trace) {
 	}
 	candidates := make([]ruleDecision, 0, len(r.rules))
 	for _, rule := range r.rules {
+		if ctx.ExcludeLevels[rule.Level] {
+			trace.skip(rule.ID, "excluded_level")
+			trace.SavedTokens += ruleCost(rule)
+			trace.addPrunedTokens(rule.Level, ruleCost(rule))
+			continue
+		}
 		decision, matched, reason := evaluateRule(rule, ctx)
 		if !matched {
 			trace.skip(rule.ID, reason)
@@ -531,6 +574,40 @@ func (t *Trace) skip(ruleID, reason string) {
 		t.SkipReasons = map[string]string{}
 	}
 	t.SkipReasons[ruleID] = reason
+}
+
+// Skip records a late planning decision while preserving the same accounting
+// semantics as registry-level pruning.
+func (t *Trace) Skip(ruleID, reason string, tokens int) {
+	t.skip(ruleID, reason)
+	t.SavedTokens += tokens
+}
+
+// RemoveLoaded converts a selected rule into a late-pruned rule. It is used
+// when a runtime-only condition, such as actual tool use, is not yet true.
+func (t *Trace) RemoveLoaded(rule Rule, reason string) {
+	for index, id := range t.Loaded {
+		if id != rule.ID {
+			continue
+		}
+		t.Loaded = append(t.Loaded[:index], t.Loaded[index+1:]...)
+		if index < len(t.Levels) {
+			t.Levels = append(t.Levels[:index], t.Levels[index+1:]...)
+		}
+		break
+	}
+	cost := ruleCost(rule)
+	if t.EstimatedUsed >= cost {
+		t.EstimatedUsed -= cost
+	}
+	if t.LevelUsage != nil && t.LevelUsage[string(rule.Level)] >= cost {
+		t.LevelUsage[string(rule.Level)] -= cost
+	}
+	if t.LevelLoaded != nil && t.LevelLoaded[string(rule.Level)] > 0 {
+		t.LevelLoaded[string(rule.Level)]--
+	}
+	t.Skip(rule.ID, reason, cost)
+	t.addPrunedTokens(rule.Level, cost)
 }
 
 func (t *Trace) noteScore(ruleID string, score float64) {
