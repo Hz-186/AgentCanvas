@@ -1,8 +1,9 @@
 import { FormEvent, useEffect, useRef, useState } from 'react';
-import { ChevronLeft, MessageSquareText, Plus, Send } from 'lucide-react';
+import { ArrowUpRight, ChevronLeft, Database, MessageSquareText, Plus, Save, Send, Trash2 } from 'lucide-react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { chatApi, conversationApi, dialogApi, knowledgeApi, settingsApi } from '../api/resources';
-import { Button, EmptyState, Field, Modal, Select, StatusBadge, TextArea, TextInput, Toast } from '../components/ui';
+import { chatApi, conversationApi, dialogApi, resourceSummaryApi, settingsApi } from '../api/resources';
+import { Button, EmptyState, Field, IconButton, Modal, Select, StatusBadge, TextArea, TextInput, Toast } from '../components/ui';
+import { EditorialHeader, ResizableRail, paneStyle, storedWidth } from '../components/editorial';
 import type { Conversation, Dialog, KnowledgeBase, Message, MessageReference, ModelProvider } from '../types/api';
 import { formatDate, friendlyErrorMessage } from '../utils/format';
 
@@ -33,17 +34,38 @@ export function ChatPage() {
   const [references, setReferences] = useState<MessageReference[]>([]);
   const [streaming, setStreaming] = useState(false);
   const [error, setError] = useState('');
+  const [model, setModel] = useState('');
+  const [retrievalMode, setRetrievalMode] = useState('hybrid');
+  const [topK, setTopK] = useState(8);
+  const [historyLimit, setHistoryLimit] = useState(10);
+  const [systemPrompt, setSystemPrompt] = useState('');
+  const [prologue, setPrologue] = useState('');
+  const chatLayoutRef = useRef<HTMLDivElement | null>(null);
   // 进行中的 SSE 流控制器：组件卸载或重新发起时取消，避免内存泄漏与“卸载后 setState”。
   const askAbortRef = useRef<AbortController | null>(null);
   // 正在流式输出的会话 id：路由 effect 据此跳过对当前流会话的重载，避免覆盖正在生成的内容。
   const streamingConversationRef = useRef<number | undefined>(undefined);
 
   async function loadBase() {
-    const [providerResp, kbResp, dialogResp] = await Promise.all([
+    const [providerResp, kbSummary, dialogSummary, selectedDialog] = await Promise.all([
       settingsApi.providers.list(),
-      knowledgeApi.list(),
-      dialogApi.list(),
+      resourceSummaryApi.list('knowledge-bases', { limit: 100 }),
+      resourceSummaryApi.list('dialogs', { limit: 100 }),
+      dialogId ? dialogApi.get(dialogId) : Promise.resolve(null),
     ]);
+    const kbResp = kbSummary.items.map((item) => ({ id: item.id, name: item.name } as KnowledgeBase));
+    const dialogResp = dialogSummary.items.map((item) => ({
+      id: item.id,
+      name: item.name,
+      description: item.description ?? '',
+      status: item.status ?? 1,
+      updated_at: item.updated_at,
+    } as Dialog));
+    if (selectedDialog) {
+      const index = dialogResp.findIndex((item) => item.id === selectedDialog.id);
+      if (index >= 0) dialogResp[index] = selectedDialog;
+      else dialogResp.unshift(selectedDialog);
+    }
     setProviders(providerResp);
     setKnowledgeBases(kbResp);
     setDialogs(dialogResp);
@@ -57,7 +79,7 @@ export function ChatPage() {
 
   useEffect(() => {
     void loadBase().catch((err) => setError(friendlyErrorMessage(err, '加载聊天配置失败')));
-  }, []);
+  }, [dialogId]);
 
   // 组件卸载时取消进行中的流，避免内存泄漏。
   useEffect(() => () => askAbortRef.current?.abort(), []);
@@ -123,6 +145,39 @@ export function ChatPage() {
       navigate(`/app/dialogs/${item.id}/chat`);
     } catch (err) {
       setError(friendlyErrorMessage(err, '创建 Dialog 失败'));
+    }
+  }
+
+  async function removeDialog(id: number) {
+    if (!window.confirm('确认删除这个 Dialog 及其会话吗？')) return;
+    try {
+      await dialogApi.remove(id);
+      setDialogs((current) => current.filter((item) => item.id !== id));
+      if (dialogId === id) navigate('/app/dialogs', { replace: true });
+    } catch (err) {
+      setError(friendlyErrorMessage(err, '删除 Dialog 失败'));
+    }
+  }
+
+  async function removeConversation(id: number) {
+    if (!dialogId || !window.confirm('确认删除这个会话吗？')) return;
+    try {
+      await conversationApi.remove(dialogId, id);
+      const remaining = conversations.filter((item) => item.id !== id);
+      setConversations(remaining);
+      if (conversationId === id) navigate(remaining[0] ? `/app/dialogs/${dialogId}/chat/${remaining[0].id}` : `/app/dialogs/${dialogId}/chat/new`, { replace: true });
+    } catch (err) {
+      setError(friendlyErrorMessage(err, '删除会话失败'));
+    }
+  }
+
+  async function saveDialogSettings() {
+    if (!dialogId) return;
+    try {
+      const updated = await dialogApi.update(dialogId, { provider_id: providerId, model, kb_ids: kbId ? [kbId] : [], retrieval_mode: retrievalMode, top_k: topK, history_round_limit: historyLimit, system_prompt: systemPrompt, prologue });
+      setDialogs((current) => current.map((item) => item.id === updated.id ? updated : item));
+    } catch (err) {
+      setError(friendlyErrorMessage(err, '保存 Dialog 设置失败'));
     }
   }
 
@@ -199,19 +254,25 @@ export function ChatPage() {
 
   const currentDialog = dialogs.find((item) => item.id === dialogId);
 
+  useEffect(() => {
+    if (!currentDialog) return;
+    setProviderId(currentDialog.provider_id || providers[0]?.id || 0);
+    setKbId(currentDialog.kb_ids?.[0] || knowledgeBases[0]?.id || 0);
+    setModel(currentDialog.model || '');
+    setRetrievalMode(currentDialog.retrieval_mode || 'hybrid');
+    setTopK(currentDialog.top_k || 8);
+    setHistoryLimit(currentDialog.history_round_limit || 10);
+    setSystemPrompt(currentDialog.system_prompt || '');
+    setPrologue(currentDialog.prologue || '');
+  }, [currentDialog?.id]);
+
   return (
-    <div className={isDialogScoped ? 'page chat-page-scoped' : 'page'}>
+    <div className={isDialogScoped ? 'page chat-page-scoped' : 'page dialogue-page'}>
       {!isDialogScoped ? (
-        <div className="page-head">
-          <div>
-            <h1>RAG 对话</h1>
-            <p>选择一个 Dialog 进入，左侧排列会话，右侧即对话窗口。</p>
-          </div>
-          <Button tone="primary" onClick={() => setDialogOpen(true)}>
+        <EditorialHeader word="Dialogue" script="Studio" kicker="RAG CONVERSATIONS / 03" description="RAG 对话 · 选择一个 Dialog，在专属工作室中组织会话与检索设置。" action={<Button tone="primary" onClick={() => setDialogOpen(true)}>
             <Plus size={17} />
-            新增 Dialog
-          </Button>
-        </div>
+            New Dialog
+          </Button>} />
       ) : null}
 
       {!isDialogScoped ? (
@@ -219,16 +280,32 @@ export function ChatPage() {
           {dialogs.length === 0 ? (
             <EmptyState icon={<MessageSquareText size={24} />} title="还没有 Dialog" description="新增一个 Dialog 后，它下面的会话会按分组展示。" action={<Button tone="primary" onClick={() => setDialogOpen(true)}>新增 Dialog</Button>} />
           ) : (
-            <div className="grid">
+            <div className="workflow-library-list dialog-library-list">
               {dialogs.map((item) => (
-                <article className="card" key={item.id}>
-                  <div className="card-title">
-                    <h3 className="truncate">{item.name}</h3>
-                    <StatusBadge tone={item.status === 1 ? 'good' : 'neutral'}>{item.status === 1 ? '启用' : '停用'}</StatusBadge>
+                <article className="workflow-library-item dialog-library-item" key={item.id}>
+                  <div className="workflow-miniature dialog-miniature" aria-hidden="true">
+                    <span><MessageSquareText size={16} /></span>
+                    <i />
+                    <span><Database size={16} /></span>
+                    <i />
+                    <span className="workflow-miniature-end"><Send size={16} /></span>
                   </div>
-                  {item.description ? <p className="muted">{item.description}</p> : <p className="muted">最近更新 {formatDate(item.updated_at ?? item.created_at)}</p>}
-                  <div className="row-wrap">
-                    <Button tone="primary" onClick={() => navigate(`/app/dialogs/${item.id}/chat`)}>打开 Dialog</Button>
+                  <div className="workflow-library-copy">
+                    <div className="card-title">
+                      <h3 className="truncate">{item.name}</h3>
+                      <StatusBadge tone={item.status === 1 ? 'good' : 'neutral'}>{item.status === 1 ? '启用' : '停用'}</StatusBadge>
+                    </div>
+                    {item.description ? <p className="muted clamp-2">{item.description}</p> : <p className="muted clamp-2">A retrieval dialog ready for grounded conversations.</p>}
+                    <div className="meta-row">
+                      <span>UPDATED {formatDate(item.updated_at ?? item.created_at)}</span>
+                    </div>
+                  </div>
+                  <div className="workflow-library-actions">
+                    <Button tone="primary" onClick={() => navigate(`/app/dialogs/${item.id}/chat`)}>
+                      Open Dialog
+                      <ArrowUpRight size={16} />
+                    </Button>
+                    <IconButton label="删除 Dialog" className="icon-btn-danger" onClick={() => void removeDialog(item.id)}><Trash2 size={16} /></IconButton>
                   </div>
                 </article>
               ))}
@@ -238,7 +315,7 @@ export function ChatPage() {
       ) : null}
 
       {isDialogScoped ? (
-        <div className="chat-shell">
+        <div ref={chatLayoutRef} className="chat-shell" style={paneStyle({ '--dialog-nav-width': `${storedWidth('agentcanvas-dialog-navigator-width', 260)}px`, '--dialog-inspector-width': `${storedWidth('agentcanvas-dialog-inspector-width', 350)}px` })}>
           <aside className="chat-sidebar glass">
             <div className="chat-sidebar-head">
               <button type="button" className="chat-back" onClick={() => navigate('/app/dialogs')}>
@@ -258,15 +335,13 @@ export function ChatPage() {
                 </div>
               ) : null}
               {conversations.map((conv) => (
-                <button
-                  type="button"
-                  key={conv.id}
-                  className={`chat-conversation-item ${conv.id === conversationId ? 'active' : ''}`}
-                  onClick={() => navigate(`/app/dialogs/${dialogId}/chat/${conv.id}`)}
-                >
-                  <span className="truncate">{conv.title || '未命名会话'}</span>
-                  <span className="chat-conversation-time">{formatDate(conv.last_message_at ?? conv.updated_at ?? conv.created_at)}</span>
-                </button>
+                <div key={conv.id} className={`chat-conversation-item ${conv.id === conversationId ? 'active' : ''}`}>
+                  <button type="button" onClick={() => navigate(`/app/dialogs/${dialogId}/chat/${conv.id}`)}>
+                    <span className="truncate">{conv.title || '未命名会话'}</span>
+                    <span className="chat-conversation-time">{formatDate(conv.last_message_at ?? conv.updated_at ?? conv.created_at)}</span>
+                  </button>
+                  <IconButton label="删除会话" className="chat-delete" onClick={() => void removeConversation(conv.id)}><Trash2 size={14} /></IconButton>
+                </div>
               ))}
               {conversations.length === 0 && !isNewConversation ? (
                 <p className="chat-empty-hint">还没有会话，点击「新建会话」开始。</p>
@@ -274,23 +349,12 @@ export function ChatPage() {
             </div>
           </aside>
 
+          <ResizableRail containerRef={chatLayoutRef} variable="--dialog-nav-width" storageKey="agentcanvas-dialog-navigator-width" side="left" min={210} max={360} collapsed={112} defaultWidth={260} label="调整会话导航宽度" />
+
           <section className="chat-main surface">
             {isDetail ? (
               <>
-                <div className="chat-settings-bar">
-                  <Field label="Provider">
-                    <Select value={providerId} onChange={(event) => setProviderId(Number(event.target.value))}>
-                      <option value={0}>选择 Provider</option>
-                      {providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.name}</option>)}
-                    </Select>
-                  </Field>
-                  <Field label="知识库">
-                    <Select value={kbId} onChange={(event) => setKbId(Number(event.target.value))}>
-                      <option value={0}>选择知识库</option>
-                      {knowledgeBases.map((kb) => <option key={kb.id} value={kb.id}>{kb.name}</option>)}
-                    </Select>
-                  </Field>
-                </div>
+                <div className="chat-session-heading"><span>LIVE DIALOGUE</span><strong>{currentDialog?.name}</strong></div>
                 <div className="message-list">
                   {lines.length === 0 ? (
                     <EmptyState icon={<MessageSquareText size={24} />} title="开始一次知识库对话" description="回答会随 SSE 增量显示，引用会在下方保留。" />
@@ -338,6 +402,20 @@ export function ChatPage() {
               />
             )}
           </section>
+          <ResizableRail containerRef={chatLayoutRef} variable="--dialog-inspector-width" storageKey="agentcanvas-dialog-inspector-width" side="right" min={300} max={520} collapsed={120} defaultWidth={350} label="调整对话设置宽度；双击恢复" />
+          <aside className="dialog-inspector glass">
+            <div className="pane-heading"><span>DIALOG INSPECTOR</span><StatusBadge tone="info">LIVE</StatusBadge></div>
+            <div className="form-stack">
+              <Field label="Provider"><Select value={providerId} onChange={(event) => setProviderId(Number(event.target.value))}><option value={0}>选择 Provider</option>{providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.name}</option>)}</Select></Field>
+              <Field label="Model"><TextInput value={model} onChange={(event) => setModel(event.target.value)} placeholder="Provider default" /></Field>
+              <Field label="Knowledge Base"><Select value={kbId} onChange={(event) => setKbId(Number(event.target.value))}><option value={0}>不使用知识库</option>{knowledgeBases.map((kb) => <option key={kb.id} value={kb.id}>{kb.name}</option>)}</Select></Field>
+              <div className="dense-grid"><Field label="Retrieval"><Select value={retrievalMode} onChange={(event) => setRetrievalMode(event.target.value)}><option value="keyword">Keyword</option><option value="vector">Vector</option><option value="hybrid">Hybrid</option></Select></Field><Field label="Top K"><TextInput type="number" min={1} value={topK} onChange={(event) => setTopK(Number(event.target.value))} /></Field></div>
+              <Field label="History rounds"><TextInput type="number" min={1} value={historyLimit} onChange={(event) => setHistoryLimit(Number(event.target.value))} /></Field>
+              <Field label="System Prompt"><TextArea value={systemPrompt} onChange={(event) => setSystemPrompt(event.target.value)} /></Field>
+              <Field label="Prologue"><TextArea value={prologue} onChange={(event) => setPrologue(event.target.value)} /></Field>
+              <Button tone="primary" onClick={() => void saveDialogSettings()}><Save size={16} />Save Settings</Button>
+            </div>
+          </aside>
         </div>
       ) : null}
 

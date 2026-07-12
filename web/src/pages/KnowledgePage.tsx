@@ -1,7 +1,8 @@
 import { FormEvent, useEffect, useRef, useState } from 'react';
-import { ChevronLeft, Database, FileText, Plus, RefreshCw, Save, Search, Trash2, Upload } from 'lucide-react';
+import { ArrowUpRight, ChevronLeft, Database, FileText, Info, Plus, RefreshCw, Save, Search, SlidersHorizontal, Trash2, Upload } from 'lucide-react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { knowledgeApi, settingsApi } from '../api/resources';
+import { knowledgeApi, resourceSummaryApi, settingsApi } from '../api/resources';
+import { EditorialHeader, ResizableRail, paneStyle } from '../components/editorial';
 import { Button, EmptyState, Field, IconButton, Modal, Panel, Select, StatusBadge, Switch, TextArea, TextInput, Toast } from '../components/ui';
 import type { AgentDocument, DocumentChunk, KnowledgeBase, ModelProvider, RetrievalResult } from '../types/api';
 import { formatBytes, formatDate, friendlyErrorMessage } from '../utils/format';
@@ -40,19 +41,48 @@ export function KnowledgePage() {
   const [searchMode, setSearchMode] = useState('keyword');
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
+  const [inspectorTab, setInspectorTab] = useState<'index' | 'search' | 'details'>('index');
+  const detailLayoutRef = useRef<HTMLDivElement | null>(null);
   // 记录已为哪个知识库填充过表单：保证 items 异步加载完成后填充一次，
   // 之后 items 因其它原因刷新时不再覆盖用户正在编辑的输入。
   const filledFormForRef = useRef<number>(0);
 
   async function load() {
-    const [list, providerList] = await Promise.all([knowledgeApi.list(), settingsApi.providers.list()]);
-    setItems(list);
+    const [summaryPage, providerList, selectedKB] = await Promise.all([
+      resourceSummaryApi.list('knowledge-bases', { limit: 50 }),
+      settingsApi.providers.list(),
+      routeId ? knowledgeApi.get(routeId) : Promise.resolve(null),
+    ]);
+    const summaries = summaryPage.items.map((item) => ({
+      id: item.id,
+      owner_id: 0,
+      name: item.name,
+      description: item.description ?? '',
+      retrieval_backend: '',
+      retrieval_mode: 'keyword',
+      embedding_provider_id: null,
+      embedding_model: '',
+      embedding_dimensions: 0,
+      hybrid_weight: 0.5,
+      rerank_enabled: false,
+      rerank_provider_id: null,
+      rerank_model: '',
+      chunk_method: 'recursive',
+      chunk_size: 800,
+      chunk_overlap: 100,
+      status: item.status ?? 1,
+      document_count: item.document_count ?? 0,
+      chunk_count: item.chunk_count ?? 0,
+      created_at: item.updated_at,
+      updated_at: item.updated_at,
+    } satisfies KnowledgeBase));
+    setItems(selectedKB ? summaries.map((item) => (item.id === selectedKB.id ? selectedKB : item)) : summaries);
     setProviders(providerList);
   }
 
   useEffect(() => {
     void load().catch((err) => setError(friendlyErrorMessage(err, '加载知识库失败')));
-  }, []);
+  }, [routeId]);
 
   useEffect(() => {
     if (!routeId) {
@@ -76,20 +106,33 @@ export function KnowledgePage() {
   useEffect(() => {
     if (!routeId || !documents.some((doc) => ACTIVE_DOCUMENT_STATUSES.has(doc.parser_status))) return;
     let cancelled = false;
-    const timer = window.setInterval(() => {
-      knowledgeApi.listDocuments(routeId)
-        .then((docs) => {
-          if (!cancelled) setDocuments(docs);
-        })
-        .catch((err) => {
-          if (!cancelled) setError(friendlyErrorMessage(err, '刷新文档状态失败'));
-        });
-    }, 2500);
+    let timer = 0;
+    let delay = 2500;
+    const poll = async () => {
+      if (cancelled) return;
+      if (document.hidden) {
+        timer = window.setTimeout(poll, 5000);
+        return;
+      }
+      try {
+        const docs = await knowledgeApi.listDocuments(routeId);
+        if (cancelled) return;
+        setDocuments(docs);
+        delay = 2500;
+        if (!docs.some((doc) => ACTIVE_DOCUMENT_STATUSES.has(doc.parser_status))) return;
+      } catch (err) {
+        if (cancelled) return;
+        setError(friendlyErrorMessage(err, '刷新文档状态失败'));
+        delay = Math.min(delay * 2, 10000);
+      }
+      timer = window.setTimeout(poll, delay);
+    };
+    timer = window.setTimeout(poll, delay);
     return () => {
       cancelled = true;
-      window.clearInterval(timer);
+      window.clearTimeout(timer);
     };
-  }, [documents, routeId]);
+  }, [routeId, documents.some((doc) => ACTIVE_DOCUMENT_STATUSES.has(doc.parser_status))]);
 
   useEffect(() => {
     if (!routeId) {
@@ -288,45 +331,49 @@ export function KnowledgePage() {
   const hasActiveDocuments = documents.some((doc) => ACTIVE_DOCUMENT_STATUSES.has(doc.parser_status));
 
   return (
-    <div className="page">
-      <div className="page-head">
-        <div>
-          <h1>知识库</h1>
-          <p>{isDetail ? '管理文档、切分与检索策略。' : '为 Agent 和 RAG 对话准备可检索的内容集合。'}</p>
-        </div>
-        {isDetail ? (
+    <div className="page knowledge-page">
+      <EditorialHeader word="Knowledge" script="Archive" kicker="RETRIEVAL LIBRARY / 02" description={isDetail ? '知识库 · 文档、索引与检索策略。' : '知识库 · 为 Agent 和 RAG 对话组织可检索的内容集合。'} action={isDetail ? (
           <Button onClick={() => navigate('/app/knowledge')}>
             <ChevronLeft size={17} />
-            返回列表
+            All Libraries
           </Button>
         ) : (
           <Button tone="primary" onClick={() => setCreateOpen(true)}>
             <Plus size={17} />
-            新建知识库
+            New Library
           </Button>
-        )}
-      </div>
+        )} />
       {!isDetail && items.length === 0 ? (
         <EmptyState icon={<Database size={24} />} title="还没有知识库" description="先创建一个知识库，再上传 txt 或 md 文档。" action={<Button tone="primary" onClick={() => setCreateOpen(true)}>新建知识库</Button>} />
       ) : null}
 
       {!isDetail && items.length > 0 ? (
-        <div className="grid">
+        <div className="workflow-library-list knowledge-library-list">
           {items.map((kb) => (
-            <article className="card" key={kb.id}>
-              <div className="card-title">
-                <h3 className="truncate">{kb.name}</h3>
-                <StatusBadge tone="good">Active</StatusBadge>
+            <article className="workflow-library-item knowledge-library-item" key={kb.id}>
+              <div className="workflow-miniature knowledge-miniature" aria-hidden="true">
+                <span><Database size={16} /></span>
+                <i />
+                <span><FileText size={16} /></span>
+                <i />
+                <span className="workflow-miniature-end"><Search size={16} /></span>
               </div>
-              <p className="muted clamp-2">{kb.description || '暂无描述'}</p>
-              <div className="meta-row">
-                <span>{kb.document_count} documents</span>
-                <span>{kb.chunk_count} chunks</span>
-                <span>更新 {formatDate(kb.updated_at)}</span>
+              <div className="workflow-library-copy">
+                <div className="card-title">
+                  <h3 className="truncate">{kb.name}</h3>
+                  <StatusBadge tone="good">Active</StatusBadge>
+                </div>
+                <p className="muted clamp-2">{kb.description || '暂无描述'}</p>
+                <div className="meta-row">
+                  <span>{kb.document_count} documents</span>
+                  <span>{kb.chunk_count} chunks</span>
+                  <span>更新 {formatDate(kb.updated_at)}</span>
+                </div>
               </div>
-              <div className="row-wrap">
+              <div className="workflow-library-actions">
                 <Button tone="primary" onClick={() => navigate(`/app/knowledge/${kb.id}`)}>
-                  打开知识库
+                  Open Library
+                  <ArrowUpRight size={16} />
                 </Button>
                 <IconButton label="删除知识库" className="icon-btn-danger" disabled={kbDeletingId === kb.id} onClick={() => void removeKnowledgeBase(kb)}>
                   <Trash2 size={16} />
@@ -338,9 +385,23 @@ export function KnowledgePage() {
       ) : null}
 
       {isDetail ? (
-        <div className="knowledge-layout">
-          <div className="stack">
+        <div
+          ref={detailLayoutRef}
+          className="knowledge-layout knowledge-studio"
+          data-inspector-tab={inspectorTab}
+          style={paneStyle({
+            '--knowledge-inspector-width': '390px',
+          })}
+        >
+          <ResizableRail containerRef={detailLayoutRef} variable="--knowledge-inspector-width" storageKey="agentcanvas-knowledge-inspector-width" side="left" min={310} max={540} collapsed={120} defaultWidth={390} label="调整索引设置宽度；双击恢复" />
+          <aside className="knowledge-inspector-nav glass">
+            <button type="button" aria-label="索引设置" title="索引设置" className={inspectorTab === 'index' ? 'active' : ''} onClick={() => setInspectorTab('index')}><SlidersHorizontal size={18} /></button>
+            <button type="button" aria-label="检索测试" title="检索测试" className={inspectorTab === 'search' ? 'active' : ''} onClick={() => setInspectorTab('search')}><Search size={18} /></button>
+            <button type="button" aria-label="知识库详情" title="知识库详情" className={inspectorTab === 'details' ? 'active' : ''} onClick={() => setInspectorTab('details')}><Info size={18} /></button>
+          </aside>
+          <div className="stack knowledge-detail-stack">
             <Panel
+              className="knowledge-files-panel"
               title={selected?.name ?? '知识库详情'}
               eyebrow={hasActiveDocuments ? '文档处理中' : '文档'}
               action={
@@ -400,6 +461,7 @@ export function KnowledgePage() {
             </Panel>
 
             <Panel
+              className="knowledge-index-panel"
               title="检索设置"
               eyebrow="策略"
               action={
@@ -475,7 +537,7 @@ export function KnowledgePage() {
               </form>
             </Panel>
 
-            <Panel title="检索测试" eyebrow="测试">
+            <Panel className="knowledge-search-panel" title="检索测试" eyebrow="Search Lab">
               <form className="form-stack" onSubmit={(event) => void testSearch(event)}>
                 <div className="dense-grid">
                   <Field label="查询">
@@ -516,12 +578,20 @@ export function KnowledgePage() {
             </Panel>
 
             {chunks.length > 0 ? (
-              <Panel title="文档片段" eyebrow="切分结果">
+              <Panel className="knowledge-chunks-panel" title="文档片段" eyebrow="Chunk Drawer">
                 {chunks.map((chunk) => (
                   <pre className="code-box" key={chunk.id}>{chunk.content}</pre>
                 ))}
               </Panel>
             ) : null}
+            <Panel className="knowledge-details-panel" title={selected?.name ?? 'Knowledge Base'} eyebrow="Library Details">
+              <div className="detail-facts">
+                <span><small>Documents</small><strong>{selected?.document_count ?? 0}</strong></span>
+                <span><small>Chunks</small><strong>{selected?.chunk_count ?? 0}</strong></span>
+                <span><small>Mode</small><strong>{selected?.retrieval_mode ?? 'keyword'}</strong></span>
+              </div>
+              <p className="muted">{selected?.description || '暂无描述。'}</p>
+            </Panel>
           </div>
         </div>
       ) : null}

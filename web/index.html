@@ -1,9 +1,19 @@
 <!doctype html>
 <html lang="zh-CN" data-theme="light">
   <head>
+    <script>
+      (() => {
+        const saved = localStorage.getItem('agentcanvas-theme') || 'system';
+        document.documentElement.dataset.themePreference = saved;
+        document.documentElement.dataset.theme = saved === 'system'
+          ? (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+          : saved;
+      })();
+    </script>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="color-scheme" content="light dark" />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='18' fill='%237482b8'/%3E%3Cpath d='M32 13l4.5 14.5L51 32l-14.5 4.5L32 51l-4.5-14.5L13 32l14.5-4.5L32 13z' fill='none' stroke='white' stroke-width='4'/%3E%3C/svg%3E" />
     <title>AgentCanvas</title>
   </head>
   <body>

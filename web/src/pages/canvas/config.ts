@@ -110,23 +110,14 @@ export function defaultConfig(type: NodeType): CanvasNodeData['config'] {
 }
 
 export function agentModeFromConfig(config: Record<string, unknown>): AgentMode {
-  const ui = config._ui && typeof config._ui === 'object' ? config._ui as Record<string, unknown> : {};
-  const uiMode = String(ui.agent_mode ?? '');
-  if (uiMode === 'action' || uiMode === 'reasoning_action') return uiMode;
   const mode = String(config.mode ?? 'react');
-  if (mode === 'plan_execute' || mode === 'reflect' || mode === 'supervisor') return mode;
-  return 'react';
+  return mode === 'plan_execute' ? 'plan_execute' : 'react';
 }
 
 export function patchAgentMode(mode: AgentMode, current: Record<string, unknown>) {
   const ui = current._ui && typeof current._ui === 'object' ? current._ui as Record<string, unknown> : {};
-  const nextUI = { ...ui, agent_mode: mode };
-  if (mode === 'action') return { mode: 'react', max_iterations: 1, _ui: nextUI };
-  if (mode === 'reasoning_action') return { mode: 'react', max_iterations: 12, _ui: { ...nextUI, reasoning_profile: 'reasoning_action' } };
-  if (mode === 'plan_execute') return { mode, max_iterations: Number(current.max_iterations ?? 8), _ui: nextUI };
-  if (mode === 'reflect') return { mode, reflection_enabled: true, _ui: nextUI };
-  if (mode === 'supervisor') return { mode, _ui: nextUI };
-  return { mode: 'react', _ui: nextUI };
+  const { agent_mode: _agentMode, reasoning_profile: _reasoningProfile, ...nextUI } = ui;
+  return { mode, _ui: nextUI };
 }
 
 export function nodeSummaryItems(data: CanvasNodeData) {

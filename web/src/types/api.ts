@@ -466,6 +466,14 @@ export interface ChatResponse {
   usage?: Record<string, unknown>;
 }
 
+export interface WorkflowMessageResponse {
+  conversation: Conversation;
+  user_message: Message;
+  assistant_message: Message;
+  run: Run;
+  output: Record<string, unknown>;
+}
+
 // —— Workflow / Flow / Run ——
 export interface Workflow {
   id: number;
@@ -477,6 +485,26 @@ export interface Workflow {
   status: number;
   created_at: string;
   updated_at: string;
+}
+
+export type ResourceSummaryKind = 'skills' | 'memories' | 'http-tools' | 'workflows' | 'dialogs' | 'knowledge-bases';
+
+export interface ResourceSummary {
+  id: number;
+  name: string;
+  description?: string;
+  status?: number;
+  resource_type?: string;
+  updated_at: string;
+  current_version_id?: number | null;
+  document_count?: number;
+  chunk_count?: number;
+}
+
+export interface ResourceSummaryPage {
+  items: ResourceSummary[];
+  next_cursor?: string;
+  has_more: boolean;
 }
 
 export interface WorkflowProfile {
@@ -509,7 +537,7 @@ export interface WorkflowProfile {
   memory_policy_json?: unknown;
   context_policy_json?: unknown;
   risk_level?: 'low' | 'medium' | 'high';
-  mode?: 'react' | 'plan_execute' | 'reflect' | 'supervisor';
+  mode?: 'react' | 'plan_execute';
   created_at: string;
   updated_at: string;
 }

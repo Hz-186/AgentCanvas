@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useMemo, useState } from 'react';
-import { BrainCircuit, Boxes, Globe2, KeyRound, PlugZap, Plus, ShieldCheck, Sparkles, Trash2, Zap } from 'lucide-react';
-import { settingsApi } from '../api/resources';
+import { ArrowUpRight, BrainCircuit, Boxes, FlaskConical, Globe2, KeyRound, Network, Pencil, PlugZap, Plus, ShieldCheck, Sparkles, Trash2, Zap } from 'lucide-react';
+import { resourceSummaryApi, settingsApi } from '../api/resources';
+import { EditorialHeader } from '../components/editorial';
 import { Button, EmptyState, Field, IconButton, Modal, Panel, Select, StatusBadge, TextArea, TextInput, Toast } from '../components/ui';
 import type { ApiToken, AuditLog, MCPServer, MCPToolCache, Memory, ModelProvider, ProviderCatalog, ProviderType, Skill, ToolDefinition, ToolPack, ToolPackItem, ToolPolicy } from '../types/api';
 import { formatDate, friendlyErrorMessage, parseJsonObject } from '../utils/format';
@@ -87,17 +88,11 @@ export function MemoryPage() {
   }
 
   return (
-    <div className="page">
-      <div className="page-head">
-        <div>
-          <h1>记忆</h1>
-          <p>管理可被 Agent 读取和写入的长期记忆。</p>
-        </div>
-        <Button tone="primary" onClick={() => setMemoryOpen(true)}>
+    <div className="page memory-page">
+      <EditorialHeader word="Memory" script="Archive" kicker="LONG-TERM CONTEXT / 04" description="长期记忆 · 管理可被 Agent 读取和写入的持久上下文。" action={<Button tone="primary" onClick={() => setMemoryOpen(true)}>
           <Plus size={17} />
-          新增记忆
-        </Button>
-      </div>
+          New Memory
+        </Button>} />
       {error ? <p className="error-text">{error}</p> : null}
 
       {memories.length === 0 ? (
@@ -108,19 +103,28 @@ export function MemoryPage() {
           <Button tone="primary" onClick={() => setMemoryOpen(true)}>新增记忆</Button>
         </div>
       ) : (
-        <div className="grid">
+        <div className="workflow-library-list memory-library-list">
           {memories.map((memory) => (
-            <article className="card" key={memory.id}>
-              <div className="card-title">
-                <h3 className="truncate">{memory.title || memory.memory_type}</h3>
-                <StatusBadge tone="info">{memoryTypeLabel(memory.memory_type)}</StatusBadge>
+            <article className="workflow-library-item memory-library-item" key={memory.id}>
+              <div className="workflow-miniature memory-miniature" aria-hidden="true">
+                <span><BrainCircuit size={16} /></span>
+                <i />
+                <span><Network size={16} /></span>
+                <i />
+                <span className="workflow-miniature-end"><ArrowUpRight size={16} /></span>
               </div>
-              <p className="muted clamp-2">{memory.content}</p>
-              <div className="meta-row">
-                <span>重要度 {memory.importance.toFixed(1)}</span>
-                <span>更新 {formatDate(memory.updated_at)}</span>
+              <div className="workflow-library-copy">
+                <div className="card-title">
+                  <h3 className="truncate">{memory.title || memory.memory_type}</h3>
+                  <StatusBadge tone="info">{memoryTypeLabel(memory.memory_type)}</StatusBadge>
+                </div>
+                <p className="muted clamp-2">{memory.content}</p>
+                <div className="meta-row">
+                  <span>IMPORTANCE {memory.importance.toFixed(1)}</span>
+                  <span>UPDATED {formatDate(memory.updated_at)}</span>
+                </div>
               </div>
-              <div className="row-wrap">
+              <div className="workflow-library-actions">
                 <IconButton label="删除记忆" onClick={() => void removeMemory(memory.id)}><Trash2 size={16} /></IconButton>
               </div>
             </article>
@@ -154,12 +158,14 @@ export function MemoryPage() {
   );
 }
 
-export function SettingsPage() {
+type ManagementView = 'settings' | 'tools' | 'skills';
+
+function ManagementPage({ view }: { view: ManagementView }) {
   const [providers, setProviders] = useState<ModelProvider[]>([]);
   const [catalog, setCatalog] = useState<ProviderCatalog[]>([]);
   const [tokens, setTokens] = useState<ApiToken[]>([]);
   const [audits, setAudits] = useState<AuditLog[]>([]);
-  const [memories, setMemories] = useState<Memory[]>([]);
+  const [memories] = useState<Memory[]>([]);
   const [tools, setTools] = useState<ToolDefinition[]>([]);
   const [skills, setSkills] = useState<Skill[]>([]);
   const [toolPolicies, setToolPolicies] = useState<ToolPolicy[]>([]);
@@ -171,7 +177,11 @@ export function SettingsPage() {
   const [tokenOpen, setTokenOpen] = useState(false);
   const [memoryOpen, setMemoryOpen] = useState(false);
   const [toolOpen, setToolOpen] = useState(false);
+  const [editingToolId, setEditingToolId] = useState(0);
+  const [toolTestInput, setToolTestInput] = useState('{}');
+  const [toolTestResult, setToolTestResult] = useState('');
   const [skillOpen, setSkillOpen] = useState(false);
+  const [editingSkillId, setEditingSkillId] = useState(0);
   const [policyOpen, setPolicyOpen] = useState(false);
   const [packOpen, setPackOpen] = useState(false);
   const [mcpOpen, setMcpOpen] = useState(false);
@@ -213,64 +223,101 @@ export function SettingsPage() {
   const [createdToken, setCreatedToken] = useState('');
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
+  const tabs = view === 'settings'
+    ? ['models', 'access', 'audit'] as const
+    : view === 'tools'
+      ? ['http', 'mcp', 'packs', 'policies'] as const
+      : ['skills'] as const;
+  const [activeSection, setActiveSection] = useState<string>(tabs[0]);
+
+  useEffect(() => {
+    setActiveSection(tabs[0]);
+  }, [view]);
 
   async function load() {
-    const [providerResp, catalogResp, tokenResp, auditResp, memoryResp, toolResp, skillResp, policyResp, packResp, mcpResp] = await Promise.allSettled([
-      settingsApi.providers.list(),
-      settingsApi.providers.catalog(),
-      settingsApi.tokens.list(),
-      settingsApi.audits.list(),
-      settingsApi.memories.list(),
-      settingsApi.tools.list(),
-      settingsApi.skills.list(),
-      settingsApi.tools.listPolicies(),
-      settingsApi.tools.listPacks(),
-      settingsApi.tools.listMCPServers(),
-    ]);
-    if (providerResp.status === 'fulfilled') setProviders(providerResp.value);
-    if (catalogResp.status === 'fulfilled') setCatalog(catalogResp.value);
-    if (tokenResp.status === 'fulfilled') setTokens(tokenResp.value.filter((token) => !token.revoked_at));
-    if (auditResp.status === 'fulfilled') setAudits(auditResp.value);
-    if (memoryResp.status === 'fulfilled') setMemories(memoryResp.value);
-    if (toolResp.status === 'fulfilled') setTools(toolResp.value);
-    if (skillResp.status === 'fulfilled') setSkills(skillResp.value);
-    if (policyResp.status === 'fulfilled') setToolPolicies(policyResp.value);
-    if (packResp.status === 'fulfilled') {
-      setToolPacks(packResp.value);
-      setSelectedPackId((current) => current || packResp.value[0]?.id || 0);
+    setError('');
+    if (view === 'skills') {
+      const page = await resourceSummaryApi.list('skills', { limit: 100 });
+      setSkills(page.items.map((item) => ({
+        id: item.id,
+        owner_id: 0,
+        name: item.name,
+        description: item.description ?? '',
+        skill_type: item.resource_type === 'bundle' ? 'bundle' : 'instruction',
+        source_type: 'inline',
+        entry_file: 'SKILL.md',
+        status: item.status ?? 1,
+        version: 0,
+        checksum: '',
+        created_at: item.updated_at,
+        updated_at: item.updated_at,
+      })));
+      return;
     }
-    if (mcpResp.status === 'fulfilled') {
-      setMcpServers(mcpResp.value);
-      setSelectedMcpId((current) => current || mcpResp.value[0]?.id || 0);
+    if (view === 'settings') {
+      if (activeSection === 'models') {
+        const [providerList, catalogList] = await Promise.all([settingsApi.providers.list(), settingsApi.providers.catalog()]);
+        setProviders(providerList);
+        setCatalog(catalogList);
+      } else if (activeSection === 'access') {
+        setTokens((await settingsApi.tokens.list()).filter((token) => !token.revoked_at));
+      } else if (activeSection === 'audit') {
+        setAudits(await settingsApi.audits.list());
+      }
+      return;
     }
-
-    const failed = [providerResp, catalogResp, tokenResp, auditResp, memoryResp, toolResp, skillResp, policyResp, packResp, mcpResp].find((item) => item.status === 'rejected');
-    setError(failed && failed.status === 'rejected' ? friendlyErrorMessage(failed.reason, '部分设置暂时不可用') : '');
+    if (activeSection === 'http') {
+      const page = await resourceSummaryApi.list('http-tools', { limit: 100 });
+      setTools(page.items.map((item) => ({
+        id: item.id,
+        owner_id: 0,
+        name: item.name,
+        tool_type: item.resource_type ?? 'http',
+        description: item.description ?? '',
+        config_json: {},
+        input_schema_json: {},
+        output_schema_json: {},
+        status: item.status ?? 1,
+        created_at: item.updated_at,
+        updated_at: item.updated_at,
+      })));
+    } else if (activeSection === 'mcp') {
+      const servers = await settingsApi.tools.listMCPServers();
+      setMcpServers(servers);
+      setSelectedMcpId((current) => current || servers[0]?.id || 0);
+    } else if (activeSection === 'packs') {
+      const [toolList, packs] = await Promise.all([settingsApi.tools.list(), settingsApi.tools.listPacks()]);
+      setTools(toolList);
+      setToolPacks(packs);
+      setSelectedPackId((current) => current || packs[0]?.id || 0);
+    } else if (activeSection === 'policies') {
+      setToolPolicies(await settingsApi.tools.listPolicies());
+    }
   }
 
   useEffect(() => {
     void load().catch((err) => setError(friendlyErrorMessage(err, '加载设置失败')));
-  }, []);
+  }, [activeSection, view]);
 
   useEffect(() => {
-    if (!selectedPackId) {
+    if (activeSection !== 'packs' || !selectedPackId) {
       setPackItems([]);
       return;
     }
     void settingsApi.tools.listPackItems(selectedPackId)
       .then(setPackItems)
       .catch((err) => setError(friendlyErrorMessage(err, '加载 Tool Pack 明细失败')));
-  }, [selectedPackId]);
+  }, [activeSection, selectedPackId]);
 
   useEffect(() => {
-    if (!selectedMcpId) {
+    if (activeSection !== 'mcp' || !selectedMcpId) {
       setMcpTools([]);
       return;
     }
     void settingsApi.tools.listMCPTools(selectedMcpId)
       .then(setMcpTools)
       .catch((err) => setError(friendlyErrorMessage(err, '加载 MCP 工具缓存失败')));
-  }, [selectedMcpId]);
+  }, [activeSection, selectedMcpId]);
 
   const selectedCatalog = useMemo(
     () => catalog.find((item) => item.key === catalogKey),
@@ -406,14 +453,45 @@ export function SettingsPage() {
       return;
     }
     try {
-      await settingsApi.tools.create({ name: toolName, tool_type: 'http', description: toolDescription, config_json: config });
+      if (editingToolId) {
+        await settingsApi.tools.update(editingToolId, { name: toolName, description: toolDescription, config_json: config });
+      } else {
+        await settingsApi.tools.create({ name: toolName, tool_type: 'http', description: toolDescription, config_json: config });
+      }
       setToolOpen(false);
+      setEditingToolId(0);
       setToolName('');
       setToolDescription('');
-      setMessage('HTTP Tool 已创建');
+      setMessage(editingToolId ? 'HTTP Tool 已更新' : 'HTTP Tool 已创建');
       await load();
     } catch (err) {
       setError(friendlyErrorMessage(err, '创建 HTTP Tool 失败'));
+    }
+  }
+
+  async function editTool(summary: ToolDefinition) {
+    try {
+      const tool = await settingsApi.tools.get(summary.id);
+      setEditingToolId(tool.id);
+      setToolName(tool.name);
+      setToolDescription(tool.description ?? '');
+      setToolConfig(JSON.stringify(tool.config_json ?? {}, null, 2));
+      setToolTestInput('{}');
+      setToolTestResult('');
+      setToolOpen(true);
+    } catch (err) {
+      setError(friendlyErrorMessage(err, '加载 HTTP Tool 详情失败'));
+    }
+  }
+
+  async function testTool(id: number) {
+    try {
+      const input = parseJsonObject(toolTestInput);
+      const result = await settingsApi.tools.test(id, input);
+      setToolTestResult(JSON.stringify(result, null, 2));
+      setMessage('HTTP Tool 测试完成');
+    } catch (err) {
+      setError(friendlyErrorMessage(err, 'HTTP Tool 测试失败'));
     }
   }
 
@@ -430,23 +508,42 @@ export function SettingsPage() {
   async function createSkill(event: FormEvent) {
     event.preventDefault();
     try {
-      await settingsApi.skills.create({
+      const body = {
         name: skillName,
         description: skillDescription,
         source_type: skillSourceType,
         content_md: skillSourceType === 'inline' ? skillContent : undefined,
         bundle_path: skillSourceType === 'local_path' ? skillBundlePath : undefined,
         tags: skillTags.split(',').map((item) => item.trim()).filter(Boolean),
-      });
+      };
+      if (editingSkillId) await settingsApi.skills.update(editingSkillId, body);
+      else await settingsApi.skills.create(body);
       setSkillOpen(false);
+      setEditingSkillId(0);
       setSkillName('');
       setSkillDescription('');
       setSkillBundlePath('');
       setSkillTags('');
-      setMessage('Skill 已创建');
+      setMessage(editingSkillId ? 'Skill 已更新' : 'Skill 已创建');
       await load();
     } catch (err) {
       setError(friendlyErrorMessage(err, '创建 Skill 失败'));
+    }
+  }
+
+  async function editSkill(summary: Skill) {
+    try {
+      const item = await settingsApi.skills.get(summary.id);
+      setEditingSkillId(item.id);
+      setSkillName(item.name);
+      setSkillDescription(item.description ?? '');
+      setSkillSourceType(item.source_type);
+      setSkillContent(item.content_md ?? '');
+      setSkillBundlePath(item.bundle_path ?? '');
+      setSkillTags(Array.isArray(item.tags_json) ? item.tags_json.join(', ') : '');
+      setSkillOpen(true);
+    } catch (err) {
+      setError(friendlyErrorMessage(err, '加载 Skill 详情失败'));
     }
   }
 
@@ -600,17 +697,26 @@ export function SettingsPage() {
   }
 
   return (
-    <div className="page">
-      <div className="page-head">
-        <div>
-          <h1>设置</h1>
-          <p>管理模型 Provider、API Token、Memory、HTTP Tool 和审计日志。</p>
-        </div>
-      </div>
+    <div className="page management-page" data-management-view={view} data-active-section={activeSection}>
+      <EditorialHeader
+        word={view === 'settings' ? 'System' : view === 'tools' ? 'Tool' : 'Skill'}
+        script={view === 'settings' ? 'Settings' : view === 'tools' ? 'Atelier' : 'Library'}
+        kicker={view === 'settings' ? 'SYSTEM CONTROL / 07' : view === 'tools' ? 'TOOL GOVERNANCE / 05' : 'CAPABILITY LIBRARY / 06'}
+        description={view === 'settings' ? '模型、访问与审计 · 保持系统配置清晰而专注。' : view === 'tools' ? 'HTTP、MCP 与工具治理 · 组合、测试并约束外部能力。' : '可复用能力 · 管理、校验并组织 Agent Skills。'}
+      />
       {error ? <p className="error-text">{error}</p> : null}
 
-      <div className="dense-grid">
-        <Panel title="模型服务" eyebrow="模型" action={<Button tone="primary" onClick={openProviderModal}><Plus size={16} />新增</Button>}>
+      <nav className="management-nav glass" aria-label="管理分类">
+        {tabs.map((tab) => (
+          <button type="button" key={tab} className={activeSection === tab ? 'active' : ''} onClick={() => setActiveSection(tab)}>
+            <span>{tab}</span>
+            <small>{tab === 'models' ? 'Providers & Models' : tab === 'access' ? 'API Tokens' : tab === 'audit' ? 'Activity history' : tab === 'http' ? 'HTTP endpoints' : tab === 'mcp' ? 'Model Context Protocol' : tab === 'packs' ? 'Reusable tool sets' : tab === 'policies' ? 'Risk & approval' : 'Reusable instructions'}</small>
+          </button>
+        ))}
+      </nav>
+
+      <div className="dense-grid management-block management-system-block">
+        <Panel className="management-panel section-models" title="模型服务" eyebrow="Models" action={<Button tone="primary" onClick={openProviderModal}><Plus size={16} />New</Button>}>
           <div className="stack">
             {providers.length === 0 ? (
               <EmptyState title="还没有模型服务" description="新增一个 Provider 后，Agent 就可以调用模型。" />
@@ -630,7 +736,7 @@ export function SettingsPage() {
           </div>
         </Panel>
 
-        <Panel title="访问令牌" eyebrow="权限" action={<Button tone="primary" onClick={() => setTokenOpen(true)}><KeyRound size={16} />创建</Button>}>
+        <Panel className="management-panel section-access" title="访问令牌" eyebrow="Access" action={<Button tone="primary" onClick={() => setTokenOpen(true)}><KeyRound size={16} />Create</Button>}>
           <div className="stack">
             {visibleTokens.length === 0 ? (
               <EmptyState title="还没有访问令牌" description="创建令牌后，可用于外部服务访问当前 API。" />
@@ -649,8 +755,8 @@ export function SettingsPage() {
         </Panel>
       </div>
 
-      <div className="dense-grid">
-        <Panel title="长期记忆" eyebrow="记忆" action={<Button tone="primary" onClick={() => setMemoryOpen(true)}><BrainCircuit size={16} />新增</Button>}>
+      <div className="dense-grid management-block management-resource-block">
+        <Panel className="management-panel section-memory" title="长期记忆" eyebrow="Memory" action={<Button tone="primary" onClick={() => setMemoryOpen(true)}><BrainCircuit size={16} />New</Button>}>
           <div className="stack">
             {memories.length === 0 ? (
               <EmptyState title="还没有记忆" description="新增一条记忆后，Agent 就可以在流程中读取它。" />
@@ -670,7 +776,7 @@ export function SettingsPage() {
           </div>
         </Panel>
 
-        <Panel title="HTTP 工具" eyebrow="工具" action={<Button tone="primary" onClick={() => setToolOpen(true)}><Globe2 size={16} />新增</Button>}>
+        <Panel className="management-panel section-http" title="HTTP 工具" eyebrow="HTTP Tools" action={<Button tone="primary" onClick={() => { setEditingToolId(0); setToolName(''); setToolDescription(''); setToolOpen(true); }}><Globe2 size={16} />New</Button>}>
           <div className="stack">
             {tools.length === 0 ? (
               <EmptyState title="还没有 HTTP 工具" description="新增工具后，Agent 可以在流程中调用外部接口。" />
@@ -680,14 +786,17 @@ export function SettingsPage() {
                   <h3 className="truncate">{tool.name}</h3>
                   <StatusBadge tone={tool.status === 1 ? 'good' : 'neutral'}>{tool.status === 1 ? 'Active' : 'Disabled'}</StatusBadge>
                 </div>
-                <p className="muted truncate">{String(tool.config_json?.method ?? 'GET')} · {String(tool.config_json?.url ?? '')}</p>
-                <IconButton label="删除 HTTP Tool" onClick={() => void removeTool(tool.id)}><Trash2 size={16} /></IconButton>
+                <p className="muted truncate">{tool.description || 'HTTP Tool'}</p>
+                <div className="row-wrap">
+                  <Button onClick={() => void editTool(tool)}><Pencil size={15} />编辑与测试</Button>
+                  <IconButton label="删除 HTTP Tool" onClick={() => void removeTool(tool.id)}><Trash2 size={16} /></IconButton>
+                </div>
               </article>
             ))}
           </div>
         </Panel>
 
-        <Panel title="Skills" eyebrow="能力" action={<Button tone="primary" onClick={() => setSkillOpen(true)}><Sparkles size={16} />新增</Button>}>
+        <Panel className="management-panel section-skills" title="Skills" eyebrow="Capability" action={<Button tone="primary" onClick={() => { setEditingSkillId(0); setSkillName(''); setSkillDescription(''); setSkillOpen(true); }}><Sparkles size={16} />New</Button>}>
           <div className="stack">
             {skills.length === 0 ? (
               <EmptyState title="还没有 Skill" description="新增 Skill 后，Agent 可以在运行时按需加载这些说明。" />
@@ -702,6 +811,7 @@ export function SettingsPage() {
                 <p className="muted truncate">{Array.isArray(item.tags_json) ? item.tags_json.join(', ') : '无标签'} · {item.last_validated_at ? formatDate(item.last_validated_at) : '未校验'}</p>
                 {item.last_validation_error ? <p className="error-text clamp-2">{item.last_validation_error}</p> : null}
                 <div className="row-wrap">
+                  <Button onClick={() => void editSkill(item)}><Pencil size={15} />编辑</Button>
                   <Button onClick={() => void validateSkill(item.id)}><Zap size={16} />校验</Button>
                   <IconButton label="删除 Skill" onClick={() => void removeSkill(item.id)}><Trash2 size={16} /></IconButton>
                 </div>
@@ -711,8 +821,8 @@ export function SettingsPage() {
         </Panel>
       </div>
 
-      <div className="dense-grid">
-        <Panel title="Tool Policy" eyebrow="治理" action={<Button tone="primary" onClick={() => setPolicyOpen(true)}><ShieldCheck size={16} />新增</Button>}>
+      <div className="dense-grid management-block management-tools-block">
+        <Panel className="management-panel section-policies" title="Tool Policy" eyebrow="Governance" action={<Button tone="primary" onClick={() => setPolicyOpen(true)}><ShieldCheck size={16} />New</Button>}>
           <div className="stack">
             {toolPolicies.length === 0 ? (
               <EmptyState title="还没有 Tool Policy" description="创建策略后，可统一治理高风险工具的审批、超时与输出上限。" />
@@ -730,7 +840,7 @@ export function SettingsPage() {
           </div>
         </Panel>
 
-        <Panel title="Tool Pack" eyebrow="工具包" action={<Button tone="primary" onClick={() => setPackOpen(true)}><Boxes size={16} />新增</Button>}>
+        <Panel className="management-panel section-packs" title="Tool Pack" eyebrow="Collections" action={<Button tone="primary" onClick={() => setPackOpen(true)}><Boxes size={16} />New</Button>}>
           <div className="stack">
             {toolPacks.length === 0 ? (
               <EmptyState title="还没有 Tool Pack" description="把常用工具组合成工具包，便于后续绑定到 Workflow Profile。" />
@@ -781,7 +891,7 @@ export function SettingsPage() {
         </Panel>
       </div>
 
-      <Panel title="MCP Server" eyebrow="外部工具" action={<Button tone="primary" onClick={() => setMcpOpen(true)}><PlugZap size={16} />新增</Button>}>
+      <Panel className="management-panel section-mcp" title="MCP Server" eyebrow="External Tools" action={<Button tone="primary" onClick={() => setMcpOpen(true)}><PlugZap size={16} />New</Button>}>
         <div className="stack">
           {mcpServers.length === 0 ? (
             <EmptyState title="还没有 MCP Server" description="接入 MCP 后，Agent 可以通过统一工具协议扩展能力。" />
@@ -798,7 +908,7 @@ export function SettingsPage() {
                   <article className="card" key={server.id}>
                     <div className="card-title">
                       <h3 className="truncate">{server.name}</h3>
-                      <StatusBadge tone={server.last_error ? 'bad' : 'info'}>{server.transport}</StatusBadge>
+                      <StatusBadge tone={server.last_error ? 'bad' : server.discovered_at ? 'good' : 'neutral'}>{server.last_error ? '错误' : server.discovered_at ? '已发现' : '未刷新'}</StatusBadge>
                     </div>
                     <p className="muted truncate">{server.transport === 'sse' ? server.endpoint_url : server.command}</p>
                     <p className="muted">发现时间 {formatDate(server.discovered_at)}</p>
@@ -829,7 +939,7 @@ export function SettingsPage() {
         </div>
       </Panel>
 
-      <Panel title="审计日志" eyebrow="记录">
+      <Panel className="management-panel section-audit" title="审计日志" eyebrow="Audit Trail">
         <div className="table-wrap">
           <table className="table">
             <thead>
@@ -958,8 +1068,8 @@ export function SettingsPage() {
 
       <Modal
         open={toolOpen}
-        title="新增 HTTP Tool"
-        onClose={() => setToolOpen(false)}
+        title={editingToolId ? '编辑 HTTP Tool' : '新增 HTTP Tool'}
+        onClose={() => { setToolOpen(false); setEditingToolId(0); }}
         footer={
           <>
             <Button type="button" onClick={() => setToolOpen(false)}>取消</Button>
@@ -974,13 +1084,20 @@ export function SettingsPage() {
             <TextArea value={toolConfig} onChange={(event) => setToolConfig(event.target.value)} required />
           </Field>
           <pre className="code-box">{toolConfig}</pre>
+          {editingToolId ? (
+            <>
+              <Field label="测试输入 JSON"><TextArea value={toolTestInput} onChange={(event) => setToolTestInput(event.target.value)} /></Field>
+              <Button type="button" onClick={() => void testTool(editingToolId)}><FlaskConical size={15} />运行测试</Button>
+              {toolTestResult ? <pre className="code-box">{toolTestResult}</pre> : null}
+            </>
+          ) : null}
         </form>
       </Modal>
 
       <Modal
         open={skillOpen}
-        title="新增 Skill"
-        onClose={() => setSkillOpen(false)}
+        title={editingSkillId ? '编辑 Skill' : '新增 Skill'}
+        onClose={() => { setSkillOpen(false); setEditingSkillId(0); }}
         footer={
           <>
             <Button type="button" onClick={() => setSkillOpen(false)}>取消</Button>
@@ -1089,3 +1206,7 @@ export function SettingsPage() {
     </div>
   );
 }
+
+export function SettingsPage() { return <ManagementPage view="settings" />; }
+export function ToolsPage() { return <ManagementPage view="tools" />; }
+export function SkillsPage() { return <ManagementPage view="skills" />; }

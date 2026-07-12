@@ -42,7 +42,7 @@ export interface LLMConfig {
 }
 
 export interface AgentLoopConfig {
-  mode?: 'react' | 'plan_execute' | 'reflect' | 'supervisor';
+  mode?: 'react' | 'plan_execute';
   provider_id?: number;
   model?: string;
   system_prompt?: string;
