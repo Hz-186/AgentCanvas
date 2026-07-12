@@ -199,11 +199,12 @@ func (s *Service) RunEvalDataset(ctx context.Context, ownerID, datasetID int64, 
 	evalRun.Status = workflow.EvalRunStatusCompleted
 	evalRun.FinishedAt = &finished
 	evalRun.SummaryJSON, _ = json.Marshal(map[string]any{
-		"total_cases":  evalRun.TotalCases,
-		"passed_cases": evalRun.PassedCases,
-		"failed_cases": evalRun.FailedCases,
-		"success_rate": evalRun.SuccessRate,
-		"metrics":      summarizeEvalMetrics(results),
+		"total_cases":         evalRun.TotalCases,
+		"passed_cases":        evalRun.PassedCases,
+		"failed_cases":        evalRun.FailedCases,
+		"success_rate":        evalRun.SuccessRate,
+		"metrics":             summarizeEvalMetrics(results),
+		"rule_set_comparison": summarizeRuleSetVersions(results),
 	})
 	if err := s.evals.UpdateEvalRun(ctx, evalRun); err != nil {
 		return evalRun, results, err

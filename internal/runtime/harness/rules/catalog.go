@@ -96,8 +96,50 @@ func DefaultEnterpriseRegistry() *Registry {
 	)
 }
 
-func ResolveForAgent(systemPrompt, task, mode, risk string, toolNames, tags []string, budget int, audit *AuditStore, policy AuditPolicy) ([]Rule, Trace) {
+func registryForAgent(custom []Rule) *Registry {
 	registry := DefaultEnterpriseRegistry()
+	for _, rule := range custom {
+		registry.Register(rule)
+	}
+	return registry
+}
+
+func ResolveForAgent(systemPrompt, task, mode, risk string, toolNames, tags []string, budget int, audit *AuditStore, policy AuditPolicy) ([]Rule, Trace) {
+	return ResolveWithRules(systemPrompt, task, mode, risk, toolNames, tags, budget, nil, audit, policy)
+}
+
+func ResolveWithRules(systemPrompt, task, mode, risk string, toolNames, tags []string, budget int, custom []Rule, audit *AuditStore, policy AuditPolicy) ([]Rule, Trace) {
+	return resolveForAgent(systemPrompt, task, mode, risk, toolNames, tags, budget, nil, custom, audit, policy)
+}
+
+// ResolveDynamicForAgent leaves permanent L0/L1 rules to the static context.
+func ResolveDynamicForAgent(systemPrompt, task, mode, risk string, toolNames, tags []string, budget int, audit *AuditStore, policy AuditPolicy) ([]Rule, Trace) {
+	return ResolveDynamicWithRules(systemPrompt, task, mode, risk, toolNames, tags, budget, nil, audit, policy)
+}
+
+func ResolveDynamicWithRules(systemPrompt, task, mode, risk string, toolNames, tags []string, budget int, custom []Rule, audit *AuditStore, policy AuditPolicy) ([]Rule, Trace) {
+	return resolveForAgent(systemPrompt, task, mode, risk, toolNames, tags, budget, map[RuleLevel]bool{
+		LevelL0Safety: true,
+		LevelL1Core:   true,
+	}, custom, audit, policy)
+}
+
+// ResolvePersistentForAgent returns only the permanent L0/L1 rules that are
+// assembled once at run start. Dynamic rules are selected by RulePlanner.
+func ResolvePersistentForAgent(systemPrompt, task, mode, risk string, toolNames, tags []string, audit *AuditStore, policy AuditPolicy) ([]Rule, Trace) {
+	return ResolvePersistentWithRules(systemPrompt, task, mode, risk, toolNames, tags, nil, audit, policy)
+}
+
+func ResolvePersistentWithRules(systemPrompt, task, mode, risk string, toolNames, tags []string, custom []Rule, audit *AuditStore, policy AuditPolicy) ([]Rule, Trace) {
+	return resolveForAgent(systemPrompt, task, mode, risk, toolNames, tags, 0, map[RuleLevel]bool{
+		LevelL2Scenario:  true,
+		LevelL3Tool:      true,
+		LevelL4Ephemeral: true,
+	}, custom, audit, policy)
+}
+
+func resolveForAgent(systemPrompt, task, mode, risk string, toolNames, tags []string, budget int, excluded map[RuleLevel]bool, custom []Rule, audit *AuditStore, policy AuditPolicy) ([]Rule, Trace) {
+	registry := registryForAgent(custom)
 	ctx := LoadContext{
 		Mode:          strings.TrimSpace(mode),
 		RiskLevel:     strings.TrimSpace(risk),
@@ -109,6 +151,7 @@ func ResolveForAgent(systemPrompt, task, mode, risk string, toolNames, tags []st
 		LevelBudgets:  DefaultLevelBudgets(budget),
 		ScoreCutoff:   110,
 		MaxCandidates: 12,
+		ExcludeLevels: excluded,
 	}
 	if audit != nil {
 		return registry.LoadWithAudit(ctx, audit, policy)

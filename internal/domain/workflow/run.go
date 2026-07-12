@@ -6,6 +6,9 @@ import (
 )
 
 const (
+	RunKindWorkflow    = "workflow"
+	RunKindInlineAgent = "inline_agent"
+
 	RunStatusRunning      = "running"
 	RunStatusSucceeded    = "succeeded"
 	RunStatusFailed       = "failed"
@@ -21,6 +24,9 @@ type Run struct {
 	OwnerID        int64           `json:"owner_id" gorm:"column:owner_id"`
 	WorkflowID     int64           `json:"workflow_id" gorm:"column:workflow_id"`
 	FlowVersionID  int64           `json:"flow_version_id" gorm:"column:flow_version_id"`
+	RunKind        string          `json:"run_kind" gorm:"column:run_kind"`
+	DefinitionJSON json.RawMessage `json:"definition_json,omitempty" gorm:"column:definition_json"`
+	DefinitionHash string          `json:"definition_hash,omitempty" gorm:"column:definition_hash"`
 	ConversationID *int64          `json:"conversation_id" gorm:"column:conversation_id"`
 	ParentRunID    *int64          `json:"parent_run_id" gorm:"column:parent_run_id"`
 	CallerNodeID   string          `json:"caller_node_id" gorm:"column:caller_node_id"`

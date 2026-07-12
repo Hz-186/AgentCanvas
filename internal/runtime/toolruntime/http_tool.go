@@ -62,7 +62,9 @@ func (t HTTPRuntimeTool) Metadata() ToolMetadata {
 	return metadata
 }
 
-func (t HTTPRuntimeTool) Execute(ctx context.Context, rc ToolRunContext, input json.RawMessage) (*ToolResult, error) {
+func (t HTTPRuntimeTool) Execute(
+	ctx context.Context, rc ToolRunContext, input json.RawMessage,
+) (*ToolResult, error) {
 	started := time.Now()
 	output, callErr := ExecuteHTTPDefinition(ctx, t.def, input)
 	status := tool.InvocationStatusSucceeded
@@ -88,7 +90,10 @@ func (t HTTPRuntimeTool) Execute(ctx context.Context, rc ToolRunContext, input j
 		})
 	}
 	if callErr != nil {
-		return &ToolResult{ContentText: errMessage, IsError: true}, callErr
+		return &ToolResult{
+			ContentText: errMessage,
+			IsError:     true,
+		}, callErr
 	}
 	return &ToolResult{
 		ContentJSON: outputJSON,

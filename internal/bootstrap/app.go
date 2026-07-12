@@ -173,7 +173,7 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 				return llm.EmbeddingProviderConfig{}, "", fmt.Errorf("embedding model is not configured")
 			}
 			return llm.EmbeddingProviderConfig{
-				ProviderType: provider.ProviderType, BaseURL: provider.BaseURL, APIKey: apiKey
+				ProviderType: provider.ProviderType, BaseURL: provider.BaseURL, APIKey: apiKey,
 			}, model, nil
 		}
 		chatClient = llm.NewCachedChatClient(baseChatClient, baseChatClient, llm.CachedChatClientOptions{
@@ -250,7 +250,6 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 		mcpRepo,
 		toolInvocationRepo,
 		providerRepo,
-		conversationRepo,
 		messageRepo,
 		retrievalService,
 		chatClient,

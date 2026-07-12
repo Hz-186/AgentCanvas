@@ -244,6 +244,15 @@ func TestUpdateAgentProfileValidatesLimits(t *testing.T) {
 	if _, err := service.UpdateWorkflowProfile(context.Background(), 1, 20, UpdateWorkflowProfileRequest{Mode: &badMode}); err == nil {
 		t.Fatal("expected invalid mode validation error")
 	}
+	invalidRules := rawJSON(`{"rules":[{"id":"tenant.core","level":"l1_core","content":"override"}]}`)
+	if _, err := service.UpdateWorkflowProfile(context.Background(), 1, 20, UpdateWorkflowProfileRequest{ContextPolicyJSON: &invalidRules}); err == nil {
+		t.Fatal("expected permanent custom rule validation error")
+	}
+	validRules := rawJSON(`{"rule_set_version":"release-2026-07","rules":[{"id":"tenant.release.check","level":"l2_scenario","content":"require rollback","activation":{"tag_any":["release"]}}]}`)
+	updated, err = service.UpdateWorkflowProfile(context.Background(), 1, 20, UpdateWorkflowProfileRequest{ContextPolicyJSON: &validRules})
+	if err != nil || !strings.Contains(string(updated.ContextPolicyJSON), "tenant.release.check") {
+		t.Fatalf("expected persisted valid custom rules, profile=%+v err=%v", updated, err)
+	}
 }
 
 func TestCreateEvalDatasetPersistsDataset(t *testing.T) {
@@ -349,7 +358,7 @@ func TestScoreEvalOutputDetailedReportsRAGAndTokenSavedMetrics(t *testing.T) {
 	result := scoreEvalOutputDetailed(
 		engine.NodeOutput{
 			"final_answer":  "ok with citations",
-			"context_trace": map[string]any{"saved_tokens": 512},
+			"context_trace": map[string]any{"saved_tokens": 512, "provider_prompt_tokens": 900, "token_estimation_error": 40, "rule_set_version": "release-2026-07", "rule_rounds": []any{map[string]any{}, map[string]any{}}, "rule_trace": map[string]any{"estimated_used": 80}, "rule_budget": map[string]any{"available_rule_tokens": 220}},
 			"results": []map[string]any{
 				{"document_id": "doc-a", "chunk_id": "chunk-a", "score": 0.92, "content": "source a"},
 				{"document_id": "doc-b", "chunk_id": "chunk-b", "score": 0.81, "content": "source b"},
@@ -361,7 +370,7 @@ func TestScoreEvalOutputDetailedReportsRAGAndTokenSavedMetrics(t *testing.T) {
 	if result.Score != 1 {
 		t.Fatalf("expected eval to pass: %+v", result)
 	}
-	if result.Metrics["token_saved"] != 512 || result.Metrics["retrieval_hit_rate"] != 1.0 || result.Metrics["mrr"] != 0.5 || result.Metrics["citation_rate"] != 1.0 {
+	if result.Metrics["token_saved"] != 512 || result.Metrics["rules_token_cost"] != float64(80) || result.Metrics["rules_dynamic_budget"] != float64(220) || result.Metrics["provider_prompt_tokens"] != float64(900) || result.Metrics["rule_round_count"] != 2 || result.Metrics["rule_set_version"] != "release-2026-07" || result.Metrics["retrieval_hit_rate"] != 1.0 || result.Metrics["mrr"] != 0.5 || result.Metrics["citation_rate"] != 1.0 {
 		t.Fatalf("expected RAG and token saved metrics, got %+v", result.Metrics)
 	}
 }
@@ -677,7 +686,7 @@ func TestGetEvalTrendAggregatesRunHistory(t *testing.T) {
 
 func TestSummarizeEvalMetricsCountsMissingMetricsAsZero(t *testing.T) {
 	results := []workflow.EvalResult{
-		{Status: "passed", Score: 1, LatencyMS: 20, MetricsJSON: rawJSON(`{"tool_call_accuracy":1,"schema_compliance":1,"reference_hit_rate":1,"retrieval_hit_rate":1,"mrr":0.5,"ndcg":0.75,"citation_rate":1,"token_saved":100,"human_approval_waiting":true}`)},
+		{Status: "passed", Score: 1, LatencyMS: 20, MetricsJSON: rawJSON(`{"tool_call_accuracy":1,"schema_compliance":1,"reference_hit_rate":1,"retrieval_hit_rate":1,"mrr":0.5,"ndcg":0.75,"citation_rate":1,"token_saved":100,"rules_token_cost":80,"provider_prompt_tokens":500,"human_approval_waiting":true}`)},
 		{Status: "failed", Score: 0, LatencyMS: 40, ErrorMessage: "runtime error", MetricsJSON: rawJSON(`{"score":0}`)},
 	}
 	summary := summarizeEvalMetrics(results)
@@ -689,6 +698,14 @@ func TestSummarizeEvalMetricsCountsMissingMetricsAsZero(t *testing.T) {
 	}
 	if summary["avg_retrieval_hit_rate"] != 0.5 || summary["avg_mrr"] != 0.25 || summary["avg_ndcg"] != 0.375 || summary["avg_citation_rate"] != 0.5 || summary["avg_token_saved"] != float64(50) {
 		t.Fatalf("expected RAG/token metrics in summary, got %+v", summary)
+	}
+	if summary["avg_rules_token_cost"] != float64(40) || summary["avg_provider_prompt_tokens"] != float64(250) {
+		t.Fatalf("expected rules cost metrics in summary: %+v", summary)
+	}
+	versions := summarizeRuleSetVersions(results)
+	builtin, _ := versions["builtin"].(map[string]any)
+	if builtin["cases"] != 2 || builtin["avg_rules_token_cost"] != float64(40) {
+		t.Fatalf("expected version-level rule metrics: %+v", versions)
 	}
 }
 

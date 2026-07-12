@@ -2,6 +2,8 @@ package workflow_usecase
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +18,7 @@ import (
 	runtimeagent "agentcanvas/internal/runtime/agent"
 	"agentcanvas/internal/runtime/engine"
 	runtimenode "agentcanvas/internal/runtime/node"
+	"agentcanvas/internal/runtime/toolruntime"
 )
 
 func (s *Service) ListApprovalRequests(ctx context.Context, ownerID int64, status string) ([]workflow.ApprovalRequest, error) {
@@ -187,13 +190,27 @@ func (s *Service) resumeRunFromCheckpoint(ctx context.Context, run *workflow.Run
 	if checkpoint.PendingToolCall != nil && decision == nil {
 		return nil, fmt.Errorf("%w: approval decision is missing", agenterrors.ErrInvalidInput)
 	}
-	version, err := s.GetWorkflowVersion(ctx, run.OwnerID, run.FlowVersionID)
-	if err != nil {
-		return nil, err
-	}
-	dsl, err := flow.ParseDSL(version.DSLJSON)
-	if err != nil {
-		return nil, fmt.Errorf("%w: invalid dsl_json", agenterrors.ErrInvalidInput)
+	var dsl *flow.DSL
+	if run.RunKind == workflow.RunKindInlineAgent {
+		var definition toolruntime.InlineAgentDefinition
+		if err := json.Unmarshal(run.DefinitionJSON, &definition); err != nil {
+			return nil, fmt.Errorf("%w: invalid inline agent definition", agenterrors.ErrInvalidInput)
+		}
+		hash := sha256.Sum256(run.DefinitionJSON)
+		if run.DefinitionHash == "" || run.DefinitionHash != hex.EncodeToString(hash[:]) {
+			return nil, fmt.Errorf("%w: inline agent definition hash mismatch", agenterrors.ErrForbidden)
+		}
+		dsl = inlineAgentDSL(definition, false)
+	} else {
+		version, err := s.GetWorkflowVersion(ctx, run.OwnerID, run.FlowVersionID)
+		if err != nil {
+			return nil, err
+		}
+		var parseErr error
+		dsl, parseErr = flow.ParseDSL(version.DSLJSON)
+		if parseErr != nil {
+			return nil, fmt.Errorf("%w: invalid dsl_json", agenterrors.ErrInvalidInput)
+		}
 	}
 	nodeSpec, err := findCheckpointAgentNode(dsl, stored.NodeID)
 	if err != nil {
@@ -258,7 +275,7 @@ func (s *Service) resumeRunFromCheckpoint(ctx context.Context, run *workflow.Run
 
 func (s *Service) resumeAgentLoopNode() runtimenode.AgentLoopNode {
 	workspaceRoot, _ := os.Getwd()
-	return runtimenode.AgentLoopNode{AgentNode: runtimenode.AgentNode{LLM: s.llm.(llm.ToolCallingClient), Providers: s, Tools: s.toolRegistry, ToolPacks: s.toolPacks, Skills: s.skills, Audits: s.audits, Retriever: s.retriever, MemoryRetriever: s.memoryRetriever, Memories: s.memories, MemoryLogs: s.memoryLogs, WorkingMemory: s.workingMemory, OnExtractTrigger: s.triggerMemoryExtraction, WorkflowCaller: s, Profiles: s, MessageHistory: s.messages, ArchivalVecStore: s.archivalVecStore, Embedder: s.embedder, WorkspaceRoot: workspaceRoot}}
+	return runtimenode.AgentLoopNode{AgentNode: runtimenode.AgentNode{LLM: s.llm.(llm.ToolCallingClient), Providers: s, Tools: s.toolRegistry, ToolPacks: s.toolPacks, Skills: s.skills, Audits: s.audits, MCPServers: s.mcpServers, Retriever: s.retriever, MemoryRetriever: s.memoryRetriever, Memories: s.memories, MemoryLogs: s.memoryLogs, WorkingMemory: s.workingMemory, OnExtractTrigger: s.triggerMemoryExtraction, WorkflowCaller: s, InlineAgentCaller: s, Profiles: s, MessageHistory: s.messages, ArchivalVecStore: s.archivalVecStore, Embedder: s.embedder, WorkspaceRoot: workspaceRoot}}
 }
 
 func decodeRuntimeCheckpoint(stored *workflow.WorkflowCheckpoint, decision *workflow.ApprovalRequest) (*runtimeagent.Checkpoint, error) {

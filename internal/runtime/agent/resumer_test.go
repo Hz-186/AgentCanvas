@@ -8,6 +8,7 @@ import (
 	"agentcanvas/internal/domain/conversation"
 	domainagent "agentcanvas/internal/domain/workflow"
 	"agentcanvas/internal/infrastructure/llm"
+	"agentcanvas/internal/runtime/harness/rules"
 	"agentcanvas/internal/runtime/toolruntime"
 )
 
@@ -58,6 +59,9 @@ func TestBuildResumeRequestApproved(t *testing.T) {
 	if runReq.ResumeIteration != 1 {
 		t.Fatalf("expected iteration 1, got %d", runReq.ResumeIteration)
 	}
+	if len(runReq.ResumeApprovedToolCallIDs) != 1 || runReq.ResumeApprovedToolCallIDs[0] != "call_1" {
+		t.Fatalf("approved resume must identify the approved call: %+v", runReq.ResumeApprovedToolCallIDs)
+	}
 }
 
 func TestBuildResumeRequestRejected(t *testing.T) {
@@ -92,6 +96,22 @@ func TestBuildResumeRequestRejected(t *testing.T) {
 	}
 	if lastMsg.Content != "Human rejected: not allowed" {
 		t.Fatalf("expected rejection message, got %s", lastMsg.Content)
+	}
+}
+
+func TestBuildResumeRequestUsesCheckpointRuleSnapshot(t *testing.T) {
+	checkpoint := &Checkpoint{
+		Messages:       []llm.ChatMessage{{Role: conversation.RoleSystem, Content: "system"}},
+		Metadata:       map[string]any{},
+		RuleSetVersion: "release-2026-07",
+		CustomRules:    []rules.Rule{{ID: "tenant.release.check", Level: rules.LevelL2Scenario, Content: "check rollback"}},
+	}
+	resumed, err := BuildResumeRequest(ResumeRequest{RunRequest: RunRequest{RuleSetVersion: "current", CustomRules: []rules.Rule{{ID: "new", Content: "new"}}}, Checkpoint: checkpoint})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resumed.RuleSetVersion != "release-2026-07" || len(resumed.CustomRules) != 1 || resumed.CustomRules[0].ID != "tenant.release.check" {
+		t.Fatalf("expected checkpoint rule snapshot, got %+v", resumed)
 	}
 }
 

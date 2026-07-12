@@ -26,7 +26,9 @@ func NewRecursiveChunker(tokenizers ...Tokenizer) *RecursiveChunker {
 
 func (c *RecursiveChunker) Method() string { return MethodRecursive }
 
-func (c *RecursiveChunker) ChunkDocument(ctx context.Context, doc parser.ParsedDocument, policy Policy) ([]Chunk, error) {
+func (c *RecursiveChunker) ChunkDocument(
+	ctx context.Context, doc parser.ParsedDocument, policy Policy,
+) ([]Chunk, error) {
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
@@ -69,7 +71,22 @@ func (c *RecursiveChunker) ChunkDocument(ctx context.Context, doc parser.ParsedD
 			flush()
 			content := strings.TrimSpace(segment.text)
 			if content != "" {
-				chunks = append(chunks, Chunk{Index: len(chunks), Content: content, TokenCount: c.count(content), CharCount: utf8.RuneCountInString(content), SectionTitle: segment.sectionTitle, PageNo: segment.pageNo, Metadata: chunkMetadata(c.Method(), c.tokenizer.Name(), []string{segment.blockID}, segment.metadata, segment.pageNo)})
+				chunks = append(chunks, Chunk{
+					Index:        len(chunks),
+					Content:      content,
+					TokenCount:   c.count(content),
+					CharCount:    utf8.RuneCountInString(content),
+					SectionTitle: segment.sectionTitle,
+					PageNo:       segment.pageNo,
+					Metadata: chunkMetadata(
+						c.Method(),
+						c.tokenizer.Name(),
+						[]string{segment.blockID},
+						segment.metadata,
+						segment.pageNo,
+					),
+				},
+				)
 			}
 			continue
 		}
@@ -135,7 +152,9 @@ func (c *RecursiveChunker) documentSegments(doc parser.ParsedDocument) []chunkSe
 		if text == "" {
 			return nil
 		}
-		return []chunkSegment{{text: text, sectionTitle: inferSectionTitle(text)}}
+		return []chunkSegment{
+			{text: text, sectionTitle: inferSectionTitle(text)},
+		}
 	}
 	segments := make([]chunkSegment, 0, len(doc.Blocks))
 	sectionTitle := ""
@@ -151,7 +170,14 @@ func (c *RecursiveChunker) documentSegments(doc parser.ParsedDocument) []chunkSe
 			sectionTitle = strings.TrimSpace(strings.TrimLeft(text, "#"))
 			continue
 		}
-		segments = append(segments, chunkSegment{text: text, sectionTitle: sectionTitle, pageNo: block.PageNo, blockID: block.ID, metadata: block.Metadata, singleChunk: shouldKeepSingleChunk(block)})
+		segments = append(segments, chunkSegment{
+			text:         text,
+			sectionTitle: sectionTitle,
+			pageNo:       block.PageNo,
+			blockID:      block.ID,
+			metadata:     block.Metadata,
+			singleChunk:  shouldKeepSingleChunk(block),
+		})
 	}
 	return segments
 }
@@ -279,7 +305,11 @@ func (c *RecursiveChunker) overlapBuffer(content string, overlap int, sectionTit
 		start--
 	}
 	if start < len(runes) {
-		return segmentBuffer{content: strings.TrimSpace(string(runes[start:])), sectionTitle: sectionTitle, pageNo: pageNo}
+		return segmentBuffer{
+			content:      strings.TrimSpace(string(runes[start:])),
+			sectionTitle: sectionTitle,
+			pageNo:       pageNo,
+		}
 	}
 	return segmentBuffer{sectionTitle: sectionTitle, pageNo: pageNo}
 }
