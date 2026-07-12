@@ -23,13 +23,9 @@ interface AgentLoopFormProps {
   addReferencedNode?: (kind: 'http_tool' | 'mcp_tool' | 'knowledge_retrieval' | 'agent_loop', id: number) => void;
 }
 
-const modeOptions: Array<{ value: AgentMode; label: string; group: 'recommended' | 'advanced'; summary: string }> = [
-  { value: 'react', label: 'ReAct', group: 'recommended', summary: '多轮 Thought/Action/Observation 工具调用' },
-  { value: 'plan_execute', label: 'Plan & Execute', group: 'recommended', summary: '先规划，再按步骤执行并记录 plan' },
-  { value: 'reflect', label: 'Reflection', group: 'recommended', summary: '输出前或失败后启用自我修正' },
-  { value: 'action', label: 'Action', group: 'advanced', summary: '前端映射为 react + max_iterations=1' },
-  { value: 'reasoning_action', label: 'Reasoning Action', group: 'advanced', summary: '前端映射为 react，并保存 reasoning_profile' },
-  { value: 'supervisor', label: 'Supervisor', group: 'advanced', summary: '面向子 Agent 和 workflow team 调度' },
+const modeOptions: Array<{ value: AgentMode; label: string; summary: string }> = [
+  { value: 'react', label: 'ReAct', summary: '边思考边行动，按需调用工具、知识库和子 Agent' },
+  { value: 'plan_execute', label: 'Plan & Execute', summary: '先生成任务计划，再按步骤执行并根据结果调整' },
 ];
 
 function moduleTone(enabled: boolean) {
@@ -173,8 +169,6 @@ export function AgentLoopForm({ config, providers, tools, skills, knowledgeBases
   function applyMode(nextMode: AgentMode) {
     onChange(patchAgentMode(nextMode, config));
     if (nextMode === 'plan_execute') setExpandedModules((current) => new Set([...current, 'planning']));
-    if (nextMode === 'reflect') setExpandedModules((current) => new Set([...current, 'reflection']));
-    if (nextMode === 'supervisor') setExpandedModules((current) => new Set([...current, 'sub_agents']));
   }
 
   function updateSchema(raw: string) {
@@ -196,7 +190,7 @@ export function AgentLoopForm({ config, providers, tools, skills, knowledgeBases
             <button key={option.value} className={`agent-mode-option ${mode === option.value ? 'active' : ''}`} type="button" onClick={() => applyMode(option.value)}>
               <strong>{option.label}</strong>
               <span>{option.summary}</span>
-              <small>{option.group === 'recommended' ? '推荐' : 'Advanced'}</small>
+              <small>{option.value === 'react' ? '灵活执行' : '复杂任务'}</small>
             </button>
           ))}
         </div>
@@ -355,7 +349,7 @@ export function AgentLoopForm({ config, providers, tools, skills, knowledgeBases
       <div className="agent-module-summary">
         <StatusBadge tone="info">{totalCallable} callable</StatusBadge>
         <StatusBadge tone={skillIds.length > 0 ? 'good' : 'neutral'}>{skillIds.length} skills</StatusBadge>
-        <StatusBadge tone={modeMeta.group === 'recommended' ? 'good' : 'warn'}>{modeMeta.group}</StatusBadge>
+        <StatusBadge tone="good">{modeMeta.label}</StatusBadge>
       </div>
     </div>
   );

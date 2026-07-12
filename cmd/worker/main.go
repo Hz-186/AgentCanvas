@@ -13,12 +13,15 @@ import (
 
 	ingestionusecase "agentcanvas/internal/application/ingestion_usecase"
 	memoryusecase "agentcanvas/internal/application/memory_usecase"
+	"agentcanvas/internal/domain/resource"
 	"agentcanvas/internal/infrastructure"
+	cacheinfra "agentcanvas/internal/infrastructure/cache"
 	chunkerinfra "agentcanvas/internal/infrastructure/chunker"
 	"agentcanvas/internal/infrastructure/llm"
 	mysqlinfra "agentcanvas/internal/infrastructure/mysql"
 	parserinfra "agentcanvas/internal/infrastructure/parser"
 	"agentcanvas/internal/infrastructure/queue"
+	redisinfra "agentcanvas/internal/infrastructure/redis"
 	"agentcanvas/internal/infrastructure/vectorstore"
 	"agentcanvas/internal/pkg/config"
 	"agentcanvas/internal/pkg/logger"
@@ -50,12 +53,30 @@ func main() {
 	db := infraDeps.DB
 	indexer := infraDeps.RetrievalStore
 
-	knowledgeRepo := mysqlinfra.NewKnowledgeBaseRepository(db)
+	var resourceInvalidator resource.Invalidator
+	if cfg.ResourceCache.Enabled {
+		resourceCache := redisinfra.NewResourceSummaryCache(
+			infraDeps.Redis,
+			mysqlinfra.NewResourceSummaryQuery(db),
+			cfg.ResourceCache.KeyPrefix+":"+cfg.App.Env,
+			time.Duration(cfg.ResourceCache.TTLSeconds)*time.Second,
+			appLogger,
+		)
+		retryingInvalidator := cacheinfra.NewRetryingInvalidator(
+			resourceCache,
+			mysqlinfra.NewResourceInvalidationStore(db),
+			appLogger,
+		)
+		retryingInvalidator.Start(ctx)
+		resourceInvalidator = retryingInvalidator
+	}
+	memoryCache := redisinfra.NewMemoryCache(infraDeps.Redis)
+	knowledgeRepo := cacheinfra.NewKnowledgeRepository(mysqlinfra.NewKnowledgeBaseRepository(db), resourceInvalidator)
 	documentRepo := mysqlinfra.NewDocumentRepository(db)
 	chunkRepo := mysqlinfra.NewChunkRepository(db)
 	ingestionJobRepo := mysqlinfra.NewIngestionJobRepository(db)
 	providerRepo := mysqlinfra.NewProviderRepository(db)
-	memoryRepo := mysqlinfra.NewMemoryRepository(db)
+	memoryRepo := cacheinfra.NewMemoryRepository(mysqlinfra.NewMemoryRepository(db), resourceInvalidator, memoryCache)
 	memoryLogRepo := mysqlinfra.NewMemoryWriteLogRepository(db)
 	messageRepo := mysqlinfra.NewMessageRepository(db)
 	fileStorage := infraDeps.FileStorage

@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent, type PointerEvent as ReactPointerEvent } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { ActivitySquare, Github, LockKeyhole, Mail, Moon, Network, Route, Sparkles, Sun, Workflow } from 'lucide-react';
+import { ActivitySquare, ArrowRight, Github, LockKeyhole, Mail, Network, Route, Sparkles, Workflow } from 'lucide-react';
 import { authApi } from '../api/auth';
 import { tokenStorage } from '../api/token';
-import { Button, Field, IconButton, TextInput } from '../components/ui';
+import { Button, Field, TextInput } from '../components/ui';
+import { ThemeControl } from '../components/ThemeControl';
 import { useAuthStore } from '../stores/authStore';
 import { friendlyErrorMessage } from '../utils/format';
 
@@ -82,23 +83,24 @@ function AuthBrandPanel() {
   return (
     <aside ref={panelRef} className="auth-brand" onPointerEnter={updatePanel} onPointerMove={updatePanel} onPointerLeave={resetPanel}>
       <div className="auth-brand-content">
-        <div className="brand-mark">
-          <Sparkles size={26} />
+        <div className="auth-brand-kicker">
+          <span className="brand-mark"><Sparkles size={20} /></span>
+          <span>INTELLIGENT WORKFLOW STUDIO</span>
         </div>
-        <h1>Agent Canvas</h1>
-        <p>构建、路由、观测 Agent Flow。</p>
+        <h1><span>Agent</span> <em>Canvas</em></h1>
+        <p>Compose intelligence.<br />Make every decision visible.</p>
         <div className="auth-feature-grid">
           <span>
             <Workflow size={18} />
-            流图编排
+            FLOW DESIGN
           </span>
           <span>
             <Route size={18} />
-            模型路由
+            MODEL ROUTING
           </span>
           <span>
             <ActivitySquare size={18} />
-            运行观测
+            LIVE TRACING
           </span>
         </div>
       </div>
@@ -107,54 +109,52 @@ function AuthBrandPanel() {
 }
 
 function AuthFrame({
+  mode,
   title,
   subtitle,
   children,
 }: {
+  mode: 'login' | 'register';
   title: string;
   subtitle: string;
   children: React.ReactNode;
 }) {
-  const [theme, setTheme] = useState(() => localStorage.getItem('agentcanvas-theme') ?? document.documentElement.dataset.theme ?? 'light');
-
-  useEffect(() => {
-    document.documentElement.dataset.theme = theme;
-    localStorage.setItem('agentcanvas-theme', theme);
-  }, [theme]);
-
   return (
     <main className="auth-page">
       <div className="auth-theme-toggle">
-        <IconButton
-          label={theme === 'dark' ? '切换浅色主题' : '切换深色主题'}
-          onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
-        >
-          {theme === 'dark' ? <Sun size={17} /> : <Moon size={17} />}
-        </IconButton>
+        <ThemeControl />
       </div>
       <section className="auth-shell">
         <AuthBrandPanel />
-        <section className="auth-card">
-          <div>
-            <h2>{title}</h2>
-            <p className="muted">{subtitle}</p>
-          </div>
-          {children}
-        </section>
+        <div className="auth-mirror-stage">
+          <div className="auth-mirror-edge" aria-hidden="true" />
+          <section className="auth-card">
+            <nav className="auth-mode-switch" aria-label="Authentication mode">
+              <Link className={mode === 'login' ? 'active' : ''} to="/login">Sign in</Link>
+              <Link className={mode === 'register' ? 'active' : ''} to="/register">Register</Link>
+            </nav>
+            <div className="auth-card-heading">
+              <span className="auth-step">{mode === 'login' ? '01 / ACCESS' : '01 / ACCOUNT'}</span>
+              <h2>{title}</h2>
+              <p className="muted">{subtitle}</p>
+            </div>
+            {children}
+          </section>
+        </div>
       </section>
     </main>
   );
 }
 
 function validateEmail(email: string): string {
-  if (!email.trim()) return '请输入邮箱。';
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return '邮箱格式不正确，请输入类似 name@example.com 的地址。';
+  if (!email.trim()) return 'Enter your email address.';
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return 'Use a valid address such as name@example.com.';
   return '';
 }
 
 function validatePassword(password: string): string {
-  if (!password) return '请输入密码。';
-  if (password.length < 8) return '密码至少需要 8 位。';
+  if (!password) return 'Enter your password.';
+  if (password.length < 8) return 'Password must contain at least 8 characters.';
   return '';
 }
 
@@ -175,7 +175,7 @@ export function LoginPage() {
     const oauthError = searchParams.get('error');
 
     if (oauthError) {
-      setLocalError(`GitHub 登录失败: ${oauthError}`);
+      setLocalError(`GitHub sign-in failed: ${oauthError}`);
       setSearchParams({}, { replace: true });
     } else if (oauthCode) {
       setSearchParams({}, { replace: true });
@@ -185,7 +185,7 @@ export function LoginPage() {
         useAuthStore.setState({ user: resp.user, error: '' });
 		navigate('/app/workflows', { replace: true });
       }).catch((err) => {
-        setLocalError(friendlyErrorMessage(err, 'GitHub 登录失败，请重新尝试。'));
+        setLocalError(friendlyErrorMessage(err, 'GitHub sign-in failed. Please try again.'));
       });
     } else if (accessToken && refreshToken) {
       tokenStorage.setTokens({
@@ -213,7 +213,7 @@ export function LoginPage() {
       await login(email, password);
 		navigate('/app/workflows');
     } catch {
-      // 错误文案由 authStore 统一转为中文。
+      // Error copy is normalized by authStore.
     }
   }
 
@@ -222,37 +222,37 @@ export function LoginPage() {
       const { redirect_url } = await authApi.githubRedirect();
       window.location.href = redirect_url;
     } catch {
-      setLocalError('暂时无法打开 GitHub 登录，请确认后端 OAuth 配置和后端服务状态。');
+      setLocalError('GitHub sign-in is unavailable. Check the OAuth configuration and backend status.');
     }
   }
 
   return (
-    <AuthFrame title="欢迎回来" subtitle="继续进入 Agent Canvas 工作台">
+    <AuthFrame mode="login" title="Welcome back." subtitle="Enter your workspace and continue building.">
       <form className="form-stack" noValidate onSubmit={(event) => void onSubmit(event)}>
-        <Field label="邮箱">
+        <Field label="EMAIL">
           <div className="auth-input-wrap">
             <Mail size={17} />
-            <TextInput autoComplete="email" type="email" inputMode="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="请输入邮箱地址" />
+            <TextInput autoComplete="email" type="email" inputMode="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="name@example.com" />
           </div>
         </Field>
-        <Field label="密码">
+        <Field label="PASSWORD">
           <div className="auth-input-wrap">
             <LockKeyhole size={17} />
-            <TextInput autoComplete="current-password" type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="请输入密码" />
+            <TextInput autoComplete="current-password" type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Enter password" />
           </div>
         </Field>
         {localError || error ? <p className="auth-error">{localError || error}</p> : null}
         <Button tone="primary" disabled={loading}>
-          <LockKeyhole size={17} />
-          {loading ? '登录中...' : '登录'}
+          {loading ? 'Signing in...' : 'Continue'}
+          <ArrowRight size={17} />
         </Button>
         <Button type="button" onClick={() => void githubLogin()}>
           <Github size={17} />
-          GitHub 登录
+          Continue with GitHub
         </Button>
       </form>
       <p className="muted">
-        还没有账号？ <Link to="/register">创建账号</Link>
+        New to Agent Canvas? <Link to="/register">Create an account</Link>
       </p>
     </AuthFrame>
   );
@@ -270,7 +270,7 @@ export function RegisterPage() {
 
   async function onSubmit(event: FormEvent) {
     event.preventDefault();
-    const message = (!username.trim() ? '请输入用户名。' : '') || validateEmail(email) || validatePassword(password);
+    const message = (!username.trim() ? 'Enter your name.' : '') || validateEmail(email) || validatePassword(password);
     if (message) {
       setLocalError(message);
       return;
@@ -280,39 +280,39 @@ export function RegisterPage() {
       await register({ username, email, password });
 		navigate('/app/workflows');
     } catch {
-      // 错误文案由 authStore 统一转为中文。
+      // Error copy is normalized by authStore.
     }
   }
 
   return (
-    <AuthFrame title="创建工作台" subtitle="初始化你的 Agent Canvas 工作台">
+    <AuthFrame mode="register" title="Begin here." subtitle="Create an identity for your new workspace.">
       <form className="form-stack" noValidate onSubmit={(event) => void onSubmit(event)}>
-        <Field label="用户名">
+        <Field label="NAME">
           <div className="auth-input-wrap">
             <Network size={17} />
-            <TextInput autoComplete="username" value={username} onChange={(event) => setUsername(event.target.value)} placeholder="你的名字" />
+            <TextInput autoComplete="username" value={username} onChange={(event) => setUsername(event.target.value)} placeholder="Your name" />
           </div>
         </Field>
-        <Field label="邮箱">
+        <Field label="EMAIL">
           <div className="auth-input-wrap">
             <Mail size={17} />
-            <TextInput autoComplete="email" type="email" inputMode="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="请输入邮箱地址" />
+            <TextInput autoComplete="email" type="email" inputMode="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="name@example.com" />
           </div>
         </Field>
-        <Field label="密码">
+        <Field label="PASSWORD">
           <div className="auth-input-wrap">
             <LockKeyhole size={17} />
-            <TextInput autoComplete="new-password" type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="至少 8 位" />
+            <TextInput autoComplete="new-password" type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="8 characters minimum" />
           </div>
         </Field>
         {localError || error ? <p className="auth-error">{localError || error}</p> : null}
         <Button tone="primary" disabled={loading}>
-          <LockKeyhole size={17} />
-          {loading ? '创建中...' : '创建账号'}
+          {loading ? 'Creating...' : 'Create workspace'}
+          <ArrowRight size={17} />
         </Button>
       </form>
       <p className="muted">
-        已有账号？ <Link to="/login">回到登录</Link>
+        Already have an account? <Link to="/login">Sign in</Link>
       </p>
     </AuthFrame>
   );

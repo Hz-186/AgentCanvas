@@ -358,14 +358,17 @@ func TestServiceDeleteInvalidatesCache(t *testing.T) {
 	}
 }
 
-func TestServiceCreateReturnsCacheInvalidationError(t *testing.T) {
+func TestServiceCreateIgnoresCacheInvalidationError(t *testing.T) {
 	repo := &fakeMemRepo{items: map[int64]*memory.Memory{}}
 	cache := &fakeCacheStore{store: map[string]fakeCacheEntry{}, err: errors.New("redis unavailable")}
 	svc := NewServiceWithCache(repo, cache)
 
-	_, err := svc.Create(context.Background(), 100, CreateMemoryRequest{MemoryType: memory.TypeProfile, Content: "test"})
-	if err == nil {
-		t.Fatal("expected cache invalidation error")
+	item, err := svc.Create(context.Background(), 100, CreateMemoryRequest{MemoryType: memory.TypeProfile, Content: "test"})
+	if err != nil {
+		t.Fatalf("database write must remain successful when cache is unavailable: %v", err)
+	}
+	if item == nil || item.ID == 0 {
+		t.Fatal("expected created memory")
 	}
 }
 

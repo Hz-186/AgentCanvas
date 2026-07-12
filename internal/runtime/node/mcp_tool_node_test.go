@@ -71,7 +71,7 @@ func TestAgentNodeLoadToolsIncludesMCPServerTools(t *testing.T) {
 		EnvJSON:   mustRawJSON(map[string]string{"MCP_NODE_HELPER": "1"}),
 		Status:    tool.MCPStatusActive,
 	}}}
-	tools, err := agent.loadTools(context.Background(), 1, agentRuntimeConfig{MCPServerIDs: []int64{10}})
+	tools, err := agent.loadTools(context.Background(), 1, agentRuntimeConfig{MCPServerIDs: []int64{10}}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +98,7 @@ func TestAgentNodeLoadMCPToolsUsesCachedDefinitions(t *testing.T) {
 			ParametersJSON: json.RawMessage(`{"type":"object"}`),
 		}},
 	}}
-	tools, err := agent.loadTools(context.Background(), 1, agentRuntimeConfig{MCPServerIDs: []int64{10}})
+	tools, err := agent.loadTools(context.Background(), 1, agentRuntimeConfig{MCPServerIDs: []int64{10}}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +109,7 @@ func TestAgentNodeLoadMCPToolsUsesCachedDefinitions(t *testing.T) {
 
 func TestAgentNodeLoadToolsExposesDynamicDelegationAsCallAgent(t *testing.T) {
 	agent := AgentNode{WorkflowCaller: &fakeNodeAgentCaller{}}
-	tools, err := agent.loadTools(context.Background(), 1, agentRuntimeConfig{CallWorkflowIDs: []int64{10}, MaxWorkflowCallDepth: 3})
+	tools, err := agent.loadTools(context.Background(), 1, agentRuntimeConfig{CallWorkflowIDs: []int64{10}, MaxWorkflowCallDepth: 3}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -264,7 +264,7 @@ func TestAgentNodeApplyProfileDefaultsInheritsPolicyAndContext(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Mode != "reflect" || cfg.MaxInputChars != 48000 || cfg.MaxToolTimeoutMS != 1500 || cfg.MaxToolOutputBytes != 4096 {
+	if cfg.Mode != "react" || !cfg.ReflectionEnabled || cfg.MaxInputChars != 48000 || cfg.MaxToolTimeoutMS != 1500 || cfg.MaxToolOutputBytes != 4096 {
 		t.Fatalf("profile defaults were not inherited: %+v", cfg)
 	}
 	if len(cfg.RequireApprovalForRisk) != 1 || cfg.RequireApprovalForRisk[0] != "medium" {

@@ -42,6 +42,19 @@ export function runtimeDSLKey(raw: unknown): string {
   });
 }
 
+export function canvasDSLKey(raw: unknown): string {
+  const parsed = normalizeDSL(raw);
+  if (!parsed) return '';
+  return JSON.stringify({
+    schema_version: parsed.schema_version,
+    flow_id: parsed.flow_id,
+    nodes: [...parsed.nodes]
+      .map((node) => ({ ...node, config: stableRuntimeValue(node.config ?? {}) }))
+      .sort((left, right) => `${left.id}:${left.type}:${left.name}`.localeCompare(`${right.id}:${right.type}:${right.name}`)),
+    edges: [...parsed.edges].sort((left, right) => `${left.from}:${left.to}`.localeCompare(`${right.from}:${right.to}`)),
+  });
+}
+
 export function defaultNodes(): CanvasNode[] {
   return [
     {
@@ -55,7 +68,19 @@ export function defaultNodes(): CanvasNode[] {
 
 export function fromDSL(dsl: FlowDSL): { nodes: CanvasNode[]; edges: Edge[] } {
   const nodes: CanvasNode[] = dsl.nodes.map((node, index) => {
-    const config = (node.config ?? {}) as CanvasNodeData['config'];
+    const rawConfig = { ...(node.config ?? {}) } as CanvasNodeData['config'];
+    if (node.type === 'agent_loop') {
+      const agentConfig = rawConfig as Record<string, unknown>;
+      const legacyMode = String(agentConfig.mode ?? 'react');
+      if (legacyMode === 'reflect') agentConfig.reflection_enabled = true;
+      agentConfig.mode = legacyMode === 'plan_execute' ? 'plan_execute' : 'react';
+      const legacyUI = rawConfig._ui as Record<string, unknown> | undefined;
+      if (legacyUI) {
+        const { agent_mode: _agentMode, reasoning_profile: _reasoningProfile, ...ui } = legacyUI;
+        rawConfig._ui = ui;
+      }
+    }
+    const config = rawConfig;
     const ui = config._ui as AgentUIState | undefined;
     const pos = typeof ui?.x === 'number' && typeof ui?.y === 'number' ? { x: ui.x, y: ui.y } : { x: 120 + index * 240, y: 170 };
     const isLegacyAgent = node.type === 'agent_loop';
@@ -72,7 +97,23 @@ export function fromDSL(dsl: FlowDSL): { nodes: CanvasNode[]; edges: Edge[] } {
   });
   return {
     nodes: nodes.length > 0 ? nodes : defaultNodes(),
-    edges: dsl.edges.map((edge, index) => ({ id: `edge-${edge.from}-${edge.to}-${index}`, source: edge.from, target: edge.to })),
+    edges: dsl.edges.map((edge, index) => {
+      const source = nodes.find((node) => node.id === edge.from);
+      const target = nodes.find((node) => node.id === edge.to);
+      const dependency = source?.data.nodeType === 'agent_loop'
+        && target
+        && ['knowledge_retrieval', 'memory_read', 'memory_write', 'http_tool', 'mcp_tool'].includes(target.data.nodeType);
+      const branchIndex = source?.data.nodeType === 'switch'
+        ? dsl.edges.slice(0, index).filter((candidate) => candidate.from === edge.from).length
+        : -1;
+      return {
+        id: `edge-${edge.from}-${edge.to}-${index}`,
+        source: edge.from,
+        target: edge.to,
+        ...(dependency ? { sourceHandle: 'dependency', targetHandle: 'dependency' } : {}),
+        ...(branchIndex >= 0 ? { sourceHandle: `branch-${branchIndex}` } : {}),
+      };
+    }),
   };
 }
 

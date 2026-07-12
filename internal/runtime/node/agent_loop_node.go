@@ -16,6 +16,7 @@ import (
 	"agentcanvas/internal/domain/skill"
 	"agentcanvas/internal/domain/tool"
 	"agentcanvas/internal/domain/workflow"
+	memoryretrieval "agentcanvas/internal/infrastructure/retrieval"
 	"agentcanvas/internal/infrastructure/vectorstore"
 	runtimeagent "agentcanvas/internal/runtime/agent"
 	"agentcanvas/internal/runtime/engine"
@@ -29,25 +30,26 @@ import (
 )
 
 type AgentNode struct {
-	LLM              llm.ToolCallingClient
-	Providers        ProviderConfigLoader
-	Tools            toolruntime.Registry
-	ToolPacks        tool.PackRepository
-	Skills           skill.Repository
-	Audits           audit.Repository
-	MCPServers       tool.MCPRepository
-	Retriever        retrieval.Retriever
-	MemoryRetriever  memory.SemanticRetriever
-	Memories         memory.Repository
-	MemoryLogs       memory.WriteLogRepository
-	WorkingMemory    memory.WorkingMemoryRepository
-	WorkflowCaller   toolruntime.WorkflowCaller
-	Profiles         AgentProfileLoader
-	Sandbox          sandbox.Runner
-	MessageHistory   MessageHistoryReader
-	ArchivalVecStore vectorstore.Store
-	Embedder         llm.EmbeddingClient
-	WorkspaceRoot    string
+	LLM               llm.ToolCallingClient
+	Providers         ProviderConfigLoader
+	Tools             toolruntime.Registry
+	ToolPacks         tool.PackRepository
+	Skills            skill.Repository
+	Audits            audit.Repository
+	MCPServers        tool.MCPRepository
+	Retriever         retrieval.Retriever
+	MemoryRetriever   memory.SemanticRetriever
+	Memories          memory.Repository
+	MemoryLogs        memory.WriteLogRepository
+	WorkingMemory     memory.WorkingMemoryRepository
+	WorkflowCaller    toolruntime.WorkflowCaller
+	InlineAgentCaller toolruntime.InlineAgentCaller
+	Profiles          AgentProfileLoader
+	Sandbox           sandbox.Runner
+	MessageHistory    MessageHistoryReader
+	ArchivalVecStore  vectorstore.Store
+	Embedder          llm.EmbeddingClient
+	WorkspaceRoot     string
 
 	OnExtractTrigger func(ctx context.Context, ownerID int64, conversationID int64)
 }
@@ -63,39 +65,48 @@ type AgentResumeOptions struct {
 }
 
 type agentRuntimeConfig struct {
-	Mode                    string          `json:"mode"`
-	ProviderID              int64           `json:"provider_id"`
-	Model                   string          `json:"model"`
-	SystemPrompt            string          `json:"system_prompt"`
-	TaskTemplate            string          `json:"task_template"`
-	ToolIDs                 []int64         `json:"tool_ids"`
-	SkillIDs                []int64         `json:"skill_ids"`
-	SkillLoadingMode        string          `json:"skill_loading_mode"`
-	KnowledgeIDs            []int64         `json:"knowledge_ids"`
-	KnowledgeTopK           int             `json:"knowledge_top_k"`
-	KnowledgeMode           string          `json:"knowledge_mode"`
-	CallWorkflowIDs         []int64         `json:"call_workflow_ids"`
-	MCPServerIDs            []int64         `json:"mcp_server_ids"`
-	MaxWorkflowCallDepth    int             `json:"max_workflow_call_depth"`
-	CodeExecutionEnabled    bool            `json:"code_execution_enabled"`
-	MemoryEnabled           bool            `json:"memory_enabled"`
-	MaxIterations           int             `json:"max_iterations"`
-	MaxToolCalls            int             `json:"max_tool_calls"`
-	MaxExecutionTimeMS      int             `json:"max_execution_time_ms"`
-	MaxInputChars           int             `json:"max_input_chars"`
-	MaxInputTokens          int             `json:"max_input_tokens"`
-	RequireApprovalForRisk  []string        `json:"require_approval_for_risk"`
-	MaxToolTimeoutMS        int             `json:"max_tool_timeout_ms"`
-	MaxToolOutputBytes      int             `json:"max_tool_output_bytes"`
-	AllowedHosts            []string        `json:"allowed_hosts"`
-	ToolPolicyJSON          json.RawMessage `json:"tool_policy_json"`
-	MemoryPolicyJSON        json.RawMessage `json:"memory_policy_json"`
-	ContextPolicyJSON       json.RawMessage `json:"context_policy_json"`
-	OutputSchemaJSON        json.RawMessage `json:"output_schema_json"`
-	ReflectionEnabled       bool            `json:"reflection_enabled"`
-	Temperature             *float64        `json:"temperature"`
-	ReturnIntermediateSteps bool            `json:"return_intermediate_steps"`
-	OutputMode              string          `json:"output_mode"`
+	Mode                      string          `json:"mode"`
+	ProviderID                int64           `json:"provider_id"`
+	Model                     string          `json:"model"`
+	SystemPrompt              string          `json:"system_prompt"`
+	TaskTemplate              string          `json:"task_template"`
+	ToolIDs                   []int64         `json:"tool_ids"`
+	SkillIDs                  []int64         `json:"skill_ids"`
+	SkillLoadingMode          string          `json:"skill_loading_mode"`
+	KnowledgeIDs              []int64         `json:"knowledge_ids"`
+	KnowledgeTopK             int             `json:"knowledge_top_k"`
+	KnowledgeMode             string          `json:"knowledge_mode"`
+	CallWorkflowIDs           []int64         `json:"call_workflow_ids"`
+	MCPServerIDs              []int64         `json:"mcp_server_ids"`
+	MaxWorkflowCallDepth      int             `json:"max_workflow_call_depth"`
+	CodeExecutionEnabled      bool            `json:"code_execution_enabled"`
+	MemoryEnabled             bool            `json:"memory_enabled"`
+	MaxIterations             int             `json:"max_iterations"`
+	MaxToolCalls              int             `json:"max_tool_calls"`
+	MaxExecutionTimeMS        int             `json:"max_execution_time_ms"`
+	MaxParallelSubAgents      int             `json:"max_parallel_sub_agents"`
+	AllowInlineAgents         bool            `json:"allow_inline_agents"`
+	MaxInputChars             int             `json:"max_input_chars"`
+	MaxInputTokens            int             `json:"max_input_tokens"`
+	ContextWindowTokens       int             `json:"context_window_tokens"`
+	ReservedOutputTokens      int             `json:"reserved_output_tokens"`
+	ContextSafetyMarginTokens int             `json:"context_safety_margin_tokens"`
+	MaxRuleTokens             int             `json:"max_rule_tokens"`
+	RuleSetVersion            string          `json:"rule_set_version"`
+	CustomRules               []rules.Rule    `json:"-"`
+	RequireApprovalForRisk    []string        `json:"require_approval_for_risk"`
+	MaxToolTimeoutMS          int             `json:"max_tool_timeout_ms"`
+	MaxToolOutputBytes        int             `json:"max_tool_output_bytes"`
+	AllowedHosts              []string        `json:"allowed_hosts"`
+	ToolPolicyJSON            json.RawMessage `json:"tool_policy_json"`
+	MemoryPolicyJSON          json.RawMessage `json:"memory_policy_json"`
+	ContextPolicyJSON         json.RawMessage `json:"context_policy_json"`
+	OutputSchemaJSON          json.RawMessage `json:"output_schema_json"`
+	ReflectionEnabled         bool            `json:"reflection_enabled"`
+	Temperature               *float64        `json:"temperature"`
+	ReturnIntermediateSteps   bool            `json:"return_intermediate_steps"`
+	OutputMode                string          `json:"output_mode"`
+	DisableProfileDefaults    bool            `json:"disable_profile_defaults"`
 }
 
 type agentNodeConfig struct {
@@ -123,15 +134,17 @@ type agentNodeConfig struct {
 		MCPServerIDs         []int64 `json:"mcp_server_ids"`
 		MaxWorkflowCallDepth int     `json:"max_workflow_call_depth"`
 		CodeExecutionEnabled bool    `json:"code_execution_enabled"`
+		AllowInlineAgents    bool    `json:"allow_inline_agents"`
 	} `json:"tools"`
 	Memory struct {
 		Enabled bool            `json:"enabled"`
 		Policy  json.RawMessage `json:"policy"`
 	} `json:"memory"`
 	Limits struct {
-		MaxIterations      int `json:"max_iterations"`
-		MaxToolCalls       int `json:"max_tool_calls"`
-		MaxExecutionTimeMS int `json:"max_execution_time_ms"`
+		MaxIterations        int `json:"max_iterations"`
+		MaxToolCalls         int `json:"max_tool_calls"`
+		MaxExecutionTimeMS   int `json:"max_execution_time_ms"`
+		MaxParallelSubAgents int `json:"max_parallel_sub_agents"`
 	} `json:"limits"`
 	Output struct {
 		Mode                    string          `json:"mode"`
@@ -171,7 +184,7 @@ func parseAgentNodeConfig(config json.RawMessage) (agentRuntimeConfig, error) {
 		if err := json.Unmarshal(config, &flat); err != nil {
 			return flat, fmt.Errorf("%w: invalid agent config", agenterrors.ErrInvalidInput)
 		}
-		return flat, nil
+		return normalizeLegacyAgentMode(flat), nil
 	}
 	var nested agentNodeConfig
 	if err := json.Unmarshal(config, &nested); err != nil {
@@ -223,6 +236,9 @@ func parseAgentNodeConfig(config json.RawMessage) (agentRuntimeConfig, error) {
 	if nested.Tools.CodeExecutionEnabled {
 		cfg.CodeExecutionEnabled = true
 	}
+	if nested.Tools.AllowInlineAgents {
+		cfg.AllowInlineAgents = true
+	}
 	if nested.Memory.Enabled {
 		cfg.MemoryEnabled = true
 	}
@@ -238,6 +254,9 @@ func parseAgentNodeConfig(config json.RawMessage) (agentRuntimeConfig, error) {
 	if nested.Limits.MaxExecutionTimeMS > 0 {
 		cfg.MaxExecutionTimeMS = nested.Limits.MaxExecutionTimeMS
 	}
+	if nested.Limits.MaxParallelSubAgents > 0 {
+		cfg.MaxParallelSubAgents = nested.Limits.MaxParallelSubAgents
+	}
 	if nested.Context.MaxInputTokens > 0 {
 		cfg.MaxInputTokens = nested.Context.MaxInputTokens
 		cfg.MaxInputChars = nested.Context.MaxInputTokens * 4
@@ -250,9 +269,6 @@ func parseAgentNodeConfig(config json.RawMessage) (agentRuntimeConfig, error) {
 	}
 	if nested.Planning.ReflectionEnabled {
 		cfg.ReflectionEnabled = true
-		if strings.TrimSpace(cfg.Mode) == "" {
-			cfg.Mode = "reflect"
-		}
 	}
 	if len(nested.Policy.RequireApprovalForRisk) > 0 {
 		cfg.RequireApprovalForRisk = nested.Policy.RequireApprovalForRisk
@@ -278,7 +294,18 @@ func parseAgentNodeConfig(config json.RawMessage) (agentRuntimeConfig, error) {
 	if nested.Output.ReturnIntermediateSteps {
 		cfg.ReturnIntermediateSteps = true
 	}
-	return cfg, nil
+	return normalizeLegacyAgentMode(cfg), nil
+}
+
+func normalizeLegacyAgentMode(cfg agentRuntimeConfig) agentRuntimeConfig {
+	switch strings.TrimSpace(cfg.Mode) {
+	case "reflect":
+		cfg.Mode = "react"
+		cfg.ReflectionEnabled = true
+	case "supervisor":
+		cfg.Mode = "react"
+	}
+	return cfg
 }
 
 func hasNestedAgentModel(config json.RawMessage) bool {
@@ -306,6 +333,9 @@ func validateAgentRuntimeConfig(cfg agentRuntimeConfig, nodeType string, require
 	if cfg.MaxExecutionTimeMS < 0 || cfg.MaxExecutionTimeMS > 10*60*1000 {
 		return fmt.Errorf("%w: %s max_execution_time_ms must be <= 600000", agenterrors.ErrInvalidInput, nodeType)
 	}
+	if cfg.MaxParallelSubAgents < 0 || cfg.MaxParallelSubAgents > 64 {
+		return fmt.Errorf("%w: %s max_parallel_sub_agents must be <= 64", agenterrors.ErrInvalidInput, nodeType)
+	}
 	if cfg.OutputMode != "" && cfg.OutputMode != "final_answer" && cfg.OutputMode != "full" {
 		return fmt.Errorf("%w: %s output_mode must be final_answer or full", agenterrors.ErrInvalidInput, nodeType)
 	}
@@ -318,8 +348,8 @@ func validateAgentRuntimeConfig(cfg agentRuntimeConfig, nodeType string, require
 	if cfg.MaxWorkflowCallDepth < 0 || cfg.MaxWorkflowCallDepth > 5 {
 		return fmt.Errorf("%w: %s max_workflow_call_depth must be <= 5", agenterrors.ErrInvalidInput, nodeType)
 	}
-	if cfg.Mode != "" && cfg.Mode != "react" && cfg.Mode != "plan_execute" && cfg.Mode != "reflect" && cfg.Mode != "supervisor" {
-		return fmt.Errorf("%w: %s mode must be react, plan_execute, reflect, or supervisor", agenterrors.ErrInvalidInput, nodeType)
+	if cfg.Mode != "" && cfg.Mode != "react" && cfg.Mode != "plan_execute" {
+		return fmt.Errorf("%w: %s mode must be react or plan_execute", agenterrors.ErrInvalidInput, nodeType)
 	}
 	for _, risk := range cfg.RequireApprovalForRisk {
 		normalized := strings.TrimSpace(risk)
@@ -350,7 +380,7 @@ func (n AgentLoopNode) Run(ctx context.Context, rc *engine.RunContext, input eng
 	if err != nil {
 		return nil, err
 	}
-	return n.AgentNode.runAgent(ctx, rc, input, cfg, n.Type(), true, nil)
+	return n.AgentNode.runAgent(ctx, rc, input, cfg, n.Type(), !cfg.DisableProfileDefaults, nil)
 }
 
 func (n AgentLoopNode) Resume(ctx context.Context, rc *engine.RunContext, input engine.NodeInput, config json.RawMessage, opts AgentResumeOptions) (engine.NodeOutput, error) {
@@ -358,7 +388,7 @@ func (n AgentLoopNode) Resume(ctx context.Context, rc *engine.RunContext, input 
 	if err != nil {
 		return nil, err
 	}
-	return n.AgentNode.runAgent(ctx, rc, input, cfg, n.Type(), true, &opts)
+	return n.AgentNode.runAgent(ctx, rc, input, cfg, n.Type(), !cfg.DisableProfileDefaults, &opts)
 }
 
 func (n AgentNode) runAgent(
@@ -390,7 +420,7 @@ func (n AgentNode) runAgent(
 	if err != nil {
 		return nil, err
 	}
-	tools, err := n.loadTools(ctx, rc.OwnerID, cfg)
+	tools, err := n.loadTools(ctx, rc.OwnerID, cfg, loaded)
 	if err != nil {
 		return nil, err
 	}
@@ -402,7 +432,7 @@ func (n AgentNode) runAgent(
 	systemPrompt := cfg.SystemPrompt
 	mode := agentMode(cfg.Mode)
 	conversationBlocks := buildConversationContext(ctx, n, rc, cfg.MaxInputChars)
-	ruleBlocks, ruleTrace := buildRuleContextBlocks(systemPrompt, task, mode, cfg, tools, conversationBlocks)
+	ruleBlocks, ruleTrace, ruleTags, ruleRisk := buildRuleContextBlocks(systemPrompt, task, mode, cfg, tools, conversationBlocks)
 	contextBlocks := append(ruleBlocks, skillBlocks...)
 	contextBlocks = append(contextBlocks, conversationBlocks...)
 	contextBlocks = n.injectWorkingMemory(ctx, rc, contextBlocks)
@@ -452,28 +482,37 @@ func (n AgentNode) runAgent(
 		},
 	}
 	runRequest := runtimeagent.RunRequest{
-		OwnerID:            rc.OwnerID,
-		WorkflowID:         rc.WorkflowID,
-		RunID:              rc.RunID,
-		NodeID:             rc.CurrentNodeID,
-		CallDepth:          rc.CallDepth,
-		WorkflowCallChain:  append([]int64(nil), rc.WorkflowCallChain...),
-		ConversationID:     rc.ConversationID,
-		Provider:           loaded.Config,
-		Model:              loaded.Model,
-		Mode:               mode,
-		Plan:               plan,
-		SystemPrompt:       systemPrompt,
-		Task:               task,
-		ReflectionEnabled:  cfg.ReflectionEnabled,
-		Temperature:        cfg.Temperature,
-		MaxIterations:      cfg.MaxIterations,
-		MaxToolCalls:       cfg.MaxToolCalls,
-		MaxExecutionTimeMS: cfg.MaxExecutionTimeMS,
-		MaxInputChars:      cfg.MaxInputChars,
-		MaxInputTokens:     cfg.MaxInputTokens,
-		RuleTrace:          ruleTrace,
-		ContextBlocks:      contextBlocks,
+		OwnerID:                   rc.OwnerID,
+		WorkflowID:                rc.WorkflowID,
+		RunID:                     rc.RunID,
+		NodeID:                    rc.CurrentNodeID,
+		CallDepth:                 rc.CallDepth,
+		WorkflowCallChain:         append([]int64(nil), rc.WorkflowCallChain...),
+		ConversationID:            rc.ConversationID,
+		Provider:                  loaded.Config,
+		Model:                     loaded.Model,
+		Mode:                      mode,
+		Plan:                      plan,
+		SystemPrompt:              systemPrompt,
+		Task:                      task,
+		ReflectionEnabled:         cfg.ReflectionEnabled,
+		Temperature:               cfg.Temperature,
+		MaxIterations:             cfg.MaxIterations,
+		MaxToolCalls:              cfg.MaxToolCalls,
+		MaxExecutionTimeMS:        cfg.MaxExecutionTimeMS,
+		MaxParallelTools:          cfg.MaxParallelSubAgents,
+		MaxInputChars:             cfg.MaxInputChars,
+		MaxInputTokens:            cfg.MaxInputTokens,
+		ContextWindowTokens:       cfg.ContextWindowTokens,
+		ReservedOutputTokens:      cfg.ReservedOutputTokens,
+		ContextSafetyMarginTokens: cfg.ContextSafetyMarginTokens,
+		MaxRuleTokens:             cfg.MaxRuleTokens,
+		RuleTags:                  ruleTags,
+		RuleRiskLevel:             ruleRisk,
+		RuleSetVersion:            cfg.RuleSetVersion,
+		CustomRules:               append([]rules.Rule(nil), cfg.CustomRules...),
+		RuleTrace:                 ruleTrace,
+		ContextBlocks:             contextBlocks,
 		ToolPolicy: runtimeagent.ToolPolicy{
 			RequireApprovalForRisk: cfg.RequireApprovalForRisk,
 			MaxToolTimeoutMS:       cfg.MaxToolTimeoutMS,
@@ -488,30 +527,39 @@ func (n AgentNode) runAgent(
 		}
 		resumeRequest, buildErr := runtimeagent.BuildResumeRequest(runtimeagent.ResumeRequest{
 			RunRequest: runtimeagent.RunRequest{
-				OwnerID:            rc.OwnerID,
-				WorkflowID:         rc.WorkflowID,
-				RunID:              rc.RunID,
-				NodeID:             rc.CurrentNodeID,
-				CallDepth:          rc.CallDepth,
-				WorkflowCallChain:  append([]int64(nil), rc.WorkflowCallChain...),
-				ConversationID:     rc.ConversationID,
-				Provider:           loaded.Config,
-				Model:              loaded.Model,
-				Mode:               mode,
-				Plan:               plan,
-				SystemPrompt:       systemPrompt,
-				Task:               task,
-				ReflectionEnabled:  cfg.ReflectionEnabled,
-				Temperature:        cfg.Temperature,
-				MaxIterations:      cfg.MaxIterations,
-				MaxToolCalls:       cfg.MaxToolCalls,
-				MaxExecutionTimeMS: cfg.MaxExecutionTimeMS,
-				MaxInputChars:      cfg.MaxInputChars,
-				MaxInputTokens:     cfg.MaxInputTokens,
-				RuleTrace:          ruleTrace,
-				ContextBlocks:      contextBlocks,
-				ToolPolicy:         runRequest.ToolPolicy,
-				Tools:              tools,
+				OwnerID:                   rc.OwnerID,
+				WorkflowID:                rc.WorkflowID,
+				RunID:                     rc.RunID,
+				NodeID:                    rc.CurrentNodeID,
+				CallDepth:                 rc.CallDepth,
+				WorkflowCallChain:         append([]int64(nil), rc.WorkflowCallChain...),
+				ConversationID:            rc.ConversationID,
+				Provider:                  loaded.Config,
+				Model:                     loaded.Model,
+				Mode:                      mode,
+				Plan:                      plan,
+				SystemPrompt:              systemPrompt,
+				Task:                      task,
+				ReflectionEnabled:         cfg.ReflectionEnabled,
+				Temperature:               cfg.Temperature,
+				MaxIterations:             cfg.MaxIterations,
+				MaxToolCalls:              cfg.MaxToolCalls,
+				MaxExecutionTimeMS:        cfg.MaxExecutionTimeMS,
+				MaxParallelTools:          cfg.MaxParallelSubAgents,
+				MaxInputChars:             cfg.MaxInputChars,
+				MaxInputTokens:            cfg.MaxInputTokens,
+				ContextWindowTokens:       cfg.ContextWindowTokens,
+				ReservedOutputTokens:      cfg.ReservedOutputTokens,
+				ContextSafetyMarginTokens: cfg.ContextSafetyMarginTokens,
+				MaxRuleTokens:             cfg.MaxRuleTokens,
+				RuleTags:                  ruleTags,
+				RuleRiskLevel:             ruleRisk,
+				RuleSetVersion:            cfg.RuleSetVersion,
+				CustomRules:               append([]rules.Rule(nil), cfg.CustomRules...),
+				RuleTrace:                 ruleTrace,
+				ContextBlocks:             contextBlocks,
+				ToolPolicy:                runRequest.ToolPolicy,
+				Tools:                     tools,
 			},
 			Checkpoint:    resume.Checkpoint,
 			Approved:      resume.Approved,
@@ -697,12 +745,18 @@ func (n AgentNode) applyProfileDefaults(
 	if len(cfg.OutputSchemaJSON) == 0 && len(profile.OutputSchemaJSON) > 0 && string(bytes.TrimSpace(profile.OutputSchemaJSON)) != "{}" {
 		cfg.OutputSchemaJSON = profile.OutputSchemaJSON
 	}
-	return cfg, nil
+	return normalizeLegacyAgentMode(cfg), nil
 }
 
 type profileContextPolicy struct {
-	MaxInputChars  int `json:"max_input_chars"`
-	MaxInputTokens int `json:"max_input_tokens"`
+	MaxInputChars             int          `json:"max_input_chars"`
+	MaxInputTokens            int          `json:"max_input_tokens"`
+	ContextWindowTokens       int          `json:"context_window_tokens"`
+	ReservedOutputTokens      int          `json:"reserved_output_tokens"`
+	ContextSafetyMarginTokens int          `json:"context_safety_margin_tokens"`
+	MaxRuleTokens             int          `json:"max_rule_tokens"`
+	RuleSetVersion            string       `json:"rule_set_version"`
+	Rules                     []rules.Rule `json:"rules"`
 }
 
 type profileMemoryPolicy struct {
@@ -731,11 +785,15 @@ func applyProfileMemoryPolicy(cfg agentRuntimeConfig, raw json.RawMessage) agent
 }
 
 func applyProfileContextPolicy(cfg agentRuntimeConfig, raw json.RawMessage) agentRuntimeConfig {
-	if (cfg.MaxInputChars > 0 || cfg.MaxInputTokens > 0) || len(raw) == 0 || string(bytes.TrimSpace(raw)) == "{}" || string(bytes.TrimSpace(raw)) == "null" {
+	if len(raw) == 0 || string(bytes.TrimSpace(raw)) == "{}" || string(bytes.TrimSpace(raw)) == "null" {
 		return cfg
 	}
 	var policy profileContextPolicy
 	if err := json.Unmarshal(raw, &policy); err != nil {
+		return cfg
+	}
+	if cfg.MaxInputChars > 0 || cfg.MaxInputTokens > 0 {
+		applyRuleContextPolicy(&cfg, policy)
 		return cfg
 	}
 	if policy.MaxInputChars > 0 {
@@ -744,6 +802,7 @@ func applyProfileContextPolicy(cfg agentRuntimeConfig, raw json.RawMessage) agen
 		cfg.MaxInputTokens = policy.MaxInputTokens
 		cfg.MaxInputChars = policy.MaxInputTokens * 4
 	}
+	applyRuleContextPolicy(&cfg, policy)
 	return cfg
 }
 
@@ -761,7 +820,35 @@ func applyNodeContextPolicy(cfg agentRuntimeConfig, raw json.RawMessage) agentRu
 		cfg.MaxInputTokens = policy.MaxInputTokens
 		cfg.MaxInputChars = policy.MaxInputTokens * 4
 	}
+	applyRuleContextPolicy(&cfg, policy)
+	if strings.TrimSpace(policy.RuleSetVersion) != "" {
+		cfg.RuleSetVersion = strings.TrimSpace(policy.RuleSetVersion)
+	}
+	if policy.Rules != nil {
+		cfg.CustomRules = append([]rules.Rule(nil), policy.Rules...)
+	}
 	return cfg
+}
+
+func applyRuleContextPolicy(cfg *agentRuntimeConfig, policy profileContextPolicy) {
+	if policy.ContextWindowTokens > 0 {
+		cfg.ContextWindowTokens = policy.ContextWindowTokens
+	}
+	if policy.ReservedOutputTokens > 0 {
+		cfg.ReservedOutputTokens = policy.ReservedOutputTokens
+	}
+	if policy.ContextSafetyMarginTokens > 0 {
+		cfg.ContextSafetyMarginTokens = policy.ContextSafetyMarginTokens
+	}
+	if policy.MaxRuleTokens > 0 {
+		cfg.MaxRuleTokens = policy.MaxRuleTokens
+	}
+	if strings.TrimSpace(cfg.RuleSetVersion) == "" {
+		cfg.RuleSetVersion = strings.TrimSpace(policy.RuleSetVersion)
+	}
+	if len(cfg.CustomRules) == 0 && len(policy.Rules) > 0 {
+		cfg.CustomRules = append([]rules.Rule(nil), policy.Rules...)
+	}
 }
 
 func applyProfileToolPolicy(cfg agentRuntimeConfig, raw json.RawMessage) agentRuntimeConfig {
@@ -868,8 +955,11 @@ func validateAgentContextPolicyJSON(raw json.RawMessage, nodeType string) error 
 	if err := json.Unmarshal(raw, &policy); err != nil {
 		return fmt.Errorf("%w: %s context_policy_json is invalid", agenterrors.ErrInvalidInput, nodeType)
 	}
-	if policy.MaxInputChars < 0 || policy.MaxInputTokens < 0 {
+	if policy.MaxInputChars < 0 || policy.MaxInputTokens < 0 || policy.ContextWindowTokens < 0 || policy.ReservedOutputTokens < 0 || policy.ContextSafetyMarginTokens < 0 || policy.MaxRuleTokens < 0 {
 		return fmt.Errorf("%w: %s context policy limits must be positive", agenterrors.ErrInvalidInput, nodeType)
+	}
+	if err := rules.ValidateCustomRules(policy.Rules); err != nil {
+		return fmt.Errorf("%w: %s custom rules are invalid: %v", agenterrors.ErrInvalidInput, nodeType, err)
 	}
 	return nil
 }
@@ -926,10 +1016,10 @@ func profileSystemPrompt(profile *workflow.Profile) string {
 
 func agentMode(mode string) string {
 	mode = strings.TrimSpace(mode)
-	if mode == "" {
-		return "react"
+	if mode == "plan_execute" {
+		return mode
 	}
-	return mode
+	return "react"
 }
 
 func agentStepRecord(step runtimeagent.RunStep, nodeID string) engine.AgentStepRecord {
@@ -952,7 +1042,7 @@ func agentStepRecord(step runtimeagent.RunStep, nodeID string) engine.AgentStepR
 	}
 }
 
-func (n AgentNode) loadTools(ctx context.Context, ownerID int64, cfg agentRuntimeConfig) ([]toolruntime.RuntimeTool, error) {
+func (n AgentNode) loadTools(ctx context.Context, ownerID int64, cfg agentRuntimeConfig, provider *LoadedProvider) ([]toolruntime.RuntimeTool, error) {
 	tools := make([]toolruntime.RuntimeTool, 0, len(cfg.ToolIDs)+2)
 	tools = append(tools, toolruntime.HumanApprovalTool{})
 	loadedSkills, err := n.loadSkillDefinitions(ctx, ownerID, cfg.SkillIDs)
@@ -993,6 +1083,14 @@ func (n AgentNode) loadTools(ctx context.Context, ownerID int64, cfg agentRuntim
 			ToolName:           "call_agent",
 		})
 	}
+	if cfg.AllowInlineAgents {
+		if n.InlineAgentCaller == nil {
+			return nil, fmt.Errorf("agent_loop inline agent caller is not configured")
+		}
+		tools = append(tools, toolruntime.InlineAgentTool{Caller: n.InlineAgentCaller, Default: toolruntime.DefaultAgentConfig{
+			ProviderID: cfg.ProviderID, Model: cfg.Model, AllowedToolIDs: append([]int64(nil), cfg.ToolIDs...), AllowedSkillIDs: append([]int64(nil), cfg.SkillIDs...), AllowedKnowledgeIDs: append([]int64(nil), cfg.KnowledgeIDs...), AllowedMCPServerIDs: append([]int64(nil), cfg.MCPServerIDs...), MaxIterations: cfg.MaxIterations, MaxToolCalls: cfg.MaxToolCalls, MaxExecutionTimeMS: cfg.MaxExecutionTimeMS, MaxParallelChildren: cfg.MaxParallelSubAgents, MaxDepth: cfg.MaxWorkflowCallDepth, RequireApprovalForRisk: append([]string(nil), cfg.RequireApprovalForRisk...), MaxToolTimeoutMS: cfg.MaxToolTimeoutMS, MaxToolOutputBytes: cfg.MaxToolOutputBytes, AllowedHosts: append([]string(nil), cfg.AllowedHosts...), CodeExecutionEnabled: cfg.CodeExecutionEnabled,
+		}})
+	}
 	if len(cfg.MCPServerIDs) > 0 {
 		if n.MCPServers == nil {
 			return nil, fmt.Errorf("agent_loop mcp server repository is not configured")
@@ -1013,9 +1111,13 @@ func (n AgentNode) loadTools(ctx context.Context, ownerID int64, cfg agentRuntim
 		if n.Memories == nil {
 			return nil, fmt.Errorf("agent_loop memory repository is not configured")
 		}
+		var archival memory.ArchivalIndex
+		if provider != nil && n.ArchivalVecStore != nil && n.Embedder != nil && strings.TrimSpace(provider.EmbeddingModel) != "" {
+			archival = memoryretrieval.ArchivalMemoryIndex{Store: n.ArchivalVecStore, Embedder: n.Embedder, Provider: provider.EmbeddingConfig, Model: provider.EmbeddingModel}
+		}
 		tools = append(tools,
-			toolruntime.MemoryReadTool{Memories: n.Memories, Retriever: n.MemoryRetriever},
-			toolruntime.MemoryWriteTool{Memories: n.Memories, Logs: n.MemoryLogs, Retriever: n.MemoryRetriever},
+			toolruntime.MemoryReadTool{Memories: n.Memories, Retriever: n.MemoryRetriever, Archival: archival},
+			toolruntime.MemoryWriteTool{Memories: n.Memories, Logs: n.MemoryLogs, Retriever: n.MemoryRetriever, Archival: archival},
 		)
 	}
 	if len(cfg.ToolIDs) == 0 {
@@ -1361,22 +1463,21 @@ func buildRuleContextBlocks(
 	cfg agentRuntimeConfig,
 	tools []toolruntime.RuntimeTool,
 	conversation []runtimeagent.ContextBlock,
-) ([]runtimeagent.ContextBlock, rules.Trace) {
+) ([]runtimeagent.ContextBlock, rules.Trace, []string, string) {
 	risk := highestToolRisk(tools)
 	if risk == "" {
 		risk = highestConfiguredRisk(cfg.RequireApprovalForRisk)
 	}
 	tags := inferRuleTags(task, mode, cfg, tools, conversation)
 	toolNames := runtimeToolNames(tools)
-	budget := 0
-	if cfg.MaxInputTokens > 0 {
-		budget = cfg.MaxInputTokens / 10
-	}
-	selected, trace := rules.ResolveForAgent(
-		systemPrompt, task, mode, risk, toolNames, tags, budget, nil, rules.AuditPolicy{},
+	selected, trace := rules.ResolvePersistentWithRules(
+		systemPrompt, task, mode, risk, toolNames, tags, cfg.CustomRules, nil, rules.AuditPolicy{},
 	)
-	blocks := make([]runtimeagent.ContextBlock, 0, len(selected))
+	blocks := make([]runtimeagent.ContextBlock, 0, 2)
 	for _, item := range selected {
+		if item.Level != rules.LevelL0Safety && item.Level != rules.LevelL1Core {
+			continue
+		}
 		content := strings.TrimSpace(item.Content)
 		if content == "" {
 			continue
@@ -1388,7 +1489,7 @@ func buildRuleContextBlocks(
 			Pinned:  item.Level == rules.LevelL0Safety || item.Level == rules.LevelL1Core,
 		})
 	}
-	return blocks, trace
+	return blocks, trace, tags, risk
 }
 
 func highestToolRisk(tools []toolruntime.RuntimeTool) string {

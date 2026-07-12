@@ -14,6 +14,7 @@ import (
 	"unicode/utf16"
 )
 
+// BBox Bounding Box
 type BBox struct {
 	X      float64 `json:"x"`
 	Y      float64 `json:"y"`
@@ -21,9 +22,11 @@ type BBox struct {
 	Height float64 `json:"height"`
 }
 
+// Block unit of PDF
 type Block struct {
-	ID       string
-	Type     string
+	ID   string
+	Type string
+	// "heading", "text", "table", "list", "faq", "caption", "scrap"
 	Text     string
 	PageNo   int
 	BBox     *BBox
@@ -36,8 +39,8 @@ type Page struct {
 }
 
 type PDFTextExtraction struct {
-	Text     string
-	Pages    []Page
+	Text     string // context of all pdf
+	Pages    []Page // block divide by page
 	Metadata map[string]any
 }
 
@@ -83,15 +86,30 @@ func ExtractPDF(ctx context.Context, filename string, reader io.Reader, opts Ext
 		if len(pages) == 0 {
 			return nil, fmt.Errorf("pdf OCR produced no text for %s", filename)
 		}
-		return &PDFTextExtraction{Text: joinPages(pages), Pages: pages, Metadata: map[string]any{"parser": "deepdoc_pdf_ocr", "source": "ocr"}}, nil
+		return &PDFTextExtraction{
+			Text:  joinPages(pages),
+			Pages: pages,
+			Metadata: map[string]any{
+				"parser": "deepdoc_pdf_ocr",
+				"source": "ocr",
+			},
+		}, nil
 	}
 	pages := textPages(text)
 	if len(pages) == 0 {
 		return nil, fmt.Errorf("pdf text extraction produced no usable text for %s; configure OCR for scanned or garbled PDFs", filename)
 	}
-	return &PDFTextExtraction{Text: joinPages(pages), Pages: pages, Metadata: map[string]any{"parser": "deepdoc_pdf_text", "source": source}}, nil
+	return &PDFTextExtraction{
+		Text:  joinPages(pages),
+		Pages: pages,
+		Metadata: map[string]any{
+			"parser": "deepdoc_pdf_text",
+			"source": source,
+		},
+	}, nil
 }
 
+// test -> page
 func textPages(text string) []Page {
 	text = splitLoosePageMarkers(text)
 	rawPages := strings.Split(text, "\f")

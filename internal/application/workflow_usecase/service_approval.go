@@ -2,6 +2,8 @@ package workflow_usecase
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +18,7 @@ import (
 	runtimeagent "agentcanvas/internal/runtime/agent"
 	"agentcanvas/internal/runtime/engine"
 	runtimenode "agentcanvas/internal/runtime/node"
+	"agentcanvas/internal/runtime/toolruntime"
 )
 
 func (s *Service) ListApprovalRequests(ctx context.Context, ownerID int64, status string) ([]workflow.ApprovalRequest, error) {
@@ -62,7 +65,9 @@ func (s *Service) ResumeRun(ctx context.Context, ownerID, runID int64) (*workflo
 	return s.resumeRunFromCheckpoint(ctx, item, checkpoint)
 }
 
-func (s *Service) decideApproval(ctx context.Context, ownerID, approvalID int64, status, note string) (*workflow.ApprovalRequest, error) {
+func (s *Service) decideApproval(
+	ctx context.Context, ownerID, approvalID int64, status, note string,
+) (*workflow.ApprovalRequest, error) {
 	if s.approvals == nil {
 		return nil, fmt.Errorf("%w: approval repository is not configured", agenterrors.ErrInvalidInput)
 	}
@@ -83,7 +88,9 @@ func (s *Service) decideApproval(ctx context.Context, ownerID, approvalID int64,
 	return item, nil
 }
 
-func (s *Service) persistRunCheckpointArtifacts(ctx context.Context, run *workflow.Run, output engine.NodeOutput, checkpointStatus string) error {
+func (s *Service) persistRunCheckpointArtifacts(
+	ctx context.Context, run *workflow.Run, output engine.NodeOutput, checkpointStatus string,
+) error {
 	if s.approvals == nil || run == nil || output == nil {
 		return nil
 	}
@@ -109,7 +116,18 @@ func (s *Service) persistRunCheckpointArtifacts(ctx context.Context, run *workfl
 	}
 	if approval != nil {
 		requestJSON, _ := json.Marshal(approval)
-		item := &workflow.ApprovalRequest{OwnerID: run.OwnerID, WorkflowID: run.WorkflowID, RunID: run.ID, NodeID: checkpointNodeID(checkpoint), ToolCallID: approval.ToolCallID, ToolName: approval.ToolName, RiskLevel: approval.RiskLevel, Reason: approval.Reason, RequestJSON: requestJSON, Status: workflow.ApprovalStatusPending}
+		item := &workflow.ApprovalRequest{
+			OwnerID:     run.OwnerID,
+			WorkflowID:  run.WorkflowID,
+			RunID:       run.ID,
+			NodeID:      checkpointNodeID(checkpoint),
+			ToolCallID:  approval.ToolCallID,
+			ToolName:    approval.ToolName,
+			RiskLevel:   approval.RiskLevel,
+			Reason:      approval.Reason,
+			RequestJSON: requestJSON,
+			Status:      workflow.ApprovalStatusPending,
+		}
 		if item.NodeID == "" {
 			item.NodeID = "agent"
 		}
@@ -121,8 +139,24 @@ func (s *Service) persistRunCheckpointArtifacts(ctx context.Context, run *workfl
 		messagesJSON, _ := json.Marshal(checkpoint.Messages)
 		stepsJSON, _ := json.Marshal(output["steps"])
 		pendingJSON, _ := json.Marshal(checkpoint.PendingToolCall)
-		contextJSON, _ := json.Marshal(checkpointContextEnvelope{Context: checkpoint.Context, Metadata: checkpoint.Metadata})
-		item := &workflow.WorkflowCheckpoint{OwnerID: run.OwnerID, WorkflowID: run.WorkflowID, RunID: run.ID, NodeID: checkpointNodeID(checkpoint), Status: checkpointStatus, MessagesJSON: messagesJSON, MessagesSummary: checkpoint.MessagesSummary, StepsJSON: stepsJSON, PendingToolCallJSON: pendingJSON, ContextJSON: contextJSON, ToolRegistryHash: checkpointToolRegistryHash(checkpoint), ToolPolicyHash: checkpointToolPolicyHash(checkpoint)}
+		contextJSON, _ := json.Marshal(checkpointContextEnvelope{
+			Context:  checkpoint.Context,
+			Metadata: checkpoint.Metadata,
+		})
+		item := &workflow.WorkflowCheckpoint{
+			OwnerID:             run.OwnerID,
+			WorkflowID:          run.WorkflowID,
+			RunID:               run.ID,
+			NodeID:              checkpointNodeID(checkpoint),
+			Status:              checkpointStatus,
+			MessagesJSON:        messagesJSON,
+			MessagesSummary:     checkpoint.MessagesSummary,
+			StepsJSON:           stepsJSON,
+			PendingToolCallJSON: pendingJSON,
+			ContextJSON:         contextJSON,
+			ToolRegistryHash:    checkpointToolRegistryHash(checkpoint),
+			ToolPolicyHash:      checkpointToolPolicyHash(checkpoint),
+		}
 		if item.NodeID == "" {
 			item.NodeID = "agent"
 		}
@@ -187,13 +221,27 @@ func (s *Service) resumeRunFromCheckpoint(ctx context.Context, run *workflow.Run
 	if checkpoint.PendingToolCall != nil && decision == nil {
 		return nil, fmt.Errorf("%w: approval decision is missing", agenterrors.ErrInvalidInput)
 	}
-	version, err := s.GetWorkflowVersion(ctx, run.OwnerID, run.FlowVersionID)
-	if err != nil {
-		return nil, err
-	}
-	dsl, err := flow.ParseDSL(version.DSLJSON)
-	if err != nil {
-		return nil, fmt.Errorf("%w: invalid dsl_json", agenterrors.ErrInvalidInput)
+	var dsl *flow.DSL
+	if run.RunKind == workflow.RunKindInlineAgent {
+		var definition toolruntime.InlineAgentDefinition
+		if err := json.Unmarshal(run.DefinitionJSON, &definition); err != nil {
+			return nil, fmt.Errorf("%w: invalid inline agent definition", agenterrors.ErrInvalidInput)
+		}
+		hash := sha256.Sum256(run.DefinitionJSON)
+		if run.DefinitionHash == "" || run.DefinitionHash != hex.EncodeToString(hash[:]) {
+			return nil, fmt.Errorf("%w: inline agent definition hash mismatch", agenterrors.ErrForbidden)
+		}
+		dsl = inlineAgentDSL(definition, false)
+	} else {
+		version, err := s.GetWorkflowVersion(ctx, run.OwnerID, run.FlowVersionID)
+		if err != nil {
+			return nil, err
+		}
+		var parseErr error
+		dsl, parseErr = flow.ParseDSL(version.DSLJSON)
+		if parseErr != nil {
+			return nil, fmt.Errorf("%w: invalid dsl_json", agenterrors.ErrInvalidInput)
+		}
 	}
 	nodeSpec, err := findCheckpointAgentNode(dsl, stored.NodeID)
 	if err != nil {
@@ -208,7 +256,29 @@ func (s *Service) resumeRunFromCheckpoint(ctx context.Context, run *workflow.Run
 		_ = json.Unmarshal(run.CallChainJSON, &callChain)
 	}
 	node := s.resumeAgentLoopNode()
-	rc := &engine.RunContext{OwnerID: run.OwnerID, WorkflowID: run.WorkflowID, FlowVersionID: run.FlowVersionID, RunID: run.ID, ParentRunID: run.ParentRunID, CallDepth: run.CallDepth, WorkflowCallChain: append([]int64(nil), callChain...), ConversationID: run.ConversationID, Input: input, NodeInputs: map[string]engine.NodeInput{}, NodeOutputs: map[string]engine.NodeOutput{}, NodeErrors: map[string]string{}, NodeLatencies: map[string]int{}, ExecutedNodes: map[string]bool{}, CurrentNodeID: nodeSpec.ID, CurrentNodeType: nodeSpec.Type, AgentSteps: s, Events: &eventEmitter{repo: s.events, ownerID: run.OwnerID, runID: run.ID}}
+	rc := &engine.RunContext{
+		OwnerID:           run.OwnerID,
+		WorkflowID:        run.WorkflowID,
+		FlowVersionID:     run.FlowVersionID,
+		RunID:             run.ID,
+		ParentRunID:       run.ParentRunID,
+		CallDepth:         run.CallDepth,
+		WorkflowCallChain: append([]int64(nil), callChain...),
+		ConversationID:    run.ConversationID,
+		Input:             input,
+		NodeInputs:        map[string]engine.NodeInput{},
+		NodeOutputs:       map[string]engine.NodeOutput{},
+		NodeErrors:        map[string]string{},
+		NodeLatencies:     map[string]int{},
+		ExecutedNodes:     map[string]bool{},
+		CurrentNodeID:     nodeSpec.ID,
+		CurrentNodeType:   nodeSpec.Type,
+		AgentSteps:        s,
+		Events: &eventEmitter{
+			repo:    s.events,
+			ownerID: run.OwnerID,
+			runID:   run.ID,
+		}}
 	started := time.Now().UTC()
 	execCtx, cancel := context.WithCancel(ctx)
 	s.runCancels.Register(run.ID, cancel)
@@ -216,7 +286,13 @@ func (s *Service) resumeRunFromCheckpoint(ctx context.Context, run *workflow.Run
 		cancel()
 		s.runCancels.Unregister(run.ID)
 	}()
-	output, execErr := node.Resume(execCtx, rc, engine.NodeInput(input), nodeSpec.Config, runtimenode.AgentResumeOptions{Checkpoint: checkpoint, Approved: decision != nil && decision.Status == workflow.ApprovalStatusApproved, RejectionNote: approvalDecisionNote(decision)})
+	output, execErr := node.Resume(
+		execCtx, rc, engine.NodeInput(input), nodeSpec.Config,
+		runtimenode.AgentResumeOptions{
+			Checkpoint:    checkpoint,
+			Approved:      decision != nil && decision.Status == workflow.ApprovalStatusApproved,
+			RejectionNote: approvalDecisionNote(decision),
+		})
 	finished := time.Now().UTC()
 	run.FinishedAt = &finished
 	run.LatencyMS += int(finished.Sub(started).Milliseconds())
@@ -258,7 +334,7 @@ func (s *Service) resumeRunFromCheckpoint(ctx context.Context, run *workflow.Run
 
 func (s *Service) resumeAgentLoopNode() runtimenode.AgentLoopNode {
 	workspaceRoot, _ := os.Getwd()
-	return runtimenode.AgentLoopNode{AgentNode: runtimenode.AgentNode{LLM: s.llm.(llm.ToolCallingClient), Providers: s, Tools: s.toolRegistry, ToolPacks: s.toolPacks, Skills: s.skills, Audits: s.audits, Retriever: s.retriever, MemoryRetriever: s.memoryRetriever, Memories: s.memories, MemoryLogs: s.memoryLogs, WorkingMemory: s.workingMemory, OnExtractTrigger: s.triggerMemoryExtraction, WorkflowCaller: s, Profiles: s, MessageHistory: s.messages, ArchivalVecStore: s.archivalVecStore, Embedder: s.embedder, WorkspaceRoot: workspaceRoot}}
+	return runtimenode.AgentLoopNode{AgentNode: runtimenode.AgentNode{LLM: s.llm.(llm.ToolCallingClient), Providers: s, Tools: s.toolRegistry, ToolPacks: s.toolPacks, Skills: s.skills, Audits: s.audits, MCPServers: s.mcpServers, Retriever: s.retriever, MemoryRetriever: s.memoryRetriever, Memories: s.memories, MemoryLogs: s.memoryLogs, WorkingMemory: s.workingMemory, OnExtractTrigger: s.triggerMemoryExtraction, WorkflowCaller: s, InlineAgentCaller: s, Profiles: s, MessageHistory: s.messages, ArchivalVecStore: s.archivalVecStore, Embedder: s.embedder, WorkspaceRoot: workspaceRoot}}
 }
 
 func decodeRuntimeCheckpoint(stored *workflow.WorkflowCheckpoint, decision *workflow.ApprovalRequest) (*runtimeagent.Checkpoint, error) {

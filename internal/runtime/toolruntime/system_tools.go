@@ -23,11 +23,17 @@ func (HumanApprovalTool) Description() string {
 }
 
 func (HumanApprovalTool) Parameters() json.RawMessage {
-	return json.RawMessage(`{"type":"object","properties":{"action":{"type":"string","description":"the action requiring approval"},"reason":{"type":"string","description":"why approval is needed"}},"required":["action","reason"]}`)
+	return json.RawMessage(
+		`{"type":"object","properties":{"action":{"type":"string","description":"the action requiring approval"},"reason":{"type":"string","description":"why approval is needed"}},"required":["action","reason"]}`,
+	)
 }
 
 func (HumanApprovalTool) Metadata() ToolMetadata {
-	return ToolMetadata{RiskLevel: RiskHigh, RequiresApproval: true, SideEffect: SideEffectExternalAction}
+	return ToolMetadata{
+		RiskLevel:        RiskHigh,
+		RequiresApproval: true,
+		SideEffect:       SideEffectExternalAction,
+	}
 }
 
 func (HumanApprovalTool) Execute(ctx context.Context, rc ToolRunContext, input json.RawMessage) (*ToolResult, error) {

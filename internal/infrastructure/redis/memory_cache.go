@@ -8,14 +8,13 @@ import (
 
 	"agentcanvas/internal/domain/memory"
 
+	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 )
 
 const (
 	memoryCachePrefix = "mem"
 	defaultTTL        = 5 * time.Minute
-	itemTTL           = 30 * time.Minute
-	ownerKeySetTTL    = 1 * time.Hour
 )
 
 type MemoryCache struct {
@@ -26,16 +25,40 @@ func NewMemoryCache(client *redis.Client) *MemoryCache {
 	return &MemoryCache{client: client}
 }
 
-func (c *MemoryCache) itemKey(ownerID int64, key string) string {
-	return fmt.Sprintf("%s:i:%d:%s", memoryCachePrefix, ownerID, key)
+func (c *MemoryCache) itemKey(ownerID int64, epoch, key string) string {
+	return fmt.Sprintf("%s:v2:i:%d:%s:%s", memoryCachePrefix, ownerID, epoch, key)
 }
 
-func (c *MemoryCache) ownerKeySet(ownerID int64) string {
-	return fmt.Sprintf("%s:owner:%d:keys", memoryCachePrefix, ownerID)
+func (c *MemoryCache) epochKey(ownerID int64) string {
+	return fmt.Sprintf("%s:v2:epoch:%d", memoryCachePrefix, ownerID)
+}
+
+func (c *MemoryCache) epoch(ctx context.Context, ownerID int64) (string, error) {
+	key := c.epochKey(ownerID)
+	epoch, err := c.client.Get(ctx, key).Result()
+	if err == nil {
+		return epoch, nil
+	}
+	if err != redis.Nil {
+		return "", err
+	}
+	epoch = uuid.NewString()
+	created, err := c.client.SetNX(ctx, key, epoch, 0).Result()
+	if err != nil {
+		return "", err
+	}
+	if created {
+		return epoch, nil
+	}
+	return c.client.Get(ctx, key).Result()
 }
 
 func (c *MemoryCache) Get(ctx context.Context, ownerID int64, key string) ([]memory.Memory, bool, error) {
-	raw, err := c.client.Get(ctx, c.itemKey(ownerID, key)).Bytes()
+	epoch, err := c.epoch(ctx, ownerID)
+	if err != nil {
+		return nil, false, err
+	}
+	raw, err := c.client.Get(ctx, c.itemKey(ownerID, epoch, key)).Bytes()
 	if err != nil {
 		if err == redis.Nil {
 			return nil, false, nil
@@ -57,26 +80,15 @@ func (c *MemoryCache) Set(ctx context.Context, ownerID int64, key string, items 
 	if err != nil {
 		return fmt.Errorf("memory cache serialize: %w", err)
 	}
-	cacheKey := c.itemKey(ownerID, key)
-	pipe := c.client.Pipeline()
-	pipe.Set(ctx, cacheKey, data, ttl)
-	pipe.SAdd(ctx, c.ownerKeySet(ownerID), cacheKey)
-	pipe.Expire(ctx, c.ownerKeySet(ownerID), ownerKeySetTTL)
-	_, pipeErr := pipe.Exec(ctx)
-	return pipeErr
-}
-
-func (c *MemoryCache) InvalidateOwner(ctx context.Context, ownerID int64) error {
-	setKey := c.ownerKeySet(ownerID)
-	keys, err := c.client.SMembers(ctx, setKey).Result()
+	epoch, err := c.epoch(ctx, ownerID)
 	if err != nil {
 		return err
 	}
-	if len(keys) == 0 {
-		return nil
-	}
-	allKeys := append(keys, setKey)
-	return c.client.Del(ctx, allKeys...).Err()
+	return c.client.Set(ctx, c.itemKey(ownerID, epoch, key), data, ttl).Err()
+}
+
+func (c *MemoryCache) InvalidateOwner(ctx context.Context, ownerID int64) error {
+	return c.client.Set(ctx, c.epochKey(ownerID), uuid.NewString(), 0).Err()
 }
 
 func (c *MemoryCache) InvalidateItem(ctx context.Context, ownerID, id int64) error {

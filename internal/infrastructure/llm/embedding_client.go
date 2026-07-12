@@ -47,7 +47,9 @@ func (c *OpenAICompatibleEmbeddingClient) Embed(ctx context.Context, cfg Embeddi
 	if strings.TrimSpace(req.Model) == "" || len(req.Input) == 0 {
 		return nil, fmt.Errorf("embedding model and input are required")
 	}
-	payload := openAIEmbeddingRequest{Model: req.Model, Input: req.Input}
+	payload := openAIEmbeddingRequest{
+		Model: req.Model, Input: req.Input,
+	}
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return nil, err
@@ -77,7 +79,10 @@ func (c *OpenAICompatibleEmbeddingClient) Embed(ctx context.Context, cfg Embeddi
 		}
 		embeddings[item.Index] = item.Embedding
 	}
-	return &EmbeddingResponse{Embeddings: embeddings, Usage: parsed.Usage}, nil
+	return &EmbeddingResponse{
+		Embeddings: embeddings,
+		Usage:      parsed.Usage,
+	}, nil
 }
 
 func (c *OpenAICompatibleEmbeddingClient) httpClient() *http.Client {

@@ -45,6 +45,26 @@ func TestContextAssemblerTruncatesOversizedPinnedTask(t *testing.T) {
 	}
 }
 
+func TestContextAssemblerDoesNotSilentlyTruncateCoreRules(t *testing.T) {
+	messages, trace := ContextAssembler{MaxInputTokens: 4}.Build(RunRequest{
+		Task: "task",
+		ContextBlocks: []ContextBlock{{
+			Name:    "rules_l1:core",
+			Role:    "system",
+			Content: strings.Repeat("core ", 20),
+			Pinned:  true,
+		}},
+	})
+	if !trace.CoreOverflow {
+		t.Fatalf("expected core overflow to be visible, got %+v", trace)
+	}
+	for _, message := range messages {
+		if strings.Contains(message.Content, "core core") {
+			t.Fatalf("core rule must not be silently truncated or included: %+v", messages)
+		}
+	}
+}
+
 func TestContextAssemblerOmitsEmptyBlocks(t *testing.T) {
 	messages, trace := ContextAssembler{MaxChars: 500}.Build(RunRequest{
 		Task: "task",

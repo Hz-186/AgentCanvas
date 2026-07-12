@@ -15,6 +15,8 @@ type DreamConfig struct {
 	IdleTimeout        time.Duration
 	Provider           llm.ChatProviderConfig
 	Model              string
+	EmbeddingProvider  llm.EmbeddingProviderConfig
+	EmbeddingModel     string
 }
 
 func NewDreamConfig(cfg config.MemoryDreamConfig) DreamConfig {
@@ -27,6 +29,8 @@ func NewDreamConfig(cfg config.MemoryDreamConfig) DreamConfig {
 			BaseURL:      cfg.LLMBaseURL,
 			APIKey:       cfg.LLMAPIKey,
 		},
-		Model: cfg.LLMModel,
+		Model:             cfg.LLMModel,
+		EmbeddingProvider: llm.EmbeddingProviderConfig{ProviderType: cfg.EmbeddingProviderType, BaseURL: cfg.EmbeddingBaseURL, APIKey: cfg.EmbeddingAPIKey},
+		EmbeddingModel:    cfg.EmbeddingModel,
 	}
 }

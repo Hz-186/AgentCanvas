@@ -36,34 +36,44 @@ const (
 )
 
 type RunRequest struct {
-	OwnerID            int64
-	WorkflowID         int64
-	RunID              int64
-	NodeID             string
-	CallDepth          int
-	WorkflowCallChain  []int64
-	ConversationID     *int64
-	Provider           llm.ChatProviderConfig
-	Model              string
-	Mode               string
-	Plan               *Plan
-	SystemPrompt       string
-	Task               string
-	ReflectionEnabled  bool
-	Temperature        *float64
-	MaxIterations      int
-	MaxToolCalls       int
-	MaxExecutionTimeMS int
-	MaxInputChars      int
-	MaxInputTokens     int
-	RuleTrace          rules.Trace
-	ContextBlocks      []ContextBlock
-	ToolPolicy         ToolPolicy
-	ToolHookChain      hooks.ToolHookChain
-	Tools              []toolruntime.RuntimeTool
-	ResumeMessages     []llm.ChatMessage
-	ResumeIteration    int
-	ResumeToolCalls    int
+	OwnerID                   int64
+	WorkflowID                int64
+	RunID                     int64
+	NodeID                    string
+	CallDepth                 int
+	WorkflowCallChain         []int64
+	ConversationID            *int64
+	Provider                  llm.ChatProviderConfig
+	Model                     string
+	Mode                      string
+	Plan                      *Plan
+	SystemPrompt              string
+	Task                      string
+	ReflectionEnabled         bool
+	Temperature               *float64
+	MaxIterations             int
+	MaxToolCalls              int
+	MaxExecutionTimeMS        int
+	MaxParallelTools          int
+	MaxInputChars             int
+	MaxInputTokens            int
+	ContextWindowTokens       int
+	ReservedOutputTokens      int
+	ContextSafetyMarginTokens int
+	MaxRuleTokens             int
+	RuleTags                  []string
+	RuleRiskLevel             string
+	RuleSetVersion            string
+	CustomRules               []rules.Rule
+	RuleTrace                 rules.Trace
+	ContextBlocks             []ContextBlock
+	ToolPolicy                ToolPolicy
+	ToolHookChain             hooks.ToolHookChain
+	Tools                     []toolruntime.RuntimeTool
+	ResumeMessages            []llm.ChatMessage
+	ResumeIteration           int
+	ResumeToolCalls           int
+	ResumeApprovedToolCallIDs []string
 }
 
 type RunResult struct {
@@ -120,6 +130,8 @@ type Checkpoint struct {
 	ToolPolicy      ToolPolicy        `json:"tool_policy"`
 	ToolNames       []string          `json:"tool_names"`
 	Metadata        map[string]any    `json:"metadata,omitempty"`
+	RuleSetVersion  string            `json:"rule_set_version,omitempty"`
+	CustomRules     []rules.Rule      `json:"custom_rules,omitempty"`
 }
 
 type ContextBlock struct {
@@ -130,20 +142,37 @@ type ContextBlock struct {
 }
 
 type ContextTrace struct {
-	MaxChars        int                 `json:"max_chars,omitempty"`
-	MaxInputTokens  int                 `json:"max_input_tokens,omitempty"`
-	UsedChars       int                 `json:"used_chars,omitempty"`
-	UsedTokens      int                 `json:"used_tokens,omitempty"`
-	EstimatedTokens int                 `json:"estimated_tokens,omitempty"`
-	SavedTokens     int                 `json:"saved_tokens,omitempty"`
-	TokenAudit      TokenAudit          `json:"token_audit,omitempty"`
-	RuleTrace       rules.Trace         `json:"rule_trace,omitempty"`
-	Included        []string            `json:"included,omitempty"`
-	Omitted         []string            `json:"omitted,omitempty"`
-	Truncated       []string            `json:"truncated,omitempty"`
-	Compressed      []string            `json:"compressed,omitempty"`
-	Strategy        string              `json:"strategy,omitempty"`
-	Blocks          []ContextBlockTrace `json:"blocks,omitempty"`
+	MaxChars              int                 `json:"max_chars,omitempty"`
+	MaxInputTokens        int                 `json:"max_input_tokens,omitempty"`
+	UsedChars             int                 `json:"used_chars,omitempty"`
+	UsedTokens            int                 `json:"used_tokens,omitempty"`
+	EstimatedTokens       int                 `json:"estimated_tokens,omitempty"`
+	SavedTokens           int                 `json:"saved_tokens,omitempty"`
+	TokenAudit            TokenAudit          `json:"token_audit,omitempty"`
+	RuleTrace             rules.Trace         `json:"rule_trace,omitempty"`
+	Included              []string            `json:"included,omitempty"`
+	Omitted               []string            `json:"omitted,omitempty"`
+	Truncated             []string            `json:"truncated,omitempty"`
+	Compressed            []string            `json:"compressed,omitempty"`
+	Strategy              string              `json:"strategy,omitempty"`
+	Blocks                []ContextBlockTrace `json:"blocks,omitempty"`
+	RuleRounds            []RuleRoundTrace    `json:"rule_rounds,omitempty"`
+	RuleBudget            RuleBudget          `json:"rule_budget,omitempty"`
+	RuleSetVersion        string              `json:"rule_set_version,omitempty"`
+	CoreOverflow          bool                `json:"core_overflow,omitempty"`
+	EstimatedPromptTokens int                 `json:"estimated_prompt_tokens,omitempty"`
+	ProviderPromptTokens  int                 `json:"provider_prompt_tokens,omitempty"`
+	TokenEstimationError  int                 `json:"token_estimation_error,omitempty"`
+}
+
+type RuleRoundTrace struct {
+	Iteration             int         `json:"iteration"`
+	Loaded                []string    `json:"loaded,omitempty"`
+	Removed               []string    `json:"removed,omitempty"`
+	Trace                 rules.Trace `json:"trace"`
+	Budget                RuleBudget  `json:"budget"`
+	EstimatedPromptTokens int         `json:"estimated_prompt_tokens,omitempty"`
+	ProviderPromptTokens  int         `json:"provider_prompt_tokens,omitempty"`
 }
 
 type TokenAudit struct {
