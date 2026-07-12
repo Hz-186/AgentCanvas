@@ -29,6 +29,11 @@ llm_cache:
   embedding_provider_id: 1
   embedding_model: text-embedding-v3
 
+resource_cache:
+  enabled: true
+  key_prefix: agentcanvas
+  ttl_seconds: 60
+
 memory_dream:
   enabled: true
   trigger_every_n_turns: 5
