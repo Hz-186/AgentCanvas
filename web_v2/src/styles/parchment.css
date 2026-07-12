@@ -1,0 +1,38 @@
+.parchment-bg { position: fixed; inset: 0; z-index: -1; overflow: hidden; pointer-events: none; isolation: isolate; background: var(--bg); }
+.parchment-base { position: absolute; inset: -2%; background-position: center; background-size: cover; filter: saturate(.82) sepia(.18) contrast(1.03); }
+.parchment-base::after { content: ""; position: absolute; inset: 0; background: color-mix(in srgb, var(--bg) 18%, transparent); mix-blend-mode: color; }
+.parchment-fiber { position: absolute; inset: 0; opacity: .25; mix-blend-mode: multiply; background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='240' height='240'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.74' numOctaves='3' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 .22 0 0 0 0 .13 0 0 0 0 .05 0 0 0 .13 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>"); }
+.parchment-grid { position: absolute; inset: 0; opacity: .16; background-image: linear-gradient(var(--grid-line-strong) 1px,transparent 1px),linear-gradient(90deg,var(--grid-line-strong) 1px,transparent 1px); background-size: 40px 40px; mask-image: radial-gradient(ellipse at 50% 45%,#000 0 42%,transparent 88%); }
+.manuscript-art-layer { position: absolute; inset: -2%; display: grid; place-items: center; will-change: transform; }
+.manuscript-plate { width: 96%; height: 92%; object-fit: contain; opacity: .45; filter: sepia(1) saturate(.65) contrast(1.22) brightness(.64); mix-blend-mode: multiply; }
+.scene-auth .manuscript-plate { width: 76%; height: 84%; object-position: 10% 42%; opacity: .7; }
+.scene-canvas .manuscript-plate { opacity: .31; filter: sepia(1) saturate(.5) contrast(1.18) brightness(.7); }
+.scene-run .manuscript-plate { opacity: .25; }
+.scene-workflows .manuscript-plate { opacity: .2; object-position: 70% 54%; }
+.drafting-guides { position: absolute; inset: -3%; width: 106%; height: 106%; color: var(--ink-faint); opacity: .22; }
+.drafting-guides g { fill: none; stroke: currentColor; stroke-width: .8; stroke-dasharray: 3 7; }
+.script-field { position: absolute; inset: 0; color: var(--ink-soft); }
+.script-line { position: absolute; font: 31px/1 var(--font-script); letter-spacing: .025em; opacity: .3; white-space: nowrap; transform: rotate(var(--script-r,-3deg)); text-shadow: .3px .3px 0 currentColor; }
+.script-line.mirrored { transform: scaleX(-1) rotate(var(--script-r,2deg)); }
+.script-1 { left: 5%; top: 9%; --script-r:-4deg; }
+.script-2 { left: 36%; top: 15%; --script-r:2deg; }
+.script-3 { right: 5%; top: 28%; --script-r:-2deg; }
+.script-4 { left: 8%; bottom: 13%; --script-r:3deg; }
+.script-5 { right: 13%; bottom: 8%; --script-r:-3deg; }
+.scene-auth .script-line { opacity: .42; }
+.scene-auth .script-2 { left: 31%; top: 6%; }
+.scene-auth .script-3 { right: 48%; top: 31%; }
+.scene-auth .script-5 { right: 43%; bottom: 5%; }
+.ink-transfer { position: absolute; inset: 0; opacity: .15; mix-blend-mode: multiply; background: radial-gradient(ellipse at 18% 36%,rgba(70,38,12,.35),transparent 29%),radial-gradient(ellipse at 82% 70%,rgba(80,44,14,.3),transparent 26%); filter: blur(18px); }
+.parchment-vignette { position: absolute; inset: 0; background: radial-gradient(ellipse at center,transparent 45%,rgba(43,24,8,.28) 100%),linear-gradient(90deg,rgba(52,30,10,.16),transparent 8% 92%,rgba(52,30,10,.16)); }
+.state-thinking .script-line,.state-retrieval .script-line,.state-tool .script-line { animation: scriptSeep 5.8s ease-in-out infinite; }
+.state-thinking .script-2,.state-retrieval .script-2 { animation-delay: -1.9s; }.state-thinking .script-3,.state-tool .script-3{animation-delay:-3.7s}.state-thinking .script-4{animation-delay:-4.8s}
+@keyframes scriptSeep { 0%,100%{opacity:.1;filter:blur(.35px)} 45%,65%{opacity:.48;filter:none} }
+[data-theme="dark"] .parchment-base { filter: brightness(.22) saturate(.72) sepia(.35) contrast(1.2); }
+[data-theme="dark"] .parchment-base::after { background: rgba(20,16,10,.38); mix-blend-mode: multiply; }
+[data-theme="dark"] .manuscript-plate { filter: sepia(1) saturate(.6) brightness(1.35) contrast(1.05); mix-blend-mode: screen; opacity: .32; }
+[data-theme="dark"] .parchment-fiber { mix-blend-mode: screen; opacity: .12; }
+[data-theme="dark"] .parchment-vignette { background: radial-gradient(ellipse at center,transparent 35%,rgba(0,0,0,.72)); }
+.liquid-bg{display:none}
+@media(max-width:820px){.scene-auth .manuscript-plate{width:130%;height:56%;object-position:center top;opacity:.54}.scene-auth .script-line{font-size:23px}.script-3,.script-5{display:none}.manuscript-plate{width:135%;opacity:.2}}
+@media(prefers-reduced-motion:reduce){.script-line{animation:none!important}.manuscript-art-layer{transform:none!important}}
