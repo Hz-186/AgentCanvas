@@ -57,7 +57,14 @@ import type {
   UpdateWorkflowProfileRequest,
   UpdateProviderRequest,
   UploadDocumentResponse,
+  ResourceSummaryKind,
+  ResourceSummaryPage,
 } from '../types/api';
+
+export const resourceSummaryApi = {
+  list: (kind: ResourceSummaryKind, params?: { limit?: number; cursor?: string }) =>
+    api.get<ResourceSummaryPage>(`/resource-summaries/${kind}`, params),
+};
 
 export const workflowApi = {
   list: () => api.get<Workflow[]>('/workflows'),
@@ -67,6 +74,17 @@ export const workflowApi = {
   create: (body: CreateWorkflowRequest) => api.post<Workflow>('/workflows', body),
   update: (id: number, body: UpdateWorkflowRequest) => api.patch<Workflow>(`/workflows/${id}`, body),
   remove: (id: number) => api.delete<{ success: boolean }>(`/workflows/${id}`),
+  createConversation: (id: number, title?: string) => api.post<Conversation>(`/workflows/${id}/conversations`, { title }),
+  listConversations: (id: number) => api.get<Conversation[]>(`/workflows/${id}/conversations`),
+  getConversation: (id: number, conversationId: number) => api.get<Conversation>(`/workflows/${id}/conversations/${conversationId}`),
+  listConversationMessages: (id: number, conversationId: number) => api.get<Message[]>(`/workflows/${id}/conversations/${conversationId}/messages`),
+  removeConversation: (id: number, conversationId: number) => api.delete<{ success: boolean }>(`/workflows/${id}/conversations/${conversationId}`),
+  streamConversationMessage: (
+    id: number,
+    conversationId: number,
+    body: { question: string; flow_version_id?: number; input?: Record<string, unknown> },
+    handlers: { onMessage: (msg: SSEMessage) => void; onError?: (err: Error) => void; signal?: AbortSignal },
+  ) => streamPost(`/workflows/${id}/conversations/${conversationId}/messages/stream`, { body, ...handlers }) as Promise<void>,
   createEvalDataset: (agentId: number, body: CreateEvalDatasetRequest) =>
     api.post<EvalDataset>(`/workflows/${agentId}/eval-datasets`, body),
   listEvalDatasets: (agentId: number) => api.get<EvalDataset[]>(`/workflows/${agentId}/eval-datasets`),
@@ -233,8 +251,11 @@ export const settingsApi = {
   },
   tools: {
     list: () => api.get<ToolDefinition[]>('/tool-definitions'),
+    get: (id: number) => api.get<ToolDefinition>(`/tool-definitions/${id}`),
     create: (body: { name: string; tool_type?: string; description?: string; config_json: Record<string, unknown> }) =>
       api.post<ToolDefinition>('/tool-definitions', body),
+    update: (id: number, body: Partial<Pick<ToolDefinition, 'name' | 'description' | 'config_json' | 'status'>>) =>
+      api.patch<ToolDefinition>(`/tool-definitions/${id}`, body),
     remove: (id: number) => api.delete<{ success: boolean }>(`/tool-definitions/${id}`),
     test: (id: number, input: Record<string, unknown>) => api.post<Record<string, unknown>>(`/tool-definitions/${id}/test`, { input }),
     listPolicies: () => api.get<ToolPolicy[]>('/tool-policies'),
@@ -259,6 +280,7 @@ export const settingsApi = {
   },
   skills: {
     list: () => api.get<Skill[]>('/skills'),
+    get: (id: number) => api.get<Skill>(`/skills/${id}`),
     create: (body: CreateSkillRequest) => api.post<Skill>('/skills', body),
     update: (id: number, body: UpdateSkillRequest) => api.patch<Skill>(`/skills/${id}`, body),
     remove: (id: number) => api.delete<{ success: boolean }>(`/skills/${id}`),

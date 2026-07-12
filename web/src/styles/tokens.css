@@ -7,20 +7,20 @@
    ============================================================ */
 
 :root {
-  /* —— 强调色（macOS 系统蓝）—— */
-  --accent: #0a84ff;
-  --accent-hover: #0a7cf0;
-  --accent-active: #0969d6;
-  --accent-soft: rgba(10, 132, 255, 0.12);
-  --accent-ring: rgba(10, 132, 255, 0.4);
+  /* —— 冷调蓝紫钛灰：克制、低饱和，不使用偏绿主色 —— */
+  --accent: #7482b8;
+  --accent-hover: #6473aa;
+  --accent-active: #566397;
+  --accent-soft: rgba(116, 130, 184, 0.15);
+  --accent-ring: rgba(116, 130, 184, 0.38);
   --accent-contrast: #ffffff;
 
   /* —— 语义色 —— */
-  --success: #30a46c;
+  --success: #6f82b9;
   --warning: #e3a008;
   --danger: #e5484d;
   --danger-soft: rgba(229, 72, 77, 0.12);
-  --info: #0a84ff;
+  --info: #7187c5;
 
   /* —— 圆角 —— */
   --radius-xs: 6px;
@@ -50,10 +50,12 @@
   --font-xl: clamp(20px, 1.6vw + 10px, 24px);
   --font-2xl: clamp(26px, 2.4vw + 12px, 34px);
 
-  --font-sans: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI',
-    'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', system-ui, sans-serif;
-  --font-mono: 'SF Mono', 'JetBrains Mono', 'Fira Code', ui-monospace,
-    Menlo, Monaco, Consolas, monospace;
+  --font-sans: 'Avenir Next', Inter, 'SF Pro Display', 'SF Pro Text', -apple-system, BlinkMacSystemFont,
+    'PingFang SC', 'Noto Sans CJK SC', 'Segoe UI', system-ui, sans-serif;
+  --font-display: 'Bodoni 72', Didot, 'Iowan Old Style', 'Times New Roman', serif;
+  --font-script: 'Snell Roundhand', 'Apple Chancery', 'URW Chancery L', cursive;
+  --font-mono: 'SFMono-Regular', 'SF Mono', Menlo, Monaco, 'Cascadia Code', 'JetBrains Mono',
+    'Fira Code', Consolas, 'Liberation Mono', ui-monospace, monospace;
 
   /* —— 层级 —— */
   --z-base: 1;
@@ -83,71 +85,71 @@ html[data-theme='light'] {
   color-scheme: light;
 
   /* 背景层：从最底到最上 */
-  --bg-app: #e8eef6;
-  --bg-app-gradient:
-    linear-gradient(180deg, #f3faff 0%, #dceaf6 100%);
-  --bg-surface: rgba(226, 243, 255, 0.08);
-  --bg-surface-2: rgba(221, 240, 255, 0.11);
-  --bg-surface-3: rgba(208, 231, 250, 0.16);
-  --bg-elevated: rgba(232, 246, 255, 0.14);
+  --bg-app: #e8eaf2;
+  --bg-app-gradient: linear-gradient(142deg, #f5f6fa 0%, #e4e7f0 48%, #d9dce8 100%);
+  --bg-surface: rgba(245, 247, 252, 0.46);
+  --bg-surface-2: rgba(248, 249, 253, 0.64);
+  --bg-surface-3: rgba(224, 227, 238, 0.76);
+  --bg-elevated: rgba(249, 250, 254, 0.82);
 
   /* 玻璃面板 */
-  --glass-bg: rgba(226, 244, 255, 0.1);
-  --glass-bg-strong: rgba(226, 244, 255, 0.16);
-  --glass-border: rgba(48, 82, 118, 0.13);
-  --glass-highlight: rgba(255, 255, 255, 0.68);
-  --tech-line: rgba(0, 113, 227, 0.16);
-  --tech-line-strong: rgba(0, 113, 227, 0.26);
+  --glass-bg: rgba(239, 242, 250, 0.52);
+  --glass-bg-strong: rgba(246, 247, 252, 0.72);
+  --glass-border: rgba(74, 82, 112, 0.17);
+  --glass-highlight: rgba(255, 255, 255, 0.8);
+  --tech-line: rgba(82, 91, 130, 0.065);
+  --tech-line-strong: rgba(82, 91, 130, 0.11);
+  --canvas-grid: rgba(91, 103, 151, 0.22);
 
   /* 文本 */
-  --text-primary: #1c1c1e;
-  --text-secondary: #5b5e66;
-  --text-tertiary: #8a8d94;
-  --text-disabled: #b4b7bd;
+  --text-primary: #202437;
+  --text-secondary: #62697f;
+  --text-tertiary: #9298aa;
+  --text-disabled: #b7bbc7;
   --text-on-accent: #ffffff;
 
   /* 边框与分隔 */
-  --border: rgba(43, 72, 105, 0.14);
-  --border-strong: rgba(39, 68, 98, 0.23);
-  --separator: rgba(37, 70, 104, 0.12);
+  --border: rgba(73, 82, 120, 0.15);
+  --border-strong: rgba(66, 76, 117, 0.26);
+  --separator: rgba(72, 82, 122, 0.13);
 
   /* 控件 */
-  --control-bg: rgba(228, 243, 255, 0.32);
-  --control-bg-hover: rgba(239, 250, 255, 0.44);
-  --control-bg-active: rgba(205, 229, 250, 0.52);
-  --input-bg: rgba(218, 237, 252, 0.62);
-  --input-bg-focus: rgba(218, 237, 252, 0.68);
+  --control-bg: rgba(229, 232, 244, 0.48);
+  --control-bg-hover: rgba(237, 239, 249, 0.72);
+  --control-bg-active: rgba(210, 216, 237, 0.66);
+  --input-bg: rgba(238, 240, 248, 0.48);
+  --input-bg-focus: rgba(246, 247, 252, 0.68);
 
   /* 阴影 */
-  --shadow-sm: 0 1px 2px rgba(34, 57, 84, 0.08), 0 1px 3px rgba(34, 57, 84, 0.06);
-  --shadow-md: 0 8px 22px rgba(35, 58, 86, 0.12), 0 2px 5px rgba(255, 255, 255, 0.34) inset;
-  --shadow-lg: 0 24px 54px rgba(35, 58, 86, 0.18), 0 6px 14px rgba(35, 58, 86, 0.08);
-  --shadow-glass: 0 24px 64px rgba(35, 58, 86, 0.18), 0 1px 0 rgba(255, 255, 255, 0.82) inset, 0 -22px 44px rgba(75, 150, 220, 0.08) inset;
+  --shadow-sm: 0 2px 6px rgba(55, 61, 90, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.54);
+  --shadow-md: 0 12px 32px rgba(55, 61, 90, 0.13), inset 0 1px 0 rgba(255, 255, 255, 0.72);
+  --shadow-lg: 0 30px 70px rgba(46, 51, 80, 0.18), 0 8px 22px rgba(70, 78, 116, 0.08);
+  --shadow-glass: 0 28px 72px rgba(55, 61, 94, 0.18), inset 0 1px 0 rgba(255, 255, 255, 0.92), inset 0 -22px 44px rgba(111, 125, 190, 0.08);
 }
 
 /* ============================ 深色主题 ============================ */
 html[data-theme='dark'] {
   color-scheme: dark;
 
-  --bg-app: #11161d;
-  --bg-app-gradient:
-    linear-gradient(180deg, #202630 0%, #121821 100%);
-  --bg-surface: rgba(30, 36, 45, 0.76);
-  --bg-surface-2: rgba(39, 46, 56, 0.78);
-  --bg-surface-3: rgba(48, 56, 68, 0.82);
-  --bg-elevated: rgba(44, 52, 64, 0.9);
+  --bg-app: #11131d;
+  --bg-app-gradient: linear-gradient(145deg, #222638 0%, #11131d 58%, #0b0d14 100%);
+  --bg-surface: rgba(27, 30, 45, 0.76);
+  --bg-surface-2: rgba(36, 40, 58, 0.8);
+  --bg-surface-3: rgba(46, 50, 70, 0.84);
+  --bg-elevated: rgba(36, 40, 58, 0.92);
 
-  --glass-bg: rgba(47, 58, 72, 0.48);
-  --glass-bg-strong: rgba(39, 48, 61, 0.72);
+  --glass-bg: rgba(37, 40, 57, 0.54);
+  --glass-bg-strong: rgba(27, 30, 44, 0.78);
   --glass-border: rgba(255, 255, 255, 0.14);
   --glass-highlight: rgba(255, 255, 255, 0.16);
-  --tech-line: rgba(115, 170, 225, 0.1);
-  --tech-line-strong: rgba(115, 170, 225, 0.18);
+  --tech-line: rgba(186, 194, 225, 0.065);
+  --tech-line-strong: rgba(186, 194, 225, 0.11);
+  --canvas-grid: rgba(181, 191, 225, 0.17);
 
-  --text-primary: #f2f3f5;
-  --text-secondary: #b1b5bc;
-  --text-tertiary: #7f848d;
-  --text-disabled: #565b63;
+  --text-primary: #f0f1f7;
+  --text-secondary: #b4b8c9;
+  --text-tertiary: #7f859c;
+  --text-disabled: #555a70;
   --text-on-accent: #ffffff;
 
   --border: rgba(255, 255, 255, 0.1);
@@ -160,7 +162,7 @@ html[data-theme='dark'] {
   --input-bg: rgba(18, 24, 32, 0.48);
   --input-bg-focus: rgba(24, 32, 43, 0.7);
 
-  --accent-soft: rgba(10, 132, 255, 0.2);
+  --accent-soft: rgba(126, 140, 207, 0.2);
 
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
   --shadow-md: 0 4px 14px rgba(0, 0, 0, 0.4);

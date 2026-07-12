@@ -1,7 +1,7 @@
 import type { Node } from '@xyflow/react';
 import type { NodeConfig, NodeType } from '../../types/flow';
 
-export type AgentMode = 'action' | 'react' | 'plan_execute' | 'reasoning_action' | 'reflect' | 'supervisor';
+export type AgentMode = 'react' | 'plan_execute';
 
 export type NodeRunStatus = 'idle' | 'running' | 'waiting_human' | 'succeeded' | 'failed';
 
@@ -9,7 +9,6 @@ export interface AgentUIState {
   x?: number;
   y?: number;
   agent_mode?: AgentMode;
-  reasoning_profile?: 'reasoning_action';
   modules?: Array<{
     id: string;
     kind: string;

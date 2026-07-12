@@ -8,23 +8,21 @@ export function NodeWrapper({
   data,
   children,
   className = '',
-  toolsHandle = false,
-  subAgentHandle = false,
 }: Pick<NodeProps<CanvasNode>, 'selected' | 'data'> & {
   children: ReactNode;
   className?: string;
-  toolsHandle?: boolean;
-  subAgentHandle?: boolean;
 }) {
   const status = data.runStatus ?? 'idle';
+  const isResource = ['knowledge_retrieval', 'memory_read', 'memory_write', 'http_tool', 'mcp_tool'].includes(data.nodeType);
+  const targetPosition = isResource ? Position.Top : Position.Left;
+  const sourcePosition = data.nodeType === 'begin' ? Position.Bottom : Position.Right;
   return (
     <div className={`workflow-node node-wrapper ${selected ? 'selected' : ''} node-status-${status} ${className}`}>
-      <Handle type="target" position={Position.Left} />
+      {data.nodeType !== 'begin' ? <Handle type="target" position={targetPosition} id={isResource ? 'dependency' : 'default'} /> : null}
       {status === 'running' ? <Loader2 className="node-running-icon" size={14} /> : null}
       {children}
-      <Handle type="source" position={Position.Right} id="default" />
-      {toolsHandle ? <Handle className="node-bottom-handle node-tools-handle" type="source" position={Position.Bottom} id="tools" /> : null}
-      {subAgentHandle ? <Handle className="node-bottom-handle node-sub-agent-handle" type="source" position={Position.Bottom} id="sub-agents" /> : null}
+      {data.nodeType !== 'message' && data.nodeType !== 'json_output' ? <Handle type="source" position={sourcePosition} id="default" /> : null}
+      {data.nodeType === 'agent_loop' ? <Handle className="dependency-handle" type="source" position={Position.Bottom} id="dependency" /> : null}
     </div>
   );
 }
