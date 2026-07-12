@@ -1,0 +1,167 @@
+/* Design tokens: parchment + ink — da Vinci sketchbook aesthetic. */
+:root {
+  color-scheme: light dark;
+
+  /* Fonts: serif display for headings, humanist sans for body, handwritten accents, mono for code */
+  --font-display: "EB Garamond", "Cormorant Garamond", "Iowan Old Style", Georgia, "Times New Roman", serif;
+  --font-sans: "Fraunces", "EB Garamond", "Iowan Old Style", Georgia, ui-serif, serif;
+  --font-body: "Inter", "General Sans", -apple-system, BlinkMacSystemFont, system-ui, "Segoe UI", sans-serif;
+  --font-hand: "Caveat", "Homemade Apple", "Kalam", "Segoe Script", "Bradley Hand", cursive;
+  --font-script: "Italianno", "Snell Roundhand", "Apple Chancery", "Segoe Script", cursive;
+  --font-mono: "JetBrains Mono", "Geist Mono", "SF Mono", ui-monospace, Menlo, Consolas, monospace;
+
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-soft: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --spring-standard: cubic-bezier(0.32, 0.72, 0, 1);
+
+  --radius-xs: 6px;
+  --radius-sm: 10px;
+  --radius-md: 14px;
+  --radius-lg: 20px;
+  --radius-xl: 28px;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+
+  --duration-fast: 140ms;
+  --duration: 220ms;
+  --duration-slow: 520ms;
+
+  --hover-scale: 1.02;
+  --tap-scale: 0.97;
+}
+
+/* Light theme — aged parchment */
+:root,
+:root[data-theme="light"] {
+  --bg:            #EFE4CC;
+  --bg-sunken:     #E3D5B4;
+  --bg-elevated:   rgba(252, 246, 230, 0.86);
+  --bg-panel:      rgba(248, 240, 220, 0.78);
+  --bg-solid:      #F7EFD8;
+  --canvas-bg:     #E7D9B8;
+
+  --surface-1:     #F6ECD1;
+  --surface-2:     #FBF3DC;
+  --surface-3:     rgba(255, 249, 232, 0.90);
+
+  --text:          #3B2A18;
+  --text-muted:    #6E5637;
+  --text-subtle:   #9A7F55;
+
+  --ink:           #2A1B0C;
+  --ink-soft:      #5C4222;
+  --ink-faint:     #8A6C3F;
+
+  --border:        rgba(90, 66, 30, 0.24);
+  --border-strong: rgba(90, 66, 30, 0.42);
+  --hairline:      rgba(255, 246, 220, 0.72);
+
+  --shadow-sm: 0 4px 14px rgba(60, 40, 15, 0.10);
+  --shadow-md: 0 10px 30px rgba(60, 40, 15, 0.16);
+  --shadow-xl: 0 24px 68px rgba(60, 40, 15, 0.22);
+
+  --accent:        #8B4A2B;
+  --accent-strong: #6E3818;
+  --accent-hover:  #6E3818;
+  --accent-soft:   rgba(139, 74, 43, 0.12);
+  --accent-glow:   rgba(139, 74, 43, 0.30);
+
+  --success:       #5E7A3A;
+  --warning:       #B0761F;
+  --danger:        #A0361E;
+  --info:          #4D6A7F;
+
+  --node-bg:       rgba(255, 248, 226, 0.86);
+  --node-border:   rgba(90, 66, 30, 0.32);
+
+  --glass-tint:        rgba(248, 238, 210, 0.72);
+  --glass-tint-strong: rgba(255, 246, 220, 0.88);
+  --glass-border:      rgba(90, 66, 30, 0.22);
+
+  --paper-fiber-a: rgba(155, 118, 60, 0.10);
+  --paper-fiber-b: rgba(90, 66, 30, 0.08);
+  --paper-stain-a: rgba(139, 74, 43, 0.14);
+  --paper-stain-b: rgba(120, 90, 40, 0.10);
+
+  --grid-line:     rgba(90, 66, 30, 0.10);
+  --grid-line-strong: rgba(90, 66, 30, 0.18);
+
+  --node-color-begin:   #6E3818;
+  --node-color-llm:     #7A4A1E;
+  --node-color-tool:    #5E7A3A;
+  --node-color-switch:  #B0761F;
+  --node-color-memory:  #4D6A7F;
+  --node-color-code:    #5C4222;
+  --node-color-guard:   #A0361E;
+}
+
+/* Dark theme — candle-lit parchment / ink at night */
+:root[data-theme="dark"] {
+  --bg:            #1E1A13;
+  --bg-sunken:     #17130D;
+  --bg-elevated:   rgba(46, 39, 27, 0.78);
+  --bg-panel:      rgba(38, 32, 22, 0.72);
+  --bg-solid:      #2A2318;
+  --canvas-bg:     #1A160F;
+
+  --surface-1:     #26200F;
+  --surface-2:     #302818;
+  --surface-3:     rgba(60, 50, 30, 0.82);
+
+  --text:          #F1E4C7;
+  --text-muted:    #C0A87A;
+  --text-subtle:   #8E764A;
+
+  --ink:           #F5E9CC;
+  --ink-soft:      #D8C296;
+  --ink-faint:     #A8895A;
+
+  --border:        rgba(220, 190, 130, 0.16);
+  --border-strong: rgba(220, 190, 130, 0.32);
+  --hairline:      rgba(255, 235, 190, 0.10);
+
+  --shadow-sm: 0 6px 18px rgba(0, 0, 0, 0.44);
+  --shadow-md: 0 14px 40px rgba(0, 0, 0, 0.56);
+  --shadow-xl: 0 30px 84px rgba(0, 0, 0, 0.70);
+
+  --accent:        #D89A5B;
+  --accent-strong: #F0B673;
+  --accent-hover:  #F0B673;
+  --accent-soft:   rgba(216, 154, 91, 0.14);
+  --accent-glow:   rgba(216, 154, 91, 0.36);
+
+  --success:       #9CBB6E;
+  --warning:       #E4B266;
+  --danger:        #E38A6A;
+  --info:          #8FB0C8;
+
+  --node-bg:       rgba(50, 42, 26, 0.80);
+  --node-border:   rgba(220, 190, 130, 0.22);
+
+  --glass-tint:        rgba(40, 34, 22, 0.68);
+  --glass-tint-strong: rgba(52, 44, 28, 0.86);
+  --glass-border:      rgba(220, 190, 130, 0.18);
+
+  --paper-fiber-a: rgba(220, 190, 130, 0.08);
+  --paper-fiber-b: rgba(255, 220, 170, 0.05);
+  --paper-stain-a: rgba(216, 154, 91, 0.16);
+  --paper-stain-b: rgba(180, 130, 70, 0.10);
+
+  --grid-line:     rgba(220, 190, 130, 0.08);
+  --grid-line-strong: rgba(220, 190, 130, 0.16);
+
+  --node-color-begin:   #F0B673;
+  --node-color-llm:     #E9C289;
+  --node-color-tool:    #9CBB6E;
+  --node-color-switch:  #E4B266;
+  --node-color-memory:  #8FB0C8;
+  --node-color-code:    #C0A87A;
+  --node-color-guard:   #E38A6A;
+}

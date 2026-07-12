@@ -15,11 +15,14 @@ import (
 	knowledgeusecase "agentcanvas/internal/application/knowledge_usecase"
 	memoryusecase "agentcanvas/internal/application/memory_usecase"
 	providerusecase "agentcanvas/internal/application/provider_usecase"
+	resourceusecase "agentcanvas/internal/application/resource_usecase"
 	retrievalusecase "agentcanvas/internal/application/retrieval_usecase"
 	skillusecase "agentcanvas/internal/application/skill_usecase"
 	toolusecase "agentcanvas/internal/application/tool_usecase"
 	agentusecase "agentcanvas/internal/application/workflow_usecase"
+	"agentcanvas/internal/domain/resource"
 	"agentcanvas/internal/infrastructure"
+	cacheinfra "agentcanvas/internal/infrastructure/cache"
 	cataloginfra "agentcanvas/internal/infrastructure/catalog"
 	cryptoinfra "agentcanvas/internal/infrastructure/crypto"
 	jobinfra "agentcanvas/internal/infrastructure/job"
@@ -66,22 +69,43 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 		return nil, fmt.Errorf("load provider catalog: %w", err)
 	}
 
+	var resourceQuery resource.Query = mysqlinfra.NewResourceSummaryQuery(db)
+	var resourceInvalidator resource.Invalidator
+	if cfg.ResourceCache.Enabled {
+		resourceCache := redisinfra.NewResourceSummaryCache(
+			redisClient,
+			resourceQuery,
+			cfg.ResourceCache.KeyPrefix+":"+cfg.App.Env,
+			time.Duration(cfg.ResourceCache.TTLSeconds)*time.Second,
+			log,
+		)
+		resourceQuery = resourceCache
+		retryingInvalidator := cacheinfra.NewRetryingInvalidator(
+			resourceCache,
+			mysqlinfra.NewResourceInvalidationStore(db),
+			log,
+		)
+		retryingInvalidator.Start(ctx)
+		resourceInvalidator = retryingInvalidator
+	}
+	memoryCache := redisinfra.NewMemoryCache(redisClient)
+
 	userRepo := mysqlinfra.NewUserRepository(db)
 	oauthRepo := mysqlinfra.NewOAuthRepository(db)
 	sessionRepo := mysqlinfra.NewSessionRepository(db)
 	apiTokenRepo := mysqlinfra.NewAPITokenRepository(db)
 	providerRepo := mysqlinfra.NewProviderRepository(db)
 	auditRepo := mysqlinfra.NewAuditRepository(db)
-	knowledgeRepo := mysqlinfra.NewKnowledgeBaseRepository(db)
+	knowledgeRepo := cacheinfra.NewKnowledgeRepository(mysqlinfra.NewKnowledgeBaseRepository(db), resourceInvalidator)
 	documentRepo := mysqlinfra.NewDocumentRepository(db)
 	chunkRepo := mysqlinfra.NewChunkRepository(db)
 	ingestionJobRepo := mysqlinfra.NewIngestionJobRepository(db)
 	retrievalLogRepo := mysqlinfra.NewRetrievalLogRepository(db)
-	dialogRepo := mysqlinfra.NewDialogRepository(db)
+	dialogRepo := cacheinfra.NewDialogRepository(mysqlinfra.NewDialogRepository(db), resourceInvalidator)
 	conversationRepo := mysqlinfra.NewConversationRepository(db)
 	messageRepo := mysqlinfra.NewMessageRepository(db)
 	usageRepo := mysqlinfra.NewUsageRepository(db)
-	workflowRepo := mysqlinfra.NewWorkflowRepository(db)
+	workflowRepo := cacheinfra.NewWorkflowRepository(mysqlinfra.NewWorkflowRepository(db), resourceInvalidator)
 	workflowProfileRepo := mysqlinfra.NewWorkflowProfileRepository(db)
 	flowVersionRepo := mysqlinfra.NewFlowVersionRepository(db)
 	runRepo := mysqlinfra.NewRunRepository(db)
@@ -91,18 +115,17 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 	workflowEvalRepo := mysqlinfra.NewWorkflowEvalRepository(db)
 	approvalRepo := mysqlinfra.NewApprovalRepository(db)
 	workflowTeamRepo := mysqlinfra.NewWorkflowTeamRepository(db)
-	memoryRepo := mysqlinfra.NewMemoryRepository(db)
+	memoryRepo := cacheinfra.NewMemoryRepository(mysqlinfra.NewMemoryRepository(db), resourceInvalidator, memoryCache)
 	memoryWriteLogRepo := mysqlinfra.NewMemoryWriteLogRepository(db)
 	extractionJobRepo := mysqlinfra.NewExtractionJobRepository(db)
 	mergeLogRepo := mysqlinfra.NewMergeLogRepository(db)
-	memoryCache := redisinfra.NewMemoryCache(redisClient)
 	workingMemoryRepo := redisinfra.NewWorkingMemoryRepository(redisClient)
-	toolDefinitionRepo := mysqlinfra.NewToolDefinitionRepository(db)
+	toolDefinitionRepo := cacheinfra.NewToolDefinitionRepository(mysqlinfra.NewToolDefinitionRepository(db), resourceInvalidator)
 	toolInvocationRepo := mysqlinfra.NewToolInvocationRepository(db)
 	toolPolicyRepo := mysqlinfra.NewToolPolicyRepository(db)
 	toolPackRepo := mysqlinfra.NewToolPackRepository(db)
 	mcpRepo := mysqlinfra.NewMCPRepository(db)
-	skillRepo := mysqlinfra.NewSkillRepository(db)
+	skillRepo := cacheinfra.NewSkillRepository(mysqlinfra.NewSkillRepository(db), resourceInvalidator)
 
 	jwtService := cryptoinfra.NewJWTService(cfg.Security.JWTSecret, cfg.Security.AccessTokenTTL())
 	tokenHasher := cryptoinfra.NewTokenHasher(cfg.Security.RefreshTokenPepper)
@@ -275,6 +298,7 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 	dialogHandler := handler.NewDialogHandler(dialogService)
 	chatHandler := handler.NewChatHandler(chatService)
 	workflowHandler := handler.NewWorkflowHandler(workflowService)
+	resourceHandler := handler.NewResourceHandler(resourceusecase.NewService(resourceQuery))
 
 	memoryScheduler := jobinfra.NewMemoryScheduler(memoryRepo, jobinfra.MemorySchedulerConfig{
 		ConsolidationInterval: 1 * time.Hour,
@@ -297,6 +321,7 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 		DialogHandler:    dialogHandler,
 		ChatHandler:      chatHandler,
 		WorkflowHandler:  workflowHandler,
+		ResourceHandler:  resourceHandler,
 		AuthService:      authService,
 		APITokens:        apiTokenRepo,
 	})

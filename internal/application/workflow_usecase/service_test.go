@@ -181,7 +181,7 @@ func TestUpdateAgentProfileValidatesLimits(t *testing.T) {
 	memoryPolicy := rawJSON(`{"enabled":true}`)
 	contextPolicy := rawJSON(`{"max_input_tokens":12000}`)
 	riskLevel := "high"
-	profileMode := "reflect"
+	profileMode := "plan_execute"
 	updated, err := service.UpdateWorkflowProfile(context.Background(), 1, 20, UpdateWorkflowProfileRequest{
 		Role:                        &role,
 		Goal:                        &goal,
@@ -233,7 +233,7 @@ func TestUpdateAgentProfileValidatesLimits(t *testing.T) {
 	if string(updated.MemoryPolicyJSON) != `{"enabled":true}` {
 		t.Fatalf("unexpected memory policy: %s", string(updated.MemoryPolicyJSON))
 	}
-	if string(updated.ContextPolicyJSON) != `{"max_input_tokens":12000}` || updated.RiskLevel != "high" || updated.Mode != "reflect" {
+	if string(updated.ContextPolicyJSON) != `{"max_input_tokens":12000}` || updated.RiskLevel != "high" || updated.Mode != "plan_execute" {
 		t.Fatalf("unexpected profile policy fields: %+v context=%s", updated, string(updated.ContextPolicyJSON))
 	}
 	badTopK := 99

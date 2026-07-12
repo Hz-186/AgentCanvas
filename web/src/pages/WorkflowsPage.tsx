@@ -1,14 +1,15 @@
 import { FormEvent, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Bot, Plus, Trash2 } from 'lucide-react';
-import { workflowApi } from '../api/resources';
+import { ArrowUpRight, Bot, GitBranch, Plus, Trash2 } from 'lucide-react';
+import { resourceSummaryApi, workflowApi } from '../api/resources';
+import { EditorialHeader } from '../components/editorial';
 import { Button, EmptyState, Field, IconButton, Modal, StatusBadge, TextArea, TextInput, Toast } from '../components/ui';
-import type { Workflow } from '../types/api';
+import type { ResourceSummary } from '../types/api';
 import { formatDate, friendlyErrorMessage } from '../utils/format';
 
 export function WorkflowsPage() {
   const navigate = useNavigate();
-  const [workflows, setAgents] = useState<Workflow[]>([]);
+  const [workflows, setAgents] = useState<ResourceSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [open, setOpen] = useState(false);
   const [name, setName] = useState('');
@@ -19,10 +20,10 @@ export function WorkflowsPage() {
   async function load() {
     setLoading(true);
     try {
-      setAgents(await workflowApi.list());
+      setAgents((await resourceSummaryApi.list('workflows', { limit: 50 })).items);
       setError('');
     } catch (err) {
-      setError(friendlyErrorMessage(err, '加载 Workflow 失败'));
+      setError(friendlyErrorMessage(err, 'Unable to load workflows.'));
     } finally {
       setLoading(false);
     }
@@ -39,66 +40,69 @@ export function WorkflowsPage() {
       setOpen(false);
       setName('');
       setDescription('');
-      setMessage('Workflow 已创建');
-      await load();
+      setMessage('Workflow created');
       navigate(`/app/workflows/${agent.id}/canvas`);
     } catch (err) {
-      setError(friendlyErrorMessage(err, '创建 Workflow 失败'));
+      setError(friendlyErrorMessage(err, 'Unable to create workflow.'));
     }
   }
 
   async function removeAgent(id: number) {
-    if (!window.confirm('确认删除这个 Workflow？')) return;
+    if (!window.confirm('Delete this workflow?')) return;
     try {
       await workflowApi.remove(id);
-      setMessage('Workflow 已删除');
-      await load();
+      setMessage('Workflow deleted');
+      setAgents((current) => current.filter((item) => item.id !== id));
     } catch (err) {
-      setError(friendlyErrorMessage(err, '删除 Workflow 失败'));
+      setError(friendlyErrorMessage(err, 'Unable to delete workflow.'));
     }
   }
 
   return (
-    <div className="page">
-      <div className="page-head">
-        <div>
-          <h1>Workflow 工作区</h1>
-          <p>每个 Workflow 都是一块独立画布，可保存、发布并直接流式调试。</p>
-        </div>
-        <Button tone="primary" onClick={() => setOpen(true)}>
+    <div className="page workflow-library-page">
+      <EditorialHeader word="Workflow" script="Library" kicker="WORKFLOW STUDIO / 01" description="工作流 · 在同一处设计、发布并追踪每一张独立画布。" action={<Button tone="primary" onClick={() => setOpen(true)}>
           <Plus size={17} />
-          新建 Workflow
-        </Button>
-      </div>
+          New Workflow
+        </Button>} />
 
       {error ? <p className="error-text">{error}</p> : null}
-      {loading ? <p className="muted">正在加载 Workflow...</p> : null}
+      {loading ? <p className="muted workflow-loading">Loading workflows...</p> : null}
 
       {!loading && workflows.length === 0 ? (
         <EmptyState
           icon={<Bot size={24} />}
-          title="还没有 Workflow"
-          description="创建一个 Workflow 后即可进入可视化画布。"
-          action={<Button tone="primary" onClick={() => setOpen(true)}>新建 Workflow</Button>}
+          title="No workflows yet"
+          description="Create your first workflow and enter the visual canvas."
+          action={<Button tone="primary" onClick={() => setOpen(true)}>New Workflow</Button>}
         />
       ) : (
-        <div className="grid">
+        <div className="workflow-library-list">
           {workflows.map((agent) => (
-            <article className="card" key={agent.id}>
-              <div className="card-title">
-                <h3 className="truncate">{agent.name}</h3>
-                <StatusBadge tone={agent.status === 1 ? 'good' : 'neutral'}>{agent.status === 1 ? 'Active' : 'Inactive'}</StatusBadge>
+            <article className="workflow-library-item" key={agent.id}>
+              <div className="workflow-miniature" aria-hidden="true">
+                <span><Bot size={16} /></span>
+                <i />
+                <span><GitBranch size={16} /></span>
+                <i />
+                <span className="workflow-miniature-end"><ArrowUpRight size={16} /></span>
               </div>
-              <p className="muted clamp-2">{agent.description || '暂无描述'}</p>
-              <div className="meta-row">
-                <span>版本 {agent.current_version_id ?? 'draft'}</span>
-                <span>更新 {formatDate(agent.updated_at)}</span>
+              <div className="workflow-library-copy">
+                <div className="card-title">
+                  <h3 className="truncate">{agent.name}</h3>
+                  <StatusBadge tone={agent.status === 1 ? 'good' : 'neutral'}>{agent.status === 1 ? 'Active' : 'Draft'}</StatusBadge>
+                </div>
+                <p className="muted clamp-2">{agent.description || 'An independent canvas ready for your next idea.'}</p>
+                <div className="meta-row">
+                  <span>VERSION {agent.current_version_id ?? 'DRAFT'}</span>
+                  <span>UPDATED {formatDate(agent.updated_at)}</span>
+                </div>
               </div>
-              <div className="row-wrap">
+              <div className="workflow-library-actions">
                 <Button tone="primary" onClick={() => navigate(`/app/workflows/${agent.id}/canvas`)}>
-                  打开画布
+                  Open Canvas
+                  <ArrowUpRight size={16} />
                 </Button>
-                <IconButton label="删除 Workflow" onClick={() => void removeAgent(agent.id)}>
+                <IconButton label="Delete Workflow" onClick={() => void removeAgent(agent.id)}>
                   <Trash2 size={16} />
                 </IconButton>
               </div>
@@ -109,21 +113,21 @@ export function WorkflowsPage() {
 
       <Modal
         open={open}
-        title="新建 Workflow"
+        title="New Workflow"
         onClose={() => setOpen(false)}
         footer={
           <>
-            <Button type="button" onClick={() => setOpen(false)}>取消</Button>
-            <Button type="submit" form="create-agent-form" tone="primary">创建并进入画布</Button>
+            <Button type="button" onClick={() => setOpen(false)}>Cancel</Button>
+            <Button type="submit" form="create-agent-form" tone="primary">Create & Open Canvas</Button>
           </>
         }
       >
         <form id="create-agent-form" className="form-stack" onSubmit={(event) => void createAgent(event)}>
-          <Field label="名称">
+          <Field label="NAME">
             <TextInput value={name} onChange={(event) => setName(event.target.value)} required placeholder="Customer Support Workflow" />
           </Field>
-          <Field label="描述">
-            <TextArea value={description} onChange={(event) => setDescription(event.target.value)} placeholder="这个 Workflow 负责回答知识库问题并生成回复。" />
+          <Field label="DESCRIPTION">
+            <TextArea value={description} onChange={(event) => setDescription(event.target.value)} placeholder="Describe what this workflow should accomplish." />
           </Field>
         </form>
       </Modal>

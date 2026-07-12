@@ -11,6 +11,9 @@ func TestQueueConfigDefaults(t *testing.T) {
 	if cfg.LLMCache.SimilarityThreshold != 0.96 || cfg.LLMCache.TTLSeconds != 86400 {
 		t.Fatalf("unexpected llm cache defaults: %+v", cfg.LLMCache)
 	}
+	if cfg.ResourceCache.KeyPrefix != "agentcanvas" || cfg.ResourceCache.TTLSeconds != 60 {
+		t.Fatalf("unexpected resource cache defaults: %+v", cfg.ResourceCache)
+	}
 	if cfg.MemoryDream.TriggerEveryNTurns != 5 || cfg.MemoryDream.IdleTimeoutSeconds != 180 {
 		t.Fatalf("unexpected memory dream defaults: %+v", cfg.MemoryDream)
 	}

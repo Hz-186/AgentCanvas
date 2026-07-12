@@ -466,6 +466,96 @@ func (h *WorkflowHandler) StreamRun(c *gin.Context) {
 	_ = writer.Event("done", gin.H{"run": run, "output": output})
 }
 
+func (h *WorkflowHandler) CreateConversation(c *gin.Context) {
+	ownerID, workflowID, ok := h.ownerAndWorkflowID(c)
+	if !ok {
+		return
+	}
+	var req agentusecase.CreateWorkflowConversationRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		writeAppError(c, err)
+		return
+	}
+	item, err := h.service.CreateWorkflowConversation(c.Request.Context(), ownerID, workflowID, req)
+	if err != nil {
+		writeAppError(c, err)
+		return
+	}
+	response.OK(c, item)
+}
+
+func (h *WorkflowHandler) ListConversations(c *gin.Context) {
+	ownerID, workflowID, ok := h.ownerAndWorkflowID(c)
+	if !ok {
+		return
+	}
+	items, err := h.service.ListWorkflowConversations(c.Request.Context(), ownerID, workflowID)
+	if err != nil {
+		writeAppError(c, err)
+		return
+	}
+	response.OK(c, items)
+}
+
+func (h *WorkflowHandler) GetConversation(c *gin.Context) {
+	ownerID, workflowID, conversationID, ok := h.ownerWorkflowAndConversationID(c)
+	if !ok {
+		return
+	}
+	item, err := h.service.GetWorkflowConversation(c.Request.Context(), ownerID, workflowID, conversationID)
+	if err != nil {
+		writeAppError(c, err)
+		return
+	}
+	response.OK(c, item)
+}
+
+func (h *WorkflowHandler) ListConversationMessages(c *gin.Context) {
+	ownerID, workflowID, conversationID, ok := h.ownerWorkflowAndConversationID(c)
+	if !ok {
+		return
+	}
+	items, err := h.service.ListWorkflowConversationMessages(c.Request.Context(), ownerID, workflowID, conversationID)
+	if err != nil {
+		writeAppError(c, err)
+		return
+	}
+	response.OK(c, items)
+}
+
+func (h *WorkflowHandler) DeleteConversation(c *gin.Context) {
+	ownerID, workflowID, conversationID, ok := h.ownerWorkflowAndConversationID(c)
+	if !ok {
+		return
+	}
+	if err := h.service.DeleteWorkflowConversation(c.Request.Context(), ownerID, workflowID, conversationID); err != nil {
+		writeAppError(c, err)
+		return
+	}
+	response.OK(c, gin.H{"success": true})
+}
+
+func (h *WorkflowHandler) StreamConversationMessage(c *gin.Context) {
+	ownerID, workflowID, conversationID, ok := h.ownerWorkflowAndConversationID(c)
+	if !ok {
+		return
+	}
+	var req agentusecase.WorkflowMessageRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		writeAppError(c, err)
+		return
+	}
+	writer := sse.NewWriter(c)
+	result, err := h.service.StreamWorkflowMessage(c.Request.Context(), ownerID, workflowID, conversationID, req, func(event runtimeevent.Event) error {
+		return writer.Event(event.Type, event)
+	})
+	if err != nil {
+		_ = writer.Event("error", gin.H{"error": err.Error()})
+		return
+	}
+	_ = writer.Event("done", result)
+}
+
 func (h *WorkflowHandler) GetRun(c *gin.Context) {
 	ownerID, id, ok := h.ownerAndID(c, "id")
 	if !ok {
@@ -659,6 +749,19 @@ func (h *WorkflowHandler) decideApproval(c *gin.Context, approve bool) {
 
 func (h *WorkflowHandler) ownerAndWorkflowID(c *gin.Context) (int64, int64, bool) {
 	return h.ownerAndID(c, "id")
+}
+
+func (h *WorkflowHandler) ownerWorkflowAndConversationID(c *gin.Context) (int64, int64, int64, bool) {
+	ownerID, workflowID, ok := h.ownerAndWorkflowID(c)
+	if !ok {
+		return 0, 0, 0, false
+	}
+	conversationID, err := parseInt64Param(c, "conversation_id")
+	if err != nil {
+		writeAppError(c, agenterrors.ErrInvalidInput)
+		return 0, 0, 0, false
+	}
+	return ownerID, workflowID, conversationID, true
 }
 
 func (h *WorkflowHandler) ownerAndID(c *gin.Context, param string) (int64, int64, bool) {

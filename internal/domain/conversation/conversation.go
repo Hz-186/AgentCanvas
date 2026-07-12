@@ -3,7 +3,8 @@ package conversation
 import "time"
 
 const (
-	SourceRAGChat = "rag_chat"
+	SourceRAGChat  = "rag_chat"
+	SourceWorkflow = "workflow"
 )
 
 type Conversation struct {

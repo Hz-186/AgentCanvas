@@ -16,6 +16,7 @@ import (
 	"agentcanvas/internal/domain/skill"
 	"agentcanvas/internal/domain/tool"
 	"agentcanvas/internal/domain/workflow"
+	memoryretrieval "agentcanvas/internal/infrastructure/retrieval"
 	"agentcanvas/internal/infrastructure/vectorstore"
 	runtimeagent "agentcanvas/internal/runtime/agent"
 	"agentcanvas/internal/runtime/engine"
@@ -183,7 +184,7 @@ func parseAgentNodeConfig(config json.RawMessage) (agentRuntimeConfig, error) {
 		if err := json.Unmarshal(config, &flat); err != nil {
 			return flat, fmt.Errorf("%w: invalid agent config", agenterrors.ErrInvalidInput)
 		}
-		return flat, nil
+		return normalizeLegacyAgentMode(flat), nil
 	}
 	var nested agentNodeConfig
 	if err := json.Unmarshal(config, &nested); err != nil {
@@ -268,9 +269,6 @@ func parseAgentNodeConfig(config json.RawMessage) (agentRuntimeConfig, error) {
 	}
 	if nested.Planning.ReflectionEnabled {
 		cfg.ReflectionEnabled = true
-		if strings.TrimSpace(cfg.Mode) == "" {
-			cfg.Mode = "reflect"
-		}
 	}
 	if len(nested.Policy.RequireApprovalForRisk) > 0 {
 		cfg.RequireApprovalForRisk = nested.Policy.RequireApprovalForRisk
@@ -296,7 +294,18 @@ func parseAgentNodeConfig(config json.RawMessage) (agentRuntimeConfig, error) {
 	if nested.Output.ReturnIntermediateSteps {
 		cfg.ReturnIntermediateSteps = true
 	}
-	return cfg, nil
+	return normalizeLegacyAgentMode(cfg), nil
+}
+
+func normalizeLegacyAgentMode(cfg agentRuntimeConfig) agentRuntimeConfig {
+	switch strings.TrimSpace(cfg.Mode) {
+	case "reflect":
+		cfg.Mode = "react"
+		cfg.ReflectionEnabled = true
+	case "supervisor":
+		cfg.Mode = "react"
+	}
+	return cfg
 }
 
 func hasNestedAgentModel(config json.RawMessage) bool {
@@ -339,8 +348,8 @@ func validateAgentRuntimeConfig(cfg agentRuntimeConfig, nodeType string, require
 	if cfg.MaxWorkflowCallDepth < 0 || cfg.MaxWorkflowCallDepth > 5 {
 		return fmt.Errorf("%w: %s max_workflow_call_depth must be <= 5", agenterrors.ErrInvalidInput, nodeType)
 	}
-	if cfg.Mode != "" && cfg.Mode != "react" && cfg.Mode != "plan_execute" && cfg.Mode != "reflect" && cfg.Mode != "supervisor" {
-		return fmt.Errorf("%w: %s mode must be react, plan_execute, reflect, or supervisor", agenterrors.ErrInvalidInput, nodeType)
+	if cfg.Mode != "" && cfg.Mode != "react" && cfg.Mode != "plan_execute" {
+		return fmt.Errorf("%w: %s mode must be react or plan_execute", agenterrors.ErrInvalidInput, nodeType)
 	}
 	for _, risk := range cfg.RequireApprovalForRisk {
 		normalized := strings.TrimSpace(risk)
@@ -411,7 +420,7 @@ func (n AgentNode) runAgent(
 	if err != nil {
 		return nil, err
 	}
-	tools, err := n.loadTools(ctx, rc.OwnerID, cfg)
+	tools, err := n.loadTools(ctx, rc.OwnerID, cfg, loaded)
 	if err != nil {
 		return nil, err
 	}
@@ -736,7 +745,7 @@ func (n AgentNode) applyProfileDefaults(
 	if len(cfg.OutputSchemaJSON) == 0 && len(profile.OutputSchemaJSON) > 0 && string(bytes.TrimSpace(profile.OutputSchemaJSON)) != "{}" {
 		cfg.OutputSchemaJSON = profile.OutputSchemaJSON
 	}
-	return cfg, nil
+	return normalizeLegacyAgentMode(cfg), nil
 }
 
 type profileContextPolicy struct {
@@ -1007,10 +1016,10 @@ func profileSystemPrompt(profile *workflow.Profile) string {
 
 func agentMode(mode string) string {
 	mode = strings.TrimSpace(mode)
-	if mode == "" {
-		return "react"
+	if mode == "plan_execute" {
+		return mode
 	}
-	return mode
+	return "react"
 }
 
 func agentStepRecord(step runtimeagent.RunStep, nodeID string) engine.AgentStepRecord {
@@ -1033,7 +1042,7 @@ func agentStepRecord(step runtimeagent.RunStep, nodeID string) engine.AgentStepR
 	}
 }
 
-func (n AgentNode) loadTools(ctx context.Context, ownerID int64, cfg agentRuntimeConfig) ([]toolruntime.RuntimeTool, error) {
+func (n AgentNode) loadTools(ctx context.Context, ownerID int64, cfg agentRuntimeConfig, provider *LoadedProvider) ([]toolruntime.RuntimeTool, error) {
 	tools := make([]toolruntime.RuntimeTool, 0, len(cfg.ToolIDs)+2)
 	tools = append(tools, toolruntime.HumanApprovalTool{})
 	loadedSkills, err := n.loadSkillDefinitions(ctx, ownerID, cfg.SkillIDs)
@@ -1102,9 +1111,13 @@ func (n AgentNode) loadTools(ctx context.Context, ownerID int64, cfg agentRuntim
 		if n.Memories == nil {
 			return nil, fmt.Errorf("agent_loop memory repository is not configured")
 		}
+		var archival memory.ArchivalIndex
+		if provider != nil && n.ArchivalVecStore != nil && n.Embedder != nil && strings.TrimSpace(provider.EmbeddingModel) != "" {
+			archival = memoryretrieval.ArchivalMemoryIndex{Store: n.ArchivalVecStore, Embedder: n.Embedder, Provider: provider.EmbeddingConfig, Model: provider.EmbeddingModel}
+		}
 		tools = append(tools,
-			toolruntime.MemoryReadTool{Memories: n.Memories, Retriever: n.MemoryRetriever},
-			toolruntime.MemoryWriteTool{Memories: n.Memories, Logs: n.MemoryLogs, Retriever: n.MemoryRetriever},
+			toolruntime.MemoryReadTool{Memories: n.Memories, Retriever: n.MemoryRetriever, Archival: archival},
+			toolruntime.MemoryWriteTool{Memories: n.Memories, Logs: n.MemoryLogs, Retriever: n.MemoryRetriever, Archival: archival},
 		)
 	}
 	if len(cfg.ToolIDs) == 0 {

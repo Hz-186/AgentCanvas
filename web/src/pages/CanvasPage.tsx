@@ -4,6 +4,7 @@ import {
   Background,
   BackgroundVariant,
   Controls,
+  MiniMap,
   ReactFlow,
   addEdge,
   applyEdgeChanges,
@@ -12,27 +13,39 @@ import {
   type Edge,
   type EdgeChange,
   type NodeChange,
+  type ReactFlowInstance,
 } from '@xyflow/react';
 import {
   Bot,
+  Focus,
+  History,
+  Maximize2,
+  Minimize2,
+  MessageSquareText,
   Play,
+  Plus,
   Save,
+  Send,
+  Settings,
   Sparkles,
+  RotateCcw,
   Workflow as WorkflowIcon,
+  X,
 } from 'lucide-react';
-import { workflowApi, knowledgeApi, settingsApi } from '../api/resources';
-import { Button, EmptyState, Field, Panel, Segmented, Select, StatusBadge, TextArea, TextInput, Toast } from '../components/ui';
-import type { Workflow, WorkflowProfile, WorkflowTeam, WorkflowTeamMember, ApprovalRequest, EvalCase, EvalDataset, EvalResult, EvalRun, EvalTrend, FlowVersion, KnowledgeBase, MCPServer, MemoryWriteLog, ModelProvider, Run, RunStep, RunTrace, Skill, ToolDefinition, ToolInvocation, ToolPack } from '../types/api';
+import { workflowApi, resourceSummaryApi, settingsApi } from '../api/resources';
+import { Button, EmptyState, Field, IconButton, Panel, Segmented, Select, StatusBadge, TextArea, TextInput, Toast } from '../components/ui';
+import type { Workflow, WorkflowProfile, WorkflowTeam, WorkflowTeamMember, ApprovalRequest, Conversation, EvalCase, EvalDataset, EvalResult, EvalRun, EvalTrend, FlowVersion, KnowledgeBase, MCPServer, MemoryWriteLog, Message, ModelProvider, Run, RunStep, RunTrace, Skill, ToolDefinition, ToolInvocation, ToolPack, WorkflowMessageResponse } from '../types/api';
 import type { NodeType } from '../types/flow';
 import type { RuntimeEvent } from '../types/events';
-import { friendlyErrorMessage, parseJsonObject, prettyJson } from '../utils/format';
+import { formatDate, friendlyErrorMessage, parseJsonObject, prettyJson } from '../utils/format';
 import { defaultConfig, isAgentNodeType, isStaticAgentCallNodeType, nodeMeta, numberArray, paletteNodeTypes } from './canvas/config';
 import { nodeTypes } from './canvas/canvas/node-types';
-import { defaultNodes, fromDSL, normalizeDSL, runtimeDSLKey, toDSL } from './canvas/canvas/hooks/useDslBridge';
+import { canvasDSLKey, defaultNodes, fromDSL, normalizeDSL, toDSL } from './canvas/canvas/hooks/useDslBridge';
 import { validateLocal } from './canvas/canvas/hooks/useCanvasValidation';
 import type { CanvasNode, NodeRunStatus } from './canvas/types';
 import { FormSheet } from './canvas/form-sheet/FormSheet';
 import { AgentLoopForm } from './canvas/forms/agent-loop/AgentLoopForm';
+import { SwitchConditionsEditor } from './canvas/forms/SwitchConditionsEditor';
 import { AgentTraceTimeline } from './canvas/debug/AgentTraceTimeline';
 import { ToolInvocationList } from './canvas/debug/ToolInvocationList';
 import { ApprovalQueue } from './canvas/debug/ApprovalQueue';
@@ -109,6 +122,9 @@ export function CanvasPage() {
   const [workflow, setWorkflow] = useState<Workflow | null>(null);
   const [profile, setProfile] = useState<WorkflowProfile | null>(null);
   const [version, setVersion] = useState<FlowVersion | null>(null);
+  const [flowVersions, setFlowVersions] = useState<FlowVersion[]>([]);
+  const [versionHistoryOpen, setVersionHistoryOpen] = useState(false);
+  const [restoredFromVersion, setRestoredFromVersion] = useState<number | null>(null);
   const [nodes, setNodes] = useState<CanvasNode[]>([]);
   const [edges, setEdges] = useState<Edge[]>([]);
   const [selectedId, setSelectedId] = useState<string>('begin');
@@ -119,10 +135,12 @@ export function CanvasPage() {
   const [skills, setSkills] = useState<Skill[]>([]);
   const [toolPacks, setToolPacks] = useState<ToolPack[]>([]);
   const [mcpServers, setMcpServers] = useState<MCPServer[]>([]);
-  const [mode, setMode] = useState<'config' | 'profile' | 'team' | 'approvals' | 'eval' | 'debug' | 'dsl'>('config');
+  const [mode, setMode] = useState<'config' | 'profile' | 'team' | 'approvals' | 'eval' | 'chat' | 'debug' | 'dsl'>('config');
   const [paletteWidth, setPaletteWidth] = useState(DEFAULT_PALETTE_WIDTH);
   const [configWidth, setConfigWidth] = useState(DEFAULT_PANEL_WIDTH);
   const [sidePanelOpen, setSidePanelOpen] = useState(true);
+  const [flowInstance, setFlowInstance] = useState<ReactFlowInstance<CanvasNode, Edge> | null>(null);
+  const [canvasFullscreen, setCanvasFullscreen] = useState(false);
   const [pendingConnectId, setPendingConnectId] = useState<string>('');
   const [runInput, setRunInput] = useState('{\n  "query": "请总结知识库内容"\n}');
   const [debugRunMode, setDebugRunMode] = useState<DebugRunMode>('stream');
@@ -135,6 +153,13 @@ export function CanvasPage() {
   const [memoryLogs, setMemoryLogs] = useState<MemoryWriteLog[]>([]);
   const [toolInvocations, setToolInvocations] = useState<ToolInvocation[]>([]);
   const [runTraceSummary, setRunTraceSummary] = useState<Record<string, unknown> | null>(null);
+  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [conversationId, setConversationId] = useState(0);
+  const [conversationMessages, setConversationMessages] = useState<Message[]>([]);
+  const [chatQuestion, setChatQuestion] = useState('');
+  const [pendingChatQuestion, setPendingChatQuestion] = useState('');
+  const [pendingChatAnswer, setPendingChatAnswer] = useState('');
+  const [chatStreaming, setChatStreaming] = useState(false);
   const [approvalRequests, setApprovalRequests] = useState<ApprovalRequest[]>([]);
   const [workflowTeams, setWorkflowTeams] = useState<WorkflowTeam[]>([]);
   const [teamMembers, setTeamMembers] = useState<WorkflowTeamMember[]>([]);
@@ -158,16 +183,19 @@ export function CanvasPage() {
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const canvasBodyRef = useRef<HTMLDivElement | null>(null);
+  const canvasPageRef = useRef<HTMLDivElement | null>(null);
+  const versionControlRef = useRef<HTMLDivElement | null>(null);
   const resizeFrameRef = useRef<number | null>(null);
   const resizeClientXRef = useRef(0);
   // 进行中的调试运行控制器：组件卸载或重新运行时取消，避免“卸载后 setState”。
   const runAbortRef = useRef<AbortController | null>(null);
+  const chatAbortRef = useRef<AbortController | null>(null);
 
   const selected = useMemo(() => nodes.find((node) => node.id === selectedId) ?? null, [nodes, selectedId]);
   const dsl = useMemo(() => toDSL(workflowId, nodes, edges), [workflowId, nodes, edges]);
-  const currentRuntimeKey = useMemo(() => runtimeDSLKey(dsl), [dsl]);
-  const savedRuntimeKey = useMemo(() => runtimeDSLKey(version?.dsl_json), [version]);
-  const hasRuntimeChanges = !version || currentRuntimeKey !== savedRuntimeKey;
+  const currentCanvasKey = useMemo(() => canvasDSLKey(dsl), [dsl]);
+  const savedCanvasKey = useMemo(() => canvasDSLKey(version?.dsl_json), [version]);
+  const hasCanvasChanges = !version || currentCanvasKey !== savedCanvasKey;
   const nodesWithRunStatus = useMemo(() => {
     const statusByNode = new Map<string, NodeRunStatus>();
     for (const event of events) {
@@ -193,29 +221,38 @@ export function CanvasPage() {
   useEffect(() => {
     let cancelled = false;
     async function load() {
-      const [workflowResp, profileResp, workflowsResp, providersResp, kbResp, toolResp, skillResp, toolPackResp, mcpResp, approvalResp, evalDatasetResp, teamResp] = await Promise.all([
+      const [workflowResp, profileResp, workflowsResp, providersResp, kbResp, toolResp, skillResp, toolPackResp, mcpResp, approvalResp, evalDatasetResp, teamResp, versionResp, conversationResp] = await Promise.all([
         workflowApi.get(workflowId),
         workflowApi.getProfile(workflowId),
-        workflowApi.list(),
+        resourceSummaryApi.list('workflows', { limit: 100 }),
         settingsApi.providers.list(),
-        knowledgeApi.list(),
-        settingsApi.tools.list(),
-        settingsApi.skills.list(),
+        resourceSummaryApi.list('knowledge-bases', { limit: 100 }),
+        resourceSummaryApi.list('http-tools', { limit: 100 }),
+        resourceSummaryApi.list('skills', { limit: 100 }),
         settingsApi.tools.listPacks(),
         settingsApi.tools.listMCPServers(),
         workflowApi.listApprovalRequests('pending'),
         workflowApi.listEvalDatasets(workflowId),
         workflowApi.listTeams(),
+        workflowApi.listFlowVersions(workflowId),
+        workflowApi.listConversations(workflowId),
       ]);
       // 快速切换 workflow 时旧请求可能晚返回，确认仍是当前 workflow 再写入。
       if (cancelled) return;
       setWorkflow(workflowResp);
-      setProfile(profileResp);
-      setCallableWorkflows(workflowsResp.filter((item) => item.id !== workflowId));
+      setProfile({
+        ...profileResp,
+        mode: profileResp.mode === 'plan_execute' || profileResp.planning_enabled ? 'plan_execute' : 'react',
+      });
+      setCallableWorkflows(workflowsResp.items.filter((item) => item.id !== workflowId).map((item) => ({
+        id: item.id, owner_id: 0, name: item.name, description: item.description ?? '', avatar_url: '',
+        current_version_id: item.current_version_id ?? null, status: item.status ?? 1,
+        created_at: item.updated_at, updated_at: item.updated_at,
+      })));
       setProviders(providersResp);
-      setKnowledgeBases(kbResp);
-      setTools(toolResp);
-      setSkills(skillResp);
+      setKnowledgeBases(kbResp.items.map((item) => ({ id: item.id, name: item.name, status: item.status ?? 1 } as KnowledgeBase)));
+      setTools(toolResp.items.map((item) => ({ id: item.id, name: item.name, tool_type: item.resource_type ?? 'http', status: item.status ?? 1 } as ToolDefinition)));
+      setSkills(skillResp.items.map((item) => ({ id: item.id, name: item.name, status: item.status ?? 1 } as Skill)));
       setToolPacks(toolPackResp);
       setMcpServers(mcpResp);
       setApprovalRequests(approvalResp.filter((item) => item.workflow_id === workflowId));
@@ -224,9 +261,13 @@ export function CanvasPage() {
       const ownedTeams = teamResp.filter((team) => team.supervisor_workflow_id === workflowId);
       setWorkflowTeams(ownedTeams);
       setSelectedTeamId(ownedTeams[0]?.id ?? 0);
-      if (workflowResp.current_version_id) {
-        const flow = await workflowApi.getFlowVersion(workflowResp.current_version_id);
-        if (cancelled) return;
+      setConversations(conversationResp);
+      setConversationId(conversationResp[0]?.id ?? 0);
+      const sortedVersions = [...versionResp].sort((left, right) => right.version_no - left.version_no);
+      setFlowVersions(sortedVersions);
+      setRestoredFromVersion(null);
+      const flow = sortedVersions[0];
+      if (flow) {
         setVersion(flow);
         const parsed = normalizeDSL(flow.dsl_json);
         const canvas = parsed ? fromDSL(parsed) : { nodes: defaultNodes(), edges: [] };
@@ -310,7 +351,22 @@ export function CanvasPage() {
   }, [selectedTeamId]);
 
   // 组件卸载时取消进行中的调试流。
-  useEffect(() => () => runAbortRef.current?.abort(), []);
+  useEffect(() => () => {
+    runAbortRef.current?.abort();
+    chatAbortRef.current?.abort();
+  }, []);
+
+  useEffect(() => {
+    if (!conversationId) {
+      setConversationMessages([]);
+      return;
+    }
+    let cancelled = false;
+    workflowApi.listConversationMessages(workflowId, conversationId)
+      .then((items) => { if (!cancelled) setConversationMessages(items); })
+      .catch((err) => { if (!cancelled) setError(friendlyErrorMessage(err, '加载 Workflow 会话失败')); });
+    return () => { cancelled = true; };
+  }, [conversationId, workflowId]);
 
   const onNodesChange = useCallback((changes: NodeChange<CanvasNode>[]) => setNodes((current) => applyNodeChanges(changes, current)), []);
   const onEdgesChange = useCallback((changes: EdgeChange[]) => setEdges((current) => applyEdgeChanges(changes, current)), []);
@@ -322,25 +378,36 @@ export function CanvasPage() {
   const startResize = useCallback((side: 'palette' | 'panel', startX: number) => {
     const body = canvasBodyRef.current;
     if (!body) return;
+    const element = body;
     const rect = body.getBoundingClientRect();
     const startsFromClosedPanel = side === 'panel' && !sidePanelOpen;
+    let finalPaletteWidth = paletteWidth;
+    let finalConfigWidth = configWidth;
+    let finalPanelOpen = sidePanelOpen;
 
     function applyResize(clientX: number) {
       if (side === 'palette') {
         const next = clientX - rect.left;
         const width = Math.min(MAX_PALETTE_WIDTH, Math.max(COLLAPSED_PALETTE_WIDTH, next));
-        setPaletteWidth((current) => (current === width ? current : width));
+        finalPaletteWidth = width;
+        element.style.setProperty('--palette-width', `${width}px`);
+        element.classList.toggle('palette-collapsed', width < MIN_PALETTE_WIDTH);
         return;
       }
 
       const next = startsFromClosedPanel ? MIN_PANEL_WIDTH + (startX - clientX) : rect.right - clientX;
       if (next < PANEL_COLLAPSE_THRESHOLD) {
-        setSidePanelOpen(false);
-        setConfigWidth(MIN_PANEL_WIDTH);
+        finalPanelOpen = false;
+        element.classList.remove('side-panel-open');
+        element.classList.add('side-panel-closed');
+        element.style.setProperty('--config-width', '0px');
       } else {
-        setSidePanelOpen(true);
         const width = Math.min(MAX_PANEL_WIDTH, Math.max(MIN_PANEL_WIDTH, next));
-        setConfigWidth((current) => (current === width ? current : width));
+        finalPanelOpen = true;
+        finalConfigWidth = width;
+        element.classList.add('side-panel-open');
+        element.classList.remove('side-panel-closed');
+        element.style.setProperty('--config-width', `${width}px`);
       }
     }
 
@@ -359,6 +426,11 @@ export function CanvasPage() {
         resizeFrameRef.current = null;
       }
       applyResize(resizeClientXRef.current);
+      if (side === 'palette') setPaletteWidth(finalPaletteWidth);
+      else {
+        setConfigWidth(finalConfigWidth);
+        setSidePanelOpen(finalPanelOpen);
+      }
       window.removeEventListener('pointermove', onMove);
       window.removeEventListener('pointerup', onUp);
       document.body.classList.remove('is-resizing-panels');
@@ -369,7 +441,7 @@ export function CanvasPage() {
     window.addEventListener('pointerup', onUp);
     resizeClientXRef.current = startX;
     applyResize(startX);
-  }, [sidePanelOpen]);
+  }, [configWidth, paletteWidth, sidePanelOpen]);
 
   function connectByShiftClick(node: CanvasNode) {
     if (!pendingConnectId) {
@@ -441,12 +513,20 @@ export function CanvasPage() {
     const node: CanvasNode = {
       id: nodeId,
       type: 'agentNode',
-      position: { x: (source?.position.x ?? 180) + 260, y: (source?.position.y ?? 120) + 80 },
+      position: source?.data.nodeType === 'agent_loop'
+        ? { x: (source.position.x ?? 180) + 28, y: (source.position.y ?? 120) + 250 }
+        : { x: (source?.position.x ?? 180) + 260, y: (source?.position.y ?? 120) + 80 },
       data: { label: nodeMeta[type].label, nodeType: type, config },
     };
     setNodes((current) => [...current, node]);
     if (source) {
-      setEdges((current) => current.some((edge) => edge.source === source.id && edge.target === nodeId) ? current : [...current, { id: `edge-${source.id}-${nodeId}`, source: source.id, target: nodeId }]);
+      const dependency = source.data.nodeType === 'agent_loop' && kind !== 'agent_loop';
+      setEdges((current) => current.some((edge) => edge.source === source.id && edge.target === nodeId) ? current : [...current, {
+        id: `edge-${source.id}-${nodeId}`,
+        source: source.id,
+        target: nodeId,
+        ...(dependency ? { sourceHandle: 'dependency', targetHandle: 'dependency' } : {}),
+      }]);
     }
     setSelectedId(nodeId);
     setMessage('已生成独立子模块节点');
@@ -477,14 +557,16 @@ export function CanvasPage() {
       setError(localError);
       return null;
     }
-    if (version && !hasRuntimeChanges) {
-      setMessage(`Flow v${version.version_no} 无实质变化，无需保存`);
+    if (version && !hasCanvasChanges) {
+      setMessage(`Flow v${version.version_no} 无变化，无需保存`);
       setError('');
       return version;
     }
     try {
       const saved = await workflowApi.createFlowVersion(workflowId, { dsl_json: dsl, description: 'Saved from visual canvas' });
       setVersion(saved);
+      setRestoredFromVersion(null);
+      setFlowVersions((current) => [saved, ...current.filter((item) => item.id !== saved.id)].sort((left, right) => right.version_no - left.version_no));
       setMessage(`已保存 Flow v${saved.version_no}`);
       setError('');
       return saved;
@@ -496,15 +578,34 @@ export function CanvasPage() {
 
   async function publishFlow() {
     try {
-      const target = hasRuntimeChanges ? await saveFlow() : version;
+      const target = hasCanvasChanges ? await saveFlow() : version;
       if (!target) return;
       const published = await workflowApi.publishFlowVersion(target.id);
       setVersion(published);
+      setFlowVersions((current) => current.map((item) => ({ ...item, is_published: item.id === published.id, is_draft: item.id === published.id ? false : item.is_draft })));
       setMessage(`已发布 v${published.version_no}`);
       setError('');
     } catch (err) {
       setError(friendlyErrorMessage(err, '发布 Flow 失败'));
     }
+  }
+
+  function restoreVersionAsDraft(item: FlowVersion) {
+    if (hasCanvasChanges && !window.confirm('当前画布有未保存修改。载入历史版本会覆盖这些修改，是否继续？')) return;
+    const parsed = normalizeDSL(item.dsl_json);
+    if (!parsed) {
+      setError(`Flow v${item.version_no} 的 DSL 无法解析`);
+      return;
+    }
+    const canvas = fromDSL(parsed);
+    setNodes(canvas.nodes);
+    setEdges(canvas.edges);
+    setSelectedId(canvas.nodes[0]?.id ?? 'begin');
+    setRestoredFromVersion(item.version_no);
+    setVersionHistoryOpen(false);
+    setMessage(`已载入 Flow v${item.version_no} 作为草稿；保存后会生成新版本`);
+    setError('');
+    window.requestAnimationFrame(() => void flowInstance?.fitView({ padding: 0.22, duration: 520, maxZoom: 1.2 }));
   }
 
   async function saveProfile() {
@@ -699,7 +800,7 @@ export function CanvasPage() {
     }
     // 未保存草稿时先保存，确保用当前画布内容运行，而不是传 flow_version_id=0。
     let target = version;
-    if (!target || hasRuntimeChanges) {
+    if (!target || hasCanvasChanges) {
       target = await saveFlow();
       if (!target) return;
     }
@@ -794,25 +895,201 @@ export function CanvasPage() {
     }
   }
 
+  async function createWorkflowConversation() {
+    try {
+      const created = await workflowApi.createConversation(workflowId);
+      setConversations((current) => [created, ...current]);
+      setConversationId(created.id);
+      setConversationMessages([]);
+      setMode('chat');
+      setMessage('已创建 Workflow 会话');
+    } catch (err) {
+      setError(friendlyErrorMessage(err, '创建 Workflow 会话失败'));
+    }
+  }
+
+  async function sendWorkflowMessage() {
+    const question = chatQuestion.trim();
+    if (!question || chatStreaming) return;
+    let targetConversationId = conversationId;
+    if (!targetConversationId) {
+      try {
+        const created = await workflowApi.createConversation(workflowId, question.slice(0, 48));
+        setConversations((current) => [created, ...current]);
+        setConversationId(created.id);
+        targetConversationId = created.id;
+      } catch (err) {
+        setError(friendlyErrorMessage(err, '创建 Workflow 会话失败'));
+        return;
+      }
+    }
+    let target = version;
+    if (!target || hasCanvasChanges) {
+      target = await saveFlow();
+      if (!target) return;
+    }
+    chatAbortRef.current?.abort();
+    const controller = new AbortController();
+    chatAbortRef.current = controller;
+    setChatQuestion('');
+    setPendingChatQuestion(question);
+    setPendingChatAnswer('');
+    setChatStreaming(true);
+    setEvents([]);
+    setRunOutput(null);
+    setError('');
+    try {
+      await workflowApi.streamConversationMessage(workflowId, targetConversationId, {
+        question,
+        flow_version_id: target.id,
+      }, {
+        signal: controller.signal,
+        onMessage: (msg) => {
+          if (controller.signal.aborted) return;
+          let data: unknown;
+          try {
+            data = JSON.parse(msg.data) as unknown;
+          } catch {
+            setError('Workflow 返回了无法解析的流式事件');
+            return;
+          }
+          if (msg.event === 'done') {
+            const result = data as WorkflowMessageResponse;
+            setConversationMessages((current) => [...current, result.user_message, result.assistant_message]);
+            setDebugRunId(result.run.id);
+            setRunOutput(result.output);
+            setPendingChatQuestion('');
+            setPendingChatAnswer('');
+            void loadRunTrace(result.run.id, controller.signal).catch(() => undefined);
+            void workflowApi.listConversations(workflowId).then(setConversations).catch(() => undefined);
+            return;
+          }
+          if (msg.event === 'error') {
+            const payload = data as { error?: string };
+            setError(friendlyErrorMessage(payload.error ?? data, 'Workflow 对话运行失败'));
+            return;
+          }
+          const event = data as RuntimeEvent;
+          if (event.run_id) setDebugRunId(event.run_id);
+          if (event.type === 'llm_delta' && typeof event.payload?.delta === 'string') {
+            setPendingChatAnswer((current) => current + String(event.payload?.delta));
+          }
+          setEvents((current) => [...current, event]);
+        },
+        onError: (err) => {
+          if (!controller.signal.aborted) setError(friendlyErrorMessage(err, 'Workflow 对话运行失败'));
+        },
+      });
+    } finally {
+      if (chatAbortRef.current === controller) {
+        chatAbortRef.current = null;
+        setChatStreaming(false);
+      }
+    }
+  }
+
+  function stopWorkflowMessage() {
+    chatAbortRef.current?.abort();
+    chatAbortRef.current = null;
+    setChatStreaming(false);
+    if (debugRunId) void workflowApi.cancelRun(debugRunId).catch(() => undefined);
+  }
+
   const config = selected?.data.config as Record<string, unknown> | undefined;
 
+  function focusWorkflow() {
+    void flowInstance?.fitView({ padding: 0.22, duration: 520, maxZoom: 1.2 });
+  }
+
+  function focusSelected() {
+    if (!selected || !flowInstance) return;
+    void flowInstance.setCenter(selected.position.x + 104, selected.position.y + 70, { zoom: 1.05, duration: 480 });
+  }
+
+  async function toggleCanvasFullscreen() {
+    if (!document.fullscreenElement) await canvasPageRef.current?.requestFullscreen();
+    else await document.exitFullscreen();
+  }
+
+  useEffect(() => {
+    const syncFullscreen = () => setCanvasFullscreen(document.fullscreenElement === canvasPageRef.current);
+    document.addEventListener('fullscreenchange', syncFullscreen);
+    return () => document.removeEventListener('fullscreenchange', syncFullscreen);
+  }, []);
+
+  useEffect(() => {
+    if (!versionHistoryOpen) return undefined;
+    const closeOnPointer = (event: PointerEvent) => {
+      if (!versionControlRef.current?.contains(event.target as Node)) setVersionHistoryOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setVersionHistoryOpen(false);
+    };
+    document.addEventListener('pointerdown', closeOnPointer);
+    document.addEventListener('keydown', closeOnEscape);
+    return () => {
+      document.removeEventListener('pointerdown', closeOnPointer);
+      document.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [versionHistoryOpen]);
+
   return (
-    <div className="canvas-page">
+    <div ref={canvasPageRef} className="canvas-page">
       <header className="canvas-toolbar glass">
         <div className="min-w-0">
-          <h1 className="truncate">{workflow?.name ?? 'Agent Canvas'}</h1>
-          <p className="muted truncate">当前版本：{version ? `v${version.version_no}` : '未保存草稿'}</p>
+          <h1 className="canvas-editorial-title truncate"><span>{workflow?.name ?? 'Agent'}</span> <em>Canvas</em></h1>
+          <p className="muted truncate">WORKFLOW STUDIO · {restoredFromVersion ? `RESTORED FROM v${restoredFromVersion} · UNSAVED DRAFT` : version ? `VERSION ${version.version_no}` : 'UNSAVED DRAFT'}</p>
         </div>
         <div className="canvas-tools">
-          <Segmented value={mode} onChange={setMode} options={[{ value: 'config', label: '配置' }, { value: 'profile', label: 'Profile' }, { value: 'team', label: 'Team' }, { value: 'approvals', label: '审批' }, { value: 'eval', label: 'Eval' }, { value: 'debug', label: '调试' }, { value: 'dsl', label: 'DSL' }]} />
+          <Segmented value={mode} onChange={setMode} options={[{ value: 'config', label: 'Build' }, { value: 'profile', label: 'Profile' }, { value: 'team', label: 'Team' }, { value: 'approvals', label: 'Approvals' }, { value: 'eval', label: 'Evaluate' }, { value: 'chat', label: 'Dialogue' }, { value: 'debug', label: 'Debug' }, { value: 'dsl', label: 'DSL' }]} />
+          <div ref={versionControlRef} className="canvas-version-control">
+            <Button
+              className="canvas-version-trigger"
+              aria-expanded={versionHistoryOpen}
+              aria-haspopup="dialog"
+              onClick={() => setVersionHistoryOpen((open) => !open)}
+            >
+              <History size={16} />
+              <span>History</span>
+              <strong>{restoredFromVersion ? `Draft · v${restoredFromVersion}` : version ? `v${version.version_no}` : 'Draft'}</strong>
+            </Button>
+            {versionHistoryOpen ? (
+              <section className="canvas-version-popover glass-strong" role="dialog" aria-label="Flow version history">
+                <header>
+                  <div>
+                    <p className="eyebrow">VERSION CONTROL</p>
+                    <h2>Flow History</h2>
+                  </div>
+                  <StatusBadge tone="info">{flowVersions.length} saved</StatusBadge>
+                </header>
+                <p className="canvas-version-help">载入历史版本不会覆盖记录；再次保存会生成一个新版本。</p>
+                <div className="canvas-version-list">
+                  {flowVersions.length === 0 ? <EmptyState icon={<History size={20} />} title="No saved versions" description="保存当前画布后，版本会出现在这里。" /> : null}
+                  {flowVersions.map((item) => (
+                    <button type="button" key={item.id} className={item.id === version?.id ? 'current' : ''} onClick={() => restoreVersionAsDraft(item)}>
+                      <span className="canvas-version-number">v{item.version_no}</span>
+                      <span className="canvas-version-copy">
+                        <strong>{item.is_published ? 'Published' : item.is_draft ? 'Draft' : 'Saved version'}</strong>
+                        <small>{formatDate(item.created_at)} · {item.description || 'Visual canvas snapshot'}</small>
+                      </span>
+                      {item.id === version?.id ? <StatusBadge tone="good">Current</StatusBadge> : <span className="canvas-version-restore"><RotateCcw size={14} />Load</span>}
+                    </button>
+                  ))}
+                </div>
+              </section>
+            ) : null}
+          </div>
           <Button onClick={() => void saveFlow()}>
             <Save size={16} />
-            保存
+            Save
           </Button>
           <Button tone="primary" onClick={() => void publishFlow()}>
             <Sparkles size={16} />
-            发布
+            Publish
           </Button>
+          <IconButton label={canvasFullscreen ? '退出全屏' : '全屏编辑'} onClick={() => void toggleCanvasFullscreen()}>
+            {canvasFullscreen ? <Minimize2 size={17} /> : <Maximize2 size={17} />}
+          </IconButton>
         </div>
       </header>
 
@@ -856,11 +1133,23 @@ export function CanvasPage() {
             onConnect={onConnect}
             onNodeClick={handleNodeClick}
             fitView
+            onInit={setFlowInstance}
+            minZoom={0.18}
+            maxZoom={2}
+            translateExtent={nodes.length ? undefined : [[-1200, -900], [1200, 900]]}
             proOptions={{ hideAttribution: true }}
           >
-            <Background color="rgba(0, 113, 227, 0.22)" gap={64} size={1} variant={BackgroundVariant.Lines} />
+            <Background color="var(--canvas-grid)" gap={48} size={1} variant={BackgroundVariant.Dots} />
             <Controls />
+            <MiniMap pannable zoomable nodeStrokeWidth={2} />
           </ReactFlow>
+          <div className="canvas-navigation glass-strong">
+            <IconButton label="适配全部节点" onClick={focusWorkflow}><Focus size={16} /></IconButton>
+            <IconButton label="定位当前节点" disabled={!selected} onClick={focusSelected}><WorkflowIcon size={16} /></IconButton>
+            <IconButton label={sidePanelOpen ? '收起配置面板' : '展开配置面板'} onClick={() => setSidePanelOpen((open) => !open)}>
+              {sidePanelOpen ? <X size={16} /> : <Settings size={16} />}
+            </IconButton>
+          </div>
           {nodes.length === 0 ? (
             <div className="flow-empty-state">
               <EmptyState icon={<Bot size={24} />} title="画布为空" />
@@ -1066,8 +1355,8 @@ export function CanvasPage() {
                 </>
               )}
               {selected.data.nodeType === 'switch' && (
-                <Field label="Conditions JSON">
-                  <TextArea value={prettyJson(config.conditions ?? [])} onChange={(event) => updateSelectedJSON('conditions', event.target.value)} />
+                <Field label="分支条件" hint="按顺序匹配，default 建议放在最后">
+                  <SwitchConditionsEditor node={selected} nodes={nodes} onChange={(conditions) => updateSelectedConfig({ conditions })} />
                 </Field>
               )}
               {selected.data.nodeType === 'json_output' && (
@@ -1124,10 +1413,8 @@ export function CanvasPage() {
               </Field>
               <Field label="默认 Agent Mode">
                 <Select value={profile.mode ?? 'react'} onChange={(event) => setProfile({ ...profile, mode: event.target.value as WorkflowProfile['mode'] })}>
-                  <option value="react">React</option>
-                  <option value="plan_execute">Plan Execute</option>
-                  <option value="reflect">Reflect</option>
-                  <option value="supervisor">Supervisor</option>
+                  <option value="react">ReAct</option>
+                  <option value="plan_execute">Plan &amp; Execute</option>
                 </Select>
               </Field>
               <Field label="默认风险等级">
@@ -1528,6 +1815,65 @@ export function CanvasPage() {
                   </div>
                 ) : null}
               </div>
+            </Panel>
+          )}
+
+          {mode === 'chat' && (
+            <Panel title="Workflow 对话" eyebrow={version ? `Flow v${version.version_no}` : '未保存'}>
+              <div className="workflow-chat-head">
+                <Select value={conversationId} onChange={(event) => setConversationId(Number(event.target.value))}>
+                  <option value={0}>选择会话</option>
+                  {conversations.map((item) => <option key={item.id} value={item.id}>{item.title || `会话 #${item.id}`}</option>)}
+                </Select>
+                <Button title="新建会话" onClick={() => void createWorkflowConversation()}>
+                  <Plus size={15} />
+                  新建
+                </Button>
+              </div>
+              <div className="workflow-chat-messages" role="log" aria-live="polite" aria-busy={chatStreaming}>
+                {conversationMessages.length === 0 && !pendingChatQuestion ? (
+                  <EmptyState icon={<MessageSquareText size={22} />} title="用这个 Workflow 开始对话" description="每条回答都会关联运行版本和 Trace。" />
+                ) : null}
+                {conversationMessages.filter((item) => item.role === 'user' || item.role === 'assistant').map((item) => (
+                  <article className={`workflow-chat-message ${item.role}`} key={item.id}>
+                    <p>{item.content}</p>
+                    {item.run_id ? (
+                      <button type="button" onClick={() => {
+                        setDebugRunId(item.run_id ?? null);
+                        if (item.run_id) void loadRunTrace(item.run_id).then(() => setMode('debug')).catch((err) => setError(friendlyErrorMessage(err, '加载 Trace 失败')));
+                      }}>Run #{item.run_id} · 查看 Trace</button>
+                    ) : null}
+                  </article>
+                ))}
+                {pendingChatQuestion ? <article className="workflow-chat-message user"><p>{pendingChatQuestion}</p></article> : null}
+                {chatStreaming ? (
+                  <article className="workflow-chat-message assistant streaming">
+                    <p>{pendingChatAnswer || 'Workflow 正在执行…'}</p>
+                    <span>{debugRunId ? `Run #${debugRunId}` : '正在创建 Run'}</span>
+                  </article>
+                ) : null}
+              </div>
+              <div className="workflow-chat-composer">
+                <TextArea
+                  value={chatQuestion}
+                  onChange={(event) => setChatQuestion(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing) return;
+                    event.preventDefault();
+                    void sendWorkflowMessage();
+                  }}
+                  placeholder="输入消息，Enter 发送"
+                />
+                {chatStreaming ? (
+                  <Button onClick={stopWorkflowMessage}>停止</Button>
+                ) : (
+                  <Button tone="primary" disabled={!chatQuestion.trim()} onClick={() => void sendWorkflowMessage()}>
+                    <Send size={15} />
+                    发送
+                  </Button>
+                )}
+              </div>
+              {error ? <p className="error-text" role="alert">{error}</p> : null}
             </Panel>
           )}
 

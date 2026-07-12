@@ -20,13 +20,13 @@ function friendlyAuthError(err: unknown, fallback: string, context: 'session' | 
   const raw = err instanceof Error ? err.message : String(err || '');
   const text = raw.toLowerCase();
   const status = err instanceof ApiError ? err.status : 0;
-  if (context === 'login' && (status === 401 || text.includes('unauthorized'))) return '邮箱或密码不正确，请重新输入。';
-  if (context === 'session' && (status === 401 || text.includes('unauthorized'))) return '登录状态已失效，请重新登录。';
-  if (text.includes('invalid') && text.includes('password')) return '密码不正确，请重新输入。';
-  if (text.includes('invalid') && text.includes('input')) return '输入内容不符合要求，请检查邮箱和密码后重试。';
-  if (text.includes('unauthorized') || text.includes('401')) return '登录状态已失效，请重新登录。';
-  if (text.includes('not found')) return '账号不存在，请检查邮箱或先创建账号。';
-  if (text.includes('network') || text.includes('fetch')) return '无法连接服务器，请确认后端服务已经启动。';
+  if (context === 'login' && (status === 401 || text.includes('unauthorized'))) return 'The email or password is incorrect.';
+  if (context === 'session' && (status === 401 || text.includes('unauthorized'))) return 'Your session has expired. Sign in again.';
+  if (text.includes('invalid') && text.includes('password')) return 'The password is incorrect.';
+  if (text.includes('invalid') && text.includes('input')) return 'Check your email and password, then try again.';
+  if (text.includes('unauthorized') || text.includes('401')) return 'Your session has expired. Sign in again.';
+  if (text.includes('not found')) return 'We could not find that account.';
+  if (text.includes('network') || text.includes('fetch')) return 'Unable to reach the server. Check that the backend is running.';
   if (text.includes('failed')) return fallback;
   return raw && raw.length < 80 && !/[a-z]{4,}\s+[a-z]{4,}/i.test(raw) ? raw : fallback;
 }
@@ -48,7 +48,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       set({ user, booted: true, error: '' });
     } catch (err) {
       tokenStorage.clear();
-      set({ user: null, booted: true, error: friendlyAuthError(err, '登录状态已失效，请重新登录。', 'session') });
+      set({ user: null, booted: true, error: friendlyAuthError(err, 'Your session has expired. Sign in again.', 'session') });
     }
   },
   login: async (email, password) => {
@@ -59,7 +59,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       tokenStorage.setUser(resp.user);
       set({ user: resp.user, loading: false, error: '' });
     } catch (err) {
-      set({ loading: false, error: friendlyAuthError(err, '登录失败，请检查邮箱和密码。', 'login') });
+      set({ loading: false, error: friendlyAuthError(err, 'Sign-in failed. Check your email and password.', 'login') });
       throw err;
     }
   },
@@ -71,7 +71,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       tokenStorage.setUser(resp.user);
       set({ user: resp.user, loading: false, error: '' });
     } catch (err) {
-      set({ loading: false, error: friendlyAuthError(err, '注册失败，请检查填写的信息。', 'register') });
+      set({ loading: false, error: friendlyAuthError(err, 'Registration failed. Check the information and try again.', 'register') });
       throw err;
     }
   },
