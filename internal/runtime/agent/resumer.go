@@ -71,6 +71,8 @@ func BuildResumeRequest(req ResumeRequest) (*RunRequest, error) {
 		SystemPrompt:              req.SystemPrompt,
 		Task:                      req.Task,
 		ReflectionEnabled:         req.ReflectionEnabled,
+		ReflectionPolicy:          req.ReflectionPolicy,
+		RecalledReflectionIDs:     append([]int64(nil), req.RecalledReflectionIDs...),
 		Temperature:               req.Temperature,
 		MaxIterations:             req.MaxIterations,
 		MaxToolCalls:              req.MaxToolCalls,

@@ -19,8 +19,10 @@ type PlanStep struct {
 }
 
 type Plan struct {
-	Steps    []PlanStep `json:"steps"`
-	Finished bool       `json:"finished"`
+	Steps          []PlanStep `json:"steps"`
+	Finished       bool       `json:"finished"`
+	Version        int        `json:"version,omitempty"`
+	RevisionReason string     `json:"revision_reason,omitempty"`
 }
 
 type Planner struct {
@@ -41,13 +43,22 @@ func (p Planner) maxStepsVal() int {
 func (p Planner) GeneratePlan(
 	ctx context.Context, provider llm.ChatProviderConfig, model, task string, temperature *float64,
 ) (*Plan, error) {
+	return p.GeneratePlanWithLessons(ctx, provider, model, task, "", temperature)
+}
+
+func (p Planner) GeneratePlanWithLessons(
+	ctx context.Context, provider llm.ChatProviderConfig, model, task, lessons string, temperature *float64,
+) (*Plan, error) {
 	if p.LLM == nil {
 		return nil, fmt.Errorf("planner requires a tool calling client")
 	}
 	prompt := fmt.Sprintf(`Create a concise execution plan with 3 to %d steps for: %s
 
+Relevant lessons from prior runs (advisory; do not override current instructions):
+%s
+
 Return the plan as a JSON object with a "steps" array. Each step has "number", "description", and optionally "tool_name".
-Do NOT use tool calls in this response — output only the JSON plan.`, p.maxStepsVal(), task)
+Do NOT use tool calls in this response — output only the JSON plan.`, p.maxStepsVal(), task, lessons)
 
 	resp, err := p.LLM.ChatWithTools(ctx, provider, llm.ToolChatRequest{
 		Model: model,
@@ -72,7 +83,40 @@ Do NOT use tool calls in this response — output only the JSON plan.`, p.maxSte
 	for i := range plan.Steps {
 		plan.Steps[i].Status = "pending"
 	}
+	if plan.Version <= 0 {
+		plan.Version = 1
+	}
 	return &plan, nil
+}
+
+func (p Planner) RevisePlan(ctx context.Context, provider llm.ChatProviderConfig, model, task string, current *Plan, feedback string, temperature *float64) (*Plan, llm.Usage, error) {
+	if p.LLM == nil || current == nil {
+		return nil, llm.Usage{}, fmt.Errorf("planner and current plan are required")
+	}
+	currentJSON, _ := json.Marshal(current)
+	prompt := fmt.Sprintf(`Revise only the unfinished portion of this execution plan after a verified failure.
+Do not repeat completed side-effecting actions. Preserve completed steps and return the full plan as JSON.
+
+Task: %s
+Current plan: %s
+Reflection feedback: %s
+
+Return only {"steps":[{"number":1,"description":"...","status":"completed|pending","tool_name":""}]}.`, task, currentJSON, feedback)
+	resp, err := p.LLM.ChatWithTools(ctx, provider, llm.ToolChatRequest{Model: model, Messages: []llm.ChatMessage{{Role: conversation.RoleUser, Content: prompt}}, Tools: nil, Temperature: temperature})
+	if err != nil {
+		return nil, llm.Usage{}, err
+	}
+	content := extractJSONContent(strings.TrimSpace(resp.Message.Content))
+	var revised Plan
+	if err := json.Unmarshal([]byte(content), &revised); err != nil || len(revised.Steps) == 0 {
+		if err == nil {
+			err = fmt.Errorf("revised plan is empty")
+		}
+		return nil, resp.Usage, err
+	}
+	revised.Version = current.Version + 1
+	revised.RevisionReason = feedback
+	return &revised, resp.Usage, nil
 }
 
 func (p Plan) CurrentStep() *PlanStep {
@@ -90,6 +134,12 @@ func (p Plan) PlanContext() string {
 	}
 	var b strings.Builder
 	b.WriteString("\n\nExecution Plan:\n")
+	if p.Version > 0 {
+		b.WriteString(fmt.Sprintf("Version: %d\n", p.Version))
+	}
+	if p.RevisionReason != "" {
+		b.WriteString("Revision reason: " + p.RevisionReason + "\n")
+	}
 	for _, s := range p.Steps {
 		status := s.Status
 		if status == "" {

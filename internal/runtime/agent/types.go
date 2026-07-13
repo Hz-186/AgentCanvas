@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"time"
 
+	"agentcanvas/internal/domain/reflection"
 	"agentcanvas/internal/infrastructure/llm"
 	"agentcanvas/internal/runtime/harness/hooks"
 	"agentcanvas/internal/runtime/harness/rules"
@@ -25,14 +26,16 @@ const (
 )
 
 const (
-	StepTypeLLMResponse = "llm_response"
-	StepTypePlan        = "plan"
-	StepTypeToolCall    = "tool_call"
-	StepTypeToolResult  = "tool_result"
-	StepTypeApproval    = "approval_required"
-	StepTypeReflection  = "reflection"
-	StepTypeFinalAnswer = "final_answer"
-	StepTypeError       = "error"
+	StepTypeLLMResponse      = "llm_response"
+	StepTypePlan             = "plan"
+	StepTypeToolCall         = "tool_call"
+	StepTypeToolResult       = "tool_result"
+	StepTypeApproval         = "approval_required"
+	StepTypeReflectionRecall = "reflection_recall"
+	StepTypeReflection       = "reflection"
+	StepTypePlanRevision     = "plan_revision"
+	StepTypeFinalAnswer      = "final_answer"
+	StepTypeError            = "error"
 )
 
 type RunRequest struct {
@@ -50,6 +53,8 @@ type RunRequest struct {
 	SystemPrompt              string
 	Task                      string
 	ReflectionEnabled         bool
+	ReflectionPolicy          reflection.Policy
+	RecalledReflectionIDs     []int64
 	Temperature               *float64
 	MaxIterations             int
 	MaxToolCalls              int
@@ -80,20 +85,44 @@ type RunRequest struct {
 }
 
 type RunResult struct {
-	FinalAnswer string       `json:"final_answer"`
-	StopReason  string       `json:"stop_reason"`
-	Iterations  int          `json:"iterations"`
-	ToolCalls   int          `json:"tool_calls"`
-	Usage       llm.Usage    `json:"usage"`
-	Plan        *Plan        `json:"plan,omitempty"`
-	Steps       []RunStep    `json:"steps,omitempty"`
-	Context     ContextTrace `json:"context_trace,omitempty"`
-	HookTrace   []HookTrace  `json:"hook_trace,omitempty"`
-	Approval    *Approval    `json:"approval,omitempty"`
-	Checkpoint  *Checkpoint  `json:"checkpoint,omitempty"`
-	StartedAt   time.Time    `json:"started_at"`
-	FinishedAt  time.Time    `json:"finished_at"`
-	LatencyMS   int          `json:"latency_ms"`
+	FinalAnswer string          `json:"final_answer"`
+	StopReason  string          `json:"stop_reason"`
+	Iterations  int             `json:"iterations"`
+	ToolCalls   int             `json:"tool_calls"`
+	Usage       llm.Usage       `json:"usage"`
+	Plan        *Plan           `json:"plan,omitempty"`
+	Steps       []RunStep       `json:"steps,omitempty"`
+	Context     ContextTrace    `json:"context_trace,omitempty"`
+	HookTrace   []HookTrace     `json:"hook_trace,omitempty"`
+	Approval    *Approval       `json:"approval,omitempty"`
+	Checkpoint  *Checkpoint     `json:"checkpoint,omitempty"`
+	Reflection  ReflectionTrace `json:"reflection_trace,omitempty"`
+	StartedAt   time.Time       `json:"started_at"`
+	FinishedAt  time.Time       `json:"finished_at"`
+	LatencyMS   int             `json:"latency_ms"`
+}
+
+type InlineReflection struct {
+	Action            string   `json:"action"`
+	TriggerType       string   `json:"trigger_type"`
+	RootCauseCategory string   `json:"root_cause_category"`
+	RootCause         string   `json:"root_cause"`
+	CorrectiveAction  string   `json:"corrective_action"`
+	Lesson            string   `json:"lesson"`
+	Applicability     string   `json:"applicability"`
+	EvidenceSteps     []int    `json:"evidence_step_indexes,omitempty"`
+	Severity          float64  `json:"severity"`
+	Generalizability  float64  `json:"generalizability"`
+	Confidence        float64  `json:"confidence"`
+	Tags              []string `json:"tags,omitempty"`
+}
+
+type ReflectionTrace struct {
+	RecalledIDs         []int64            `json:"recalled_ids,omitempty"`
+	Inline              []InlineReflection `json:"inline,omitempty"`
+	TriggerFingerprints []string           `json:"trigger_fingerprints,omitempty"`
+	Errors              []string           `json:"errors,omitempty"`
+	Usage               llm.Usage          `json:"usage,omitempty"`
 }
 
 type RunStep struct {
@@ -187,20 +216,21 @@ type RuleRoundTrace struct {
 }
 
 type TokenAudit struct {
-	System        int `json:"system,omitempty"`
-	Profile       int `json:"profile,omitempty"`
-	RulesL0       int `json:"rules_l0,omitempty"`
-	RulesL1       int `json:"rules_l1,omitempty"`
-	RulesL2       int `json:"rules_l2,omitempty"`
-	RulesL3       int `json:"rules_l3,omitempty"`
-	RulesL4       int `json:"rules_l4,omitempty"`
-	ToolSchema    int `json:"tool_schema,omitempty"`
-	History       int `json:"history,omitempty"`
-	Memory        int `json:"memory,omitempty"`
-	WorkingMemory int `json:"working_memory,omitempty"`
-	Retrieval     int `json:"retrieval,omitempty"`
-	Task          int `json:"task,omitempty"`
-	Total         int `json:"total,omitempty"`
+	System           int `json:"system,omitempty"`
+	Profile          int `json:"profile,omitempty"`
+	RulesL0          int `json:"rules_l0,omitempty"`
+	RulesL1          int `json:"rules_l1,omitempty"`
+	RulesL2          int `json:"rules_l2,omitempty"`
+	RulesL3          int `json:"rules_l3,omitempty"`
+	RulesL4          int `json:"rules_l4,omitempty"`
+	ToolSchema       int `json:"tool_schema,omitempty"`
+	History          int `json:"history,omitempty"`
+	Memory           int `json:"memory,omitempty"`
+	ReflectionMemory int `json:"reflection_memory,omitempty"`
+	WorkingMemory    int `json:"working_memory,omitempty"`
+	Retrieval        int `json:"retrieval,omitempty"`
+	Task             int `json:"task,omitempty"`
+	Total            int `json:"total,omitempty"`
 }
 
 type ContextBlockTrace struct {
