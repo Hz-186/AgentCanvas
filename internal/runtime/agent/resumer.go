@@ -56,6 +56,17 @@ func BuildResumeRequest(req ResumeRequest) (*RunRequest, error) {
 	if err != nil {
 		return nil, err
 	}
+	reflectionPolicy := req.ReflectionPolicy
+	recalledReflectionIDs := append([]int64(nil), req.RecalledReflectionIDs...)
+	plan := req.Plan
+	if req.Checkpoint.ReflectionPolicy.RuntimeMode != "" {
+		reflectionPolicy = req.Checkpoint.ReflectionPolicy
+		recalledReflectionIDs = append([]int64(nil), req.Checkpoint.RecalledReflectionIDs...)
+	}
+	if req.Checkpoint.Plan != nil {
+		cloned := clonePlan(req.Checkpoint.Plan)
+		plan = &cloned
+	}
 	return &RunRequest{
 		OwnerID:                   req.OwnerID,
 		WorkflowID:                req.WorkflowID,
@@ -67,12 +78,12 @@ func BuildResumeRequest(req ResumeRequest) (*RunRequest, error) {
 		Provider:                  req.Provider,
 		Model:                     req.Model,
 		Mode:                      req.Mode,
-		Plan:                      req.Plan,
+		Plan:                      plan,
 		SystemPrompt:              req.SystemPrompt,
 		Task:                      req.Task,
 		ReflectionEnabled:         req.ReflectionEnabled,
-		ReflectionPolicy:          req.ReflectionPolicy,
-		RecalledReflectionIDs:     append([]int64(nil), req.RecalledReflectionIDs...),
+		ReflectionPolicy:          reflectionPolicy,
+		RecalledReflectionIDs:     recalledReflectionIDs,
 		Temperature:               req.Temperature,
 		MaxIterations:             req.MaxIterations,
 		MaxToolCalls:              req.MaxToolCalls,

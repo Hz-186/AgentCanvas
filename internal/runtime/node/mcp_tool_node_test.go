@@ -8,6 +8,7 @@ import (
 	"os"
 	"testing"
 
+	"agentcanvas/internal/domain/reflection"
 	"agentcanvas/internal/domain/tool"
 	"agentcanvas/internal/domain/workflow"
 	"agentcanvas/internal/infrastructure/llm"
@@ -278,6 +279,60 @@ func TestAgentNodeApplyProfileDefaultsInheritsPolicyAndContext(t *testing.T) {
 	}
 }
 
+func TestReflectionPolicyDefaultsActiveAndHonorsExplicitDisable(t *testing.T) {
+	policy, err := effectiveReflectionPolicy(agentRuntimeConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !policy.Enabled || policy.RuntimeMode != reflection.RuntimeActive || !reflectionAffectsExecution(policy) {
+		t.Fatalf("expected passive reflection to default active, got %+v", policy)
+	}
+	disabled, err := effectiveReflectionPolicy(agentRuntimeConfig{ReflectionPolicyJSON: json.RawMessage(`{"enabled":false}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if disabled.Active() || reflectionAffectsExecution(disabled) {
+		t.Fatalf("explicit enabled=false must disable reflection, got %+v", disabled)
+	}
+	zeroInline, err := effectiveReflectionPolicy(agentRuntimeConfig{ReflectionPolicyJSON: json.RawMessage(`{"max_inline_per_run":0}`)})
+	if err != nil || zeroInline.MaxInlinePerRun != 0 || !zeroInline.Active() {
+		t.Fatalf("zero inline budget should keep terminal reflection active: policy=%+v err=%v", zeroInline, err)
+	}
+	if _, err := effectiveReflectionPolicy(agentRuntimeConfig{ReflectionPolicyJSON: json.RawMessage(`{"max_inline_per_run":-1}`)}); err == nil {
+		t.Fatal("negative inline budget must be rejected")
+	}
+}
+
+func TestReflectionShadowObservesWithoutInfluencingExecution(t *testing.T) {
+	policy := reflection.DefaultPolicy()
+	policy.RuntimeMode = reflection.RuntimeShadow
+	if !policy.Active() {
+		t.Fatal("shadow mode must still collect recall and terminal observations")
+	}
+	if reflectionAffectsExecution(policy) {
+		t.Fatal("shadow mode must not inject lessons into Actor or Planner")
+	}
+}
+
+func TestAgentNodeReflectionPolicyOverridesProfilePolicy(t *testing.T) {
+	agent := AgentNode{Profiles: fakeAgentProfileLoader{profile: &workflow.Profile{
+		OwnerID: 1, WorkflowID: 2, ReflectionPolicyJSON: json.RawMessage(`{"enabled":true,"runtime_mode":"active"}`),
+	}}}
+	cfg, err := agent.applyProfileDefaults(context.Background(), &engine.RunContext{OwnerID: 1, WorkflowID: 2}, agentRuntimeConfig{
+		ReflectionPolicyJSON: json.RawMessage(`{"enabled":false,"runtime_mode":"off"}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy, err := effectiveReflectionPolicy(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if policy.Active() {
+		t.Fatalf("node policy must override profile policy, got %+v", policy)
+	}
+}
+
 func TestAgentNodePolicyJSONCannotLoosenProfileToolPolicy(t *testing.T) {
 	agent := AgentNode{Profiles: fakeAgentProfileLoader{profile: &workflow.Profile{
 		OwnerID:           1,
@@ -419,6 +474,42 @@ type fakeAgentProfileLoader struct {
 
 func (l fakeAgentProfileLoader) GetWorkflowProfile(context.Context, int64, int64) (*workflow.Profile, error) {
 	return l.profile, nil
+}
+
+type fakeReflectionAdvisor struct {
+	enqueued []*reflection.Job
+	resolved []string
+}
+
+func (f *fakeReflectionAdvisor) Recall(context.Context, reflection.RecallRequest) (reflection.RecallResult, error) {
+	return reflection.RecallResult{}, nil
+}
+func (f *fakeReflectionAdvisor) Enqueue(_ context.Context, job *reflection.Job) error {
+	f.enqueued = append(f.enqueued, job)
+	return nil
+}
+func (f *fakeReflectionAdvisor) ResolveRun(_ context.Context, _, _ int64, outcome string) {
+	f.resolved = append(f.resolved, outcome)
+}
+func (f *fakeReflectionAdvisor) RecordEvaluation(context.Context, int64, int64, bool, string) {}
+
+func TestFinalizeReflectionSkipsApprovalPauseAndEnqueuesAfterResumeCompletion(t *testing.T) {
+	advisor := &fakeReflectionAdvisor{}
+	node := AgentNode{Reflections: advisor}
+	rc := &engine.RunContext{OwnerID: 1, WorkflowID: 2, RunID: 3, CurrentNodeID: "agent"}
+	loaded := &LoadedProvider{ProviderID: 4, Model: "model"}
+	policy := reflection.DefaultPolicy()
+
+	node.finalizeReflection(context.Background(), rc, agentRuntimeConfig{}, loaded, "task", &runtimeagent.RunResult{StopReason: runtimeagent.StopReasonWaitingHuman}, policy)
+	node.finalizeReflection(context.Background(), rc, agentRuntimeConfig{}, loaded, "task", &runtimeagent.RunResult{StopReason: runtimeagent.StopReasonPaused}, policy)
+	if len(advisor.enqueued) != 0 || len(advisor.resolved) != 0 {
+		t.Fatalf("paused run must not be treated as terminal: %+v", advisor)
+	}
+
+	node.finalizeReflection(context.Background(), rc, agentRuntimeConfig{}, loaded, "task", &runtimeagent.RunResult{StopReason: runtimeagent.StopReasonFinalAnswer, FinalAnswer: "done"}, policy)
+	if len(advisor.enqueued) != 1 || len(advisor.resolved) != 1 || advisor.resolved[0] != "succeeded" {
+		t.Fatalf("resumed terminal run must enqueue exactly once: %+v", advisor)
+	}
 }
 
 type fakeNodeToolClient struct {

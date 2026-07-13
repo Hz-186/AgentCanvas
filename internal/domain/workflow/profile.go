@@ -35,6 +35,7 @@ type Profile struct {
 	OutputSchemaJSON            json.RawMessage `json:"output_schema_json" gorm:"column:output_schema_json"`
 	ToolPolicyJSON              json.RawMessage `json:"tool_policy_json" gorm:"column:tool_policy_json"`
 	MemoryPolicyJSON            json.RawMessage `json:"memory_policy_json" gorm:"column:memory_policy_json"`
+	ReflectionPolicyJSON        json.RawMessage `json:"reflection_policy_json" gorm:"column:reflection_policy_json"`
 	ContextPolicyJSON           json.RawMessage `json:"context_policy_json" gorm:"column:context_policy_json"`
 	ActiveRuleSetID             *int64          `json:"active_rule_set_id" gorm:"column:active_rule_set_id"`
 	RuleCompilerProviderID      *int64          `json:"rule_compiler_provider_id" gorm:"column:rule_compiler_provider_id"`
@@ -90,6 +91,7 @@ func (p *Profile) normalizeJSON() error {
 	p.OutputSchemaJSON = normalizeJSONObjectField(p.OutputSchemaJSON)
 	p.ToolPolicyJSON = normalizeJSONObjectField(p.ToolPolicyJSON)
 	p.MemoryPolicyJSON = normalizeJSONObjectField(p.MemoryPolicyJSON)
+	p.ReflectionPolicyJSON = normalizeJSONObjectField(p.ReflectionPolicyJSON)
 	p.ContextPolicyJSON = normalizeJSONObjectField(p.ContextPolicyJSON)
 	return nil
 }

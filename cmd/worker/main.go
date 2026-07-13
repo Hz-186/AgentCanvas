@@ -13,6 +13,7 @@ import (
 
 	ingestionusecase "agentcanvas/internal/application/ingestion_usecase"
 	memoryusecase "agentcanvas/internal/application/memory_usecase"
+	reflectionusecase "agentcanvas/internal/application/reflection_usecase"
 	rulecompileusecase "agentcanvas/internal/application/rule_compile_usecase"
 	"agentcanvas/internal/domain/resource"
 	"agentcanvas/internal/domain/workflow"
@@ -113,6 +114,12 @@ func main() {
 	dreamWorker := memoryusecase.NewDreamWorker(baseChatClient(), llm.NewOpenAICompatibleEmbeddingClient(), memoryRepo, memoryLogRepo, messageRepo, archivalVecStore, infraDeps.Redis, memoryusecase.NewDreamConfig(cfg.MemoryDream), workerID)
 	ruleSetRepo := mysqlinfra.NewWorkflowRuleSetRepository(db)
 	ruleCompiler := rulecompileusecase.NewService(ruleSetRepo, providerRepo, secretBox, llm.NewOpenAICompatibleChatClient())
+	reflectionRepo := mysqlinfra.NewReflectionRepository(db)
+	reflectionJobRepo := mysqlinfra.NewReflectionJobRepository(db)
+	reflectionRecallRepo := mysqlinfra.NewReflectionRecallLogRepository(db)
+	reflectionEventSink := mysqlinfra.NewReflectionEventSink(mysqlinfra.NewRunEventRepository(db))
+	reflectionService := reflectionusecase.Service{Reflections: reflectionRepo, Jobs: reflectionJobRepo, RecallLogs: reflectionRecallRepo, Events: reflectionEventSink}
+	reflectionWorker := reflectionusecase.Worker{Service: reflectionService, Jobs: reflectionJobRepo, Providers: providerRepo, Secrets: secretBox, LLM: baseChatClient()}
 	appLogger.Info("worker started", "worker_id", workerID)
 
 	ticker := time.NewTicker(2 * time.Second)
@@ -142,6 +149,11 @@ func main() {
 		if compiled, compileErr := ruleCompiler.ProcessNext(ctx, workerID); compileErr != nil {
 			appLogger.Error("process rule compile job failed", "error", compileErr)
 		} else if compiled {
+			continue
+		}
+		if reflected, reflectionErr := reflectionWorker.ProcessNext(ctx, workerID); reflectionErr != nil {
+			appLogger.Error("process reflection job failed", "error", reflectionErr)
+		} else if reflected {
 			continue
 		}
 

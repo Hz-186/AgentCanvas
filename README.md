@@ -61,7 +61,7 @@ Agent 的执行能力不仅仅取决于模型本身，更取决于包裹在模�
 ```
 
 四层职责边界被严格划分，避免 token 消耗失控：
-- **Commands**：流程入口，控制 Agent 的执行生命周期（run → plan → execute → judge → resume），四种模式（ReAct / Plan-Execute / Reflect / Supervisor）由 Commands 层统一调度
+- **Commands**：流程入口，控制 Agent 的执行生命周期（run → plan → execute → evaluate → reflect → resume），统一调度 ReAct / Plan-Execute、Supervisor 委派与持久化 Reflexion
 - **Skills**：领域能力封装，将可复用能力抽象为标准化模块，通过 `load_skill` / `skill_search` 工具按需加载
 - **Rules**：前馈约束，基于 MCTS 剪枝思想的 L0-L4 五级分级注入，确保进入模型的上下文是精选而非全量
 - **Hooks**：反馈兜底，`preToolUse` / `postToolUse` 双环拦截，覆盖危险命令物理阻断 + 敏感字段脱敏 + 输出压缩
@@ -70,7 +70,7 @@ Agent 的执行能力不仅仅取决于模型本身，更取决于包裹在模�
 
 ### Agent 四种运行模式
 
-系统支持四种 Agent 模式，通过 `mode` 字段（`react` / `plan_execute` / `reflect` / `supervisor`）选择，默认 `react`。模式配置遵循三层优先级：Node Config → Profile Defaults → Fallback（react）。
+Agent Loop 的主执行模式为 `react` / `plan_execute`，默认 `react`。旧版 `reflect` 配置会兼容映射为 ReAct，但真正的 Reflexion 已作为独立的持久化经验域被动接入两种主循环，不再依赖一个“反思模式”开关。模式配置遵循三层优先级：Node Config → Profile Defaults → Fallback（react）。
 
 #### 1. ReAct 模式（默认）
 
@@ -90,7 +90,7 @@ Agent 的执行能力不仅仅取决于模型本身，更取决于包裹在模�
 
 **关键参数**：默认 `MaxIterations=8`，`MaxToolCalls=16`。单次 LLM 调用可返回多个 tool_call，每个 tool 串行执行。
 
-**八种停止原因**：`FinalAnswer` / `MaxIterations` / `MaxToolCalls` / `Timeout` / `Cancelled` / `WaitingHuman` / `LLMError` / `ToolNameNotFound`
+**主要停止原因**：`FinalAnswer` / `PlanCompleted` / `MaxIterations` / `MaxToolCalls` / `Timeout` / `Cancelled` / `Paused` / `WaitingHuman` / `LLMError` / `ToolNameNotFound` / `ReflectionFailed`
 
 #### 2. Plan-Execute 模式
 
@@ -104,28 +104,38 @@ Agent 的执行能力不仅仅取决于模型本身，更取决于包裹在模�
 - `Plan.PlanContext()` 将计划作为 `pinned: true` 的系统提示注入上下文
 - 当 LLM 返回无 tool_call 的 final answer 时，`Plan.Finish()` 标记所有步骤完成并停止
 
-**注意**：Planner 生成的是一次性静态计划，运行期间不会被 LLM 动态修改，但 LLM 可根据 "if a step fails, revise the plan and continue" 指令自行调整行为。
+当工具硬失败触发结构化反思且返回 `action=replan` 时，Planner 会调用 `RevisePlan()` 只重写未完成部分。已完成步骤由运行时强制保留，模型不能把已执行的副作用步骤改回 `pending` 或静默删除。
 
-#### 3. Reflect 模式（反思模式）
+#### 3. Persistent Reflexion（持久化反思）
 
-Reflect 不是独立的执行循环，而是 **三层反思体系**嵌入在 ReAct 循环之上：
+Reflexion 是独立于事实记忆/用户偏好的经验域，默认以被动 `active` 策略同时接入 ReAct 与 Plan-Execute：
 
-**第一层 — 指令级反思**（System Prompt 注入）：
+```text
+Episodic Reflection Memory
+          │ 任务开始：按 owner/workflow/node/mode 召回
+          ▼
+Actor / Planner ──→ Tool / Environment ──→ Failure Signal
+      ▲                                         │
+      │ 固定 advisory 反馈                       ▼
+      └──────── Inline Self-Reflection ← 结构化错误分析
+                                                │
+Run 结束 ──→ Reflection Job ──→ Worker 轨迹分析 ─┘
+                                  │
+                                  ▼
+                       去重、质量门控、持久化
 ```
-"Use reflection: after each tool result or draft answer, verify correctness,
-schema compliance, and missing evidence before finalizing."
-```
-当 `mode=react` 且 `ReflectionEnabled=true` 时也会注入类似指令，实现 ReAct + Reflection 混合模式。
 
-**第二层 — Schema 反思修复**（`agent_loop_node.go:561-598`）：
-Runner 返回 final answer 后，如果配置了 `output_schema_json`，自动验证 JSON schema 合规性；不合规则调用 LLM 修复，修复结果以 `StepTypeReflection` 追加到 Steps 中。
+- **任务前召回**：MySQL 候选集按中英文词法/CJK bigram、节点、模式、重要性、置信度和历史 usefulness 排名；默认 Top 3、800 token，低相关结果不注入。
+- **循环内反思**：Tool hard failure 后同步调用 LLM 返回严格 JSON，生成 root cause、corrective action、lesson 和 applicability；同一错误指纹去重，每个 Run 默认最多 2 次。
+- **Plan Revision**：反思可请求 `replan`，但已完成步骤由运行时快照保护，不会重复执行副作用。
+- **终局反思**：Run 完成后写入幂等异步 Job，由 Worker 分析完整轨迹；普通成功并不自动等于“重要经验”，只有外部 Eval、用户反馈或明确恢复证据通过质量门控后才持久化。
+- **经验演化**：相同内容哈希会合并证据；两次 helpful 可升级为 `validated`，两次 harmful 会降级为 `disputed`；只有 validated 的 global 经验允许跨 Workflow 回退。
+- **安全边界**：Tool Output 只作为不可信 evidence 放在 user payload，持久化经验以固定 advisory system 包装注入，不能覆盖系统规则、Safety Policy 或 Tool Policy。
+- **暂停恢复**：Reflection Policy、召回 ID 和当前 Plan 固化到 Checkpoint；Resume 不会重复召回或重复写终局 Job。
 
-**第三层 — Judge 质量评分**（`judge.go`）：
-离线/事后评估组件，三层评分机制：
-- **工具覆盖率**：`evalharness.Coverage` 比较预期工具 vs 实际使用工具
-- **内容匹配**：子串匹配 + 词重合度计算（忽略 ≤2 字短词）
-- **LLM 二次评分**：可选的另一个 LLM 对输出打分
-- 综合得分 ≥ 0.6 视为通过
+`reflection_policy_json` 支持：`enabled`、`runtime_mode=active|shadow|off`、`inline_on_hard_failure`、`terminal_async`、`max_inline_per_run`、`recall_top_k`、`recall_token_budget`、`min_importance`、`min_confidence`、`allow_validated_global_fallback`、`reflect_on_success`，以及可选的专用 `provider_id` / `model`。`shadow` 会记录召回与终局分析，但不会影响 Actor 或 Planner。
+
+当前方案通过 `reflection.EventSink` 将生命周期事件投影到 `workflow_run_events`；后续可替换为独立事件存储，实现事件溯源方案而无需修改 Agent Runtime。
 
 #### 4. Supervisor 模式（多 Agent 委派）
 
@@ -440,6 +450,7 @@ CachedChatClient.StreamChat()
 | **Working Memory** | Redis | 单次 Agent Loop | 四维模型：当前任务(ActiveTask) + 近期事实(RecentFacts) + 注意力焦点(AttentionFocus) + 上下文摘要(ContextSummary) |
 | **Short-term** | MySQL + Vector | 对话会话级别 | 当前 session 关键信息提取，置信度 ≥0.7 才输出到上下文 |
 | **Long-term** | MySQL + Vector | 跨会话持久化 | 用户偏好、历史决策，含 `embedding` + `memory_level` + `access_count` + `consolidation_count` |
+| **Episodic Reflection** | MySQL | 跨 Run/跨会话 | 错误教训与重要策略，含证据、作用域、置信度、状态与 usefulness 演化 |
 
 - **Dream（记忆梦境）**：定时 Job 遍历记忆，LLM 自动提取合并，`conflict_flag` 冲突检测去重
 - **Working Memory** 事件驱动更新，`ToContextBlock()` 自动序列化为 LLM 可读格式
@@ -477,7 +488,7 @@ Docker 容器六重隔离（`sandbox.go`）：
 ```text
 cmd/                        API、Worker、Migration 三个入口
   api/main.go               ─ Gin HTTP Server (SSE 流式 + SPA 嵌入)
-  worker/main.go            ─ 异步文档解析/索引 Worker
+  worker/main.go            ─ 异步文档解析/索引、规则编译与 Reflection Worker
   migrate/main.go           ─ 数据库迁移工具
 configs/                    运行配置 (YAML)
   config.yaml               ─ Docker 环境默认配置
@@ -497,6 +508,7 @@ internal/                   核心后端代码
     ingestion_usecase/       ─ 文档解析/切片/索引
     knowledge_usecase/       ─ 知识库管理/文档上传/检索/重建索引
     memory_usecase/          ─ 记忆提取/合并/Dream/缓存
+    reflection_usecase/      ─ Reflexion 召回/持久化/反馈/异步 Worker
     provider_usecase/        ─ 模型供应商管理/API Key 加密
     retrieval_usecase/       ─ Keyword/Vector/Hybrid 检索 + Rerank
     skill_usecase/           ─ Skill 技能管理 (12+条校验规则)
@@ -508,6 +520,7 @@ internal/                   核心后端代码
     workflow/                ─ DSL/Workflow/FlowVersion/Run/Profile/Eval/Approval/Team
     knowledge/               ─ 知识库/文档/Chunk/Ingestion
     memory/                  ─ 记忆/Working Memory/Cache
+    reflection/              ─ 经验实体/策略/信号/Repository/EventSink 端口
     retrieval/               ─ 检索接口定义
     provider/                ─ 模型供应商
     auth/                    ─ 认证 (APIToken)
@@ -547,7 +560,7 @@ internal/                   核心后端代码
     response/                ─ 统一 HTTP 响应格式
     strutil/                 ─ 字符串工具 (截断/脱敏)
   runtime/                  Agent 运行时引擎
-    agent/                   ─ 4种模式: Runner/Planner/Supervisor/Judge/Resumer/ContextAssembler/Metrics
+    agent/                   ─ Runner/Planner/Reflexion/Supervisor/Judge/Resumer/ContextAssembler
     engine/                  ─ DAG 执行器/VariableResolver
     harness/                 ─ Harness框架: Rules (L0-L4 MCTS剪枝) + Hooks (preToolUse/postToolUse责任链)
     node/                    ─ 23 种节点实现
@@ -563,7 +576,7 @@ skill/                      内置 Skill 预设 (explain-knowledge / record-know
 
 ---
 
-## 数据库表清单（44 张表）
+## 核心数据库表清单
 
 | 表名 | 用途 |
 |------|------|
@@ -589,7 +602,7 @@ skill/                      内置 Skill 预设 (explain-knowledge / record-know
 | `workflow_run_events` | SSE 运行时事件 |
 | `workflow_node_logs` | 节点执行日志 |
 | `workflow_run_steps` | 运行步骤 |
-| `workflow_profiles` | Profile 配置（Mode/Tool Packs/MCP/Memory/Context/Output Schema/Risk Level） |
+| `workflow_profiles` | Profile 配置（Mode/Tool Packs/MCP/Memory/Reflection/Context/Output Schema/Risk Level） |
 | `workflow_eval_datasets` | 评估数据集 |
 | `workflow_eval_cases` | 评估用例 |
 | `workflow_eval_runs` | 评估运行记录 |
@@ -600,6 +613,9 @@ skill/                      内置 Skill 预设 (explain-knowledge / record-know
 | `memory_write_logs` | 记忆写入日志 |
 | `memory_merge_logs` | 记忆合并日志 |
 | `memory_extraction_jobs` | 记忆提取任务 |
+| `agent_reflections` | 持久化错误教训/重要策略及证据、状态、usefulness |
+| `agent_reflection_jobs` | 终局轨迹、Eval 与用户纠正的异步反思任务 |
+| `agent_reflection_recall_logs` | 每次 Run 的召回排名、token、结果与 helpful/harmful 反馈 |
 | `tool_definitions` | 工具定义 |
 | `tool_invocations` | 工具调用记录 |
 | `tool_policies` | 工具策略（超时/截断/白名单/风险级别） |
@@ -701,11 +717,16 @@ POST   /api/v1/workflows/:id/runs/stream              SSE 流式运行
 POST   /api/v1/runs/:id/pause                         暂停 (→ Checkpoint)
 POST   /api/v1/runs/:id/resume                        恢复 (Checkpoint → Resume)
 GET    /api/v1/runs/:id/trace                         运行追踪
+GET    /api/v1/workflows/:id/reflections              Reflection 列表
+PATCH  /api/v1/workflows/:id/reflections/:reflection_id 状态管理
+POST   /api/v1/runs/:id/reflections/:reflection_id/feedback helpful/harmful 反馈
 POST   /api/v1/workflows/:id/eval-datasets            创建评估数据集
 GET    /api/v1/eval-datasets/:id/trend                评估趋势
 GET    /api/v1/approval-requests                      审批请求
 POST   /api/v1/workflow-teams                         创建 Team
 ```
+
+Reflection 健康与进程/数据库指标：`GET /api/v1/health/reflection-system`。
 
 ### Memory / Tool / Skill / MCP
 

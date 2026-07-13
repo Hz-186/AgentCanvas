@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -114,9 +115,53 @@ Return only {"steps":[{"number":1,"description":"...","status":"completed|pendin
 		}
 		return nil, resp.Usage, err
 	}
+	revised.Steps = preserveCompletedPlanSteps(current.Steps, revised.Steps)
+	if len(revised.Steps) == 0 {
+		return nil, resp.Usage, fmt.Errorf("revised plan has no executable steps")
+	}
 	revised.Version = current.Version + 1
 	revised.RevisionReason = feedback
 	return &revised, resp.Usage, nil
+}
+
+// preserveCompletedPlanSteps treats planner output as an untrusted proposal.
+// A revision may change unfinished work, but it must never replay, rewrite, or
+// silently drop a step whose side effects have already completed.
+func preserveCompletedPlanSteps(current, proposed []PlanStep) []PlanStep {
+	completed := make(map[int]PlanStep, len(current))
+	for _, step := range current {
+		if step.Status == "completed" {
+			step.Status = "completed"
+			completed[step.Number] = step
+		}
+	}
+
+	result := make([]PlanStep, 0, len(proposed)+len(completed))
+	seen := make(map[int]bool, len(proposed)+len(completed))
+	for _, step := range proposed {
+		if step.Number <= 0 || seen[step.Number] {
+			continue
+		}
+		seen[step.Number] = true
+		if preserved, ok := completed[step.Number]; ok {
+			result = append(result, preserved)
+			delete(completed, step.Number)
+			continue
+		}
+		// The model cannot declare previously unfinished work completed.
+		step.Status = "pending"
+		result = append(result, step)
+	}
+	for _, step := range current {
+		preserved, ok := completed[step.Number]
+		if !ok || seen[step.Number] {
+			continue
+		}
+		seen[step.Number] = true
+		result = append(result, preserved)
+	}
+	sort.SliceStable(result, func(i, j int) bool { return result[i].Number < result[j].Number })
+	return result
 }
 
 func (p Plan) CurrentStep() *PlanStep {

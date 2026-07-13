@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"agentcanvas/internal/domain/conversation"
+	"agentcanvas/internal/domain/reflection"
 	domainagent "agentcanvas/internal/domain/workflow"
 	"agentcanvas/internal/infrastructure/llm"
 	"agentcanvas/internal/runtime/harness/rules"
@@ -112,6 +113,45 @@ func TestBuildResumeRequestUsesCheckpointRuleSnapshot(t *testing.T) {
 	}
 	if resumed.RuleSetVersion != "release-2026-07" || len(resumed.CustomRules) != 1 || resumed.CustomRules[0].ID != "tenant.release.check" {
 		t.Fatalf("expected checkpoint rule snapshot, got %+v", resumed)
+	}
+}
+
+func TestBuildResumeRequestUsesCheckpointReflectionAndPlanSnapshot(t *testing.T) {
+	checkpointPolicy := reflection.DefaultPolicy()
+	checkpointPolicy.RuntimeMode = reflection.RuntimeShadow
+	checkpoint := &Checkpoint{
+		Messages:              []llm.ChatMessage{{Role: conversation.RoleSystem, Content: "system"}},
+		Metadata:              map[string]any{},
+		ReflectionPolicy:      checkpointPolicy,
+		RecalledReflectionIDs: []int64{7, 8},
+		Plan: &Plan{Version: 3, Steps: []PlanStep{
+			{Number: 1, Description: "completed side effect", Status: "completed"},
+			{Number: 2, Description: "continue safely", Status: "pending"},
+		}},
+	}
+	currentPolicy := reflection.DefaultPolicy()
+	resumed, err := BuildResumeRequest(ResumeRequest{RunRequest: RunRequest{
+		ReflectionPolicy: currentPolicy, RecalledReflectionIDs: []int64{99},
+		Plan: &Plan{Version: 1, Steps: []PlanStep{{Number: 1, Description: "new plan", Status: "pending"}}},
+	}, Checkpoint: checkpoint})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resumed.ReflectionPolicy.RuntimeMode != reflection.RuntimeShadow || len(resumed.RecalledReflectionIDs) != 2 || resumed.RecalledReflectionIDs[0] != 7 {
+		t.Fatalf("reflection snapshot drifted during resume: %+v", resumed)
+	}
+	if resumed.Plan == nil || resumed.Plan.Version != 3 || resumed.Plan.Steps[0].Status != "completed" {
+		t.Fatalf("plan snapshot drifted during resume: %+v", resumed.Plan)
+	}
+}
+
+func TestCheckpointCapturesReflectionAndPlanState(t *testing.T) {
+	policy := reflection.DefaultPolicy()
+	plan := &Plan{Version: 2, Steps: []PlanStep{{Number: 1, Description: "done", Status: "completed"}}}
+	checkpoint := checkpointFromMessages(RunRequest{ReflectionPolicy: policy, RecalledReflectionIDs: []int64{4, 5}}, nil,
+		ContextTrace{}, nil, nil, StopReasonPaused, 1, 0, plan)
+	if checkpoint.ReflectionPolicy.RuntimeMode != reflection.RuntimeActive || len(checkpoint.RecalledReflectionIDs) != 2 || checkpoint.Plan == nil || checkpoint.Plan.Version != 2 {
+		t.Fatalf("checkpoint did not capture reflection state: %+v", checkpoint)
 	}
 }
 

@@ -17,23 +17,24 @@ import (
 )
 
 type RouterDeps struct {
-	Logger           *slog.Logger
-	HealthHandler    *handler.HealthHandler
-	AuthHandler      *handler.AuthHandler
-	OAuthHandler     *handler.OAuthHandler
-	ProviderHandler  *handler.ProviderHandler
-	MemoryHandler    *handler.MemoryHandler
-	ToolHandler      *handler.ToolHandler
-	SkillHandler     *handler.SkillHandler
-	AuditHandler     *handler.AuditHandler
-	KnowledgeHandler *handler.KnowledgeHandler
-	DocumentHandler  *handler.DocumentHandler
-	DialogHandler    *handler.DialogHandler
-	ChatHandler      *handler.ChatHandler
-	WorkflowHandler  *handler.WorkflowHandler
-	ResourceHandler  *handler.ResourceHandler
-	AuthService      *authusecase.Service
-	APITokens        authdomain.APITokenRepository
+	Logger            *slog.Logger
+	HealthHandler     *handler.HealthHandler
+	AuthHandler       *handler.AuthHandler
+	OAuthHandler      *handler.OAuthHandler
+	ProviderHandler   *handler.ProviderHandler
+	MemoryHandler     *handler.MemoryHandler
+	ReflectionHandler *handler.ReflectionHandler
+	ToolHandler       *handler.ToolHandler
+	SkillHandler      *handler.SkillHandler
+	AuditHandler      *handler.AuditHandler
+	KnowledgeHandler  *handler.KnowledgeHandler
+	DocumentHandler   *handler.DocumentHandler
+	DialogHandler     *handler.DialogHandler
+	ChatHandler       *handler.ChatHandler
+	WorkflowHandler   *handler.WorkflowHandler
+	ResourceHandler   *handler.ResourceHandler
+	AuthService       *authusecase.Service
+	APITokens         authdomain.APITokenRepository
 }
 
 func NewRouter(deps RouterDeps) *gin.Engine {
@@ -52,6 +53,7 @@ func NewRouter(deps RouterDeps) *gin.Engine {
 		v1.GET("/health/minio", deps.HealthHandler.MinIO)
 		v1.GET("/health/es", deps.HealthHandler.Elasticsearch)
 		v1.GET("/health/rule-system", deps.HealthHandler.RuleSystem)
+		v1.GET("/health/reflection-system", deps.HealthHandler.ReflectionSystem)
 
 		authGroup := v1.Group("/auth")
 		{
@@ -118,6 +120,8 @@ func NewRouter(deps RouterDeps) *gin.Engine {
 
 			registerCRUD(protected, "/workflows", ":id", deps.WorkflowHandler.Create, deps.WorkflowHandler.List, deps.WorkflowHandler.Get, deps.WorkflowHandler.Update, deps.WorkflowHandler.Delete)
 			protected.GET("/workflows/:id/profile", deps.WorkflowHandler.GetProfile)
+			protected.GET("/workflows/:id/reflections", deps.ReflectionHandler.List)
+			protected.PATCH("/workflows/:id/reflections/:reflection_id", deps.ReflectionHandler.SetStatus)
 			protected.PATCH("/workflows/:id/profile", deps.WorkflowHandler.UpdateProfile)
 			protected.GET("/workflows/:id/rule-sets", deps.WorkflowHandler.ListRuleSets)
 			protected.POST("/workflows/:id/rule-sets", deps.WorkflowHandler.CreateRuleSet)
@@ -165,6 +169,7 @@ func NewRouter(deps RouterDeps) *gin.Engine {
 			protected.POST("/runs/:id/cancel", deps.WorkflowHandler.CancelRun)
 			protected.POST("/runs/:id/pause", deps.WorkflowHandler.PauseRun)
 			protected.POST("/runs/:id/resume", deps.WorkflowHandler.ResumeRun)
+			protected.POST("/runs/:id/reflections/:reflection_id/feedback", deps.ReflectionHandler.Feedback)
 			protected.GET("/approval-requests", deps.WorkflowHandler.ListApprovalRequests)
 			protected.POST("/approval-requests/:id/approve", deps.WorkflowHandler.ApproveRequest)
 			protected.POST("/approval-requests/:id/reject", deps.WorkflowHandler.RejectRequest)

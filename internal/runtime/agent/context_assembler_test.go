@@ -197,6 +197,27 @@ func TestContextAssemblerBuildsTokenAuditByCategory(t *testing.T) {
 	}
 }
 
+func TestContextAssemblerDropsReflectionBeforeMandatoryRules(t *testing.T) {
+	_, trace := ContextAssembler{}.Build(RunRequest{
+		Task:           "task",
+		MaxInputTokens: 12,
+		ContextBlocks: []ContextBlock{
+			{Name: "reflection_memory", Role: "system", Content: strings.Repeat("lesson ", 30)},
+			{Name: "rules_l0:safety", Role: "system", Content: "never bypass safety", Pinned: true},
+			{Name: "rules_l1:tenant", Role: "system", Content: "respect tenant policy", Pinned: true},
+		},
+	})
+	if trace.CoreOverflow {
+		t.Fatalf("reflection memory must not consume the mandatory rule budget: %+v", trace)
+	}
+	if trace.TokenAudit.RulesL0 == 0 || trace.TokenAudit.RulesL1 == 0 {
+		t.Fatalf("mandatory rules were not retained: %+v", trace.TokenAudit)
+	}
+	if trace.TokenAudit.ReflectionMemory != 0 {
+		t.Fatalf("reflection should be omitted under pressure: %+v", trace.TokenAudit)
+	}
+}
+
 func TestContextAssemblerSortsCoreMemoryBeforeHistoryAndRetrieval(t *testing.T) {
 	messages, _ := ContextAssembler{MaxChars: 5000}.Build(RunRequest{
 		Task: "task",

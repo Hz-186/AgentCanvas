@@ -182,6 +182,9 @@ func (s *Service) RunEvalDataset(ctx context.Context, ownerID, datasetID int64, 
 		if err := s.evals.CreateEvalResult(ctx, result); err != nil {
 			return evalRun, results, err
 		}
+		if agentRunID != nil && s.reflections != nil {
+			s.reflections.RecordEvaluation(ctx, ownerID, *agentRunID, status == "passed", reason)
+		}
 		results = append(results, *result)
 	}
 	passed := 0

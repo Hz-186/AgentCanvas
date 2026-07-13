@@ -12,6 +12,7 @@ import (
 
 	"agentcanvas/internal/domain/audit"
 	"agentcanvas/internal/domain/memory"
+	"agentcanvas/internal/domain/reflection"
 	"agentcanvas/internal/domain/retrieval"
 	"agentcanvas/internal/domain/skill"
 	"agentcanvas/internal/domain/tool"
@@ -47,6 +48,7 @@ type AgentNode struct {
 	InlineAgentCaller toolruntime.InlineAgentCaller
 	Profiles          AgentProfileLoader
 	RuleSets          ActiveRuleSetLoader
+	Reflections       reflection.Advisor
 	Sandbox           sandbox.Runner
 	MessageHistory    MessageHistoryReader
 	ArchivalVecStore  vectorstore.Store
@@ -109,6 +111,7 @@ type agentRuntimeConfig struct {
 	ContextPolicyJSON         json.RawMessage        `json:"context_policy_json"`
 	OutputSchemaJSON          json.RawMessage        `json:"output_schema_json"`
 	ReflectionEnabled         bool                   `json:"reflection_enabled"`
+	ReflectionPolicyJSON      json.RawMessage        `json:"reflection_policy_json"`
 	Temperature               *float64               `json:"temperature"`
 	ReturnIntermediateSteps   bool                   `json:"return_intermediate_steps"`
 	OutputMode                string                 `json:"output_mode"`
@@ -165,6 +168,9 @@ type agentNodeConfig struct {
 		Enabled           bool `json:"enabled"`
 		ReflectionEnabled bool `json:"reflection_enabled"`
 	} `json:"planning"`
+	Reflection struct {
+		Policy json.RawMessage `json:"policy"`
+	} `json:"reflection"`
 	Policy struct {
 		RequireApprovalForRisk []string        `json:"require_approval_for_risk"`
 		MaxToolTimeoutMS       int             `json:"max_tool_timeout_ms"`
@@ -276,6 +282,9 @@ func parseAgentNodeConfig(config json.RawMessage) (agentRuntimeConfig, error) {
 	if nested.Planning.ReflectionEnabled {
 		cfg.ReflectionEnabled = true
 	}
+	if len(nested.Reflection.Policy) > 0 {
+		cfg.ReflectionPolicyJSON = nested.Reflection.Policy
+	}
 	if len(nested.Policy.RequireApprovalForRisk) > 0 {
 		cfg.RequireApprovalForRisk = nested.Policy.RequireApprovalForRisk
 	}
@@ -372,6 +381,9 @@ func validateAgentRuntimeConfig(cfg agentRuntimeConfig, nodeType string, require
 	if err := validateAgentMemoryPolicyJSON(cfg.MemoryPolicyJSON, nodeType); err != nil {
 		return err
 	}
+	if _, err := effectiveReflectionPolicy(cfg); err != nil {
+		return fmt.Errorf("%w: %s reflection_policy_json is invalid: %v", agenterrors.ErrInvalidInput, nodeType, err)
+	}
 	if err := validateAgentContextPolicyJSON(cfg.ContextPolicyJSON, nodeType); err != nil {
 		return err
 	}
@@ -455,16 +467,35 @@ func (n AgentNode) runAgent(
 	ruleBlocks, ruleTrace, ruleTags, ruleRisk := buildRuleContextBlocks(systemPrompt, task, mode, cfg, tools, conversationBlocks)
 	contextBlocks := append(ruleBlocks, skillBlocks...)
 	contextBlocks = append(contextBlocks, conversationBlocks...)
+	reflectionPolicy, policyErr := effectiveReflectionPolicy(cfg)
+	if policyErr != nil {
+		return nil, fmt.Errorf("%w: reflection policy is invalid: %v", agenterrors.ErrInvalidInput, policyErr)
+	}
+	if resume != nil && resume.Checkpoint != nil && resume.Checkpoint.ReflectionPolicy.RuntimeMode != "" {
+		reflectionPolicy = resume.Checkpoint.ReflectionPolicy.Normalize()
+	}
+	var reflectionRecall reflection.RecallResult
+	if resume == nil && n.Reflections != nil && reflectionPolicy.Active() {
+		reflectionRecall, _ = n.Reflections.Recall(ctx, reflection.RecallRequest{OwnerID: rc.OwnerID, WorkflowID: rc.WorkflowID,
+			RunID: rc.RunID, NodeID: rc.CurrentNodeID, Mode: mode, Task: task, Policy: reflectionPolicy})
+		if reflectionAffectsExecution(reflectionPolicy) && strings.TrimSpace(reflectionRecall.Context) != "" {
+			contextBlocks = append(contextBlocks, runtimeagent.ContextBlock{Name: "reflection_memory", Role: "system", Content: reflectionRecall.Context, Pinned: false})
+		}
+	}
 	contextBlocks = n.injectWorkingMemory(ctx, rc, contextBlocks)
 	var plan *runtimeagent.Plan
-	if mode == "plan_execute" && task != "" {
+	if resume == nil && mode == "plan_execute" && task != "" {
 		planner := runtimeagent.Planner{
 			LLM:        n.LLM,
 			MaxSteps:   8,
 			ProviderID: loaded.ProviderID,
 			ModelName:  loaded.Model,
 		}
-		generatedPlan, planErr := planner.GeneratePlan(ctx, loaded.Config, loaded.Model, task, cfg.Temperature)
+		lessons := ""
+		if reflectionAffectsExecution(reflectionPolicy) {
+			lessons = reflectionRecall.Context
+		}
+		generatedPlan, planErr := planner.GeneratePlanWithLessons(ctx, loaded.Config, loaded.Model, task, lessons, cfg.Temperature)
 		if planErr == nil && generatedPlan != nil {
 			plan = generatedPlan
 		}
@@ -516,6 +547,8 @@ func (n AgentNode) runAgent(
 		SystemPrompt:              systemPrompt,
 		Task:                      task,
 		ReflectionEnabled:         cfg.ReflectionEnabled,
+		ReflectionPolicy:          reflectionPolicy,
+		RecalledReflectionIDs:     reflectionLessonIDs(reflectionRecall.Lessons),
 		Temperature:               cfg.Temperature,
 		MaxIterations:             cfg.MaxIterations,
 		MaxToolCalls:              cfg.MaxToolCalls,
@@ -566,6 +599,8 @@ func (n AgentNode) runAgent(
 				SystemPrompt:              systemPrompt,
 				Task:                      task,
 				ReflectionEnabled:         cfg.ReflectionEnabled,
+				ReflectionPolicy:          reflectionPolicy,
+				RecalledReflectionIDs:     reflectionLessonIDs(reflectionRecall.Lessons),
 				Temperature:               cfg.Temperature,
 				MaxIterations:             cfg.MaxIterations,
 				MaxToolCalls:              cfg.MaxToolCalls,
@@ -621,6 +656,7 @@ func (n AgentNode) runAgent(
 		})
 	}
 	if err != nil {
+		n.finalizeReflection(ctx, rc, cfg, loaded, task, result, reflectionPolicy)
 		return nil, err
 	}
 	output := engine.NodeOutput{
@@ -669,6 +705,8 @@ func (n AgentNode) runAgent(
 			}
 		}
 		if schemaErr != nil {
+			result.StopReason = runtimeagent.StopReasonReflectionFailed
+			n.finalizeReflection(ctx, rc, cfg, loaded, task, result, reflectionPolicy)
 			return nil, fmt.Errorf("%w: agent_loop final_answer does not match output_schema_json: %v", agenterrors.ErrInvalidInput, schemaErr)
 		}
 		output["structured_output"] = parsed
@@ -685,7 +723,70 @@ func (n AgentNode) runAgent(
 	if cfg.ReturnIntermediateSteps || cfg.OutputMode == "full" {
 		output["steps"] = runtimeagent.CompactSteps(result.Steps, 8192)
 	}
+	n.finalizeReflection(ctx, rc, cfg, loaded, task, result, reflectionPolicy)
 	return output, nil
+}
+
+func effectiveReflectionPolicy(cfg agentRuntimeConfig) (reflection.Policy, error) {
+	policy := reflection.DefaultPolicy()
+	raw := bytes.TrimSpace(cfg.ReflectionPolicyJSON)
+	if len(raw) > 0 && string(raw) != "{}" && string(raw) != "null" {
+		if err := json.Unmarshal(raw, &policy); err != nil {
+			return reflection.Policy{}, err
+		}
+	}
+	if err := policy.Validate(); err != nil {
+		return reflection.Policy{}, err
+	}
+	policy = policy.Normalize()
+	return policy, nil
+}
+
+func reflectionAffectsExecution(policy reflection.Policy) bool {
+	policy = policy.Normalize()
+	return policy.Enabled && policy.RuntimeMode == reflection.RuntimeActive
+}
+
+func reflectionLessonIDs(items []reflection.RecalledLesson) []int64 {
+	ids := make([]int64, 0, len(items))
+	for _, item := range items {
+		if item.ID > 0 {
+			ids = append(ids, item.ID)
+		}
+	}
+	return ids
+}
+
+func (n AgentNode) finalizeReflection(ctx context.Context, rc *engine.RunContext, cfg agentRuntimeConfig, loaded *LoadedProvider, task string, result *runtimeagent.RunResult, policy reflection.Policy) {
+	if n.Reflections == nil || rc == nil || loaded == nil || result == nil || !policy.Active() {
+		return
+	}
+	if result.StopReason == runtimeagent.StopReasonWaitingHuman || result.StopReason == runtimeagent.StopReasonPaused {
+		return
+	}
+	outcome := result.StopReason
+	if result.StopReason == runtimeagent.StopReasonFinalAnswer || result.StopReason == runtimeagent.StopReasonPlanCompleted {
+		outcome = "succeeded"
+	}
+	n.Reflections.ResolveRun(ctx, rc.OwnerID, rc.RunID, outcome)
+	if !policy.TerminalAsync {
+		return
+	}
+	payload, _ := json.Marshal(map[string]any{
+		"task": task, "stop_reason": result.StopReason, "final_answer": result.FinalAnswer, "plan": result.Plan,
+		"steps": runtimeagent.CompactSteps(result.Steps, 4096), "reflection_trace": result.Reflection,
+		"reflection_policy": policy,
+	})
+	providerID, model := loaded.ProviderID, loaded.Model
+	if policy.ProviderID > 0 {
+		providerID = policy.ProviderID
+	}
+	if strings.TrimSpace(policy.Model) != "" {
+		model = strings.TrimSpace(policy.Model)
+	}
+	_ = n.Reflections.Enqueue(ctx, &reflection.Job{OwnerID: rc.OwnerID, WorkflowID: rc.WorkflowID, RunID: rc.RunID,
+		NodeID: rc.CurrentNodeID, ProviderID: providerID, Model: model, Mode: agentMode(cfg.Mode), Task: task,
+		PayloadJSON: payload, Status: reflection.JobPending, MaxAttempts: 3})
 }
 
 func (n AgentNode) applyProfileDefaults(
@@ -717,6 +818,9 @@ func (n AgentNode) applyProfileDefaults(
 		cfg.MemoryEnabled = true
 	}
 	cfg = applyProfileMemoryPolicy(cfg, profile.MemoryPolicyJSON)
+	if len(bytes.TrimSpace(cfg.ReflectionPolicyJSON)) == 0 || string(bytes.TrimSpace(cfg.ReflectionPolicyJSON)) == "{}" || string(bytes.TrimSpace(cfg.ReflectionPolicyJSON)) == "null" {
+		cfg.ReflectionPolicyJSON = profile.ReflectionPolicyJSON
+	}
 	if profile.AllowCodeExecution {
 		cfg.CodeExecutionEnabled = true
 	}

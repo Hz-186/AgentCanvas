@@ -109,19 +109,26 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 	if req.Plan != nil && len(req.Plan.Steps) > 0 {
 		plan := clonePlan(req.Plan)
 		result.Plan = &plan
-		planJSON, _ := json.Marshal(plan)
-		planStep := r.appendStep(result,
-			RunStep{
-				Type:       StepTypePlan,
-				Content:    plan.PlanContext(),
-				OutputJSON: planJSON,
-				ProviderID: r.ProviderID,
-				Model:      r.ModelName,
-			},
-		)
-		_ = r.emit(ctx, planStep)
+		if len(req.ResumeMessages) == 0 {
+			planJSON, _ := json.Marshal(plan)
+			planStep := r.appendStep(result,
+				RunStep{
+					Type:       StepTypePlan,
+					Content:    plan.PlanContext(),
+					OutputJSON: planJSON,
+					ProviderID: r.ProviderID,
+					Model:      r.ModelName,
+				},
+			)
+			_ = r.emit(ctx, planStep)
+		}
 	}
 	result.Context = contextTrace
+	if len(req.ResumeMessages) == 0 && len(req.RecalledReflectionIDs) > 0 {
+		recalledJSON, _ := json.Marshal(req.RecalledReflectionIDs)
+		step := r.appendStep(result, RunStep{Type: StepTypeReflectionRecall, Content: fmt.Sprintf("Recalled %d prior reflection(s).", len(req.RecalledReflectionIDs)), OutputJSON: recalledJSON, ProviderID: r.ProviderID, Model: r.ModelName})
+		_ = r.emit(ctx, step)
+	}
 	startIteration := 0
 	startToolCalls := 0
 	if len(req.ResumeMessages) > 0 {
@@ -158,7 +165,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 			if errors.Is(err, context.Canceled) {
 				result.Checkpoint = checkpointFromMessages(
 					req, messages, contextTrace, toolNames, nil,
-					result.StopReason, result.Iterations, result.ToolCalls)
+					result.StopReason, result.Iterations, result.ToolCalls, result.Plan)
 			}
 			return result, nil
 		}
@@ -225,7 +232,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 				result = finishWithContext(result, err, r.now())
 				result.Checkpoint = checkpointFromMessages(
 					req, messages, contextTrace, toolNames, nil,
-					result.StopReason, result.Iterations, result.ToolCalls,
+					result.StopReason, result.Iterations, result.ToolCalls, result.Plan,
 				)
 				return result, nil
 			}
@@ -566,7 +573,7 @@ func (r *Runner) executeToolBatch(
 			result.FinalAnswer = "Agent is waiting for human approval before executing tool " + call.Name + "."
 			result.Approval = approval
 			pending := call
-			result.Checkpoint = checkpointFromMessages(req, messages, contextTrace, toolNames, &pending, StopReasonWaitingHuman, result.Iterations, result.ToolCalls)
+			result.Checkpoint = checkpointFromMessages(req, messages, contextTrace, toolNames, &pending, StopReasonWaitingHuman, result.Iterations, result.ToolCalls, result.Plan)
 			result.Checkpoint.Metadata["approved_tool_call_ids"] = append([]string(nil), approvedToolCallIDs...)
 			approvalStep := r.appendStep(result, RunStep{Type: StepTypeApproval, ToolCallID: call.ID, ToolName: call.Name, Content: approval.Reason, ProviderID: r.ProviderID, Model: r.ModelName})
 			_ = r.emit(ctx, approvalStep)
@@ -644,14 +651,22 @@ func (r *Runner) executeToolBatch(
 	return false, messages
 }
 
-func checkpointFromMessages(req RunRequest, messages []llm.ChatMessage, contextTrace ContextTrace, toolNames []string, pending *llm.ToolCall, stopReason string, iteration int, toolCalls int) *Checkpoint {
+func checkpointFromMessages(req RunRequest, messages []llm.ChatMessage, contextTrace ContextTrace, toolNames []string, pending *llm.ToolCall, stopReason string, iteration int, toolCalls int, plan *Plan) *Checkpoint {
+	var checkpointPlan *Plan
+	if plan != nil {
+		cloned := clonePlan(plan)
+		checkpointPlan = &cloned
+	}
 	return &Checkpoint{
-		Messages:        append([]llm.ChatMessage(nil), messages...),
-		MessagesSummary: summarizeMessages(messages),
-		PendingToolCall: pending,
-		Context:         contextTrace,
-		ToolPolicy:      req.ToolPolicy,
-		ToolNames:       append([]string(nil), toolNames...),
+		Messages:              append([]llm.ChatMessage(nil), messages...),
+		MessagesSummary:       summarizeMessages(messages),
+		PendingToolCall:       pending,
+		Context:               contextTrace,
+		ToolPolicy:            req.ToolPolicy,
+		ToolNames:             append([]string(nil), toolNames...),
+		Plan:                  checkpointPlan,
+		ReflectionPolicy:      req.ReflectionPolicy,
+		RecalledReflectionIDs: append([]int64(nil), req.RecalledReflectionIDs...),
 		Metadata: map[string]any{
 			"run_id":              req.RunID,
 			"workflow_id":         req.WorkflowID,

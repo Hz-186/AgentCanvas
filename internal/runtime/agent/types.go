@@ -155,18 +155,21 @@ type Approval struct {
 }
 
 type Checkpoint struct {
-	Messages        []llm.ChatMessage      `json:"messages"`
-	MessagesSummary string                 `json:"messages_summary"`
-	PendingToolCall *llm.ToolCall          `json:"pending_tool_call,omitempty"`
-	Context         ContextTrace           `json:"context"`
-	ToolPolicy      ToolPolicy             `json:"tool_policy"`
-	ToolNames       []string               `json:"tool_names"`
-	Metadata        map[string]any         `json:"metadata,omitempty"`
-	RuleSetVersion  string                 `json:"rule_set_version,omitempty"`
-	RuleSetID       int64                  `json:"rule_set_id,omitempty"`
-	CompiledHash    string                 `json:"compiled_hash,omitempty"`
-	CompiledRules   *rules.CompiledRuleSet `json:"compiled_rules,omitempty"`
-	CustomRules     []rules.Rule           `json:"custom_rules,omitempty"`
+	Messages              []llm.ChatMessage      `json:"messages"`
+	MessagesSummary       string                 `json:"messages_summary"`
+	PendingToolCall       *llm.ToolCall          `json:"pending_tool_call,omitempty"`
+	Context               ContextTrace           `json:"context"`
+	ToolPolicy            ToolPolicy             `json:"tool_policy"`
+	ToolNames             []string               `json:"tool_names"`
+	Metadata              map[string]any         `json:"metadata,omitempty"`
+	Plan                  *Plan                  `json:"plan,omitempty"`
+	ReflectionPolicy      reflection.Policy      `json:"reflection_policy,omitempty"`
+	RecalledReflectionIDs []int64                `json:"recalled_reflection_ids,omitempty"`
+	RuleSetVersion        string                 `json:"rule_set_version,omitempty"`
+	RuleSetID             int64                  `json:"rule_set_id,omitempty"`
+	CompiledHash          string                 `json:"compiled_hash,omitempty"`
+	CompiledRules         *rules.CompiledRuleSet `json:"compiled_rules,omitempty"`
+	CustomRules           []rules.Rule           `json:"custom_rules,omitempty"`
 }
 
 type ContextBlock struct {

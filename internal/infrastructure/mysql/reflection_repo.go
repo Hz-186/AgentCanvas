@@ -119,11 +119,11 @@ func (r *ReflectionRepository) UpdateUsefulness(ctx context.Context, ownerID, id
 		status := item.Status
 		if item.HarmfulCount >= 2 {
 			status = reflection.StatusDisputed
-		} else if item.SuccessfulUseCount >= 2 && status == reflection.StatusActive {
+		} else if item.SuccessfulUseCount >= 2 && (status == reflection.StatusCandidate || status == reflection.StatusActive) {
 			status = reflection.StatusValidated
 		}
 		if status != item.Status {
-			return tx.Model(&reflection.Reflection{}).Where("id = ?", id).Update("status", status).Error
+			return tx.Model(&reflection.Reflection{}).Where("owner_id = ? AND id = ?", ownerID, id).Update("status", status).Error
 		}
 		return nil
 	})
@@ -154,6 +154,14 @@ func (r *ReflectionJobRepository) Create(ctx context.Context, item *reflection.J
 	}
 	item.UpdatedAt = now
 	return r.db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(item).Error
+}
+
+func (r *ReflectionJobRepository) FindLatestByRun(ctx context.Context, ownerID, runID int64) (*reflection.Job, error) {
+	var item reflection.Job
+	err := r.db.WithContext(ctx).
+		Where("owner_id = ? AND run_id = ?", ownerID, runID).
+		Order("id DESC").First(&item).Error
+	return &item, err
 }
 
 func (r *ReflectionJobRepository) ClaimNext(ctx context.Context, workerID string) (*reflection.Job, error) {
@@ -213,6 +221,12 @@ func (r *ReflectionRecallLogRepository) Create(ctx context.Context, item *reflec
 	}
 	item.UpdatedAt = now
 	return r.db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(item).Error
+}
+
+func (r *ReflectionRecallLogRepository) ListByRun(ctx context.Context, ownerID, runID int64) ([]reflection.RecallLog, error) {
+	var items []reflection.RecallLog
+	err := r.db.WithContext(ctx).Where("owner_id = ? AND run_id = ?", ownerID, runID).Order("rank ASC, id ASC").Find(&items).Error
+	return items, err
 }
 
 func (r *ReflectionRecallLogRepository) ResolveRun(ctx context.Context, ownerID, runID int64, outcome string) error {

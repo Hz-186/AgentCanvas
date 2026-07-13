@@ -8,6 +8,7 @@ import (
 	"agentcanvas/internal/domain/audit"
 	"agentcanvas/internal/domain/conversation"
 	"agentcanvas/internal/domain/memory"
+	"agentcanvas/internal/domain/reflection"
 	"agentcanvas/internal/domain/retrieval"
 	"agentcanvas/internal/domain/skill"
 	"agentcanvas/internal/domain/tool"
@@ -72,6 +73,7 @@ type Deps struct {
 	InlineAgentCaller       toolruntime.InlineAgentCaller
 	Profiles                AgentProfileLoader
 	RuleSets                ActiveRuleSetLoader
+	Reflections             reflection.Advisor
 	Teams                   workflow.TeamRepository
 	Sandbox                 sandbox.Runner
 	ArchivalVecStore        vectorstore.Store
@@ -103,6 +105,7 @@ func DefaultNodes(deps Deps) ([]engine.Node, error) {
 		InlineAgentCaller: deps.InlineAgentCaller,
 		Profiles:          deps.Profiles,
 		RuleSets:          deps.RuleSets,
+		Reflections:       deps.Reflections,
 		Sandbox:           deps.Sandbox,
 		MessageHistory:    deps.MessageHistory,
 		ArchivalVecStore:  deps.ArchivalVecStore,

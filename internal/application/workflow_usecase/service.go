@@ -17,6 +17,7 @@ import (
 	"agentcanvas/internal/domain/flow"
 	"agentcanvas/internal/domain/memory"
 	providerdomain "agentcanvas/internal/domain/provider"
+	"agentcanvas/internal/domain/reflection"
 	"agentcanvas/internal/domain/retrieval"
 	"agentcanvas/internal/domain/skill"
 	"agentcanvas/internal/domain/tool"
@@ -70,6 +71,7 @@ type Service struct {
 	llm              llm.ChatClient
 	embedder         llm.EmbeddingClient
 	archivalVecStore vectorstore.Store
+	reflections      reflection.Advisor
 	secrets          *cryptoinfra.SecretBox
 	executor         *engine.Executor
 	validator        *flow.Validator
@@ -150,6 +152,7 @@ func NewService(
 	embedder llm.EmbeddingClient,
 	archivalVecStore vectorstore.Store,
 	secrets *cryptoinfra.SecretBox,
+	reflectionAdvisor reflection.Advisor,
 ) (*Service, error) {
 	toolCalling, ok := llmClient.(llm.ToolCallingClient)
 	if !ok {
@@ -188,6 +191,7 @@ func NewService(
 		llm:              llmClient,
 		embedder:         embedder,
 		archivalVecStore: archivalVecStore,
+		reflections:      reflectionAdvisor,
 		secrets:          secrets,
 	}
 	if extractionJobs != nil && mergeLogs != nil {
@@ -216,6 +220,7 @@ func NewService(
 		InlineAgentCaller:       s,
 		Profiles:                s,
 		RuleSets:                s,
+		Reflections:             reflectionAdvisor,
 		Audits:                  audits,
 		Teams:                   teams,
 		Sandbox:                 sandbox.NewDockerRunner(),
@@ -311,6 +316,7 @@ type UpdateWorkflowProfileRequest struct {
 	OutputSchemaJSON            *json.RawMessage `json:"output_schema_json"`
 	ToolPolicyJSON              *json.RawMessage `json:"tool_policy_json"`
 	MemoryPolicyJSON            *json.RawMessage `json:"memory_policy_json"`
+	ReflectionPolicyJSON        *json.RawMessage `json:"reflection_policy_json"`
 	ContextPolicyJSON           *json.RawMessage `json:"context_policy_json"`
 	RuleCompilerProviderID      *int64           `json:"rule_compiler_provider_id"`
 	RuleCompilerModel           *string          `json:"rule_compiler_model"`
@@ -547,6 +553,22 @@ func (s *Service) UpdateWorkflowProfile(ctx context.Context, ownerID, workflowID
 			return nil, err
 		}
 		profile.MemoryPolicyJSON = memoryPolicy
+	}
+	if req.ReflectionPolicyJSON != nil {
+		reflectionPolicy, err := normalizeOptionalRawJSON(*req.ReflectionPolicyJSON, "reflection_policy_json")
+		if err != nil {
+			return nil, err
+		}
+		if string(reflectionPolicy) != "{}" {
+			policy := reflection.DefaultPolicy()
+			if err := json.Unmarshal(reflectionPolicy, &policy); err != nil {
+				return nil, fmt.Errorf("%w: reflection_policy_json is invalid", agenterrors.ErrInvalidInput)
+			}
+			if err := policy.Validate(); err != nil {
+				return nil, fmt.Errorf("%w: reflection_policy_json is invalid: %v", agenterrors.ErrInvalidInput, err)
+			}
+		}
+		profile.ReflectionPolicyJSON = reflectionPolicy
 	}
 	if req.ContextPolicyJSON != nil {
 		contextPolicy, err := normalizeOptionalRawJSON(*req.ContextPolicyJSON, "context_policy_json")
@@ -2547,6 +2569,7 @@ func defaultWorkflowProfile(ownerID, workflowID int64, name, description string)
 		OutputSchemaJSON:            json.RawMessage("{}"),
 		ToolPolicyJSON:              json.RawMessage("{}"),
 		MemoryPolicyJSON:            json.RawMessage("{}"),
+		ReflectionPolicyJSON:        mustMarshalJSON(reflection.DefaultPolicy()),
 		ContextPolicyJSON:           json.RawMessage("{}"),
 		RiskLevel:                   toolruntime.RiskMedium,
 		Mode:                        "react",

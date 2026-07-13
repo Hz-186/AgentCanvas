@@ -25,3 +25,24 @@ func TestPolicyNormalize(t *testing.T) {
 		t.Fatalf("%+v", p)
 	}
 }
+
+func TestPolicyNormalizePreservesExplicitZeroInlineBudget(t *testing.T) {
+	p := DefaultPolicy()
+	p.MaxInlinePerRun = 0
+	if got := p.Normalize().MaxInlinePerRun; got != 0 {
+		t.Fatalf("explicit zero should disable inline reflection, got %d", got)
+	}
+}
+
+func TestPolicyValidateRejectsInvalidRuntimeControls(t *testing.T) {
+	p := DefaultPolicy()
+	p.ReflectOnSuccess = "sometimes"
+	if err := p.Validate(); err == nil {
+		t.Fatal("expected invalid reflect_on_success to be rejected")
+	}
+	p = DefaultPolicy()
+	p.MinConfidence = 1.1
+	if err := p.Validate(); err == nil {
+		t.Fatal("expected confidence outside 0..1 to be rejected")
+	}
+}

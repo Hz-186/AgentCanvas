@@ -28,6 +28,7 @@ type Repository interface {
 
 type JobRepository interface {
 	Create(context.Context, *Job) error
+	FindLatestByRun(context.Context, int64, int64) (*Job, error)
 	ClaimNext(context.Context, string) (*Job, error)
 	Complete(context.Context, *Job) error
 	Fail(context.Context, *Job, error, *time.Time) error
@@ -35,6 +36,7 @@ type JobRepository interface {
 
 type RecallLogRepository interface {
 	Create(context.Context, *RecallLog) error
+	ListByRun(context.Context, int64, int64) ([]RecallLog, error)
 	ResolveRun(context.Context, int64, int64, string) error
 	SetVerdict(context.Context, int64, int64, int64, string, string) error
 }
@@ -73,6 +75,7 @@ type Advisor interface {
 	Recall(context.Context, RecallRequest) (RecallResult, error)
 	Enqueue(context.Context, *Job) error
 	ResolveRun(context.Context, int64, int64, string)
+	RecordEvaluation(context.Context, int64, int64, bool, string)
 }
 
 type SearchRequest struct {

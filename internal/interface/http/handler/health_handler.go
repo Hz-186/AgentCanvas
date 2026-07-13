@@ -145,3 +145,58 @@ func (h *HealthHandler) RuleSystem(c *gin.Context) {
 	}
 	response.OK(c, gin.H{"component": "rule_system", "database": metrics, "process": process, "alerts": alerts})
 }
+
+func (h *HealthHandler) ReflectionSystem(c *gin.Context) {
+	const (
+		jobBacklogAlertThreshold = int64(100)
+		jobAgeAlertSeconds       = int64(300)
+	)
+	type databaseMetrics struct {
+		PendingJobs          int64 `json:"pending_jobs"`
+		RunningJobs          int64 `json:"running_jobs"`
+		FailedJobs           int64 `json:"failed_jobs"`
+		RetryAttempts        int64 `json:"retry_attempts"`
+		OldestPendingSeconds int64 `json:"oldest_pending_seconds"`
+		ActiveReflections    int64 `json:"active_reflections"`
+		ValidatedReflections int64 `json:"validated_reflections"`
+		DisputedReflections  int64 `json:"disputed_reflections"`
+		HelpfulFeedback      int64 `json:"helpful_feedback"`
+		HarmfulFeedback      int64 `json:"harmful_feedback"`
+	}
+	var metrics databaseMetrics
+	jobQuery := `SELECT
+		COALESCE(SUM(status = 'pending'), 0) AS pending_jobs,
+		COALESCE(SUM(status = 'running'), 0) AS running_jobs,
+		COALESCE(SUM(status = 'failed'), 0) AS failed_jobs,
+		COALESCE(SUM(GREATEST(attempt_count - 1, 0)), 0) AS retry_attempts,
+		COALESCE(TIMESTAMPDIFF(SECOND, MIN(CASE WHEN status = 'pending' THEN created_at END), UTC_TIMESTAMP()), 0) AS oldest_pending_seconds
+		FROM agent_reflection_jobs`
+	if err := h.db.WithContext(c.Request.Context()).Raw(jobQuery).Scan(&metrics).Error; err != nil {
+		response.Error(c, http.StatusServiceUnavailable, errors.CodeDependencyUnavailable, err.Error())
+		return
+	}
+	reflectionQuery := `SELECT
+		COALESCE(SUM(status = 'active' AND deleted_at IS NULL), 0) AS active_reflections,
+		COALESCE(SUM(status = 'validated' AND deleted_at IS NULL), 0) AS validated_reflections,
+		COALESCE(SUM(status = 'disputed' AND deleted_at IS NULL), 0) AS disputed_reflections
+		FROM agent_reflections`
+	if err := h.db.WithContext(c.Request.Context()).Raw(reflectionQuery).Scan(&metrics).Error; err != nil {
+		response.Error(c, http.StatusServiceUnavailable, errors.CodeDependencyUnavailable, err.Error())
+		return
+	}
+	feedbackQuery := `SELECT
+		COALESCE(SUM(verdict = 'helpful'), 0) AS helpful_feedback,
+		COALESCE(SUM(verdict = 'harmful'), 0) AS harmful_feedback
+		FROM agent_reflection_recall_logs`
+	if err := h.db.WithContext(c.Request.Context()).Raw(feedbackQuery).Scan(&metrics).Error; err != nil {
+		response.Error(c, http.StatusServiceUnavailable, errors.CodeDependencyUnavailable, err.Error())
+		return
+	}
+	process := observability.ReflectionSystemMetrics.Snapshot()
+	alerts := gin.H{
+		"job_backlog":       metrics.PendingJobs >= jobBacklogAlertThreshold,
+		"job_queue_stalled": metrics.OldestPendingSeconds >= jobAgeAlertSeconds,
+		"failed_jobs":       metrics.FailedJobs > 0,
+	}
+	response.OK(c, gin.H{"component": "reflection_system", "database": metrics, "process": process, "alerts": alerts})
+}

@@ -1,5 +1,7 @@
 package reflection
 
+import "fmt"
+
 const (
 	RuntimeOff    = "off"
 	RuntimeShadow = "shadow"
@@ -35,7 +37,7 @@ func (p Policy) Normalize() Policy {
 	if p.RuntimeMode == "" {
 		p.RuntimeMode = d.RuntimeMode
 	}
-	if p.MaxInlinePerRun <= 0 {
+	if p.MaxInlinePerRun < 0 {
 		p.MaxInlinePerRun = d.MaxInlinePerRun
 	}
 	if p.RecallTopK <= 0 {
@@ -60,3 +62,35 @@ func (p Policy) Normalize() Policy {
 }
 
 func (p Policy) Active() bool { p = p.Normalize(); return p.Enabled && p.RuntimeMode != RuntimeOff }
+
+func (p Policy) Validate() error {
+	switch p.RuntimeMode {
+	case "", RuntimeOff, RuntimeShadow, RuntimeActive:
+	default:
+		return fmt.Errorf("runtime_mode must be off, shadow, or active")
+	}
+	if p.MaxInlinePerRun < 0 || p.MaxInlinePerRun > 10 {
+		return fmt.Errorf("max_inline_per_run must be 0..10")
+	}
+	if p.RecallTopK < 0 || p.RecallTopK > 10 {
+		return fmt.Errorf("recall_top_k must be 0..10")
+	}
+	if p.RecallTokenBudget < 0 || p.RecallTokenBudget > 8000 {
+		return fmt.Errorf("recall_token_budget must be 0..8000")
+	}
+	if p.MinImportance < 0 || p.MinImportance > 1 {
+		return fmt.Errorf("min_importance must be 0..1")
+	}
+	if p.MinConfidence < 0 || p.MinConfidence > 1 {
+		return fmt.Errorf("min_confidence must be 0..1")
+	}
+	switch p.ReflectOnSuccess {
+	case "", "never", "external_or_novel", "always":
+	default:
+		return fmt.Errorf("reflect_on_success must be never, external_or_novel, or always")
+	}
+	if p.ProviderID < 0 {
+		return fmt.Errorf("provider_id must be non-negative")
+	}
+	return nil
+}

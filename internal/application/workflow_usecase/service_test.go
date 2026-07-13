@@ -12,6 +12,7 @@ import (
 	"agentcanvas/internal/domain/flow"
 	"agentcanvas/internal/domain/memory"
 	providerdomain "agentcanvas/internal/domain/provider"
+	"agentcanvas/internal/domain/reflection"
 	"agentcanvas/internal/domain/tool"
 	"agentcanvas/internal/domain/workflow"
 	cryptoinfra "agentcanvas/internal/infrastructure/crypto"
@@ -149,6 +150,10 @@ func TestGetAgentProfileCreatesDefaultProfile(t *testing.T) {
 	if profile.Role != "Researcher" || profile.Goal != "Find facts" || profile.MaxIterations != 10 {
 		t.Fatalf("unexpected profile: %+v", profile)
 	}
+	var reflectionPolicy reflection.Policy
+	if err := json.Unmarshal(profile.ReflectionPolicyJSON, &reflectionPolicy); err != nil || !reflectionPolicy.Enabled || reflectionPolicy.RuntimeMode != reflection.RuntimeActive {
+		t.Fatalf("default profile must enable passive reflection: raw=%s policy=%+v err=%v", profile.ReflectionPolicyJSON, reflectionPolicy, err)
+	}
 	if len(profiles.items) != 1 {
 		t.Fatalf("expected default profile to be created, got %d", len(profiles.items))
 	}
@@ -268,6 +273,29 @@ func TestUpdateWorkflowProfileRejectsLegacyRulesAfterRuleSetActivation(t *testin
 	_, err := service.UpdateWorkflowProfile(context.Background(), 1, 20, UpdateWorkflowProfileRequest{ContextPolicyJSON: &legacy})
 	if !errors.Is(err, workflow.ErrRuleSetConflict) {
 		t.Fatalf("expected legacy rule conflict, got %v", err)
+	}
+}
+
+func TestUpdateWorkflowProfileValidatesReflectionPolicy(t *testing.T) {
+	profiles := &fakeProfileRepo{items: map[int64]*workflow.Profile{
+		20: {ID: 1, OwnerID: 1, WorkflowID: 20, Role: "Agent", Goal: "Work", MaxIterations: 10, MaxExecutionTimeMS: 120000},
+	}}
+	service := &Service{
+		workflows: &fakeAgentRepo{items: map[int64]*workflow.Workflow{20: {ID: 20, OwnerID: 1, Name: "Workflow", Status: workflow.StatusActive}}},
+		profiles:  profiles,
+	}
+	invalid := rawJSON(`{"enabled":true,"runtime_mode":"active","min_confidence":1.5}`)
+	if _, err := service.UpdateWorkflowProfile(context.Background(), 1, 20, UpdateWorkflowProfileRequest{ReflectionPolicyJSON: &invalid}); err == nil {
+		t.Fatal("expected invalid reflection confidence threshold to be rejected")
+	}
+	valid := rawJSON(`{"enabled":true,"runtime_mode":"shadow","max_inline_per_run":0,"reflect_on_success":"never"}`)
+	updated, err := service.UpdateWorkflowProfile(context.Background(), 1, 20, UpdateWorkflowProfileRequest{ReflectionPolicyJSON: &valid})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var policy reflection.Policy
+	if err := json.Unmarshal(updated.ReflectionPolicyJSON, &policy); err != nil || policy.RuntimeMode != reflection.RuntimeShadow || policy.MaxInlinePerRun != 0 {
+		t.Fatalf("reflection policy was not persisted: raw=%s policy=%+v err=%v", updated.ReflectionPolicyJSON, policy, err)
 	}
 }
 

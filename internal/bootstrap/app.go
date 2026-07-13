@@ -15,6 +15,7 @@ import (
 	knowledgeusecase "agentcanvas/internal/application/knowledge_usecase"
 	memoryusecase "agentcanvas/internal/application/memory_usecase"
 	providerusecase "agentcanvas/internal/application/provider_usecase"
+	reflectionusecase "agentcanvas/internal/application/reflection_usecase"
 	resourceusecase "agentcanvas/internal/application/resource_usecase"
 	retrievalusecase "agentcanvas/internal/application/retrieval_usecase"
 	skillusecase "agentcanvas/internal/application/skill_usecase"
@@ -108,9 +109,13 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 	workflowRepo := cacheinfra.NewWorkflowRepository(mysqlinfra.NewWorkflowRepository(db), resourceInvalidator)
 	workflowProfileRepo := mysqlinfra.NewWorkflowProfileRepository(db)
 	workflowRuleSetRepo := mysqlinfra.NewWorkflowRuleSetRepository(db)
+	reflectionRepo := mysqlinfra.NewReflectionRepository(db)
+	reflectionJobRepo := mysqlinfra.NewReflectionJobRepository(db)
+	reflectionRecallLogRepo := mysqlinfra.NewReflectionRecallLogRepository(db)
 	flowVersionRepo := mysqlinfra.NewFlowVersionRepository(db)
 	runRepo := mysqlinfra.NewRunRepository(db)
 	runEventRepo := mysqlinfra.NewRunEventRepository(db)
+	reflectionEventSink := mysqlinfra.NewReflectionEventSink(runEventRepo)
 	nodeLogRepo := mysqlinfra.NewNodeLogRepository(db)
 	runStepRepo := mysqlinfra.NewRunStepRepository(db)
 	workflowEvalRepo := mysqlinfra.NewWorkflowEvalRepository(db)
@@ -250,6 +255,7 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 		secretBox,
 	)
 	chatService.ConfigureDream(jobQueue, redisClient, dreamCfg)
+	reflectionService := reflectionusecase.Service{Reflections: reflectionRepo, Jobs: reflectionJobRepo, RecallLogs: reflectionRecallLogRepo, Events: reflectionEventSink}
 	workflowService, err := agentusecase.NewService(
 		workflowRepo,
 		workflowProfileRepo,
@@ -281,6 +287,7 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 		embeddingClient,
 		archivalVecStore,
 		secretBox,
+		reflectionService,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("init workflow service: %w", err)
@@ -301,6 +308,7 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 	dialogHandler := handler.NewDialogHandler(dialogService)
 	chatHandler := handler.NewChatHandler(chatService)
 	workflowHandler := handler.NewWorkflowHandler(workflowService)
+	reflectionHandler := handler.NewReflectionHandler(reflectionService)
 	resourceHandler := handler.NewResourceHandler(resourceusecase.NewService(resourceQuery))
 
 	memoryScheduler := jobinfra.NewMemoryScheduler(memoryRepo, jobinfra.MemorySchedulerConfig{
@@ -310,23 +318,24 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 	memoryScheduler.Start(ctx)
 
 	router := httpserver.NewRouter(httpserver.RouterDeps{
-		Logger:           log,
-		HealthHandler:    healthHandler,
-		AuthHandler:      authHandler,
-		OAuthHandler:     oauthHandler,
-		ProviderHandler:  providerHandler,
-		MemoryHandler:    memoryHandler,
-		ToolHandler:      toolHandler,
-		SkillHandler:     skillHandler,
-		AuditHandler:     auditHandler,
-		KnowledgeHandler: knowledgeHandler,
-		DocumentHandler:  documentHandler,
-		DialogHandler:    dialogHandler,
-		ChatHandler:      chatHandler,
-		WorkflowHandler:  workflowHandler,
-		ResourceHandler:  resourceHandler,
-		AuthService:      authService,
-		APITokens:        apiTokenRepo,
+		Logger:            log,
+		HealthHandler:     healthHandler,
+		AuthHandler:       authHandler,
+		OAuthHandler:      oauthHandler,
+		ProviderHandler:   providerHandler,
+		MemoryHandler:     memoryHandler,
+		ToolHandler:       toolHandler,
+		SkillHandler:      skillHandler,
+		AuditHandler:      auditHandler,
+		KnowledgeHandler:  knowledgeHandler,
+		DocumentHandler:   documentHandler,
+		DialogHandler:     dialogHandler,
+		ChatHandler:       chatHandler,
+		WorkflowHandler:   workflowHandler,
+		ReflectionHandler: reflectionHandler,
+		ResourceHandler:   resourceHandler,
+		AuthService:       authService,
+		APITokens:         apiTokenRepo,
 	})
 
 	return &App{Config: cfg, Logger: log, Router: router}, nil

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"agentcanvas/internal/domain/conversation"
@@ -100,13 +101,45 @@ func TestPlannerMaxStepsVal(t *testing.T) {
 
 type fakePlannerLLM struct {
 	response string
+	request  llm.ToolChatRequest
 }
 
 func (c *fakePlannerLLM) ChatWithTools(ctx context.Context, cfg llm.ChatProviderConfig, req llm.ToolChatRequest) (*llm.ToolChatResponse, error) {
+	c.request = req
 	return &llm.ToolChatResponse{
 		Message: llm.ChatMessage{Role: conversation.RoleAssistant, Content: c.response},
 		Usage:   llm.Usage{TotalTokens: 10},
 	}, nil
+}
+
+func TestPlannerIncludesRecalledLessons(t *testing.T) {
+	client := &fakePlannerLLM{response: `{"steps":[{"number":1,"description":"validate input"}]}`}
+	planner := &Planner{LLM: client}
+	if _, err := planner.GeneratePlanWithLessons(context.Background(), llm.ChatProviderConfig{}, "m", "task", "avoid invalid input", nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(client.request.Messages) == 0 || !strings.Contains(client.request.Messages[0].Content, "avoid invalid input") {
+		t.Fatalf("lessons missing from planner request: %+v", client.request)
+	}
+}
+
+func TestPlannerRevisionPreservesCompletedStepsAndDoesNotTrustNewCompletion(t *testing.T) {
+	client := &fakePlannerLLM{response: `{"steps":[{"number":1,"description":"repeat side effect","status":"pending"},{"number":2,"description":"retry safely","status":"completed"},{"number":3,"description":"verify","status":"pending"}]}`}
+	planner := &Planner{LLM: client}
+	current := &Plan{Version: 2, Steps: []PlanStep{
+		{Number: 1, Description: "write external record", Status: "completed", ToolName: "writer"},
+		{Number: 2, Description: "old unfinished step", Status: "pending"},
+	}}
+	revised, _, err := planner.RevisePlan(context.Background(), llm.ChatProviderConfig{}, "m", "task", current, "tool failed", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if revised.Version != 3 || revised.Steps[0] != current.Steps[0] {
+		t.Fatalf("completed side effect must be preserved verbatim: %+v", revised)
+	}
+	if revised.Steps[1].Status != "pending" {
+		t.Fatalf("model must not mark unfinished work completed: %+v", revised.Steps[1])
+	}
 }
 
 func (c *fakePlannerLLM) Chat(ctx context.Context, cfg llm.ChatProviderConfig, req llm.ChatRequest) (*llm.ChatResponse, error) {

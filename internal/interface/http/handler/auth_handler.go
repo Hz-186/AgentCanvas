@@ -195,6 +195,8 @@ func writeAppError(c *gin.Context, err error) {
 		response.Error(c, http.StatusBadRequest, agenterrors.CodeBadRequest, err.Error())
 	case errors.Is(err, agenterrors.ErrUnauthorized):
 		response.Error(c, http.StatusUnauthorized, agenterrors.CodeUnauthorized, err.Error())
+	case errors.Is(err, agenterrors.ErrForbidden):
+		response.Error(c, http.StatusForbidden, agenterrors.CodeForbidden, err.Error())
 	case errors.Is(err, agenterrors.ErrNotFound):
 		response.Error(c, http.StatusNotFound, agenterrors.CodeNotFound, err.Error())
 	case errors.Is(err, agenterrors.ErrConflict):
