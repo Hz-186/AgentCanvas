@@ -341,6 +341,8 @@ func (a *TokenAudit) add(name string, tokens int) {
 		a.WorkingMemory += tokens
 	case "memory":
 		a.Memory += tokens
+	case "reflection_memory":
+		a.ReflectionMemory += tokens
 	case "retrieval":
 		a.Retrieval += tokens
 	case "task":
@@ -373,6 +375,8 @@ func tokenAuditCategory(name string) string {
 		return "working_memory"
 	case strings.Contains(name, "skills"):
 		return "profile"
+	case strings.Contains(name, "reflection_memory"):
+		return "reflection_memory"
 	case strings.Contains(name, "memory"):
 		return "memory"
 	case strings.Contains(name, "retrieval") || strings.Contains(name, "knowledge") || strings.Contains(name, "citation"):

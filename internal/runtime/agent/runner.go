@@ -46,7 +46,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 		return nil, fmt.Errorf("agent task is required")
 	}
 	started := r.now()
-	result := &RunResult{StartedAt: started}
+	result := &RunResult{StartedAt: started, Reflection: ReflectionTrace{RecalledIDs: append([]int64(nil), req.RecalledReflectionIDs...)}}
 	if req.MaxIterations <= 0 {
 		req.MaxIterations = 8
 	}
@@ -134,8 +134,14 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 		}
 		unresolved := findUnresolvedToolCalls(messages, toolByName)
 		if len(unresolved) > 0 {
+			stepStart := len(result.Steps)
 			stop, updatedMessages := r.executeToolBatch(ctx, req, result, messages, unresolved, toolByName, toolHooks, contextTrace, toolNames, req.ResumeApprovedToolCallIDs)
 			messages = updatedMessages
+			if !stop {
+				if feedback := r.maybeReflect(ctx, req, result, result.Steps[stepStart:]); feedback != nil {
+					messages = append(messages, *feedback)
+				}
+			}
 			if stop {
 				return finish(result, r.now()), nil
 			}
@@ -266,12 +272,21 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 		}
 		messages = append(messages, assistant)
 		messageCountBeforeTools := len(messages)
+		stepStart := len(result.Steps)
 		stop, updatedMessages := r.executeToolBatch(ctx, req, result, messages, assistant.ToolCalls, toolByName, toolHooks, contextTrace, toolNames, nil)
 		messages = updatedMessages
 		if len(req.ResumeMessages) == 0 {
 			transcript = append(transcript, assistant)
 			if len(updatedMessages) > messageCountBeforeTools {
 				transcript = append(transcript, updatedMessages[messageCountBeforeTools:]...)
+			}
+		}
+		if !stop {
+			if feedback := r.maybeReflect(ctx, req, result, result.Steps[stepStart:]); feedback != nil {
+				messages = append(messages, *feedback)
+				if len(req.ResumeMessages) == 0 {
+					transcript = append(transcript, *feedback)
+				}
 			}
 		}
 		if stop {
@@ -821,7 +836,7 @@ func clonePlan(plan *Plan) Plan {
 	if plan == nil {
 		return Plan{}
 	}
-	cloned := Plan{Finished: plan.Finished}
+	cloned := Plan{Finished: plan.Finished, Version: plan.Version, RevisionReason: plan.RevisionReason}
 	if len(plan.Steps) > 0 {
 		cloned.Steps = append([]PlanStep(nil), plan.Steps...)
 	}
