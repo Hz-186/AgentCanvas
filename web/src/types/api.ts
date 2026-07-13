@@ -535,12 +535,57 @@ export interface WorkflowProfile {
   output_schema_json?: unknown;
   tool_policy_json?: unknown;
   memory_policy_json?: unknown;
+  reflection_policy_json?: unknown;
   context_policy_json?: unknown;
   active_rule_set_id?: number | null;
   rule_compiler_provider_id?: number | null;
   rule_compiler_model?: string;
   risk_level?: 'low' | 'medium' | 'high';
   mode?: 'react' | 'plan_execute';
+  created_at: string;
+  updated_at: string;
+}
+
+export type ReflectionStatus =
+  | 'candidate'
+  | 'active'
+  | 'validated'
+  | 'disputed'
+  | 'superseded'
+  | 'archived';
+
+export type ReflectionKind = 'error_lesson' | 'important_strategy';
+export type ReflectionScope = 'node' | 'workflow' | 'global';
+
+export interface AgentReflection {
+  id: number;
+  owner_id: number;
+  workflow_id: number;
+  node_id: string;
+  source_run_id: number;
+  supersedes_id?: number | null;
+  scope: ReflectionScope;
+  kind: ReflectionKind;
+  status: ReflectionStatus;
+  mode: string;
+  trigger_type: string;
+  task_fingerprint: string;
+  task_summary: string;
+  root_cause_category: string;
+  root_cause: string;
+  corrective_action: string;
+  lesson: string;
+  applicability: string;
+  evidence_json?: unknown;
+  tags_json?: unknown;
+  importance: number;
+  confidence: number;
+  content_hash: string;
+  recall_count: number;
+  successful_use_count: number;
+  harmful_count: number;
+  last_recalled_at?: string | null;
+  expires_at?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -672,6 +717,7 @@ export type UpdateWorkflowProfileRequest = Partial<Pick<
   | 'output_schema_json'
   | 'tool_policy_json'
   | 'memory_policy_json'
+  | 'reflection_policy_json'
   | 'context_policy_json'
   | 'rule_compiler_provider_id'
   | 'rule_compiler_model'

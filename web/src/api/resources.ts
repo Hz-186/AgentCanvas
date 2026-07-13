@@ -1,8 +1,10 @@
 import { api, request } from './client';
 import { streamPost, type SSEMessage } from './sse';
 import type {
+  AgentReflection,
   Workflow,
   WorkflowProfile,
+  ReflectionStatus,
   WorkflowRule,
   WorkflowRuleSet,
   RuleCompileJob,
@@ -74,6 +76,15 @@ export const workflowApi = {
   get: (id: number) => api.get<Workflow>(`/workflows/${id}`),
   getProfile: (id: number) => api.get<WorkflowProfile>(`/workflows/${id}/profile`),
   updateProfile: (id: number, body: UpdateWorkflowProfileRequest) => api.patch<WorkflowProfile>(`/workflows/${id}/profile`, body),
+  listReflections: (id: number, status?: ReflectionStatus) =>
+    api.get<AgentReflection[]>(`/workflows/${id}/reflections`, status ? { status } : undefined),
+  setReflectionStatus: (
+    id: number,
+    reflectionId: number,
+    status: Extract<ReflectionStatus, 'active' | 'validated' | 'disputed' | 'archived'>,
+  ) => api.patch<{ success: boolean }>(`/workflows/${id}/reflections/${reflectionId}`, { status }),
+  feedbackReflection: (id: number, reflectionId: number, verdict: 'helpful' | 'harmful', note?: string) =>
+    api.post<{ success: boolean }>(`/runs/${id}/reflections/${reflectionId}/feedback`, { verdict, note }),
   listRuleSets: (id: number) => api.get<WorkflowRuleSet[]>(`/workflows/${id}/rule-sets`),
   getRuleSet: (id: number, ruleSetId: number) => api.get<WorkflowRuleSet>(`/workflows/${id}/rule-sets/${ruleSetId}`),
   createRuleSet: (id: number, body: { clone_from_rule_set_id?: number; rules?: WorkflowRule[] }) => api.post<WorkflowRuleSet>(`/workflows/${id}/rule-sets`, body),

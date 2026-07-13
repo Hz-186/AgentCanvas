@@ -17,6 +17,20 @@ import {
 import type { NodeType } from '../../types/flow';
 import type { AgentMode, CanvasNodeData } from './types';
 
+export const DEFAULT_REFLECTION_POLICY = {
+  enabled: true,
+  runtime_mode: 'active',
+  inline_on_hard_failure: true,
+  terminal_async: true,
+  max_inline_per_run: 2,
+  recall_top_k: 3,
+  recall_token_budget: 800,
+  min_importance: 0.65,
+  min_confidence: 0.7,
+  allow_validated_global_fallback: true,
+  reflect_on_success: 'external_or_novel',
+} as const;
+
 export const nodeMeta: Record<NodeType, { label: string; icon: React.ElementType; description: string }> = {
   begin: { label: 'Begin', icon: Sparkles, description: '读取运行输入' },
   knowledge_retrieval: { label: 'Retrieval', icon: Database, description: '从知识库检索上下文' },
@@ -85,7 +99,8 @@ export function defaultConfig(type: NodeType): CanvasNodeData['config'] {
 		max_parallel_sub_agents: 8,
       max_input_chars: 96000,
       temperature: 0.2,
-      reflection_enabled: false,
+      reflection_enabled: true,
+      reflection_policy_json: { ...DEFAULT_REFLECTION_POLICY },
       require_approval_for_risk: ['high'],
       max_tool_timeout_ms: 30000,
       max_tool_output_bytes: 524288,

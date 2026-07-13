@@ -71,6 +71,7 @@ export interface AgentLoopConfig {
 	max_rule_tokens?: number;
   temperature?: number;
   reflection_enabled?: boolean;
+  reflection_policy_json?: Record<string, unknown>;
   require_approval_for_risk?: string[];
   max_tool_timeout_ms?: number;
   max_tool_output_bytes?: number;

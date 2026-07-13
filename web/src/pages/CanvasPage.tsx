@@ -34,11 +34,11 @@ import {
 } from 'lucide-react';
 import { workflowApi, resourceSummaryApi, settingsApi } from '../api/resources';
 import { Button, EmptyState, Field, IconButton, Panel, Segmented, Select, StatusBadge, TextArea, TextInput, Toast } from '../components/ui';
-import type { Workflow, WorkflowProfile, WorkflowTeam, WorkflowTeamMember, ApprovalRequest, Conversation, EvalCase, EvalDataset, EvalResult, EvalRun, EvalTrend, FlowVersion, KnowledgeBase, MCPServer, MemoryWriteLog, Message, ModelProvider, Run, RunStep, RunTrace, Skill, ToolDefinition, ToolInvocation, ToolPack, WorkflowMessageResponse } from '../types/api';
+import type { AgentReflection, ReflectionStatus, Workflow, WorkflowProfile, WorkflowTeam, WorkflowTeamMember, ApprovalRequest, Conversation, EvalCase, EvalDataset, EvalResult, EvalRun, EvalTrend, FlowVersion, KnowledgeBase, MCPServer, MemoryWriteLog, Message, ModelProvider, Run, RunStep, RunTrace, Skill, ToolDefinition, ToolInvocation, ToolPack, WorkflowMessageResponse } from '../types/api';
 import type { NodeType } from '../types/flow';
 import type { RuntimeEvent } from '../types/events';
 import { formatDate, friendlyErrorMessage, parseJsonObject, prettyJson } from '../utils/format';
-import { defaultConfig, isAgentNodeType, isStaticAgentCallNodeType, nodeMeta, numberArray, paletteNodeTypes } from './canvas/config';
+import { defaultConfig, DEFAULT_REFLECTION_POLICY, isAgentNodeType, isStaticAgentCallNodeType, nodeMeta, numberArray, paletteNodeTypes } from './canvas/config';
 import { nodeTypes } from './canvas/canvas/node-types';
 import { canvasDSLKey, defaultNodes, fromDSL, normalizeDSL, toDSL } from './canvas/canvas/hooks/useDslBridge';
 import { validateLocal } from './canvas/canvas/hooks/useCanvasValidation';
@@ -136,7 +136,7 @@ export function CanvasPage() {
   const [skills, setSkills] = useState<Skill[]>([]);
   const [toolPacks, setToolPacks] = useState<ToolPack[]>([]);
   const [mcpServers, setMcpServers] = useState<MCPServer[]>([]);
-  const [mode, setMode] = useState<'config' | 'profile' | 'team' | 'approvals' | 'eval' | 'chat' | 'debug' | 'dsl'>('config');
+  const [mode, setMode] = useState<'config' | 'profile' | 'reflections' | 'team' | 'approvals' | 'eval' | 'chat' | 'debug' | 'dsl'>('config');
   const [paletteWidth, setPaletteWidth] = useState(DEFAULT_PALETTE_WIDTH);
   const [configWidth, setConfigWidth] = useState(DEFAULT_PANEL_WIDTH);
   const [sidePanelOpen, setSidePanelOpen] = useState(true);
@@ -154,6 +154,9 @@ export function CanvasPage() {
   const [memoryLogs, setMemoryLogs] = useState<MemoryWriteLog[]>([]);
   const [toolInvocations, setToolInvocations] = useState<ToolInvocation[]>([]);
   const [runTraceSummary, setRunTraceSummary] = useState<Record<string, unknown> | null>(null);
+  const [reflections, setReflections] = useState<AgentReflection[]>([]);
+  const [reflectionStatusFilter, setReflectionStatusFilter] = useState<ReflectionStatus | ''>('');
+  const [reflectionFeedback, setReflectionFeedback] = useState<Record<number, 'helpful' | 'harmful'>>({});
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [conversationId, setConversationId] = useState(0);
   const [conversationMessages, setConversationMessages] = useState<Message[]>([]);
@@ -222,9 +225,10 @@ export function CanvasPage() {
   useEffect(() => {
     let cancelled = false;
     async function load() {
-      const [workflowResp, profileResp, workflowsResp, providersResp, kbResp, toolResp, skillResp, toolPackResp, mcpResp, approvalResp, evalDatasetResp, teamResp, versionResp, conversationResp] = await Promise.all([
+      const [workflowResp, profileResp, reflectionResp, workflowsResp, providersResp, kbResp, toolResp, skillResp, toolPackResp, mcpResp, approvalResp, evalDatasetResp, teamResp, versionResp, conversationResp] = await Promise.all([
         workflowApi.get(workflowId),
         workflowApi.getProfile(workflowId),
+        workflowApi.listReflections(workflowId),
         resourceSummaryApi.list('workflows', { limit: 100 }),
         settingsApi.providers.list(),
         resourceSummaryApi.list('knowledge-bases', { limit: 100 }),
@@ -245,6 +249,7 @@ export function CanvasPage() {
         ...profileResp,
         mode: profileResp.mode === 'plan_execute' || profileResp.planning_enabled ? 'plan_execute' : 'react',
       });
+      setReflections(reflectionResp);
       setCallableWorkflows(workflowsResp.items.filter((item) => item.id !== workflowId).map((item) => ({
         id: item.id, owner_id: 0, name: item.name, description: item.description ?? '', avatar_url: '',
         current_version_id: item.current_version_id ?? null, status: item.status ?? 1,
@@ -294,6 +299,48 @@ export function CanvasPage() {
   async function refreshApprovals() {
     const items = await workflowApi.listApprovalRequests('pending');
     setApprovalRequests(items.filter((item) => item.workflow_id === workflowId));
+  }
+
+  async function refreshReflections(status: ReflectionStatus | '' = reflectionStatusFilter) {
+    try {
+      setReflections(await workflowApi.listReflections(workflowId, status || undefined));
+      setError('');
+    } catch (err) {
+      setError(friendlyErrorMessage(err, '刷新 Reflection 失败'));
+    }
+  }
+
+  async function updateReflectionStatus(
+    reflectionId: number,
+    status: 'active' | 'validated' | 'disputed' | 'archived',
+  ) {
+    try {
+      await workflowApi.setReflectionStatus(workflowId, reflectionId, status);
+      await refreshReflections();
+      setMessage(`Reflection #${reflectionId} 已更新为 ${status}`);
+    } catch (err) {
+      setError(friendlyErrorMessage(err, '更新 Reflection 状态失败'));
+    }
+  }
+
+  async function feedbackReflection(reflectionId: number, verdict: 'helpful' | 'harmful') {
+    if (!debugRunId) {
+      setError('当前没有可提交反馈的 Run');
+      return;
+    }
+    try {
+      await workflowApi.feedbackReflection(
+        debugRunId,
+        reflectionId,
+        verdict,
+        `Marked ${verdict} from AgentCanvas trace`,
+      );
+      setReflectionFeedback((current) => ({ ...current, [reflectionId]: verdict }));
+      setMessage(`Reflection #${reflectionId} 已标记为 ${verdict}`);
+      setError('');
+    } catch (err) {
+      setError(friendlyErrorMessage(err, '提交 Reflection 反馈失败'));
+    }
   }
 
   async function refreshEvalDatasets() {
@@ -637,6 +684,7 @@ export function CanvasPage() {
         output_schema_json: profile.output_schema_json ?? {},
         tool_policy_json: profile.tool_policy_json ?? {},
         memory_policy_json: profile.memory_policy_json ?? {},
+        reflection_policy_json: profile.reflection_policy_json ?? DEFAULT_REFLECTION_POLICY,
         context_policy_json: profile.context_policy_json ?? {},
         risk_level: profile.risk_level ?? 'medium',
         mode: profile.mode ?? 'react',
@@ -1042,7 +1090,7 @@ export function CanvasPage() {
           <p className="muted truncate">WORKFLOW STUDIO · {restoredFromVersion ? `RESTORED FROM v${restoredFromVersion} · UNSAVED DRAFT` : version ? `VERSION ${version.version_no}` : 'UNSAVED DRAFT'}</p>
         </div>
         <div className="canvas-tools">
-          <Segmented value={mode} onChange={setMode} options={[{ value: 'config', label: 'Build' }, { value: 'profile', label: 'Profile' }, { value: 'team', label: 'Team' }, { value: 'approvals', label: 'Approvals' }, { value: 'eval', label: 'Evaluate' }, { value: 'chat', label: 'Dialogue' }, { value: 'debug', label: 'Debug' }, { value: 'dsl', label: 'DSL' }]} />
+          <Segmented value={mode} onChange={setMode} options={[{ value: 'config', label: 'Build' }, { value: 'profile', label: 'Profile' }, { value: 'reflections', label: 'Reflections' }, { value: 'team', label: 'Team' }, { value: 'approvals', label: 'Approvals' }, { value: 'eval', label: 'Evaluate' }, { value: 'chat', label: 'Dialogue' }, { value: 'debug', label: 'Debug' }, { value: 'dsl', label: 'DSL' }]} />
           <div ref={versionControlRef} className="canvas-version-control">
             <Button
               className="canvas-version-trigger"
@@ -1561,6 +1609,19 @@ export function CanvasPage() {
                   }}
                 />
               </Field>
+              <Field label="默认 Reflection Policy JSON">
+                <TextArea
+                  value={prettyJson(profile.reflection_policy_json ?? DEFAULT_REFLECTION_POLICY)}
+                  onChange={(event) => {
+                    try {
+                      setProfile({ ...profile, reflection_policy_json: JSON.parse(event.target.value) as unknown });
+                      setError('');
+                    } catch {
+                      setError('Reflection Policy JSON 格式不正确');
+                    }
+                  }}
+                />
+              </Field>
               <Field label="默认 Context Policy JSON">
                 <TextArea
                   value={prettyJson(profile.context_policy_json ?? {})}
@@ -1578,6 +1639,62 @@ export function CanvasPage() {
                 <Save size={16} />
                 保存 Profile
               </Button>
+              {error ? <p className="error-text">{error}</p> : null}
+            </Panel>
+          ) : null}
+
+          {mode === 'reflections' ? (
+            <Panel title="Persistent Reflexion" eyebrow={`${reflections.length} memories`}>
+              <Field label="状态筛选">
+                <div className="toolbar-actions">
+                  <Select value={reflectionStatusFilter} onChange={(event) => {
+                    const nextStatus = event.target.value as ReflectionStatus | '';
+                    setReflectionStatusFilter(nextStatus);
+                    void refreshReflections(nextStatus);
+                  }}>
+                    <option value="">全部状态</option>
+                    <option value="candidate">Candidate</option>
+                    <option value="active">Active</option>
+                    <option value="validated">Validated</option>
+                    <option value="disputed">Disputed</option>
+                    <option value="superseded">Superseded</option>
+                    <option value="archived">Archived</option>
+                  </Select>
+                  <Button onClick={() => void refreshReflections()}>刷新</Button>
+                </div>
+              </Field>
+              <p className="muted">这里管理 Agent 从历史运行中提炼出的经验。Active 会参与同工作流召回，Validated 可作为可信的全局回退记忆。</p>
+              {reflections.length === 0 ? (
+                <EmptyState icon={<Bot size={22} />} title="暂无 Reflection" description="Agent 完成运行或遇到失败后，符合重要性与置信度门槛的反思会持久化到这里。" />
+              ) : (
+                <div className="trace-list">
+                  {reflections.map((item) => (
+                    <article className="trace-item" key={item.id}>
+                      <div className="trace-item-head">
+                        <strong>#{item.id} {item.task_summary || item.lesson}</strong>
+                        <div className="toolbar-actions">
+                          <StatusBadge tone={item.status === 'validated' ? 'good' : item.status === 'disputed' ? 'bad' : item.status === 'active' ? 'info' : 'neutral'}>{item.status}</StatusBadge>
+                          <StatusBadge tone={item.kind === 'error_lesson' ? 'warn' : 'info'}>{item.kind}</StatusBadge>
+                          <StatusBadge tone="neutral">{item.scope}</StatusBadge>
+                        </div>
+                      </div>
+                      <p><strong>教训：</strong>{item.lesson}</p>
+                      {item.root_cause ? <p><strong>根因：</strong>{item.root_cause}</p> : null}
+                      {item.corrective_action ? <p><strong>纠正行动：</strong>{item.corrective_action}</p> : null}
+                      {item.applicability ? <p><strong>适用条件：</strong>{item.applicability}</p> : null}
+                      <p className="muted">
+                        importance {item.importance.toFixed(2)} · confidence {item.confidence.toFixed(2)} · recalled {item.recall_count} · helpful {item.successful_use_count} · harmful {item.harmful_count} · {formatDate(item.created_at)}
+                      </p>
+                      <div className="toolbar-actions">
+                        <Button disabled={item.status === 'active'} onClick={() => void updateReflectionStatus(item.id, 'active')}>Activate</Button>
+                        <Button disabled={item.status === 'validated'} onClick={() => void updateReflectionStatus(item.id, 'validated')}>Validate</Button>
+                        <Button disabled={item.status === 'disputed'} onClick={() => void updateReflectionStatus(item.id, 'disputed')}>Dispute</Button>
+                        <Button disabled={item.status === 'archived'} onClick={() => void updateReflectionStatus(item.id, 'archived')}>Archive</Button>
+                      </div>
+                    </article>
+                  ))}
+                </div>
+              )}
               {error ? <p className="error-text">{error}</p> : null}
             </Panel>
           ) : null}
@@ -1803,7 +1920,11 @@ export function CanvasPage() {
                       <StatusBadge tone="info">{runSteps.length}</StatusBadge>
                       {runSteps.some((step) => step.compressed) ? <StatusBadge tone="warn">{runSteps.filter((step) => step.compressed).length} compressed</StatusBadge> : null}
                     </div>
-                    <AgentTraceTimeline steps={runSteps} />
+                    <AgentTraceTimeline
+                      steps={runSteps}
+                      onReflectionFeedback={(reflectionId, verdict) => void feedbackReflection(reflectionId, verdict)}
+                      reflectionFeedback={reflectionFeedback}
+                    />
                   </div>
                 ) : null}
                 {childRuns.length > 0 ? (

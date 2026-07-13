@@ -3,7 +3,7 @@ import { Bot, ChevronDown, ChevronRight, Crosshair, Database, FileJson, GitBranc
 import { Button, Field, Select, StatusBadge, TextArea, TextInput } from '../../../../components/ui';
 import type { KnowledgeBase, MCPServer, ModelProvider, Skill, ToolDefinition, Workflow } from '../../../../types/api';
 import { prettyJson } from '../../../../utils/format';
-import { agentModeFromConfig, patchAgentMode, stringArray } from '../../config';
+import { agentModeFromConfig, DEFAULT_REFLECTION_POLICY, patchAgentMode, stringArray } from '../../config';
 import type { AgentMode } from '../../types';
 import { useAgentFormValues } from './useAgentFormValues';
 import { useWatchAgentFormChange } from './useWatchAgentFormChange';
@@ -131,6 +131,12 @@ export function AgentLoopForm({ config, providers, tools, skills, knowledgeBases
   const [expandedModules, setExpandedModules] = useState<Set<ModuleId>>(() => new Set(['mode', 'model', 'tools']));
   const [schemaDraft, setSchemaDraft] = useState(() => prettyJson(config.output_schema_json ?? {}));
   const [schemaError, setSchemaError] = useState('');
+  const reflectionPolicy = config.reflection_policy_json && typeof config.reflection_policy_json === 'object' && !Array.isArray(config.reflection_policy_json)
+    ? config.reflection_policy_json as Record<string, unknown>
+    : DEFAULT_REFLECTION_POLICY;
+  const reflectionRuntimeMode = config.reflection_enabled === false
+    ? 'off'
+    : String(reflectionPolicy.runtime_mode ?? 'active');
   const mode = values.mode;
   const modeMeta = modeOptions.find((item) => item.value === mode) ?? modeOptions[0];
   const toolIds = values.toolIds;
@@ -298,12 +304,27 @@ export function AgentLoopForm({ config, providers, tools, skills, knowledgeBases
         </Field>
       </ModuleCard>
 
-      <ModuleCard id="reflection" title="Reflection" summary={config.reflection_enabled ? '失败或输出前修正' : '关闭'} icon={<ShieldCheck size={16} />} status={<StatusBadge tone={moduleTone(Boolean(config.reflection_enabled))}>{config.reflection_enabled ? 'on' : 'off'}</StatusBadge>} expanded={moduleOpen.reflection} onToggle={toggleModule}>
-        <Field label="反思修正">
-          <Select value={config.reflection_enabled ? 'enabled' : 'disabled'} onChange={(event) => onChange({ reflection_enabled: event.target.value === 'enabled' })}>
-            <option value="disabled">Disabled</option>
-            <option value="enabled">Enabled</option>
+      <ModuleCard id="reflection" title="Persistent Reflexion" summary={reflectionRuntimeMode === 'active' ? '召回历史教训并影响决策' : reflectionRuntimeMode === 'shadow' ? '仅观察和记录，不影响决策' : '关闭'} icon={<ShieldCheck size={16} />} status={<StatusBadge tone={moduleTone(reflectionRuntimeMode !== 'off')}>{reflectionRuntimeMode}</StatusBadge>} expanded={moduleOpen.reflection} onToggle={toggleModule}>
+        <Field label="运行模式">
+          <Select value={reflectionRuntimeMode} onChange={(event) => {
+            const runtimeMode = event.target.value as 'active' | 'shadow' | 'off';
+            onChange({
+              reflection_enabled: runtimeMode !== 'off',
+              reflection_policy_json: {
+                ...reflectionPolicy,
+                enabled: runtimeMode !== 'off',
+                runtime_mode: runtimeMode,
+              },
+            });
+          }}>
+            <option value="active">Active · 召回并指导 Actor / Planner</option>
+            <option value="shadow">Shadow · 只观察、评估和持久化</option>
+            <option value="off">Off · 完全关闭</option>
           </Select>
+        </Field>
+        <p className="muted">Active 会把历史教训注入 ReAct 与 Plan &amp; Execute；Shadow 只记录反思，适合灰度验证。</p>
+        <Field label="Reflection Policy JSON">
+          <TextArea value={prettyJson(reflectionPolicy)} onChange={(event) => updateJSON('reflection_policy_json', event.target.value)} />
         </Field>
       </ModuleCard>
 

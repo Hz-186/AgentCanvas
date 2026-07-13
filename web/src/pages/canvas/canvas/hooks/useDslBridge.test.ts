@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { FlowDSL } from '../../../../types/flow';
+import { DEFAULT_REFLECTION_POLICY, defaultConfig } from '../../config';
+import { reflectionIds } from '../../debug/AgentTraceTimeline';
 import { canvasDSLKey, fromDSL, runtimeDSLKey } from './useDslBridge';
 
 function dsl(config: Record<string, unknown>): FlowDSL {
@@ -35,5 +37,19 @@ describe('DSL bridge', () => {
 
     expect(config.mode).toBe('react');
     expect(config.call_workflow_ids).toEqual([7]);
+  });
+
+  it('enables persistent Reflexion by default for new agent loops', () => {
+    const config = defaultConfig('agent_loop') as Record<string, unknown>;
+
+    expect(config.reflection_enabled).toBe(true);
+    expect(config.reflection_policy_json).toEqual(DEFAULT_REFLECTION_POLICY);
+  });
+
+  it('extracts recalled reflection ids from arrays, JSON strings, and envelopes', () => {
+    expect(reflectionIds([3, '5', 0, 'bad'])).toEqual([3, 5]);
+    expect(reflectionIds('[7, 9]')).toEqual([7, 9]);
+    expect(reflectionIds({ reflection_ids: [11] })).toEqual([11]);
+    expect(reflectionIds('{bad')).toEqual([]);
   });
 });
