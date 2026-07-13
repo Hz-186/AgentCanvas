@@ -51,6 +51,7 @@ func NewRouter(deps RouterDeps) *gin.Engine {
 		v1.GET("/health/redis", deps.HealthHandler.Redis)
 		v1.GET("/health/minio", deps.HealthHandler.MinIO)
 		v1.GET("/health/es", deps.HealthHandler.Elasticsearch)
+		v1.GET("/health/rule-system", deps.HealthHandler.RuleSystem)
 
 		authGroup := v1.Group("/auth")
 		{
@@ -118,6 +119,14 @@ func NewRouter(deps RouterDeps) *gin.Engine {
 			registerCRUD(protected, "/workflows", ":id", deps.WorkflowHandler.Create, deps.WorkflowHandler.List, deps.WorkflowHandler.Get, deps.WorkflowHandler.Update, deps.WorkflowHandler.Delete)
 			protected.GET("/workflows/:id/profile", deps.WorkflowHandler.GetProfile)
 			protected.PATCH("/workflows/:id/profile", deps.WorkflowHandler.UpdateProfile)
+			protected.GET("/workflows/:id/rule-sets", deps.WorkflowHandler.ListRuleSets)
+			protected.POST("/workflows/:id/rule-sets", deps.WorkflowHandler.CreateRuleSet)
+			protected.GET("/workflows/:id/rule-sets/:rule_set_id", deps.WorkflowHandler.GetRuleSet)
+			protected.PATCH("/workflows/:id/rule-sets/:rule_set_id", deps.WorkflowHandler.UpdateRuleSet)
+			protected.POST("/workflows/:id/rule-sets/:rule_set_id/publish", deps.WorkflowHandler.PublishRuleSet)
+			protected.POST("/workflows/:id/rule-sets/:rule_set_id/review", deps.WorkflowHandler.ReviewRuleSet)
+			protected.POST("/workflows/:id/rule-sets/:rule_set_id/rollback", deps.WorkflowHandler.RollbackRuleSet)
+			protected.GET("/workflows/:id/rule-compile-jobs/:job_id", deps.WorkflowHandler.GetRuleCompileJob)
 			protected.POST("/workflows/:id/eval-datasets", deps.WorkflowHandler.CreateEvalDataset)
 			protected.GET("/workflows/:id/eval-datasets", deps.WorkflowHandler.ListEvalDatasets)
 			protected.POST("/eval-datasets/:id/cases", deps.WorkflowHandler.CreateEvalCase)

@@ -115,6 +115,26 @@ func TestBuildResumeRequestUsesCheckpointRuleSnapshot(t *testing.T) {
 	}
 }
 
+func TestBuildResumeRequestRejectsTamperedCompiledRuleSnapshot(t *testing.T) {
+	compiled, err := rules.CompileRuleSet([]rules.Rule{{
+		ID: "tenant.audit", Content: "audit", Strength: rules.RuleMandatory,
+	}}, rules.CompileOptions{RuleSetID: 8, Version: "2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkpoint := &Checkpoint{
+		Messages:       []llm.ChatMessage{{Role: conversation.RoleSystem, Content: "system"}},
+		RuleSetID:      8,
+		RuleSetVersion: "2",
+		CompiledHash:   compiled.CompiledHash,
+		CompiledRules:  compiled,
+	}
+	compiled.Rules[0].Rule.Content = "tampered"
+	if _, err := BuildResumeRequest(ResumeRequest{Checkpoint: checkpoint}); err == nil {
+		t.Fatal("expected tampered checkpoint rule snapshot to be rejected")
+	}
+}
+
 func TestFindUnresolvedToolCalls(t *testing.T) {
 	toolByName := map[string]toolruntime.RuntimeTool{
 		"search": &fakeResumeTool{name: "search"},

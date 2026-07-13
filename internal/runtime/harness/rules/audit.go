@@ -45,7 +45,7 @@ func (s *AuditStore) Snapshot(ruleID string) RuleAudit {
 }
 
 func ShouldPrune(rule Rule, audit RuleAudit, policy AuditPolicy) bool {
-	if hardPinnedLevel(rule.Level) {
+	if rule.EffectiveStrength() == RuleMandatory {
 		return false
 	}
 	if rule.Level != LevelL2Scenario && rule.Level != LevelL3Tool && rule.Level != LevelL4Ephemeral {

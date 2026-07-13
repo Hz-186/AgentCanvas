@@ -3,8 +3,10 @@ package agent
 import (
 	"encoding/json"
 	"strings"
+	"time"
 
 	"agentcanvas/internal/infrastructure/llm"
+	"agentcanvas/internal/observability"
 	"agentcanvas/internal/runtime/harness/rules"
 )
 
@@ -31,6 +33,7 @@ type RulePlanningState struct {
 	SafetyMargin   int
 	MaxRuleTokens  int
 	CustomRules    []rules.Rule
+	CompiledRules  *rules.CompiledRuleSet
 }
 
 type RulePlan struct {
@@ -51,23 +54,34 @@ type RuleBudget struct {
 }
 
 func (RulePlanner) Plan(state RulePlanningState) RulePlan {
+	started := time.Now()
 	budget := calculateRuleBudget(state)
 	tags := append([]string(nil), state.Tags...)
 	if len(state.UsedToolNames) > 0 {
 		tags = append(tags, "tool_used")
 	}
-	selected, trace := rules.ResolveDynamicWithRules(
-		state.SystemPrompt,
-		state.Task,
-		state.Mode,
-		state.RiskLevel,
-		state.UsedToolNames,
-		tags,
-		budget.AvailableRuleTokens,
-		state.CustomRules,
-		nil,
-		rules.AuditPolicy{},
-	)
+	var selected []rules.Rule
+	var trace rules.Trace
+	if state.CompiledRules != nil {
+		selected, trace = rules.SelectOptionalRules(state.CompiledRules, rules.LoadContext{
+			Mode: state.Mode, RiskLevel: state.RiskLevel, ToolNames: state.UsedToolNames,
+			Tags: tags, Task: state.Task, Conversation: state.SystemPrompt,
+			TokenBudget: budget.AvailableRuleTokens, ScoreCutoff: 110,
+		}, rules.DefaultOptimizerExpansions)
+	} else {
+		selected, trace = rules.ResolveDynamicWithRules(
+			state.SystemPrompt,
+			state.Task,
+			state.Mode,
+			state.RiskLevel,
+			state.UsedToolNames,
+			tags,
+			budget.AvailableRuleTokens,
+			state.CustomRules,
+			nil,
+			rules.AuditPolicy{},
+		)
+	}
 	// Tool guidance is useful only after the tool has become part of this run.
 	// It must not consume every initial prompt merely because a tool is available.
 	kept := selected[:0]
@@ -78,6 +92,13 @@ func (RulePlanner) Plan(state RulePlanningState) RulePlan {
 		}
 		kept = append(kept, rule)
 	}
+	closureRejected := 0
+	for _, reason := range trace.SkipReasons {
+		if reason == rules.ReasonTokenBudgetExceeded {
+			closureRejected++
+		}
+	}
+	observability.RuleSystemMetrics.RecordPlanner(time.Since(started), trace.OptimizerLimited, closureRejected)
 	return RulePlan{Rules: kept, Trace: trace, Budget: budget}
 }
 

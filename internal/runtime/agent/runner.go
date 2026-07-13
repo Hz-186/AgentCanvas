@@ -12,6 +12,7 @@ import (
 
 	"agentcanvas/internal/domain/conversation"
 	"agentcanvas/internal/infrastructure/llm"
+	"agentcanvas/internal/observability"
 	"agentcanvas/internal/pkg/strutil"
 	"agentcanvas/internal/runtime/harness/hooks"
 	"agentcanvas/internal/runtime/harness/rules"
@@ -19,6 +20,7 @@ import (
 )
 
 var ErrNoToolCallingClient = errors.New("llm client does not support tool calling")
+var ErrMandatoryRuleBudgetExceeded = errors.New("mandatory rules exceed the configured input context budget")
 
 type StepEmitter func(ctx context.Context, step RunStep) error
 
@@ -95,8 +97,11 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 
 	baseMessages, contextTrace := ContextAssembler{}.Build(req)
 	contextTrace.RuleSetVersion = req.RuleSetVersion
+	contextTrace.RuleSetID = req.RuleSetID
+	contextTrace.CompiledHash = req.CompiledRuleHash
 	if contextTrace.CoreOverflow {
-		return nil, fmt.Errorf("core rules exceed the configured input context budget")
+		observability.RuleSystemMetrics.RecordMandatoryOverflow()
+		return nil, fmt.Errorf("%w: rule_set_id=%d version=%s mandatory_tokens=%d budget_tokens=%d deficit_tokens=%d", ErrMandatoryRuleBudgetExceeded, req.RuleSetID, req.RuleSetVersion, contextTrace.MandatoryTokens, contextTrace.MandatoryBudgetTokens, contextTrace.MandatoryDeficitTokens)
 	}
 	messages := baseMessages
 	transcript := make([]llm.ChatMessage, 0, req.MaxIterations*2)
@@ -182,6 +187,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 				SafetyMargin:   req.ContextSafetyMarginTokens,
 				MaxRuleTokens:  req.MaxRuleTokens,
 				CustomRules:    req.CustomRules,
+				CompiledRules:  req.CompiledRules,
 			})
 			messages = assembleRoundMessages(baseMessages, ruleMessages(plan.Rules), transcript)
 			contextTrace.RuleTrace = mergeRuleTraces(req.RuleTrace, plan.Trace)
@@ -641,8 +647,13 @@ func checkpointFromMessages(req RunRequest, messages []llm.ChatMessage, contextT
 			"iteration":           iteration,
 			"tool_calls":          toolCalls,
 			"rule_set_version":    req.RuleSetVersion,
+			"rule_set_id":         req.RuleSetID,
+			"compiled_hash":       req.CompiledRuleHash,
 		},
 		RuleSetVersion: req.RuleSetVersion,
+		RuleSetID:      req.RuleSetID,
+		CompiledHash:   req.CompiledRuleHash,
+		CompiledRules:  req.CompiledRules,
 		CustomRules:    append([]rules.Rule(nil), req.CustomRules...),
 	}
 }

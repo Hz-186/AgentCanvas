@@ -8,15 +8,19 @@ import (
 	"strings"
 	"time"
 
+	"agentcanvas/internal/observability"
 	"agentcanvas/internal/pkg/strutil"
+	"agentcanvas/internal/runtime/harness/rules"
 	"agentcanvas/internal/runtime/toolruntime"
 )
 
 type ToolPolicy struct {
-	RequireApprovalForRisk []string `json:"require_approval_for_risk,omitempty"`
-	MaxToolTimeoutMS       int      `json:"max_tool_timeout_ms,omitempty"`
-	MaxToolOutputBytes     int      `json:"max_tool_output_bytes,omitempty"`
-	AllowedHosts           []string `json:"allowed_hosts,omitempty"`
+	RequireApprovalForRisk []string                   `json:"require_approval_for_risk,omitempty"`
+	MaxToolTimeoutMS       int                        `json:"max_tool_timeout_ms,omitempty"`
+	MaxToolOutputBytes     int                        `json:"max_tool_output_bytes,omitempty"`
+	AllowedHosts           []string                   `json:"allowed_hosts,omitempty"`
+	RuleBindings           []rules.BoundPolicyBinding `json:"rule_bindings,omitempty"`
+	DenyAllHosts           bool                       `json:"deny_all_hosts,omitempty"`
 }
 
 // human approval request
@@ -35,6 +39,8 @@ type Trace struct {
 	Decision   string `json:"decision"` // allowed/denied/approval_required/recorded/compressed
 	Reason     string `json:"reason,omitempty"`
 	Compressed bool   `json:"compressed,omitempty"` // yes or no
+	RuleID     string `json:"rule_id,omitempty"`
+	PolicyKey  string `json:"policy_key,omitempty"`
 }
 
 type PreToolUseRequest struct {
@@ -111,10 +117,12 @@ func (c ToolHookChain) BeforeToolUse(ctx context.Context, req PreToolUseRequest)
 		}
 		if next.Approval != nil {
 			result.Approval = next.Approval
+			observability.RuleSystemMetrics.RecordHookDecision("approval_required")
 			return result
 		}
 		if next.Denied != nil {
 			result.Denied = next.Denied
+			observability.RuleSystemMetrics.RecordHookDecision("denied")
 			return result
 		}
 	}
@@ -142,56 +150,149 @@ func (c ToolHookChain) AfterToolUse(ctx context.Context, req PostToolUseRequest)
 type PolicyPreToolUseHook struct{}
 
 func (PolicyPreToolUseHook) BeforeToolUse(ctx context.Context, req PreToolUseRequest) PreToolUseResult {
+	effective, bindingTraces, bindingErr := applyRuleBindings(req.Policy)
+	if bindingErr != nil {
+		err := fmt.Errorf("rule policy evaluation failed closed: %w", bindingErr)
+		return PreToolUseResult{Context: ctx, Denied: err, Traces: append(bindingTraces, Trace{Stage: "pre_tool_use", Hook: "rule_policy", Decision: "denied", Reason: err.Error()})}
+	}
+	req.Policy = effective
 	if reason := dangerousToolArgumentReason(req); reason != "" {
 		err := fmt.Errorf("dangerous tool invocation blocked: %s", reason)
 		return PreToolUseResult{
 			Context: ctx,
 			Denied:  err,
-			Traces: []Trace{
-				{Stage: "pre_tool_use", Hook: "policy", Decision: "denied", Reason: err.Error()},
-			},
+			Traces:  append(bindingTraces, Trace{Stage: "pre_tool_use", Hook: "policy", Decision: "denied", Reason: err.Error()}),
+		}
+	}
+	if err := validateAllowedHosts(req.Metadata.AllowedHosts, req.Policy.AllowedHosts, req.Policy.DenyAllHosts); err != nil {
+		return PreToolUseResult{
+			Context: ctx,
+			Denied:  err,
+			Traces:  append(bindingTraces, Trace{Stage: "pre_tool_use", Hook: "policy", Decision: "denied", Reason: err.Error()}),
 		}
 	}
 	if approval := requiredApproval(req); approval != nil {
 		return PreToolUseResult{
 			Context:  ctx,
 			Approval: approval,
-			Traces: []Trace{
-				{Stage: "pre_tool_use", Hook: "policy", Decision: "approval_required", Reason: approval.Reason},
-			},
-		}
-	}
-	if err := validateAllowedHosts(req.Metadata.AllowedHosts, req.Policy.AllowedHosts); err != nil {
-		return PreToolUseResult{
-			Context: ctx,
-			Denied:  err,
-			Traces: []Trace{
-				{Stage: "pre_tool_use", Hook: "policy", Decision: "denied", Reason: err.Error()},
-			},
+			Traces:   append(bindingTraces, Trace{Stage: "pre_tool_use", Hook: "policy", Decision: "approval_required", Reason: approval.Reason}),
 		}
 	}
 	timeoutMS := effectiveTimeoutMS(req.Metadata, req.Policy)
 	if timeoutMS <= 0 {
 		return PreToolUseResult{
 			Context: ctx,
-			Traces: []Trace{
-				{Stage: "pre_tool_use", Hook: "policy", Decision: "allowed"},
-			},
+			Traces:  append(bindingTraces, Trace{Stage: "pre_tool_use", Hook: "policy", Decision: "allowed"}),
 		}
 	}
 	execCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutMS)*time.Millisecond)
 	return PreToolUseResult{
 		Context: execCtx,
 		Cancel:  cancel,
-		Traces: []Trace{
-			{
-				Stage:    "pre_tool_use",
-				Hook:     "policy",
-				Decision: "allowed",
-				Reason:   fmt.Sprintf("timeout_ms=%d", timeoutMS),
-			},
-		},
+		Traces:  append(bindingTraces, Trace{Stage: "pre_tool_use", Hook: "policy", Decision: "allowed", Reason: fmt.Sprintf("timeout_ms=%d", timeoutMS)}),
 	}
+}
+
+func applyRuleBindings(policy ToolPolicy) (ToolPolicy, []Trace, error) {
+	effective := policy
+	effective.RequireApprovalForRisk = append([]string(nil), policy.RequireApprovalForRisk...)
+	effective.AllowedHosts = append([]string(nil), policy.AllowedHosts...)
+	effective.RuleBindings = nil
+	traces := make([]Trace, 0, len(policy.RuleBindings))
+	for _, binding := range policy.RuleBindings {
+		policyKey := strings.TrimSpace(binding.PolicyKey)
+		raw := binding.Params
+		if len(raw) == 0 || string(raw) == "null" {
+			raw = json.RawMessage(`{}`)
+		}
+		switch policyKey {
+		case rules.PolicyDangerousArgumentsDeny:
+			var params struct{}
+			if err := json.Unmarshal(raw, &params); err != nil {
+				return effective, traces, fmt.Errorf("rule %s dangerous-arguments params: %w", binding.RuleID, err)
+			}
+		case rules.PolicyRiskRequireApproval:
+			var params struct {
+				RiskLevels []string `json:"risk_levels"`
+			}
+			if err := json.Unmarshal(raw, &params); err != nil {
+				return effective, traces, fmt.Errorf("rule %s approval params: %w", binding.RuleID, err)
+			}
+			effective.RequireApprovalForRisk = appendUniqueFold(effective.RequireApprovalForRisk, params.RiskLevels...)
+		case rules.PolicyHostAllowlist:
+			var params struct {
+				AllowedHosts []string `json:"allowed_hosts"`
+			}
+			if err := json.Unmarshal(raw, &params); err != nil {
+				return effective, traces, fmt.Errorf("rule %s host allowlist params: %w", binding.RuleID, err)
+			}
+			var denyAll bool
+			effective.AllowedHosts, denyAll = intersectAllowedHosts(effective.AllowedHosts, params.AllowedHosts)
+			effective.DenyAllHosts = effective.DenyAllHosts || denyAll
+		case rules.PolicyExecutionLimits:
+			var params struct {
+				MaxToolTimeoutMS   int `json:"max_tool_timeout_ms"`
+				MaxToolOutputBytes int `json:"max_tool_output_bytes"`
+			}
+			if err := json.Unmarshal(raw, &params); err != nil {
+				return effective, traces, fmt.Errorf("rule %s execution limits params: %w", binding.RuleID, err)
+			}
+			effective.MaxToolTimeoutMS = minimumPositive(effective.MaxToolTimeoutMS, params.MaxToolTimeoutMS)
+			effective.MaxToolOutputBytes = minimumPositive(effective.MaxToolOutputBytes, params.MaxToolOutputBytes)
+		default:
+			return effective, traces, fmt.Errorf("rule %s uses unknown policy binding %q", binding.RuleID, policyKey)
+		}
+		traces = append(traces, Trace{Stage: "pre_tool_use", Hook: "rule_policy", Decision: "applied", RuleID: binding.RuleID, PolicyKey: policyKey})
+	}
+	return effective, traces, nil
+}
+
+func appendUniqueFold(values []string, additions ...string) []string {
+	for _, addition := range additions {
+		addition = strings.TrimSpace(addition)
+		if addition == "" {
+			continue
+		}
+		found := false
+		for _, existing := range values {
+			if strings.EqualFold(existing, addition) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			values = append(values, addition)
+		}
+	}
+	return values
+}
+
+func intersectAllowedHosts(current, constraint []string) ([]string, bool) {
+	left := normalizedSet(current)
+	right := normalizedSet(constraint)
+	if len(left) == 0 {
+		return right, len(right) == 0
+	}
+	if len(right) == 0 {
+		return nil, true
+	}
+	allowed := make([]string, 0, len(left))
+	for _, host := range left {
+		if slices.Contains(right, host) {
+			allowed = append(allowed, host)
+		}
+	}
+	return allowed, len(allowed) == 0
+}
+
+func minimumPositive(current, constraint int) int {
+	if constraint <= 0 {
+		return current
+	}
+	if current <= 0 || constraint < current {
+		return constraint
+	}
+	return current
 }
 
 type ObservationPostToolUseHook struct{}
@@ -308,7 +409,10 @@ func effectiveMaxOutputBytes(metadata toolruntime.ToolMetadata, policy ToolPolic
 	return maxBytes
 }
 
-func validateAllowedHosts(toolHosts []string, policyHosts []string) error {
+func validateAllowedHosts(toolHosts []string, policyHosts []string, denyAll bool) error {
+	if denyAll && len(toolHosts) > 0 {
+		return fmt.Errorf("tool hosts are denied by intersected policy allowlists")
+	}
 	allowed := normalizedSet(policyHosts)
 	if len(allowed) == 0 || len(toolHosts) == 0 {
 		return nil

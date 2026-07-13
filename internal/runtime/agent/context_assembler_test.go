@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -62,6 +64,24 @@ func TestContextAssemblerDoesNotSilentlyTruncateCoreRules(t *testing.T) {
 		if strings.Contains(message.Content, "core core") {
 			t.Fatalf("core rule must not be silently truncated or included: %+v", messages)
 		}
+	}
+}
+
+func TestRunnerReturnsTypedMandatoryBudgetErrorBeforeCallingModel(t *testing.T) {
+	client := &fakeToolClient{}
+	runner := NewRunner(client)
+	_, err := runner.Run(context.Background(), RunRequest{
+		Model: "test", Task: "task", MaxInputTokens: 4,
+		ContextBlocks: []ContextBlock{{Name: "rules_l1:tenant.mandatory", Role: "system", Content: strings.Repeat("mandatory ", 20), Pinned: true}},
+	})
+	if !errors.Is(err, ErrMandatoryRuleBudgetExceeded) {
+		t.Fatalf("expected typed mandatory overflow, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "deficit_tokens=") {
+		t.Fatalf("mandatory overflow must report token deficit, got %v", err)
+	}
+	if len(client.requests) != 0 {
+		t.Fatalf("model must not be called on mandatory overflow, requests=%d", len(client.requests))
 	}
 }
 

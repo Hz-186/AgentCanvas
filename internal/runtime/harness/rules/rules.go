@@ -1,9 +1,17 @@
 package rules
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
+)
+
+type RuleStrength string
+
+const (
+	RuleMandatory RuleStrength = "mandatory"
+	RuleOptional  RuleStrength = "optional"
 )
 
 type RuleLevel string
@@ -27,15 +35,19 @@ const (
 )
 
 type Rule struct {
-	ID          string            `json:"id"`
-	Name        string            `json:"name"`
-	Level       RuleLevel         `json:"level"`
-	Content     string            `json:"content"`
-	Triggers    []string          `json:"triggers,omitempty"`
-	Activation  Activation        `json:"activation,omitempty"`
-	TokenBudget int               `json:"token_budget,omitempty"`
-	Priority    int               `json:"priority,omitempty"`
-	Metadata    map[string]string `json:"metadata,omitempty"`
+	ID              string            `json:"id"`
+	Name            string            `json:"name"`
+	Strength        RuleStrength      `json:"strength,omitempty"`
+	Level           RuleLevel         `json:"level,omitempty"` // Deprecated: compatibility with pre-DAG rule sets.
+	Content         string            `json:"content"`
+	Triggers        []string          `json:"triggers,omitempty"`
+	Activation      Activation        `json:"activation,omitempty"`
+	TokenBudget     int               `json:"token_budget,omitempty"`
+	Priority        int               `json:"priority,omitempty"`
+	SafetyCritical  bool              `json:"safety_critical,omitempty"`
+	ManualDependsOn []string          `json:"manual_depends_on,omitempty"`
+	PolicyBinding   *PolicyBinding    `json:"policy_binding,omitempty"`
+	Metadata        map[string]string `json:"metadata,omitempty"`
 }
 
 // TokenCost exposes the stable cost used by planning and trace accounting.
@@ -92,6 +104,34 @@ type Trace struct {
 	PrunedTokensByLevel map[string]int      `json:"pruned_tokens_by_level,omitempty"`
 	MatchedSignals      map[string][]string `json:"matched_signals,omitempty"`
 	SkippedSignals      map[string][]string `json:"skipped_signals,omitempty"`
+	MandatoryTokens     int                 `json:"mandatory_tokens,omitempty"`
+	OptionalBudget      int                 `json:"optional_budget,omitempty"`
+	DependencyLoadedBy  map[string][]string `json:"dependency_loaded_by,omitempty"`
+	CandidateRoots      []string            `json:"candidate_roots,omitempty"`
+	BundleMembers       map[string][]string `json:"bundle_members,omitempty"`
+	BundleCosts         map[string]int      `json:"bundle_costs,omitempty"`
+	BundleMarginalCosts map[string]int      `json:"bundle_marginal_costs,omitempty"`
+	SharedDependencies  map[string][]string `json:"shared_dependencies,omitempty"`
+	OptimizerNodes      int                 `json:"optimizer_nodes,omitempty"`
+	OptimizerLimited    bool                `json:"optimizer_limited,omitempty"`
+	RuleSetID           int64               `json:"rule_set_id,omitempty"`
+	RuleSetVersion      string              `json:"rule_set_version,omitempty"`
+	CompiledHash        string              `json:"compiled_hash,omitempty"`
+}
+
+type PolicyBinding struct {
+	PolicyKey string          `json:"policy_key"`
+	Params    json.RawMessage `json:"params,omitempty"`
+}
+
+func (r Rule) EffectiveStrength() RuleStrength {
+	if r.Strength == RuleMandatory || r.Strength == RuleOptional {
+		return r.Strength
+	}
+	if r.Level == LevelL0Safety || r.Level == LevelL1Core {
+		return RuleMandatory
+	}
+	return RuleOptional
 }
 
 type Registry struct {
@@ -110,24 +150,8 @@ func (r *Registry) Rules() []Rule {
 // ValidateCustomRules keeps permanent platform constraints out of tenant
 // configuration. L0/L1 are intentionally defined only by the built-in catalog.
 func ValidateCustomRules(items []Rule) error {
-	if len(items) > 50 {
-		return fmt.Errorf("at most 50 custom rules are allowed")
-	}
-	seen := map[string]bool{}
-	for _, item := range items {
-		id := strings.TrimSpace(item.ID)
-		if id == "" || strings.TrimSpace(item.Content) == "" {
-			return fmt.Errorf("custom rules require id and content")
-		}
-		if seen[id] {
-			return fmt.Errorf("duplicate custom rule id %q", id)
-		}
-		seen[id] = true
-		if item.Level == LevelL0Safety || item.Level == LevelL1Core {
-			return fmt.Errorf("custom rule %q cannot use permanent level %s", id, item.Level)
-		}
-	}
-	return nil
+	_, err := CompileRuleSet(items, CompileOptions{RejectLegacyPermanentLevels: true})
+	return err
 }
 
 type ruleDecision struct {
@@ -150,8 +174,15 @@ func (r *Registry) Register(rule Rule) {
 	if r == nil || strings.TrimSpace(rule.ID) == "" {
 		return
 	}
+	if rule.Strength == "" {
+		rule.Strength = rule.EffectiveStrength()
+	}
 	if rule.Level == "" {
-		rule.Level = LevelL2Scenario
+		if rule.Strength == RuleMandatory {
+			rule.Level = LevelL1Core
+		} else {
+			rule.Level = LevelL2Scenario
+		}
 	}
 	rule.ID = strings.TrimSpace(rule.ID)
 	rule.Name = strings.TrimSpace(rule.Name)
@@ -201,8 +232,8 @@ func (r *Registry) Load(ctx LoadContext) ([]Rule, Trace) {
 	}
 	trace.ConsideredCount = len(candidates)
 	sort.SliceStable(candidates, func(i, j int) bool {
-		if hardPinnedLevel(candidates[i].rule.Level) != hardPinnedLevel(candidates[j].rule.Level) {
-			return hardPinnedLevel(candidates[i].rule.Level)
+		if isMandatory(candidates[i].rule) != isMandatory(candidates[j].rule) {
+			return isMandatory(candidates[i].rule)
 		}
 		if candidates[i].score == candidates[j].score {
 			if candidates[i].rule.Priority == candidates[j].rule.Priority {
@@ -224,7 +255,7 @@ func (r *Registry) Load(ctx LoadContext) ([]Rule, Trace) {
 	used := 0
 	levelUsage := map[RuleLevel]int{}
 	for _, decision := range candidates {
-		if ctx.ScoreCutoff > 0 && decision.score < ctx.ScoreCutoff && !hardPinnedLevel(decision.rule.Level) {
+		if ctx.ScoreCutoff > 0 && decision.score < ctx.ScoreCutoff && !isMandatory(decision.rule) {
 			trace.skip(decision.rule.ID, ReasonBelowScoreThreshold)
 			trace.SavedTokens += decision.cost
 			trace.addPrunedTokens(decision.rule.Level, decision.cost)
@@ -234,13 +265,13 @@ func (r *Registry) Load(ctx LoadContext) ([]Rule, Trace) {
 		if ctx.LevelBudgets != nil {
 			levelBudget = ctx.LevelBudgets[decision.rule.Level]
 		}
-		if levelBudget > 0 && !hardPinnedLevel(decision.rule.Level) && levelUsage[decision.rule.Level]+decision.cost > levelBudget {
+		if levelBudget > 0 && !isMandatory(decision.rule) && levelUsage[decision.rule.Level]+decision.cost > levelBudget {
 			trace.skip(decision.rule.ID, ReasonTokenBudgetExceeded)
 			trace.SavedTokens += decision.cost
 			trace.addPrunedTokens(decision.rule.Level, decision.cost)
 			continue
 		}
-		if ctx.TokenBudget > 0 && !hardPinnedLevel(decision.rule.Level) && used+decision.cost > ctx.TokenBudget {
+		if ctx.TokenBudget > 0 && !isMandatory(decision.rule) && used+decision.cost > ctx.TokenBudget {
 			trace.skip(decision.rule.ID, ReasonTokenBudgetExceeded)
 			trace.SavedTokens += decision.cost
 			trace.addPrunedTokens(decision.rule.Level, decision.cost)
@@ -277,9 +308,11 @@ func hardPinnedLevel(level RuleLevel) bool {
 	return level == LevelL0Safety || level == LevelL1Core
 }
 
+func isMandatory(rule Rule) bool { return rule.EffectiveStrength() == RuleMandatory }
+
 func evaluateRule(rule Rule, ctx LoadContext) (ruleDecision, bool, string) {
 	decision := ruleDecision{rule: rule, cost: ruleCost(rule)}
-	if hardPinnedLevel(rule.Level) {
+	if isMandatory(rule) {
 		decision.score = baseLevelScore(rule.Level) + float64(rule.Priority)
 		decision.reasons = append(decision.reasons, "hard_pinned_level")
 		decision.signals = append(decision.signals, string(rule.Level))
@@ -574,6 +607,19 @@ func (t *Trace) skip(ruleID, reason string) {
 		t.SkipReasons = map[string]string{}
 	}
 	t.SkipReasons[ruleID] = reason
+}
+
+func (t *Trace) unskip(ruleID string) {
+	for index := 0; index < len(t.Skipped); {
+		if t.Skipped[index] == ruleID {
+			t.Skipped = append(t.Skipped[:index], t.Skipped[index+1:]...)
+			continue
+		}
+		index++
+	}
+	if t.SkipReasons != nil {
+		delete(t.SkipReasons, ruleID)
+	}
 }
 
 // Skip records a late planning decision while preserving the same accounting

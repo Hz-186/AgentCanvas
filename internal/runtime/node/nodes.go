@@ -15,6 +15,7 @@ import (
 	"agentcanvas/internal/infrastructure/llm"
 	"agentcanvas/internal/infrastructure/vectorstore"
 	"agentcanvas/internal/runtime/engine"
+	"agentcanvas/internal/runtime/harness/rules"
 	"agentcanvas/internal/runtime/sandbox"
 	"agentcanvas/internal/runtime/toolruntime"
 )
@@ -44,6 +45,10 @@ type AgentProfileLoader interface {
 	GetWorkflowProfile(ctx context.Context, ownerID, workflowID int64) (*workflow.Profile, error)
 }
 
+type ActiveRuleSetLoader interface {
+	LoadActiveRuleSet(ctx context.Context, ownerID, workflowID int64) (*rules.CompiledRuleSet, error)
+}
+
 type Deps struct {
 	Retriever               retrieval.Retriever
 	LLM                     llm.ChatClient
@@ -66,6 +71,7 @@ type Deps struct {
 	WorkflowCaller          toolruntime.WorkflowCaller
 	InlineAgentCaller       toolruntime.InlineAgentCaller
 	Profiles                AgentProfileLoader
+	RuleSets                ActiveRuleSetLoader
 	Teams                   workflow.TeamRepository
 	Sandbox                 sandbox.Runner
 	ArchivalVecStore        vectorstore.Store
@@ -96,6 +102,7 @@ func DefaultNodes(deps Deps) ([]engine.Node, error) {
 		WorkflowCaller:    deps.WorkflowCaller,
 		InlineAgentCaller: deps.InlineAgentCaller,
 		Profiles:          deps.Profiles,
+		RuleSets:          deps.RuleSets,
 		Sandbox:           deps.Sandbox,
 		MessageHistory:    deps.MessageHistory,
 		ArchivalVecStore:  deps.ArchivalVecStore,

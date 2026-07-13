@@ -75,6 +75,8 @@ type Service struct {
 	validator        *flow.Validator
 	runCancels       *runCancelRegistry
 	dreamQueue       queueinfra.JobQueue
+	ruleSets         workflow.RuleSetRepository
+	ruleCompileQueue queueinfra.JobQueue
 	redisClient      *redis.Client
 	dreamCfg         memoryusecase.DreamConfig
 }
@@ -213,6 +215,7 @@ func NewService(
 		WorkflowCaller:          s,
 		InlineAgentCaller:       s,
 		Profiles:                s,
+		RuleSets:                s,
 		Audits:                  audits,
 		Teams:                   teams,
 		Sandbox:                 sandbox.NewDockerRunner(),
@@ -242,6 +245,11 @@ func (s *Service) ConfigureDream(queue queueinfra.JobQueue, redisClient *redis.C
 	s.dreamQueue = queue
 	s.redisClient = redisClient
 	s.dreamCfg = dreamCfg
+}
+
+func (s *Service) ConfigureRuleSets(repository workflow.RuleSetRepository, jobQueue queueinfra.JobQueue) {
+	s.ruleSets = repository
+	s.ruleCompileQueue = jobQueue
 }
 
 func (s *Service) publishDream(ctx context.Context, ownerID, conversationID int64) {
@@ -304,6 +312,8 @@ type UpdateWorkflowProfileRequest struct {
 	ToolPolicyJSON              *json.RawMessage `json:"tool_policy_json"`
 	MemoryPolicyJSON            *json.RawMessage `json:"memory_policy_json"`
 	ContextPolicyJSON           *json.RawMessage `json:"context_policy_json"`
+	RuleCompilerProviderID      *int64           `json:"rule_compiler_provider_id"`
+	RuleCompilerModel           *string          `json:"rule_compiler_model"`
 	RiskLevel                   *string          `json:"risk_level"`
 	Mode                        *string          `json:"mode"`
 }
@@ -546,7 +556,20 @@ func (s *Service) UpdateWorkflowProfile(ctx context.Context, ownerID, workflowID
 		if err := validateContextPolicyRules(contextPolicy); err != nil {
 			return nil, err
 		}
+		if profile.ActiveRuleSetID != nil && contextPolicyRuleCount(contextPolicy) > 0 {
+			return nil, fmt.Errorf("%w: legacy context_policy_json.rules cannot be updated after a versioned rule set is active", workflow.ErrRuleSetConflict)
+		}
 		profile.ContextPolicyJSON = contextPolicy
+	}
+	if req.RuleCompilerProviderID != nil {
+		if *req.RuleCompilerProviderID > 0 {
+			profile.RuleCompilerProviderID = req.RuleCompilerProviderID
+		} else {
+			profile.RuleCompilerProviderID = nil
+		}
+	}
+	if req.RuleCompilerModel != nil {
+		profile.RuleCompilerModel = strings.TrimSpace(*req.RuleCompilerModel)
 	}
 	if req.RiskLevel != nil {
 		risk := strings.TrimSpace(*req.RiskLevel)
@@ -767,6 +790,13 @@ func (s *Service) CallInlineAgent(ctx context.Context, req toolruntime.InlineAge
 	if parent.WorkflowID != req.CallerWorkflowID || parent.CallDepth != req.CallDepth {
 		return nil, fmt.Errorf("%w: inline agent parent run context does not match", agenterrors.ErrForbidden)
 	}
+	var pinnedRules *rules.CompiledRuleSet
+	if parent.RuleSetID != nil {
+		pinnedRules, err = s.loadPinnedRuleSet(ctx, req.OwnerID, req.CallerWorkflowID, *parent.RuleSetID)
+		if err != nil {
+			return nil, err
+		}
+	}
 	definitionJSON, err := json.Marshal(req.Definition)
 	if err != nil {
 		return nil, err
@@ -781,14 +811,14 @@ func (s *Service) CallInlineAgent(ctx context.Context, req toolruntime.InlineAge
 	callChain := normalizeWorkflowCallChain(req.WorkflowCallChain, req.CallerWorkflowID)
 	callChainJSON, _ := json.Marshal(callChain)
 	now := time.Now().UTC()
-	run := &workflow.Run{OwnerID: req.OwnerID, WorkflowID: req.CallerWorkflowID, FlowVersionID: parent.FlowVersionID, ConversationID: req.ConversationID, ParentRunID: &req.ParentRunID, CallerNodeID: req.CallerNodeID, CallDepth: req.CallDepth + 1, CallChainJSON: callChainJSON, RunKind: workflow.RunKindInlineAgent, DefinitionJSON: definitionJSON, DefinitionHash: hex.EncodeToString(definitionHash[:]), Status: workflow.RunStatusRunning, InputJSON: inputJSON, StartedAt: now}
+	run := &workflow.Run{OwnerID: req.OwnerID, WorkflowID: req.CallerWorkflowID, FlowVersionID: parent.FlowVersionID, RuleSetID: parent.RuleSetID, RuleSetVersion: parent.RuleSetVersion, CompiledRuleHash: parent.CompiledRuleHash, ConversationID: req.ConversationID, ParentRunID: &req.ParentRunID, CallerNodeID: req.CallerNodeID, CallDepth: req.CallDepth + 1, CallChainJSON: callChainJSON, RunKind: workflow.RunKindInlineAgent, DefinitionJSON: definitionJSON, DefinitionHash: hex.EncodeToString(definitionHash[:]), Status: workflow.RunStatusRunning, InputJSON: inputJSON, StartedAt: now}
 	if err := s.runs.Create(ctx, run); err != nil {
 		return nil, err
 	}
 	execCtx, cancel := context.WithCancel(ctx)
 	s.runCancels.Register(run.ID, cancel)
 	defer func() { cancel(); s.runCancels.Unregister(run.ID) }()
-	rc := &engine.RunContext{OwnerID: req.OwnerID, WorkflowID: req.CallerWorkflowID, FlowVersionID: parent.FlowVersionID, RunID: run.ID, ParentRunID: &req.ParentRunID, CallDepth: req.CallDepth + 1, WorkflowCallChain: callChain, ConversationID: req.ConversationID, AgentSteps: s, Input: input, Events: &eventEmitter{repo: s.events, ownerID: req.OwnerID, runID: run.ID}}
+	rc := &engine.RunContext{OwnerID: req.OwnerID, WorkflowID: req.CallerWorkflowID, FlowVersionID: parent.FlowVersionID, RuleSetID: ruleSetIDValue(parent.RuleSetID), RuleSetVersion: parent.RuleSetVersion, CompiledRuleHash: parent.CompiledRuleHash, CompiledRules: pinnedRules, RunID: run.ID, ParentRunID: &req.ParentRunID, CallDepth: req.CallDepth + 1, WorkflowCallChain: callChain, ConversationID: req.ConversationID, AgentSteps: s, Input: input, Events: &eventEmitter{repo: s.events, ownerID: req.OwnerID, runID: run.ID}}
 	output, execErr := s.executor.Execute(execCtx, rc, dsl)
 	finished := time.Now().UTC()
 	run.FinishedAt = &finished
@@ -1130,19 +1160,34 @@ func (s *Service) run(
 	}
 	callChainJSON, _ := json.Marshal(callChain)
 	now := time.Now().UTC()
+	var activeRuleSetID *int64
+	var activeRuleSet *rules.CompiledRuleSet
+	var activeRuleSetVersion, activeCompiledHash string
+	if active, activeErr := s.LoadActiveRuleSet(ctx, ownerID, workflowID); activeErr != nil {
+		return nil, nil, activeErr
+	} else if active != nil {
+		activeRuleSet = active
+		id := active.ID
+		activeRuleSetID = &id
+		activeRuleSetVersion = active.Version
+		activeCompiledHash = active.CompiledHash
+	}
 	run := &workflow.Run{
-		OwnerID:        ownerID,
-		WorkflowID:     workflowID,
-		FlowVersionID:  version.ID,
-		RunKind:        workflow.RunKindWorkflow,
-		ConversationID: req.ConversationID,
-		ParentRunID:    opts.ParentRunID,
-		CallerNodeID:   opts.CallerNodeID,
-		CallDepth:      opts.CallDepth,
-		CallChainJSON:  callChainJSON,
-		Status:         workflow.RunStatusRunning,
-		InputJSON:      inputJSON,
-		StartedAt:      now,
+		OwnerID:          ownerID,
+		WorkflowID:       workflowID,
+		FlowVersionID:    version.ID,
+		RuleSetID:        activeRuleSetID,
+		RuleSetVersion:   activeRuleSetVersion,
+		CompiledRuleHash: activeCompiledHash,
+		RunKind:          workflow.RunKindWorkflow,
+		ConversationID:   req.ConversationID,
+		ParentRunID:      opts.ParentRunID,
+		CallerNodeID:     opts.CallerNodeID,
+		CallDepth:        opts.CallDepth,
+		CallChainJSON:    callChainJSON,
+		Status:           workflow.RunStatusRunning,
+		InputJSON:        inputJSON,
+		StartedAt:        now,
 	}
 	if err := s.runs.Create(ctx, run); err != nil {
 		return nil, nil, err
@@ -1160,6 +1205,10 @@ func (s *Service) run(
 		OwnerID:           ownerID,
 		WorkflowID:        workflowID,
 		FlowVersionID:     version.ID,
+		RuleSetID:         ruleSetIDValue(activeRuleSetID),
+		RuleSetVersion:    activeRuleSetVersion,
+		CompiledRuleHash:  activeCompiledHash,
+		CompiledRules:     activeRuleSet,
 		RunID:             run.ID,
 		ParentRunID:       opts.ParentRunID,
 		CallDepth:         opts.CallDepth,
@@ -1381,6 +1430,16 @@ func validateContextPolicyRules(raw json.RawMessage) error {
 		return fmt.Errorf("%w: context_policy_json rules are invalid: %v", agenterrors.ErrInvalidInput, err)
 	}
 	return nil
+}
+
+func contextPolicyRuleCount(raw json.RawMessage) int {
+	var policy struct {
+		Rules []json.RawMessage `json:"rules"`
+	}
+	if json.Unmarshal(raw, &policy) != nil {
+		return 0
+	}
+	return len(policy.Rules)
 }
 
 func failedEvalResult(

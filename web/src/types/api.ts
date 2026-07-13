@@ -536,8 +536,99 @@ export interface WorkflowProfile {
   tool_policy_json?: unknown;
   memory_policy_json?: unknown;
   context_policy_json?: unknown;
+  active_rule_set_id?: number | null;
+  rule_compiler_provider_id?: number | null;
+  rule_compiler_model?: string;
   risk_level?: 'low' | 'medium' | 'high';
   mode?: 'react' | 'plan_execute';
+  created_at: string;
+  updated_at: string;
+}
+
+export type RuleStrength = 'mandatory' | 'optional';
+
+export interface RuleActivation {
+  mode_any?: string[];
+  mode_all?: string[];
+  risk_any?: string[];
+  tool_any?: string[];
+  tool_all?: string[];
+  tag_any?: string[];
+  tag_all?: string[];
+  keywords_any?: string[];
+  keywords_all?: string[];
+  exclude_tools?: string[];
+  exclude_tags?: string[];
+  exclude_modes?: string[];
+  exclude_risk?: string[];
+  min_priority?: number;
+  always?: boolean;
+}
+
+export interface RulePolicyBinding {
+  policy_key: 'tool.dangerous_arguments.deny' | 'tool.risk.require_approval' | 'tool.host.allowlist' | 'tool.execution_limits';
+  params?: Record<string, unknown>;
+}
+
+export interface WorkflowRule {
+  id: string;
+  name?: string;
+  content: string;
+  strength: RuleStrength;
+  activation?: RuleActivation;
+  priority?: number;
+  safety_critical?: boolean;
+  manual_depends_on?: string[];
+  policy_binding?: RulePolicyBinding;
+  token_cost?: number;
+  topological_order?: number;
+  content_hash?: string;
+}
+
+export interface WorkflowRuleEdge {
+  id: number;
+  rule_id: string;
+  depends_on: string;
+  source: 'manual' | 'llm';
+  confidence: number;
+  reason?: string;
+  decision: 'pending' | 'accepted' | 'rejected';
+}
+
+export interface WorkflowRuleSet {
+  id: number;
+  owner_id: number;
+  workflow_id: number;
+  version_no: number;
+  status: 'draft' | 'queued' | 'compiling' | 'review_required' | 'ready' | 'published' | 'superseded' | 'failed';
+  revision: number;
+  source_hash: string;
+  compiled_hash: string;
+  compiler_provider_id?: number | null;
+  compiler_model?: string;
+  compiler_prompt_version?: string;
+  token_estimator_version?: string;
+  rollback_of_rule_set_id?: number | null;
+  published_by?: number | null;
+  published_at?: string | null;
+  rules?: WorkflowRule[];
+  edges?: WorkflowRuleEdge[];
+  compile_error?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RuleCompileJob {
+  id: number;
+  owner_id: number;
+  workflow_id: number;
+  rule_set_id: number;
+  revision: number;
+  status: 'queued' | 'compiling' | 'completed' | 'failed' | 'stale';
+  attempts: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  error_message?: string;
   created_at: string;
   updated_at: string;
 }
@@ -582,6 +673,8 @@ export type UpdateWorkflowProfileRequest = Partial<Pick<
   | 'tool_policy_json'
   | 'memory_policy_json'
   | 'context_policy_json'
+  | 'rule_compiler_provider_id'
+  | 'rule_compiler_model'
   | 'risk_level'
   | 'mode'
 >>;
@@ -715,6 +808,9 @@ export interface Run {
   owner_id: number;
   workflow_id: number;
   flow_version_id: number;
+  rule_set_id?: number | null;
+  rule_set_version?: string;
+  compiled_rule_hash?: string;
   conversation_id: number | null;
   parent_run_id?: number | null;
   caller_node_id?: string;

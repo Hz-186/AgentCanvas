@@ -63,6 +63,7 @@ export interface RequestOptions {
   // multipart 时传 FormData，并跳过 JSON 序列化
   formData?: FormData;
   query?: Record<string, string | number | undefined>;
+  headers?: Record<string, string>;
 }
 
 function buildUrl(path: string, query?: RequestOptions['query']): string {
@@ -77,7 +78,7 @@ function buildUrl(path: string, query?: RequestOptions['query']): string {
 }
 
 async function rawRequest(path: string, opts: RequestOptions, retry: boolean): Promise<Response> {
-  const headers: Record<string, string> = {};
+  const headers: Record<string, string> = { ...opts.headers };
   const auth = opts.auth !== false;
   if (auth) {
     const token = tokenStorage.getAccess();
@@ -134,7 +135,7 @@ export async function request<T>(path: string, opts: RequestOptions = {}): Promi
 
 export const api = {
   get: <T>(path: string, query?: RequestOptions['query']) => request<T>(path, { query }),
-  post: <T>(path: string, body?: unknown) => request<T>(path, { method: 'POST', body }),
+  post: <T>(path: string, body?: unknown, options?: Pick<RequestOptions, 'headers' | 'signal'>) => request<T>(path, { method: 'POST', body, ...options }),
   patch: <T>(path: string, body?: unknown) => request<T>(path, { method: 'PATCH', body }),
   delete: <T>(path: string) => request<T>(path, { method: 'DELETE' }),
   upload: <T>(path: string, formData: FormData) =>

@@ -107,6 +107,7 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 	usageRepo := mysqlinfra.NewUsageRepository(db)
 	workflowRepo := cacheinfra.NewWorkflowRepository(mysqlinfra.NewWorkflowRepository(db), resourceInvalidator)
 	workflowProfileRepo := mysqlinfra.NewWorkflowProfileRepository(db)
+	workflowRuleSetRepo := mysqlinfra.NewWorkflowRuleSetRepository(db)
 	flowVersionRepo := mysqlinfra.NewFlowVersionRepository(db)
 	runRepo := mysqlinfra.NewRunRepository(db)
 	runEventRepo := mysqlinfra.NewRunEventRepository(db)
@@ -273,6 +274,7 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 		mcpRepo,
 		toolInvocationRepo,
 		providerRepo,
+		conversationRepo,
 		messageRepo,
 		retrievalService,
 		chatClient,
@@ -284,6 +286,7 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 		return nil, fmt.Errorf("init workflow service: %w", err)
 	}
 	workflowService.ConfigureDream(jobQueue, redisClient, dreamCfg)
+	workflowService.ConfigureRuleSets(workflowRuleSetRepo, jobQueue)
 
 	healthHandler := handler.NewHealthHandler(db, redisClient, minioClient, esClient, cfg.MinIO.Bucket)
 	authHandler := handler.NewAuthHandler(authService)

@@ -9,6 +9,7 @@ func DefaultEnterpriseRegistry() *Registry {
 		Rule{
 			ID:       "safety.output.boundary",
 			Name:     "Output Boundary",
+			Strength: RuleMandatory,
 			Level:    LevelL0Safety,
 			Priority: 100,
 			Content:  "Reject impossible claims, keep tool claims grounded in observed outputs, and do not fabricate execution results or external facts.",
@@ -19,6 +20,7 @@ func DefaultEnterpriseRegistry() *Registry {
 		Rule{
 			ID:       "core.task.completion",
 			Name:     "Task Completion",
+			Strength: RuleMandatory,
 			Level:    LevelL1Core,
 			Priority: 90,
 			Content:  "Answer the user's task directly, preserve critical constraints, and prefer concise execution over speculative discussion.",
@@ -29,6 +31,7 @@ func DefaultEnterpriseRegistry() *Registry {
 		Rule{
 			ID:       "scenario.rag.citations",
 			Name:     "RAG Citations",
+			Strength: RuleOptional,
 			Level:    LevelL2Scenario,
 			Priority: 70,
 			Content:  "When retrieval content is present, cite or clearly attribute retrieved evidence and separate retrieved facts from reasoning.",
@@ -41,6 +44,7 @@ func DefaultEnterpriseRegistry() *Registry {
 		Rule{
 			ID:       "scenario.code.change_verification",
 			Name:     "Code Verification",
+			Strength: RuleOptional,
 			Level:    LevelL2Scenario,
 			Priority: 80,
 			Content:  "For code changes, keep edits minimal, verify behavior with focused tests or checks, and report what was validated versus what was not.",
@@ -53,6 +57,7 @@ func DefaultEnterpriseRegistry() *Registry {
 		Rule{
 			ID:       "scenario.review.risk_first",
 			Name:     "Review Risk First",
+			Strength: RuleOptional,
 			Level:    LevelL2Scenario,
 			Priority: 75,
 			Content:  "For review tasks, lead with concrete findings, prioritize regressions and missing tests, and keep summaries secondary.",
@@ -64,6 +69,7 @@ func DefaultEnterpriseRegistry() *Registry {
 		Rule{
 			ID:       "tool.high_risk.approval",
 			Name:     "High Risk Approval",
+			Strength: RuleOptional,
 			Level:    LevelL3Tool,
 			Priority: 85,
 			Content:  "For high-risk or side-effecting tools, confirm policy and explain operational impact before relying on the tool result in the final answer.",
@@ -75,6 +81,7 @@ func DefaultEnterpriseRegistry() *Registry {
 		Rule{
 			ID:       "tool.plan_execute.checkpoints",
 			Name:     "Plan Execute Checkpoints",
+			Strength: RuleOptional,
 			Level:    LevelL3Tool,
 			Priority: 65,
 			Content:  "In plan-execute mode, keep steps explicit, revise the plan after failures, and avoid drifting into hidden execution state.",
@@ -85,6 +92,7 @@ func DefaultEnterpriseRegistry() *Registry {
 		Rule{
 			ID:       "ephemeral.long_context.compaction",
 			Name:     "Long Context Compaction",
+			Strength: RuleOptional,
 			Level:    LevelL4Ephemeral,
 			Priority: 50,
 			Content:  "When conversation context is long or repetitive, prefer summarized state over replaying every prior detail unless a rare signal would be lost.",
@@ -118,10 +126,25 @@ func ResolveDynamicForAgent(systemPrompt, task, mode, risk string, toolNames, ta
 }
 
 func ResolveDynamicWithRules(systemPrompt, task, mode, risk string, toolNames, tags []string, budget int, custom []Rule, audit *AuditStore, policy AuditPolicy) ([]Rule, Trace) {
-	return resolveForAgent(systemPrompt, task, mode, risk, toolNames, tags, budget, map[RuleLevel]bool{
-		LevelL0Safety: true,
-		LevelL1Core:   true,
-	}, custom, audit, policy)
+	compiled, err := CompileRuntimeRuleSet(custom)
+	if err != nil {
+		return nil, Trace{TokenBudget: budget, OptionalBudget: budget, SelectionStrategy: "dag_compile_failed:" + err.Error()}
+	}
+	return SelectOptionalRules(compiled, LoadContext{
+		Mode:         strings.TrimSpace(mode),
+		RiskLevel:    strings.TrimSpace(risk),
+		ToolNames:    append([]string(nil), toolNames...),
+		Tags:         dedupeStrings(tags),
+		Task:         strings.TrimSpace(task),
+		Conversation: strings.TrimSpace(systemPrompt),
+		TokenBudget:  budget,
+		ScoreCutoff:  110,
+	}, DefaultOptimizerExpansions)
+}
+
+func CompileRuntimeRuleSet(custom []Rule) (*CompiledRuleSet, error) {
+	registry := registryForAgent(custom)
+	return CompileRuleSet(registry.Rules(), CompileOptions{Version: "runtime"})
 }
 
 // ResolvePersistentForAgent returns only the permanent L0/L1 rules that are

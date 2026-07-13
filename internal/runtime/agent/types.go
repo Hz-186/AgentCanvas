@@ -64,6 +64,9 @@ type RunRequest struct {
 	RuleTags                  []string
 	RuleRiskLevel             string
 	RuleSetVersion            string
+	RuleSetID                 int64
+	CompiledRuleHash          string
+	CompiledRules             *rules.CompiledRuleSet
 	CustomRules               []rules.Rule
 	RuleTrace                 rules.Trace
 	ContextBlocks             []ContextBlock
@@ -123,15 +126,18 @@ type Approval struct {
 }
 
 type Checkpoint struct {
-	Messages        []llm.ChatMessage `json:"messages"`
-	MessagesSummary string            `json:"messages_summary"`
-	PendingToolCall *llm.ToolCall     `json:"pending_tool_call,omitempty"`
-	Context         ContextTrace      `json:"context"`
-	ToolPolicy      ToolPolicy        `json:"tool_policy"`
-	ToolNames       []string          `json:"tool_names"`
-	Metadata        map[string]any    `json:"metadata,omitempty"`
-	RuleSetVersion  string            `json:"rule_set_version,omitempty"`
-	CustomRules     []rules.Rule      `json:"custom_rules,omitempty"`
+	Messages        []llm.ChatMessage      `json:"messages"`
+	MessagesSummary string                 `json:"messages_summary"`
+	PendingToolCall *llm.ToolCall          `json:"pending_tool_call,omitempty"`
+	Context         ContextTrace           `json:"context"`
+	ToolPolicy      ToolPolicy             `json:"tool_policy"`
+	ToolNames       []string               `json:"tool_names"`
+	Metadata        map[string]any         `json:"metadata,omitempty"`
+	RuleSetVersion  string                 `json:"rule_set_version,omitempty"`
+	RuleSetID       int64                  `json:"rule_set_id,omitempty"`
+	CompiledHash    string                 `json:"compiled_hash,omitempty"`
+	CompiledRules   *rules.CompiledRuleSet `json:"compiled_rules,omitempty"`
+	CustomRules     []rules.Rule           `json:"custom_rules,omitempty"`
 }
 
 type ContextBlock struct {
@@ -142,27 +148,32 @@ type ContextBlock struct {
 }
 
 type ContextTrace struct {
-	MaxChars              int                 `json:"max_chars,omitempty"`
-	MaxInputTokens        int                 `json:"max_input_tokens,omitempty"`
-	UsedChars             int                 `json:"used_chars,omitempty"`
-	UsedTokens            int                 `json:"used_tokens,omitempty"`
-	EstimatedTokens       int                 `json:"estimated_tokens,omitempty"`
-	SavedTokens           int                 `json:"saved_tokens,omitempty"`
-	TokenAudit            TokenAudit          `json:"token_audit,omitempty"`
-	RuleTrace             rules.Trace         `json:"rule_trace,omitempty"`
-	Included              []string            `json:"included,omitempty"`
-	Omitted               []string            `json:"omitted,omitempty"`
-	Truncated             []string            `json:"truncated,omitempty"`
-	Compressed            []string            `json:"compressed,omitempty"`
-	Strategy              string              `json:"strategy,omitempty"`
-	Blocks                []ContextBlockTrace `json:"blocks,omitempty"`
-	RuleRounds            []RuleRoundTrace    `json:"rule_rounds,omitempty"`
-	RuleBudget            RuleBudget          `json:"rule_budget,omitempty"`
-	RuleSetVersion        string              `json:"rule_set_version,omitempty"`
-	CoreOverflow          bool                `json:"core_overflow,omitempty"`
-	EstimatedPromptTokens int                 `json:"estimated_prompt_tokens,omitempty"`
-	ProviderPromptTokens  int                 `json:"provider_prompt_tokens,omitempty"`
-	TokenEstimationError  int                 `json:"token_estimation_error,omitempty"`
+	MaxChars               int                 `json:"max_chars,omitempty"`
+	MaxInputTokens         int                 `json:"max_input_tokens,omitempty"`
+	UsedChars              int                 `json:"used_chars,omitempty"`
+	UsedTokens             int                 `json:"used_tokens,omitempty"`
+	EstimatedTokens        int                 `json:"estimated_tokens,omitempty"`
+	SavedTokens            int                 `json:"saved_tokens,omitempty"`
+	TokenAudit             TokenAudit          `json:"token_audit,omitempty"`
+	RuleTrace              rules.Trace         `json:"rule_trace,omitempty"`
+	Included               []string            `json:"included,omitempty"`
+	Omitted                []string            `json:"omitted,omitempty"`
+	Truncated              []string            `json:"truncated,omitempty"`
+	Compressed             []string            `json:"compressed,omitempty"`
+	Strategy               string              `json:"strategy,omitempty"`
+	Blocks                 []ContextBlockTrace `json:"blocks,omitempty"`
+	RuleRounds             []RuleRoundTrace    `json:"rule_rounds,omitempty"`
+	RuleBudget             RuleBudget          `json:"rule_budget,omitempty"`
+	RuleSetVersion         string              `json:"rule_set_version,omitempty"`
+	RuleSetID              int64               `json:"rule_set_id,omitempty"`
+	CompiledHash           string              `json:"compiled_hash,omitempty"`
+	CoreOverflow           bool                `json:"core_overflow,omitempty"`
+	MandatoryTokens        int                 `json:"mandatory_tokens,omitempty"`
+	MandatoryBudgetTokens  int                 `json:"mandatory_budget_tokens,omitempty"`
+	MandatoryDeficitTokens int                 `json:"mandatory_deficit_tokens,omitempty"`
+	EstimatedPromptTokens  int                 `json:"estimated_prompt_tokens,omitempty"`
+	ProviderPromptTokens   int                 `json:"provider_prompt_tokens,omitempty"`
+	TokenEstimationError   int                 `json:"token_estimation_error,omitempty"`
 }
 
 type RuleRoundTrace struct {

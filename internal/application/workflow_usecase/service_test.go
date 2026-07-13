@@ -255,6 +255,41 @@ func TestUpdateAgentProfileValidatesLimits(t *testing.T) {
 	}
 }
 
+func TestUpdateWorkflowProfileRejectsLegacyRulesAfterRuleSetActivation(t *testing.T) {
+	activeID := int64(99)
+	profiles := &fakeProfileRepo{items: map[int64]*workflow.Profile{
+		20: {ID: 1, OwnerID: 1, WorkflowID: 20, Role: "Agent", Goal: "Work", MaxIterations: 10, MaxExecutionTimeMS: 120000, ActiveRuleSetID: &activeID},
+	}}
+	service := &Service{
+		workflows: &fakeAgentRepo{items: map[int64]*workflow.Workflow{20: {ID: 20, OwnerID: 1, Name: "Workflow", Status: workflow.StatusActive}}},
+		profiles:  profiles,
+	}
+	legacy := rawJSON(`{"rules":[{"id":"tenant.legacy","content":"legacy","strength":"optional"}]}`)
+	_, err := service.UpdateWorkflowProfile(context.Background(), 1, 20, UpdateWorkflowProfileRequest{ContextPolicyJSON: &legacy})
+	if !errors.Is(err, workflow.ErrRuleSetConflict) {
+		t.Fatalf("expected legacy rule conflict, got %v", err)
+	}
+}
+
+func TestUpdateWorkflowProfileStoresDedicatedCompilerSelection(t *testing.T) {
+	profiles := &fakeProfileRepo{items: map[int64]*workflow.Profile{
+		20: {ID: 1, OwnerID: 1, WorkflowID: 20, Role: "Agent", Goal: "Work", MaxIterations: 10, MaxExecutionTimeMS: 120000},
+	}}
+	service := &Service{
+		workflows: &fakeAgentRepo{items: map[int64]*workflow.Workflow{20: {ID: 20, OwnerID: 1, Name: "Workflow", Status: workflow.StatusActive}}},
+		profiles:  profiles,
+	}
+	providerID := int64(7)
+	model := "cheap-compiler"
+	updated, err := service.UpdateWorkflowProfile(context.Background(), 1, 20, UpdateWorkflowProfileRequest{RuleCompilerProviderID: &providerID, RuleCompilerModel: &model})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.RuleCompilerProviderID == nil || *updated.RuleCompilerProviderID != providerID || updated.RuleCompilerModel != model {
+		t.Fatalf("unexpected compiler selection: %+v", updated)
+	}
+}
+
 func TestCreateEvalDatasetPersistsDataset(t *testing.T) {
 	evals := &fakeEvalRepo{}
 	service := &Service{

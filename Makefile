@@ -1,4 +1,4 @@
-.PHONY: dev dev-v1 dev-v2 run worker build build-web typecheck-web test-web docker-up docker-down tidy test migrate lint fmt verify clean
+.PHONY: dev dev-v1 dev-v2 run worker backfill-rule-sets build build-web typecheck-web test-web docker-up docker-down tidy test migrate lint fmt verify clean
 
 dev:
 	./scripts/dev.sh
@@ -27,6 +27,9 @@ test-web:
 worker: migrate
 	go run ./cmd/worker
 
+backfill-rule-sets: migrate
+	go run ./cmd/backfill-rule-sets
+
 docker-up:
 	docker compose -f deployments/docker-compose.yml up -d
 
@@ -54,7 +57,7 @@ verify:
 verify-tables:
 	@migrations/*.up.sql 2>/dev/null; \
 	declared=$$(grep -h 'CREATE TABLE IF NOT EXISTS ' migrations/*.up.sql 2>/dev/null | sed 's/CREATE TABLE IF NOT EXISTS //' | sed 's/ (.*//' | sort -u); \
-	codetables=$$(grep -rh 'TableName()' internal/ | grep -oP '"([^"]+)"' | tr -d '"' | sort -u); \
+	codetables=$$(grep -rh 'TableName()' internal/ | sed -n 's/.*return "\([^"]*\)".*/\1/p' | sort -u); \
 	unused=""; \
 	for table in $$declared; do \
 		matched=false; \

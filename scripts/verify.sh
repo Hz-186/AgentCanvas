@@ -9,7 +9,7 @@ check_migration_tables() {
 
     declared_tables=$(grep -h 'CREATE TABLE IF NOT EXISTS ' migrations/*.up.sql 2>/dev/null | sed 's/CREATE TABLE IF NOT EXISTS //' | sed 's/ (.*//' | sort -u)
 
-    code_tables=$(grep -rh 'TableName()' internal/ | grep -oP '"([^"]+)"' | tr -d '"' | sort -u)
+    code_tables=$(grep -rh 'TableName()' internal/ | sed -n 's/.*return "\([^"]*\)".*/\1/p' | sort -u)
 
     unused=()
 
@@ -45,10 +45,11 @@ check_migration_tables
 echo "==> go vet ./..."
 go vet ./...
 
-echo "==> go build check (api + worker + migrate)..."
+echo "==> go build check (api + worker + migrate + rule backfill)..."
 go build -o /dev/null ./cmd/api
 go build -o /dev/null ./cmd/worker
 go build -o /dev/null ./cmd/migrate
+go build -o /dev/null ./cmd/backfill-rule-sets
 
 echo ""
 echo "All validation checks passed."

@@ -36,6 +36,9 @@ type Profile struct {
 	ToolPolicyJSON              json.RawMessage `json:"tool_policy_json" gorm:"column:tool_policy_json"`
 	MemoryPolicyJSON            json.RawMessage `json:"memory_policy_json" gorm:"column:memory_policy_json"`
 	ContextPolicyJSON           json.RawMessage `json:"context_policy_json" gorm:"column:context_policy_json"`
+	ActiveRuleSetID             *int64          `json:"active_rule_set_id" gorm:"column:active_rule_set_id"`
+	RuleCompilerProviderID      *int64          `json:"rule_compiler_provider_id" gorm:"column:rule_compiler_provider_id"`
+	RuleCompilerModel           string          `json:"rule_compiler_model" gorm:"column:rule_compiler_model"`
 	RiskLevel                   string          `json:"risk_level" gorm:"column:risk_level"`
 	Mode                        string          `json:"mode" gorm:"column:mode"`
 	CreatedAt                   time.Time       `json:"created_at" gorm:"column:created_at"`

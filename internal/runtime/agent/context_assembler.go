@@ -117,9 +117,28 @@ func (a ContextAssembler) Build(req RunRequest) ([]llm.ChatMessage, ContextTrace
 			Pinned:        block.Pinned,
 			OriginalChars: originalChars,
 		}
+		if isCoreRuleBlock(name) {
+			available := maxTokens - usedTokens
+			if available < 0 {
+				available = 0
+			}
+			if trace.MandatoryTokens == 0 || available < trace.MandatoryBudgetTokens {
+				trace.MandatoryBudgetTokens = available
+			}
+			trace.MandatoryTokens += originalTokens
+		}
 		if used+len(content) > maxChars || usedTokens+originalTokens > maxTokens {
 			if isCoreRuleBlock(name) {
 				trace.CoreOverflow = true
+				deficit := usedTokens + originalTokens - maxTokens
+				if charOverflow := used + len(content) - maxChars; charOverflow > 0 {
+					if charDeficit := estimateContextTokens(strings.Repeat("x", charOverflow)); charDeficit > deficit {
+						deficit = charDeficit
+					}
+				}
+				if deficit > trace.MandatoryDeficitTokens {
+					trace.MandatoryDeficitTokens = deficit
+				}
 				blockTrace.Status = "core_overflow"
 				trace.Blocks = append(trace.Blocks, blockTrace)
 				continue

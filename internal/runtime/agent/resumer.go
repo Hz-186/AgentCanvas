@@ -2,9 +2,11 @@ package agent
 
 import (
 	"encoding/json"
+	"fmt"
 
 	"agentcanvas/internal/domain/conversation"
 	"agentcanvas/internal/infrastructure/llm"
+	"agentcanvas/internal/observability"
 	"agentcanvas/internal/runtime/harness/rules"
 )
 
@@ -50,6 +52,10 @@ func BuildResumeRequest(req ResumeRequest) (*RunRequest, error) {
 	if len(contextBlocks) == 0 {
 		contextBlocks = nil
 	}
+	compiledRules, err := checkpointCompiledRules(req.Checkpoint, req.CompiledRules)
+	if err != nil {
+		return nil, err
+	}
 	return &RunRequest{
 		OwnerID:                   req.OwnerID,
 		WorkflowID:                req.WorkflowID,
@@ -79,6 +85,9 @@ func BuildResumeRequest(req ResumeRequest) (*RunRequest, error) {
 		RuleTags:                  append([]string(nil), req.RuleTags...),
 		RuleRiskLevel:             req.RuleRiskLevel,
 		RuleSetVersion:            firstNonEmpty(req.Checkpoint.RuleSetVersion, req.RuleSetVersion),
+		RuleSetID:                 firstPositive(req.Checkpoint.RuleSetID, req.RuleSetID),
+		CompiledRuleHash:          firstNonEmpty(req.Checkpoint.CompiledHash, req.CompiledRuleHash),
+		CompiledRules:             compiledRules,
 		CustomRules:               checkpointRules(req.Checkpoint, req.CustomRules),
 		RuleTrace:                 req.RuleTrace,
 		ContextBlocks:             contextBlocks,
@@ -90,6 +99,33 @@ func BuildResumeRequest(req ResumeRequest) (*RunRequest, error) {
 		ResumeToolCalls:           toolCalls,
 		ResumeApprovedToolCallIDs: approvedToolCallIDs,
 	}, nil
+}
+
+func checkpointCompiledRules(checkpoint *Checkpoint, fallback *rules.CompiledRuleSet) (*rules.CompiledRuleSet, error) {
+	if checkpoint != nil && checkpoint.CompiledRules != nil {
+		if checkpoint.RuleSetID > 0 && checkpoint.CompiledRules.ID != checkpoint.RuleSetID {
+			observability.RuleSystemMetrics.RecordSnapshotIntegrityFailure()
+			return nil, fmt.Errorf("checkpoint compiled rule set id mismatch")
+		}
+		if checkpoint.RuleSetVersion != "" && checkpoint.CompiledRules.Version != checkpoint.RuleSetVersion {
+			observability.RuleSystemMetrics.RecordSnapshotIntegrityFailure()
+			return nil, fmt.Errorf("checkpoint compiled rule set version mismatch")
+		}
+		if err := rules.VerifyCompiledHash(checkpoint.CompiledRules); err != nil {
+			observability.RuleSystemMetrics.RecordSnapshotIntegrityFailure()
+			return nil, fmt.Errorf("checkpoint compiled rule integrity check failed: %w", err)
+		}
+		checkpoint.CompiledRules.Prepare()
+		return checkpoint.CompiledRules, nil
+	}
+	if fallback != nil {
+		if err := rules.VerifyCompiledHash(fallback); err != nil {
+			observability.RuleSystemMetrics.RecordSnapshotIntegrityFailure()
+			return nil, fmt.Errorf("fallback compiled rule integrity check failed: %w", err)
+		}
+		fallback.Prepare()
+	}
+	return fallback, nil
 }
 
 func checkpointRules(checkpoint *Checkpoint, fallback []rules.Rule) []rules.Rule {
@@ -106,6 +142,15 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func firstPositive(values ...int64) int64 {
+	for _, value := range values {
+		if value > 0 {
+			return value
+		}
+	}
+	return 0
 }
 
 func metadataStringSlice(value any) []string {
@@ -138,6 +183,9 @@ func CheckpointFromJSON(data json.RawMessage) (*Checkpoint, error) {
 	var cp Checkpoint
 	if err := json.Unmarshal(data, &cp); err != nil {
 		return nil, err
+	}
+	if cp.CompiledRules != nil {
+		cp.CompiledRules.Prepare()
 	}
 	return &cp, nil
 }

@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"agentcanvas/internal/runtime/harness/rules"
+	"agentcanvas/internal/runtime/toolruntime"
 )
 
 func TestPolicyPreToolUseHookBlocksDangerousCommands(t *testing.T) {
@@ -49,6 +52,58 @@ func TestPolicyPreToolUseHookAllowsNormalCommands(t *testing.T) {
 	}
 	if len(result.Traces) != 1 || result.Traces[0].Decision != "allowed" {
 		t.Fatalf("unexpected traces = %+v", result.Traces)
+	}
+}
+
+func TestPolicyPreToolUseHookAppliesMandatoryRuleBindings(t *testing.T) {
+	result := (PolicyPreToolUseHook{}).BeforeToolUse(context.Background(), PreToolUseRequest{
+		ToolName: "http_request",
+		Metadata: toolruntime.ToolMetadata{RiskLevel: toolruntime.RiskHigh, AllowedHosts: []string{"api.example.com"}},
+		Policy: ToolPolicy{
+			AllowedHosts: []string{"api.example.com", "other.example.com"},
+			RuleBindings: []rules.BoundPolicyBinding{
+				{RuleID: "tenant.approval", PolicyKey: rules.PolicyRiskRequireApproval, Params: json.RawMessage(`{"risk_levels":["high"]}`)},
+				{RuleID: "tenant.hosts", PolicyKey: rules.PolicyHostAllowlist, Params: json.RawMessage(`{"allowed_hosts":["api.example.com"]}`)},
+			},
+		},
+	})
+	if result.Denied != nil || result.Approval == nil {
+		t.Fatalf("expected rule-bound approval without denial, got %+v", result)
+	}
+	found := false
+	for _, trace := range result.Traces {
+		if trace.RuleID == "tenant.approval" && trace.PolicyKey == rules.PolicyRiskRequireApproval {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected rule binding trace, got %+v", result.Traces)
+	}
+}
+
+func TestPolicyPreToolUseHookFailsClosedForUnknownRuntimeBinding(t *testing.T) {
+	result := (PolicyPreToolUseHook{}).BeforeToolUse(context.Background(), PreToolUseRequest{
+		ToolName: "http_request",
+		Policy:   ToolPolicy{RuleBindings: []rules.BoundPolicyBinding{{RuleID: "tenant.bad", PolicyKey: "unknown"}}},
+	})
+	if result.Denied == nil {
+		t.Fatalf("expected unknown binding to fail closed, got %+v", result)
+	}
+}
+
+func TestPolicyPreToolUseHookDenyTakesPriorityOverApproval(t *testing.T) {
+	result := (PolicyPreToolUseHook{}).BeforeToolUse(context.Background(), PreToolUseRequest{
+		ToolName: "http_request",
+		Metadata: toolruntime.ToolMetadata{
+			RiskLevel: toolruntime.RiskHigh, AllowedHosts: []string{"blocked.example.com"},
+		},
+		Policy: ToolPolicy{
+			RequireApprovalForRisk: []string{toolruntime.RiskHigh},
+			AllowedHosts:           []string{"allowed.example.com"},
+		},
+	})
+	if result.Denied == nil || result.Approval != nil {
+		t.Fatalf("deny must take priority over approval, got %+v", result)
 	}
 }
 

@@ -278,7 +278,7 @@ func TestAgentNodeApplyProfileDefaultsInheritsPolicyAndContext(t *testing.T) {
 	}
 }
 
-func TestAgentNodePolicyJSONOverridesProfileDefaults(t *testing.T) {
+func TestAgentNodePolicyJSONCannotLoosenProfileToolPolicy(t *testing.T) {
 	agent := AgentNode{Profiles: fakeAgentProfileLoader{profile: &workflow.Profile{
 		OwnerID:           1,
 		WorkflowID:        2,
@@ -304,8 +304,8 @@ func TestAgentNodePolicyJSONOverridesProfileDefaults(t *testing.T) {
 	if cfg.MaxInputChars != 4000 {
 		t.Fatalf("node context policy should override profile default, got %+v", cfg)
 	}
-	if len(cfg.RequireApprovalForRisk) != 0 || cfg.MaxToolTimeoutMS != 1500 || cfg.MaxToolOutputBytes != 4096 || len(cfg.AllowedHosts) != 1 || cfg.AllowedHosts[0] != "node.example.com" {
-		t.Fatalf("node tool policy should override profile default, got %+v", cfg)
+	if len(cfg.RequireApprovalForRisk) != 1 || cfg.RequireApprovalForRisk[0] != "high" || cfg.MaxToolTimeoutMS != 1500 || cfg.MaxToolOutputBytes != 4096 || !cfg.DenyAllHosts || len(cfg.AllowedHosts) != 0 {
+		t.Fatalf("node tool policy must only tighten profile policy, got %+v", cfg)
 	}
 }
 

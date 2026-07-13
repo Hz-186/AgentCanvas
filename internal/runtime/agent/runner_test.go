@@ -344,6 +344,45 @@ func TestRunnerApprovalResumeExecutesWholeBatchWithoutGrantingSiblings(t *testin
 	}
 }
 
+func TestRunnerApprovalResumeRechecksDenyPolicy(t *testing.T) {
+	high := toolruntime.ToolMetadata{
+		RiskLevel: toolruntime.RiskHigh, AllowedHosts: []string{"api.example.com"},
+	}
+	tool := &fakeRuntimeTool{name: "http_tool", output: "must not execute", metadata: high}
+	call := llm.ToolCall{ID: "call_1", Name: "http_tool", Arguments: json.RawMessage(`{}`)}
+	initialClient := &fakeToolClient{responses: []llm.ToolChatResponse{{Message: llm.ChatMessage{Role: conversation.RoleAssistant, ToolCalls: []llm.ToolCall{call}}}}}
+	req := RunRequest{
+		Model: "test-model", Task: "call remote API", MaxIterations: 3, MaxToolCalls: 2,
+		ToolPolicy: ToolPolicy{RequireApprovalForRisk: []string{toolruntime.RiskHigh}, AllowedHosts: []string{"api.example.com"}},
+		Tools:      []toolruntime.RuntimeTool{tool},
+	}
+	initial, err := NewRunner(initialClient).Run(context.Background(), req)
+	if err != nil || initial.Checkpoint == nil {
+		t.Fatalf("expected initial approval checkpoint, result=%+v err=%v", initial, err)
+	}
+	req.ToolPolicy.AllowedHosts = []string{"other.example.com"}
+	resumeReq, err := BuildResumeRequest(ResumeRequest{RunRequest: req, Checkpoint: initial.Checkpoint, Approved: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resumed, err := NewRunner(&fakeToolClient{}).Run(context.Background(), *resumeReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tool.input) != 0 {
+		t.Fatalf("approval must not bypass a changed deny policy, input=%s", string(tool.input))
+	}
+	denied := false
+	for _, trace := range resumed.HookTrace {
+		if strings.Contains(trace.Action, "denied") {
+			denied = true
+		}
+	}
+	if !denied {
+		t.Fatalf("expected deny trace after approval resume, got %+v", resumed.HookTrace)
+	}
+}
+
 func TestRunnerCreatesCheckpointWhenContextIsCanceled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
