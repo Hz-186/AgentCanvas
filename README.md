@@ -63,12 +63,12 @@ Agent 的执行能力不仅仅取决于模型本身，更取决于包裹在模�
 四层职责边界被严格划分，避免 token 消耗失控：
 - **Commands**：流程入口，控制 Agent 的执行生命周期（run → plan → execute → evaluate → reflect → resume），统一调度 ReAct / Plan-Execute、Supervisor 委派与持久化 Reflexion
 - **Skills**：领域能力封装，将可复用能力抽象为标准化模块，通过 `load_skill` / `skill_search` 工具按需加载
-- **Rules**：前馈约束，基于 MCTS 剪枝思想的 L0-L4 五级分级注入，确保进入模型的上下文是精选而非全量
+- **Rules**：前馈约束，内置目录保留 L0-L4 分层，持久化 RuleSet 使用 `mandatory / optional` 强度分级与 DAG 依赖编译，确保硬约束不丢失、可选规则按预算成组加载
 - **Hooks**：反馈兜底，`preToolUse` / `postToolUse` 双环拦截，覆盖危险命令物理阻断 + 敏感字段脱敏 + 输出压缩
 
 ---
 
-### Agent 四种运行模式
+### Agent 运行循环与扩展机制
 
 Agent Loop 的主执行模式为 `react` / `plan_execute`，默认 `react`。旧版 `reflect` 配置会兼容映射为 ReAct，但真正的 Reflexion 已作为独立的持久化经验域被动接入两种主循环，不再依赖一个“反思模式”开关。模式配置遵循三层优先级：Node Config → Profile Defaults → Fallback（react）。
 
@@ -132,6 +132,7 @@ Run 结束 ──→ Reflection Job ──→ Worker 轨迹分析 ─┘
 - **经验演化**：相同内容哈希会合并证据；两次 helpful 可升级为 `validated`，两次 harmful 会降级为 `disputed`；只有 validated 的 global 经验允许跨 Workflow 回退。
 - **安全边界**：Tool Output 只作为不可信 evidence 放在 user payload，持久化经验以固定 advisory system 包装注入，不能覆盖系统规则、Safety Policy 或 Tool Policy。
 - **暂停恢复**：Reflection Policy、召回 ID 和当前 Plan 固化到 Checkpoint；Resume 不会重复召回或重复写终局 Job。
+- **前端控制面**：`web/` 的 Agent Loop 支持 `Active / Shadow / Off`，Workflow Profile 可维护默认策略；Reflections 工作台可按状态筛选并执行 Activate / Validate / Dispute / Archive，Debug Trace 会单列 `Reflection Recall` / `Plan Revision`，并允许对本次召回提交 Helpful / Harmful 反馈。
 
 `reflection_policy_json` 支持：`enabled`、`runtime_mode=active|shadow|off`、`inline_on_hard_failure`、`terminal_async`、`max_inline_per_run`、`recall_top_k`、`recall_token_budget`、`min_importance`、`min_confidence`、`allow_validated_global_fallback`、`reflect_on_success`，以及可选的专用 `provider_id` / `model`。`shadow` 会记录召回与终局分析，但不会影响 Actor 或 Planner。
 
@@ -184,27 +185,47 @@ Agent 执行中
 
 ### Harness 双环控制：Rules + Hooks
 
-#### Rules 规则分级体系（前馈约束）
+#### Rules 规则分级与版本化 RuleSet（前馈约束）
 
-将蒙特卡洛树搜索（MCTS）的剪枝思想应用于规则分级管理，实现五级分级注入：
+规则系统分为两个边界清晰的层次，避免租户规则伪装成平台永久约束：
 
-| 级别 | 类型 | 策略 | 说明 |
-|------|------|------|------|
-| L0 | Safety | 永久硬挂载 | 安全规则，不可被剪枝（baseScore=1000） |
-| L1 | Core | 永久硬挂载 | 核心行为约束，永久剪掉明显错误分支（baseScore=800） |
-| L2 | Scenario | 按需加载 | 场景规则，激活信号驱动，token 预算内按分数加载（baseScore=300） |
-| L3 | Tool | 按需加载 | 工具级别规则，工具使用时才激活（baseScore=180） |
-| L4 | Ephemeral | 低优先按需 | 临时/实验性规则，最低得分，预算不足时首批裁剪（baseScore=80） |
+| 层次 | 分级 | 运行时语义 |
+|------|------|------------|
+| 内置规则目录 | L0 Safety / L1 Core / L2 Scenario / L3 Tool / L4 Ephemeral | L0/L1 属于平台硬约束；L2-L4 根据场景信号与 token 预算动态加载，兼容旧 DSL |
+| 持久化 RuleSet | `mandatory` / `optional` | Mandatory 必须注入且参与发布前预算预检；Optional 按激活信号、分数和完整依赖闭包优化选择 |
 
-每条规则可配置激活信号（`mode_any`/`tool_any`/`tool_all`/`risk_any`/`tag_any`/`tag_all`/`keywords_any`/`keywords_all`/`always`）和排除信号（`exclude_modes`/`exclude_tools`/`exclude_tags`/`exclude_risk`），配合 `level_budgets`（Default: L2=45%/L3=35%/L4=20%）和 `score_cutoff` 实现**信息熵压缩**——通过分层预算精确控制每个级别注入上下文的信息量。
+租户自定义规则不能声明永久 L0/L1。旧 `level` 字段仍可读取，但发布后的 Optional 规则统一使用相同基础分，不再借助 L2/L3/L4 人为抬高排名。每条规则可配置激活信号（`mode_any` / `tool_any` / `risk_any` / `tag_any` / `keywords_any` / `always` 等）、排除信号、优先级、安全标记、策略绑定和人工依赖。
 
-规则加载采用 `mcts_pruning:tiered_budgeted_scoring` 策略：
-1. L0/L1 永久硬挂载，不可被任何条件剪枝
-2. L2-L4 先按 legacy triggers + activation signals 匹配，再按 score 排序
-3. 在 score 排序基础上，按 level_budget → global_budget → max_candidates 三级预算逐层裁剪
-4. 对 `MaxCandidates` 和 `score_cutoff` 超限的候选项直接丢弃
+##### RuleSet 编译与发布
 
-在场景信号精准匹配 + 分层预算控制下，32K 窗口模型的可用空间从 8.5K tokens 翻到 17K tokens。
+```text
+Draft(revision N)
+   │ Publish + expected_revision + Idempotency-Key
+   ▼
+Queued ──→ Worker Compile ──→ 确定性 DAG 校验
+                                  │
+                    ┌─────────────┴─────────────┐
+                    │ 无新增依赖建议             │ 有 LLM 依赖建议
+                    ▼                           ▼
+              Ready → Published          Review Required
+                    │                           │ 人工 Accept / Reject
+                    │                           └──→ 重新编译 → Published
+                    ▼
+      Profile.active_rule_set_id
+                    │
+                    ▼
+      Run 固定 ID + Version + Compiled Hash
+```
+
+- **确定性编译器**：限制最多 50 条规则、200 条依赖边和 16 层深度；拒绝重复 ID、未知依赖、自依赖、环，以及 Mandatory → Optional 的非法依赖。
+- **LLM 只提建议**：编译模型只能通过严格的 `submit_rule_graph` Tool Call 建议语义前置依赖，不能修改规则内容、强度或安全属性；建议边记录 confidence / reason，并必须由人类接受或拒绝。
+- **依赖闭包优化**：Mandatory 规则始终注入；Optional 候选先匹配信号，再把根规则与全部 Optional 前置依赖组成 bundle，通过 `dag_branch_and_bound:v1` 在 token 预算内按边际成本选择，避免加载“缺少前置条件”的孤立规则，并复用共享依赖成本。
+- **策略硬绑定**：`tool.dangerous_arguments.deny`、`tool.risk.require_approval`、`tool.host.allowlist`、`tool.execution_limits` 等绑定在编译期校验，运行时直接进入 Tool Hook Policy，不依赖 LLM 自觉遵守。
+- **不可变快照**：发布时固化拓扑序、传递依赖闭包、token cost、内容哈希和完整 `compiled_hash`；每个 Run / Checkpoint 固定 RuleSet ID、版本与哈希，恢复时继续使用同一快照并执行完整性校验。
+- **安全发布与回滚**：Mandatory token 加 safety margin 超过上下文预算时拒绝发布；新版本发布后旧版本进入 superseded，回滚会从历史快照重新校验并创建一个新的 Published 版本，不会原地篡改历史。
+- **兼容回退**：没有激活版本化 RuleSet 时，继续使用 `mcts_pruning:tiered_budgeted_scoring` 的 L0-L4 目录加载器，保证旧 Workflow 行为稳定。
+
+RuleSet 状态包括 `draft / queued / compiling / review_required / ready / published / superseded / failed`。编译队列、Review 堆积、Mandatory overflow、快照完整性和回滚次数可通过 `GET /api/v1/health/rule-system` 观察。
 
 #### Hooks 拦截链（反馈兜底）
 
@@ -489,6 +510,7 @@ Docker 容器六重隔离（`sandbox.go`）：
 cmd/                        API、Worker、Migration 三个入口
   api/main.go               ─ Gin HTTP Server (SSE 流式 + SPA 嵌入)
   worker/main.go            ─ 异步文档解析/索引、规则编译与 Reflection Worker
+  backfill-rule-sets/main.go ─ 将旧 Profile 自定义规则回填为版本化 RuleSet
   migrate/main.go           ─ 数据库迁移工具
 configs/                    运行配置 (YAML)
   config.yaml               ─ Docker 环境默认配置
@@ -508,16 +530,18 @@ internal/                   核心后端代码
     ingestion_usecase/       ─ 文档解析/切片/索引
     knowledge_usecase/       ─ 知识库管理/文档上传/检索/重建索引
     memory_usecase/          ─ 记忆提取/合并/Dream/缓存
+    rule_compile_usecase/    ─ RuleSet 异步依赖分析、确定性编译与发布
+    rule_backfill_usecase/   ─ 旧规则配置到版本化 RuleSet 的幂等回填
     reflection_usecase/      ─ Reflexion 召回/持久化/反馈/异步 Worker
     provider_usecase/        ─ 模型供应商管理/API Key 加密
     retrieval_usecase/       ─ Keyword/Vector/Hybrid 检索 + Rerank
     skill_usecase/           ─ Skill 技能管理 (12+条校验规则)
     tool_usecase/            ─ Tool 定义/Tool Policy/Tool Pack/MCP Server
-    workflow_usecase/        ─ Workflow CRUD/Flow Version/Run/Eval/Approval/Team
+    workflow_usecase/        ─ Workflow CRUD/Flow Version/RuleSet/Run/Eval/Approval/Team
     audit_usecase/           ─ 审计日志查询
   bootstrap/                 ─ 启动引导 (App 装配器)
   domain/                   领域层 (15 个包, DDD)
-    workflow/                ─ DSL/Workflow/FlowVersion/Run/Profile/Eval/Approval/Team
+    workflow/                ─ DSL/Workflow/FlowVersion/RuleSet/Run/Profile/Eval/Approval/Team
     knowledge/               ─ 知识库/文档/Chunk/Ingestion
     memory/                  ─ 记忆/Working Memory/Cache
     reflection/              ─ 经验实体/策略/信号/Repository/EventSink 端口
@@ -562,13 +586,13 @@ internal/                   核心后端代码
   runtime/                  Agent 运行时引擎
     agent/                   ─ Runner/Planner/Reflexion/Supervisor/Judge/Resumer/ContextAssembler
     engine/                  ─ DAG 执行器/VariableResolver
-    harness/                 ─ Harness框架: Rules (L0-L4 MCTS剪枝) + Hooks (preToolUse/postToolUse责任链)
+    harness/                 ─ Harness框架: Rules (内置分层 + RuleSet DAG 编译/优化) + Hooks (preToolUse/postToolUse责任链)
     node/                    ─ 23 种节点实现
     toolruntime/             ─ 工具运行时 (7种Tool + ToolRegistry + Skill集成)
     evalharness/             ─ 评估指标 (Coverage + Judge)
     sandbox/                 ─ Docker六重隔离代码沙箱
     contextcompress/         ─ 三重指纹压缩: SimHash+MinHash+Cosine/后缀数组LCS/LazyGreedy/CJK Shingle
-migrations/                 数据库迁移 SQL (25 组, .up.sql + .down.sql)
+migrations/                 数据库迁移 SQL (30 组, .up.sql + .down.sql)
 scripts/                    本地脚本 (dev/migrate/lint/build/verify)
 web/                        React + Vite 前端 (SPA, 内嵌 embed)
 skill/                      内置 Skill 预设 (explain-knowledge / record-knowledge)
@@ -602,7 +626,11 @@ skill/                      内置 Skill 预设 (explain-knowledge / record-know
 | `workflow_run_events` | SSE 运行时事件 |
 | `workflow_node_logs` | 节点执行日志 |
 | `workflow_run_steps` | 运行步骤 |
-| `workflow_profiles` | Profile 配置（Mode/Tool Packs/MCP/Memory/Reflection/Context/Output Schema/Risk Level） |
+| `workflow_profiles` | Profile 配置（Mode/Tool Packs/MCP/Memory/Reflection/RuleSet/Context/Output Schema/Risk Level） |
+| `workflow_rule_sets` | 版本化 RuleSet、发布状态、编译快照与回滚来源 |
+| `workflow_rule_nodes` | RuleSet 中的规则、强度、激活条件、策略绑定与编译元数据 |
+| `workflow_rule_edges` | 规则依赖 DAG、来源、置信度及人工 Review 决策 |
+| `workflow_rule_compile_jobs` | RuleSet 异步编译任务、幂等键、重试与模型用量 |
 | `workflow_eval_datasets` | 评估数据集 |
 | `workflow_eval_cases` | 评估用例 |
 | `workflow_eval_runs` | 评估运行记录 |
@@ -645,7 +673,8 @@ open http://localhost:8080
 make dev              # 启动完整本地开发链路
 make run              # 迁移 + 前端构建 + API 启动
 make build            # 生产构建（含迁移表完整性校验）
-make worker           # 启动文档解析 Worker
+make worker             # 启动异步 Worker（文档解析、RuleSet 编译、Reflexion）
+make backfill-rule-sets # 将旧 Profile 规则幂等迁移为版本化 RuleSet
 make migrate          # 运行数据库迁移
 make lint             # go vet + gofmt + typecheck + build dry-run
 make verify           # 迁移表完整性验证 + go vet + build check
@@ -709,6 +738,14 @@ POST   /api/v1/dialogs/:dialog_id/rag/chat/stream     RAG 流式问答 (SSE)
 ```text
 POST   /api/v1/workflows                             创建 Workflow
 GET    /api/v1/workflows/:id/profile                  Profile 配置
+GET    /api/v1/workflows/:id/rule-sets                RuleSet 版本列表
+POST   /api/v1/workflows/:id/rule-sets                创建或克隆 Draft
+GET    /api/v1/workflows/:id/rule-sets/:rule_set_id   RuleSet 详情
+PATCH  /api/v1/workflows/:id/rule-sets/:rule_set_id   按 expected_revision 更新 Draft
+POST   /api/v1/workflows/:id/rule-sets/:rule_set_id/publish 异步编译并发布
+POST   /api/v1/workflows/:id/rule-sets/:rule_set_id/review  审核 LLM 依赖建议
+POST   /api/v1/workflows/:id/rule-sets/:rule_set_id/rollback 从历史快照创建回滚版本
+GET    /api/v1/workflows/:id/rule-compile-jobs/:job_id 编译任务状态
 POST   /api/v1/workflows/:id/flow-versions            创建 Flow Version
 POST   /api/v1/flow-versions/:id/publish              发布
 POST   /api/v1/flow-versions/:id/validate             校验
@@ -726,7 +763,7 @@ GET    /api/v1/approval-requests                      审批请求
 POST   /api/v1/workflow-teams                         创建 Team
 ```
 
-Reflection 健康与进程/数据库指标：`GET /api/v1/health/reflection-system`。
+规则系统健康指标：`GET /api/v1/health/rule-system`；Reflection 健康与进程/数据库指标：`GET /api/v1/health/reflection-system`。
 
 ### Memory / Tool / Skill / MCP
 
