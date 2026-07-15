@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"log/slog"
 	"os"
 	"os/signal"
 	"strconv"
+	"sync"
 	"syscall"
 	"time"
 
@@ -112,14 +114,41 @@ func main() {
 	hostname, _ := os.Hostname()
 	workerID := fmt.Sprintf("%s-%d", hostname, os.Getpid())
 	dreamWorker := memoryusecase.NewDreamWorker(baseChatClient(), llm.NewOpenAICompatibleEmbeddingClient(), memoryRepo, memoryLogRepo, messageRepo, archivalVecStore, infraDeps.Redis, memoryusecase.NewDreamConfig(cfg.MemoryDream), workerID)
+	extractionCompatibility := memoryusecase.NewExtractionService(memoryRepo, mysqlinfra.NewExtractionJobRepository(db), mysqlinfra.NewMergeLogRepository(db))
 	ruleSetRepo := mysqlinfra.NewWorkflowRuleSetRepository(db)
 	ruleCompiler := rulecompileusecase.NewService(ruleSetRepo, providerRepo, secretBox, llm.NewOpenAICompatibleChatClient())
 	reflectionRepo := mysqlinfra.NewReflectionRepository(db)
 	reflectionJobRepo := mysqlinfra.NewReflectionJobRepository(db)
 	reflectionRecallRepo := mysqlinfra.NewReflectionRecallLogRepository(db)
 	reflectionEventSink := mysqlinfra.NewReflectionEventSink(mysqlinfra.NewRunEventRepository(db))
-	reflectionService := reflectionusecase.Service{Reflections: reflectionRepo, Jobs: reflectionJobRepo, RecallLogs: reflectionRecallRepo, Events: reflectionEventSink}
-	reflectionWorker := reflectionusecase.Worker{Service: reflectionService, Jobs: reflectionJobRepo, Providers: providerRepo, Secrets: secretBox, LLM: baseChatClient()}
+	dispatchReflection := cfg.ReflectionQueue.Backend == "nats"
+	reflectionService := reflectionusecase.Service{Reflections: reflectionRepo, Jobs: reflectionJobRepo, RecallLogs: reflectionRecallRepo, Events: reflectionEventSink,
+		DispatchEnabled: dispatchReflection}
+	reflectionWorker := reflectionusecase.Worker{Service: reflectionService, Jobs: reflectionJobRepo, Providers: providerRepo, Secrets: secretBox,
+		LLM: baseChatClient(), DispatchEnabled: dispatchReflection}
+	var reflectionWG sync.WaitGroup
+	reflectionWG.Add(1)
+	if dispatchReflection {
+		transport, transportErr := queue.NewReflectionNATSTransport(cfg.NATS, cfg.ReflectionQueue, appLogger)
+		if transportErr != nil {
+			appLogger.Error("init reflection nats transport failed", "error", transportErr)
+			os.Exit(1)
+		}
+		runtime := &reflectionusecase.QueueRuntime{Worker: reflectionWorker, Jobs: reflectionJobRepo, Outbox: reflectionJobRepo,
+			Transport: transport, Config: cfg.ReflectionQueue, WorkerID: workerID, Logger: appLogger}
+		go func() {
+			defer reflectionWG.Done()
+			if runErr := runtime.Run(ctx); runErr != nil && ctx.Err() == nil {
+				appLogger.Error("reflection queue runtime stopped", "error", runErr)
+			}
+		}()
+	} else {
+		go func() {
+			defer reflectionWG.Done()
+			runMySQLReflectionWorker(ctx, reflectionWorker, workerID, appLogger)
+		}()
+	}
+	defer reflectionWG.Wait()
 	appLogger.Info("worker started", "worker_id", workerID)
 
 	ticker := time.NewTicker(2 * time.Second)
@@ -151,15 +180,33 @@ func main() {
 		} else if compiled {
 			continue
 		}
-		if reflected, reflectionErr := reflectionWorker.ProcessNext(ctx, workerID); reflectionErr != nil {
-			appLogger.Error("process reflection job failed", "error", reflectionErr)
-		} else if reflected {
+		if drained, drainErr := extractionCompatibility.ProcessNextDream(ctx, dreamWorker); drainErr != nil {
+			appLogger.Error("drain legacy memory extraction job failed", "error", drainErr)
+		} else if drained {
 			continue
 		}
-
 		select {
 		case <-ctx.Done():
 			appLogger.Info("worker stopped")
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+func runMySQLReflectionWorker(ctx context.Context, worker reflectionusecase.Worker, workerID string, appLogger *slog.Logger) {
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	for ctx.Err() == nil {
+		processed, err := worker.ProcessNext(ctx, workerID)
+		if err != nil {
+			appLogger.Error("process reflection job failed", "worker_id", workerID, "error", err)
+		}
+		if processed {
+			continue
+		}
+		select {
+		case <-ctx.Done():
 			return
 		case <-ticker.C:
 		}
