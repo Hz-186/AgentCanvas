@@ -1,0 +1,10 @@
+ALTER TABLE agent_turns
+    DROP INDEX idx_agent_turn_worker,
+    DROP INDEX idx_agent_turn_claim,
+    DROP COLUMN retry_at,
+    DROP COLUMN last_heartbeat_at,
+    DROP COLUMN lease_expires_at,
+    DROP COLUMN lease_token,
+    DROP COLUMN worker_id,
+    DROP COLUMN max_attempts,
+    DROP COLUMN attempt_count;
