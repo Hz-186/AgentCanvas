@@ -41,6 +41,8 @@ const (
 type RunRequest struct {
 	OwnerID                   int64
 	WorkflowID                int64
+	AgentID                   int64
+	AgentReleaseID            int64
 	RunID                     int64
 	NodeID                    string
 	CallDepth                 int
@@ -221,11 +223,8 @@ type RuleRoundTrace struct {
 type TokenAudit struct {
 	System           int `json:"system,omitempty"`
 	Profile          int `json:"profile,omitempty"`
-	RulesL0          int `json:"rules_l0,omitempty"`
-	RulesL1          int `json:"rules_l1,omitempty"`
-	RulesL2          int `json:"rules_l2,omitempty"`
-	RulesL3          int `json:"rules_l3,omitempty"`
-	RulesL4          int `json:"rules_l4,omitempty"`
+	RulesMandatory   int `json:"rules_mandatory,omitempty"`
+	RulesOptional    int `json:"rules_optional,omitempty"`
 	ToolSchema       int `json:"tool_schema,omitempty"`
 	History          int `json:"history,omitempty"`
 	Memory           int `json:"memory,omitempty"`

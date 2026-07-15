@@ -19,6 +19,7 @@ const (
 	DefaultTokenEstimatorVersion = "conservative-rune-v1"
 	DefaultOptimizerExpansions   = 4096
 	compiledOptionalBaseScore    = 300.0
+	CurrentSnapshotSchemaVersion = 2
 	maxRuleCount                 = 50
 	maxRuleEdges                 = 200
 	maxRuleDepth                 = 16
@@ -37,11 +38,10 @@ type DependencyEdge struct {
 }
 
 type CompileOptions struct {
-	RuleSetID                   int64
-	Version                     string
-	Edges                       []DependencyEdge
-	RejectLegacyPermanentLevels bool
-	TokenEstimatorVersion       string
+	RuleSetID             int64
+	Version               string
+	Edges                 []DependencyEdge
+	TokenEstimatorVersion string
 }
 
 type BoundPolicyBinding struct {
@@ -62,6 +62,7 @@ type CompiledRule struct {
 }
 
 type CompiledRuleSet struct {
+	SchemaVersion         int            `json:"schema_version"`
 	ID                    int64          `json:"id,omitempty"`
 	Version               string         `json:"version,omitempty"`
 	CompiledHash          string         `json:"compiled_hash"`
@@ -69,7 +70,17 @@ type CompiledRuleSet struct {
 	MandatoryTokens       int            `json:"mandatory_tokens"`
 	Rules                 []CompiledRule `json:"rules"`
 
-	byID map[string]int
+	byID           map[string]int
+	legacyVerified bool
+	legacyRaw      json.RawMessage
+}
+
+func (c CompiledRuleSet) MarshalJSON() ([]byte, error) {
+	if c.SchemaVersion < CurrentSnapshotSchemaVersion && len(c.legacyRaw) > 0 {
+		return append([]byte(nil), c.legacyRaw...), nil
+	}
+	type compiledRuleSetAlias CompiledRuleSet
+	return json.Marshal(compiledRuleSetAlias(c))
 }
 
 func (c *CompiledRuleSet) Prepare() {
@@ -102,7 +113,7 @@ func (c *CompiledRuleSet) PolicyBindings() []BoundPolicyBinding {
 	}
 	bindings := make([]BoundPolicyBinding, 0)
 	for _, item := range c.Rules {
-		if item.Rule.PolicyBinding == nil {
+		if item.Rule.PolicyBinding == nil || item.Rule.Strength != RuleMandatory {
 			continue
 		}
 		bindings = append(bindings, BoundPolicyBinding{
@@ -129,7 +140,7 @@ func RulesFromCompiled(c *CompiledRuleSet) []Rule {
 func PolicyBindingsForRules(items []Rule) []BoundPolicyBinding {
 	bindings := make([]BoundPolicyBinding, 0)
 	for _, rule := range items {
-		if rule.PolicyBinding == nil || rule.EffectiveStrength() != RuleMandatory {
+		if rule.PolicyBinding == nil || rule.Strength != RuleMandatory {
 			continue
 		}
 		bindings = append(bindings, BoundPolicyBinding{
@@ -167,25 +178,8 @@ func CompileRuleSet(items []Rule, opts CompileOptions) (*CompiledRuleSet, error)
 		if _, exists := byID[rule.ID]; exists {
 			return nil, fmt.Errorf("duplicate custom rule id %q", rule.ID)
 		}
-		if opts.RejectLegacyPermanentLevels && rule.Strength == "" && hardPinnedLevel(rule.Level) {
-			return nil, fmt.Errorf("custom rule %q cannot use permanent legacy level %s", rule.ID, rule.Level)
-		}
-		if rule.Strength == "" {
-			rule.Strength = rule.EffectiveStrength()
-		}
 		if rule.Strength != RuleMandatory && rule.Strength != RuleOptional {
-			return nil, fmt.Errorf("custom rule %q has invalid strength %q", rule.ID, rule.Strength)
-		}
-		if rule.Level == "" {
-			if rule.Strength == RuleMandatory {
-				rule.Level = LevelL1Core
-			} else {
-				rule.Level = LevelL2Scenario
-			}
-		} else if rule.Strength == RuleMandatory && !hardPinnedLevel(rule.Level) {
-			rule.Level = LevelL1Core
-		} else if rule.Strength == RuleOptional && hardPinnedLevel(rule.Level) {
-			rule.Level = LevelL2Scenario
+			return nil, fmt.Errorf("custom rule %q requires strength mandatory or optional", rule.ID)
 		}
 		if err := validatePolicyBinding(rule); err != nil {
 			return nil, err
@@ -254,6 +248,11 @@ func CompileRuleSet(items []Rule, opts CompileOptions) (*CompiledRuleSet, error)
 	for id := range adjacency {
 		sort.Strings(adjacency[id])
 	}
+	for _, rule := range normalized {
+		if rule.Strength == RuleOptional && !hasPositiveActivation(rule.Activation) && len(adjacency[rule.ID]) == 0 {
+			return nil, fmt.Errorf("optional rule %q requires activation or must be referenced as a dependency", rule.ID)
+		}
+	}
 
 	topologicalIDs := make([]string, 0, len(items))
 	ready := make([]string, 0, len(items))
@@ -262,7 +261,7 @@ func CompileRuleSet(items []Rule, opts CompileOptions) (*CompiledRuleSet, error)
 			ready = append(ready, id)
 		}
 	}
-	sort.Strings(ready)
+	sortReadyRules(ready, normalized, byID)
 	depth := make(map[string]int, len(items))
 	for len(ready) > 0 {
 		id := ready[0]
@@ -278,7 +277,7 @@ func CompileRuleSet(items []Rule, opts CompileOptions) (*CompiledRuleSet, error)
 			indegree[next]--
 			if indegree[next] == 0 {
 				ready = append(ready, next)
-				sort.Strings(ready)
+				sortReadyRules(ready, normalized, byID)
 			}
 		}
 	}
@@ -292,6 +291,7 @@ func CompileRuleSet(items []Rule, opts CompileOptions) (*CompiledRuleSet, error)
 		topologicalIndex[id] = index
 	}
 	compiled := &CompiledRuleSet{
+		SchemaVersion:         CurrentSnapshotSchemaVersion,
 		ID:                    opts.RuleSetID,
 		Version:               strings.TrimSpace(opts.Version),
 		TokenEstimatorVersion: opts.TokenEstimatorVersion,
@@ -351,6 +351,7 @@ func RefreshCompiledHash(compiled *CompiledRuleSet) error {
 	}
 	canonical := *compiled
 	canonical.CompiledHash = ""
+	canonical.legacyRaw = nil
 	data, err := json.Marshal(&canonical)
 	if err != nil {
 		return fmt.Errorf("marshal compiled rule set: %w", err)
@@ -358,6 +359,17 @@ func RefreshCompiledHash(compiled *CompiledRuleSet) error {
 	sum := sha256.Sum256(data)
 	compiled.CompiledHash = hex.EncodeToString(sum[:])
 	return nil
+}
+
+func sortReadyRules(ready []string, rules []Rule, byID map[string]int) {
+	sort.SliceStable(ready, func(i, j int) bool {
+		left := rules[byID[ready[i]]]
+		right := rules[byID[ready[j]]]
+		if left.Priority != right.Priority {
+			return left.Priority > right.Priority
+		}
+		return left.ID < right.ID
+	})
 }
 
 func normalizeDependencySource(source string) string {
@@ -373,6 +385,12 @@ func normalizeDependencySource(source string) string {
 func VerifyCompiledHash(compiled *CompiledRuleSet) error {
 	if compiled == nil {
 		return fmt.Errorf("compiled rule set is nil")
+	}
+	if compiled.SchemaVersion < CurrentSnapshotSchemaVersion {
+		if compiled.legacyVerified {
+			return nil
+		}
+		return fmt.Errorf("legacy compiled rule set was not decoded by the compatibility codec")
 	}
 	expected := strings.TrimSpace(compiled.CompiledHash)
 	if expected == "" {
@@ -396,7 +414,7 @@ func validatePolicyBinding(rule Rule) error {
 		}
 		return nil
 	}
-	if rule.EffectiveStrength() != RuleMandatory {
+	if rule.Strength != RuleMandatory {
 		return fmt.Errorf("rule %q with a policy binding must be mandatory", rule.ID)
 	}
 	policyKey := strings.TrimSpace(rule.PolicyBinding.PolicyKey)
@@ -508,6 +526,27 @@ type optionalCandidate struct {
 	memberCost int
 }
 
+func SelectMandatoryRules(compiled *CompiledRuleSet) ([]Rule, Trace) {
+	trace := Trace{SelectionStrategy: "mandatory_static:v2"}
+	if compiled == nil {
+		return nil, trace
+	}
+	trace.MandatoryTokens = compiled.MandatoryTokens
+	trace.RuleSetID = compiled.ID
+	trace.RuleSetVersion = compiled.Version
+	trace.CompiledHash = compiled.CompiledHash
+	loaded := make([]Rule, 0)
+	for _, item := range compiled.Rules {
+		if item.Rule.Strength != RuleMandatory {
+			continue
+		}
+		loaded = append(loaded, item.Rule)
+		trace.Loaded = append(trace.Loaded, item.Rule.ID)
+		trace.EstimatedUsed += item.TokenCost
+	}
+	return loaded, trace
+}
+
 func SelectOptionalRules(compiled *CompiledRuleSet, ctx LoadContext, maxExpansions int) ([]Rule, Trace) {
 	trace := Trace{TokenBudget: ctx.TokenBudget, OptionalBudget: ctx.TokenBudget, SelectionStrategy: "dag_branch_and_bound:v1"}
 	if compiled == nil {
@@ -529,7 +568,7 @@ func SelectOptionalRules(compiled *CompiledRuleSet, ctx LoadContext, maxExpansio
 	candidates := make([]optionalCandidate, 0, len(compiled.Rules))
 	for _, item := range compiled.Rules {
 		rule := item.Rule
-		if rule.EffectiveStrength() != RuleOptional {
+		if rule.Strength != RuleOptional {
 			continue
 		}
 		decision, matched, reason := evaluateRule(rule, ctx)
@@ -539,9 +578,6 @@ func SelectOptionalRules(compiled *CompiledRuleSet, ctx LoadContext, maxExpansio
 			trace.noteSkippedSignals(rule.ID, decision.signals)
 			continue
 		}
-		// Published rule sets have one optional strength. Legacy L2/L3/L4
-		// values remain serializable but cannot influence ranking.
-		decision.score = decision.score - baseLevelScore(rule.Level) + compiledOptionalBaseScore
 		if ctx.ScoreCutoff > 0 && decision.score < ctx.ScoreCutoff {
 			trace.skip(rule.ID, ReasonBelowScoreThreshold)
 			continue
@@ -557,7 +593,7 @@ func SelectOptionalRules(compiled *CompiledRuleSet, ctx LoadContext, maxExpansio
 		optionalMembers := members[:0]
 		for _, memberID := range members {
 			member, ok := compiled.RuleByID(memberID)
-			if !ok || member.Rule.EffectiveStrength() == RuleMandatory {
+			if !ok || member.Rule.Strength == RuleMandatory {
 				continue
 			}
 			optionalMembers = append(optionalMembers, memberID)
@@ -642,9 +678,6 @@ func SelectOptionalRules(compiled *CompiledRuleSet, ctx LoadContext, maxExpansio
 		loaded = append(loaded, item.Rule)
 		trace.unskip(item.Rule.ID)
 		trace.Loaded = append(trace.Loaded, item.Rule.ID)
-		trace.Levels = append(trace.Levels, string(item.Rule.Level))
-		trace.addLevelUsage(item.Rule.Level, item.TokenCost)
-		trace.addLevelLoaded(item.Rule.Level)
 	}
 	trace.EstimatedUsed = bestCost
 	marginalMembers := map[string]bool{}

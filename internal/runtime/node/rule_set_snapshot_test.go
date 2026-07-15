@@ -32,8 +32,8 @@ func TestApplyProfileDefaultsUsesPublishedSnapshotInsteadOfLegacyRules(t *testin
 	if cfg.RuleSetID != activeID || cfg.RuleSetVersion != "3" || cfg.CompiledRules == nil || len(cfg.CustomRules) != 1 || cfg.CustomRules[0].ID != "tenant.published" {
 		t.Fatalf("expected published snapshot, got %+v", cfg)
 	}
-	if _, ok := cfg.CompiledRules.RuleByID("scenario.code.change_verification"); !ok {
-		t.Fatalf("runtime snapshot must retain platform optional rules: %+v", cfg.CompiledRules)
+	if _, ok := cfg.CompiledRules.RuleByID("scenario.code.change_verification"); ok {
+		t.Fatalf("active RuleSet must replace fallback optional rules: %+v", cfg.CompiledRules)
 	}
 	if err := rules.VerifyCompiledHash(cfg.CompiledRules); err != nil {
 		t.Fatalf("composed runtime snapshot hash must verify: %v", err)

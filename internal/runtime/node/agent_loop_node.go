@@ -11,12 +11,14 @@ import (
 	"time"
 
 	"agentcanvas/internal/domain/audit"
+	"agentcanvas/internal/domain/conversation"
 	"agentcanvas/internal/domain/memory"
 	"agentcanvas/internal/domain/reflection"
 	"agentcanvas/internal/domain/retrieval"
 	"agentcanvas/internal/domain/skill"
 	"agentcanvas/internal/domain/tool"
 	"agentcanvas/internal/domain/workflow"
+	"agentcanvas/internal/domain/workspace"
 	memoryretrieval "agentcanvas/internal/infrastructure/retrieval"
 	"agentcanvas/internal/infrastructure/vectorstore"
 	runtimeagent "agentcanvas/internal/runtime/agent"
@@ -46,11 +48,15 @@ type AgentNode struct {
 	WorkingMemory     memory.WorkingMemoryRepository
 	WorkflowCaller    toolruntime.WorkflowCaller
 	InlineAgentCaller toolruntime.InlineAgentCaller
+	AgentCaller       toolruntime.AgentCaller
 	Profiles          AgentProfileLoader
 	RuleSets          ActiveRuleSetLoader
 	Reflections       reflection.Advisor
+	Workspaces        workspace.Repository
+	WorkspaceManager  *toolruntime.WorkspaceManager
 	Sandbox           sandbox.Runner
 	MessageHistory    MessageHistoryReader
+	SessionSearch     conversation.MessageSearchIndex
 	ArchivalVecStore  vectorstore.Store
 	Embedder          llm.EmbeddingClient
 	WorkspaceRoot     string
@@ -69,53 +75,59 @@ type AgentResumeOptions struct {
 }
 
 type agentRuntimeConfig struct {
-	Mode                      string                 `json:"mode"`
-	ProviderID                int64                  `json:"provider_id"`
-	Model                     string                 `json:"model"`
-	SystemPrompt              string                 `json:"system_prompt"`
-	TaskTemplate              string                 `json:"task_template"`
-	ToolIDs                   []int64                `json:"tool_ids"`
-	SkillIDs                  []int64                `json:"skill_ids"`
-	SkillLoadingMode          string                 `json:"skill_loading_mode"`
-	KnowledgeIDs              []int64                `json:"knowledge_ids"`
-	KnowledgeTopK             int                    `json:"knowledge_top_k"`
-	KnowledgeMode             string                 `json:"knowledge_mode"`
-	CallWorkflowIDs           []int64                `json:"call_workflow_ids"`
-	MCPServerIDs              []int64                `json:"mcp_server_ids"`
-	MaxWorkflowCallDepth      int                    `json:"max_workflow_call_depth"`
-	CodeExecutionEnabled      bool                   `json:"code_execution_enabled"`
-	MemoryEnabled             bool                   `json:"memory_enabled"`
-	MaxIterations             int                    `json:"max_iterations"`
-	MaxToolCalls              int                    `json:"max_tool_calls"`
-	MaxExecutionTimeMS        int                    `json:"max_execution_time_ms"`
-	MaxParallelSubAgents      int                    `json:"max_parallel_sub_agents"`
-	AllowInlineAgents         bool                   `json:"allow_inline_agents"`
-	MaxInputChars             int                    `json:"max_input_chars"`
-	MaxInputTokens            int                    `json:"max_input_tokens"`
-	ContextWindowTokens       int                    `json:"context_window_tokens"`
-	ReservedOutputTokens      int                    `json:"reserved_output_tokens"`
-	ContextSafetyMarginTokens int                    `json:"context_safety_margin_tokens"`
-	MaxRuleTokens             int                    `json:"max_rule_tokens"`
-	RuleSetVersion            string                 `json:"rule_set_version"`
-	RuleSetID                 int64                  `json:"-"`
-	CompiledRuleHash          string                 `json:"-"`
-	CompiledRules             *rules.CompiledRuleSet `json:"-"`
-	CustomRules               []rules.Rule           `json:"-"`
-	RequireApprovalForRisk    []string               `json:"require_approval_for_risk"`
-	MaxToolTimeoutMS          int                    `json:"max_tool_timeout_ms"`
-	MaxToolOutputBytes        int                    `json:"max_tool_output_bytes"`
-	AllowedHosts              []string               `json:"allowed_hosts"`
-	DenyAllHosts              bool                   `json:"deny_all_hosts"`
-	ToolPolicyJSON            json.RawMessage        `json:"tool_policy_json"`
-	MemoryPolicyJSON          json.RawMessage        `json:"memory_policy_json"`
-	ContextPolicyJSON         json.RawMessage        `json:"context_policy_json"`
-	OutputSchemaJSON          json.RawMessage        `json:"output_schema_json"`
-	ReflectionEnabled         bool                   `json:"reflection_enabled"`
-	ReflectionPolicyJSON      json.RawMessage        `json:"reflection_policy_json"`
-	Temperature               *float64               `json:"temperature"`
-	ReturnIntermediateSteps   bool                   `json:"return_intermediate_steps"`
-	OutputMode                string                 `json:"output_mode"`
-	DisableProfileDefaults    bool                   `json:"disable_profile_defaults"`
+	Mode                      string                      `json:"mode"`
+	ProviderID                int64                       `json:"provider_id"`
+	Model                     string                      `json:"model"`
+	SystemPrompt              string                      `json:"system_prompt"`
+	TaskTemplate              string                      `json:"task_template"`
+	ToolIDs                   []int64                     `json:"tool_ids"`
+	ToolPackIDs               []int64                     `json:"tool_pack_ids"`
+	SkillIDs                  []int64                     `json:"skill_ids"`
+	SkillLoadingMode          string                      `json:"skill_loading_mode"`
+	KnowledgeIDs              []int64                     `json:"knowledge_ids"`
+	KnowledgeTopK             int                         `json:"knowledge_top_k"`
+	KnowledgeMode             string                      `json:"knowledge_mode"`
+	CallWorkflowIDs           []int64                     `json:"call_workflow_ids"`
+	CallAgentIDs              []int64                     `json:"callable_agent_ids"`
+	CallWorkflowToolName      string                      `json:"call_workflow_tool_name"`
+	MCPServerIDs              []int64                     `json:"mcp_server_ids"`
+	MaxWorkflowCallDepth      int                         `json:"max_workflow_call_depth"`
+	CodeExecutionEnabled      bool                        `json:"code_execution_enabled"`
+	WorkspaceEnabled          bool                        `json:"workspace_enabled"`
+	WorkspacePackID           *int64                      `json:"workspace_pack_id"`
+	MemoryEnabled             bool                        `json:"memory_enabled"`
+	MaxIterations             int                         `json:"max_iterations"`
+	MaxToolCalls              int                         `json:"max_tool_calls"`
+	MaxExecutionTimeMS        int                         `json:"max_execution_time_ms"`
+	MaxParallelSubAgents      int                         `json:"max_parallel_sub_agents"`
+	AllowInlineAgents         bool                        `json:"allow_inline_agents"`
+	MaxInputChars             int                         `json:"max_input_chars"`
+	MaxInputTokens            int                         `json:"max_input_tokens"`
+	ContextWindowTokens       int                         `json:"context_window_tokens"`
+	ReservedOutputTokens      int                         `json:"reserved_output_tokens"`
+	ContextSafetyMarginTokens int                         `json:"context_safety_margin_tokens"`
+	MaxRuleTokens             int                         `json:"max_rule_tokens"`
+	RuleSetVersion            string                      `json:"rule_set_version"`
+	RuleSetID                 int64                       `json:"-"`
+	CompiledRuleHash          string                      `json:"-"`
+	CompiledRules             *rules.CompiledRuleSet      `json:"-"`
+	CustomRules               []rules.Rule                `json:"-"`
+	RequireApprovalForRisk    []string                    `json:"require_approval_for_risk"`
+	MaxToolTimeoutMS          int                         `json:"max_tool_timeout_ms"`
+	MaxToolOutputBytes        int                         `json:"max_tool_output_bytes"`
+	AllowedHosts              []string                    `json:"allowed_hosts"`
+	DenyAllHosts              bool                        `json:"deny_all_hosts"`
+	ToolPolicyJSON            json.RawMessage             `json:"tool_policy_json"`
+	MemoryPolicyJSON          json.RawMessage             `json:"memory_policy_json"`
+	ContextPolicyJSON         json.RawMessage             `json:"context_policy_json"`
+	OutputSchemaJSON          json.RawMessage             `json:"output_schema_json"`
+	ReflectionEnabled         bool                        `json:"reflection_enabled"`
+	ReflectionPolicyJSON      json.RawMessage             `json:"reflection_policy_json"`
+	Temperature               *float64                    `json:"temperature"`
+	ReturnIntermediateSteps   bool                        `json:"return_intermediate_steps"`
+	OutputMode                string                      `json:"output_mode"`
+	DisableProfileDefaults    bool                        `json:"disable_profile_defaults"`
+	AdditionalContextBlocks   []runtimeagent.ContextBlock `json:"-"`
 }
 
 type agentNodeConfig struct {
@@ -134,15 +146,19 @@ type agentNodeConfig struct {
 	} `json:"model"`
 	Tools struct {
 		ToolIDs              []int64 `json:"tool_ids"`
+		ToolPackIDs          []int64 `json:"tool_pack_ids"`
 		SkillIDs             []int64 `json:"skill_ids"`
 		SkillLoadingMode     string  `json:"skill_loading_mode"`
 		KnowledgeIDs         []int64 `json:"knowledge_ids"`
 		KnowledgeTopK        int     `json:"knowledge_top_k"`
 		KnowledgeMode        string  `json:"knowledge_mode"`
 		CallWorkflowIDs      []int64 `json:"call_workflow_ids"`
+		CallAgentIDs         []int64 `json:"callable_agent_ids"`
 		MCPServerIDs         []int64 `json:"mcp_server_ids"`
 		MaxWorkflowCallDepth int     `json:"max_workflow_call_depth"`
 		CodeExecutionEnabled bool    `json:"code_execution_enabled"`
+		WorkspaceEnabled     bool    `json:"workspace_enabled"`
+		WorkspacePackID      *int64  `json:"workspace_pack_id"`
 		AllowInlineAgents    bool    `json:"allow_inline_agents"`
 	} `json:"tools"`
 	Memory struct {
@@ -227,6 +243,15 @@ func parseAgentNodeConfig(config json.RawMessage) (agentRuntimeConfig, error) {
 	if len(nested.Tools.ToolIDs) > 0 {
 		cfg.ToolIDs = nested.Tools.ToolIDs
 	}
+	if len(nested.Tools.ToolPackIDs) > 0 {
+		cfg.ToolPackIDs = nested.Tools.ToolPackIDs
+	}
+	if len(nested.Tools.SkillIDs) > 0 {
+		cfg.SkillIDs = nested.Tools.SkillIDs
+	}
+	if strings.TrimSpace(nested.Tools.SkillLoadingMode) != "" {
+		cfg.SkillLoadingMode = nested.Tools.SkillLoadingMode
+	}
 	if len(nested.Tools.KnowledgeIDs) > 0 {
 		cfg.KnowledgeIDs = nested.Tools.KnowledgeIDs
 	}
@@ -239,6 +264,9 @@ func parseAgentNodeConfig(config json.RawMessage) (agentRuntimeConfig, error) {
 	if len(nested.Tools.CallWorkflowIDs) > 0 {
 		cfg.CallWorkflowIDs = nested.Tools.CallWorkflowIDs
 	}
+	if len(nested.Tools.CallAgentIDs) > 0 {
+		cfg.CallAgentIDs = nested.Tools.CallAgentIDs
+	}
 	if len(nested.Tools.MCPServerIDs) > 0 {
 		cfg.MCPServerIDs = nested.Tools.MCPServerIDs
 	}
@@ -247,6 +275,10 @@ func parseAgentNodeConfig(config json.RawMessage) (agentRuntimeConfig, error) {
 	}
 	if nested.Tools.CodeExecutionEnabled {
 		cfg.CodeExecutionEnabled = true
+	}
+	if nested.Tools.WorkspaceEnabled {
+		cfg.WorkspaceEnabled = true
+		cfg.WorkspacePackID = nested.Tools.WorkspacePackID
 	}
 	if nested.Tools.AllowInlineAgents {
 		cfg.AllowInlineAgents = true
@@ -366,6 +398,9 @@ func validateAgentRuntimeConfig(cfg agentRuntimeConfig, nodeType string, require
 	if cfg.Mode != "" && cfg.Mode != "react" && cfg.Mode != "plan_execute" {
 		return fmt.Errorf("%w: %s mode must be react or plan_execute", agenterrors.ErrInvalidInput, nodeType)
 	}
+	if cfg.WorkspaceEnabled && (cfg.WorkspacePackID == nil || *cfg.WorkspacePackID <= 0) {
+		return fmt.Errorf("%w: %s workspace_pack_id is required when workspace is enabled", agenterrors.ErrInvalidInput, nodeType)
+	}
 	for _, risk := range cfg.RequireApprovalForRisk {
 		normalized := strings.TrimSpace(risk)
 		if normalized != "" && normalized != toolruntime.RiskLow && normalized != toolruntime.RiskMedium && normalized != toolruntime.RiskHigh {
@@ -428,6 +463,9 @@ func (n AgentNode) runAgent(
 			return nil, err
 		}
 	}
+	if len(cfg.ToolPackIDs) > 0 && n.ToolPacks != nil {
+		cfg.ToolIDs = mergeInt64IDs(cfg.ToolIDs, n.toolIDsFromPacks(ctx, rc.OwnerID, cfg.ToolPackIDs))
+	}
 	cfg = applyNodeMemoryPolicy(cfg, cfg.MemoryPolicyJSON)
 	cfg = applyNodeContextPolicy(cfg, cfg.ContextPolicyJSON)
 	cfg = applyNodeToolPolicy(cfg, cfg.ToolPolicyJSON)
@@ -438,7 +476,23 @@ func (n AgentNode) runAgent(
 	if err != nil {
 		return nil, err
 	}
-	tools, err := n.loadTools(ctx, rc.OwnerID, cfg, loaded)
+	workspaceExecution, err := n.acquireWorkspaceExecution(ctx, rc.OwnerID, rc.RunID, cfg)
+	if err != nil {
+		return nil, err
+	}
+	keepWorkspace := false
+	if workspaceExecution != nil {
+		defer func() {
+			if keepWorkspace {
+				workspaceExecution.Suspend()
+				return
+			}
+			releaseContext, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			_ = workspaceExecution.Release(releaseContext)
+		}()
+	}
+	tools, err := n.loadTools(ctx, rc.OwnerID, cfg, loaded, workspaceExecution)
 	if err != nil {
 		return nil, err
 	}
@@ -466,6 +520,7 @@ func (n AgentNode) runAgent(
 	}
 	ruleBlocks, ruleTrace, ruleTags, ruleRisk := buildRuleContextBlocks(systemPrompt, task, mode, cfg, tools, conversationBlocks)
 	contextBlocks := append(ruleBlocks, skillBlocks...)
+	contextBlocks = append(contextBlocks, cfg.AdditionalContextBlocks...)
 	contextBlocks = append(contextBlocks, conversationBlocks...)
 	reflectionPolicy, policyErr := effectiveReflectionPolicy(cfg)
 	if policyErr != nil {
@@ -476,7 +531,7 @@ func (n AgentNode) runAgent(
 	}
 	var reflectionRecall reflection.RecallResult
 	if resume == nil && n.Reflections != nil && reflectionPolicy.Active() {
-		reflectionRecall, _ = n.Reflections.Recall(ctx, reflection.RecallRequest{OwnerID: rc.OwnerID, WorkflowID: rc.WorkflowID,
+		reflectionRecall, _ = n.Reflections.Recall(ctx, reflection.RecallRequest{OwnerID: rc.OwnerID, WorkflowID: rc.WorkflowID, AgentID: rc.AgentID,
 			RunID: rc.RunID, NodeID: rc.CurrentNodeID, Mode: mode, Task: task, Policy: reflectionPolicy})
 		if reflectionAffectsExecution(reflectionPolicy) && strings.TrimSpace(reflectionRecall.Context) != "" {
 			contextBlocks = append(contextBlocks, runtimeagent.ContextBlock{Name: "reflection_memory", Role: "system", Content: reflectionRecall.Context, Pinned: false})
@@ -535,6 +590,8 @@ func (n AgentNode) runAgent(
 	runRequest := runtimeagent.RunRequest{
 		OwnerID:                   rc.OwnerID,
 		WorkflowID:                rc.WorkflowID,
+		AgentID:                   rc.AgentID,
+		AgentReleaseID:            rc.AgentReleaseID,
 		RunID:                     rc.RunID,
 		NodeID:                    rc.CurrentNodeID,
 		CallDepth:                 rc.CallDepth,
@@ -587,6 +644,8 @@ func (n AgentNode) runAgent(
 			RunRequest: runtimeagent.RunRequest{
 				OwnerID:                   rc.OwnerID,
 				WorkflowID:                rc.WorkflowID,
+				AgentID:                   rc.AgentID,
+				AgentReleaseID:            rc.AgentReleaseID,
 				RunID:                     rc.RunID,
 				NodeID:                    rc.CurrentNodeID,
 				CallDepth:                 rc.CallDepth,
@@ -634,6 +693,9 @@ func (n AgentNode) runAgent(
 		runRequest = *resumeRequest
 	}
 	result, err := runner.Run(ctx, runRequest)
+	if result != nil && (result.StopReason == runtimeagent.StopReasonWaitingHuman || result.StopReason == runtimeagent.StopReasonPaused) {
+		keepWorkspace = true
+	}
 	n.updateWorkingMemory(ctx, rc, result)
 	n.checkExtractionTrigger(ctx, rc, result)
 	if result != nil {
@@ -784,7 +846,15 @@ func (n AgentNode) finalizeReflection(ctx context.Context, rc *engine.RunContext
 	if strings.TrimSpace(policy.Model) != "" {
 		model = strings.TrimSpace(policy.Model)
 	}
-	_ = n.Reflections.Enqueue(ctx, &reflection.Job{OwnerID: rc.OwnerID, WorkflowID: rc.WorkflowID, RunID: rc.RunID,
+	var reflectionAgentID *int64
+	reflectionWorkflowID := rc.WorkflowID
+	if rc.AgentID > 0 {
+		reflectionAgentID = &rc.AgentID
+		// Keep the legacy non-pointer workflow scope collision-free while the
+		// physical reflection tables transition to first-class agent_id scope.
+		reflectionWorkflowID = -rc.AgentID
+	}
+	_ = n.Reflections.Enqueue(ctx, &reflection.Job{OwnerID: rc.OwnerID, WorkflowID: reflectionWorkflowID, AgentID: reflectionAgentID, RunID: rc.RunID,
 		NodeID: rc.CurrentNodeID, ProviderID: providerID, Model: model, Mode: agentMode(cfg.Mode), Task: task,
 		PayloadJSON: payload, Status: reflection.JobPending, MaxAttempts: 3})
 }
@@ -855,7 +925,7 @@ func (n AgentNode) applyProfileDefaults(
 	}
 	if published != nil {
 		custom := rules.RulesFromCompiled(published)
-		runtimeCompiled, compileErr := rules.CompileRuntimeRuleSet(custom)
+		runtimeCompiled, compileErr := rules.CompileActiveRuleSet(custom)
 		if compileErr != nil {
 			return cfg, fmt.Errorf("compose platform and published rules: %w", compileErr)
 		}
@@ -918,14 +988,28 @@ func (n AgentNode) applyProfileDefaults(
 }
 
 type profileContextPolicy struct {
-	MaxInputChars             int          `json:"max_input_chars"`
-	MaxInputTokens            int          `json:"max_input_tokens"`
-	ContextWindowTokens       int          `json:"context_window_tokens"`
-	ReservedOutputTokens      int          `json:"reserved_output_tokens"`
-	ContextSafetyMarginTokens int          `json:"context_safety_margin_tokens"`
-	MaxRuleTokens             int          `json:"max_rule_tokens"`
-	RuleSetVersion            string       `json:"rule_set_version"`
-	Rules                     []rules.Rule `json:"rules"`
+	MaxInputChars             int                   `json:"max_input_chars"`
+	MaxInputTokens            int                   `json:"max_input_tokens"`
+	ContextWindowTokens       int                   `json:"context_window_tokens"`
+	ReservedOutputTokens      int                   `json:"reserved_output_tokens"`
+	ContextSafetyMarginTokens int                   `json:"context_safety_margin_tokens"`
+	MaxRuleTokens             int                   `json:"max_rule_tokens"`
+	RuleSetVersion            string                `json:"rule_set_version"`
+	LegacyRules               []rules.LegacyRuleDTO `json:"rules"`
+	Rules                     []rules.Rule          `json:"-"`
+}
+
+func decodeProfileContextPolicy(raw json.RawMessage) (profileContextPolicy, error) {
+	var policy profileContextPolicy
+	if err := json.Unmarshal(raw, &policy); err != nil {
+		return policy, err
+	}
+	converted, _, err := rules.ConvertLegacyRules(policy.LegacyRules)
+	if err != nil {
+		return policy, err
+	}
+	policy.Rules = converted
+	return policy, nil
 }
 
 type profileMemoryPolicy struct {
@@ -958,8 +1042,8 @@ func applyProfileContextPolicy(cfg agentRuntimeConfig, raw json.RawMessage) agen
 	if len(raw) == 0 || string(bytes.TrimSpace(raw)) == "{}" || string(bytes.TrimSpace(raw)) == "null" {
 		return cfg
 	}
-	var policy profileContextPolicy
-	if err := json.Unmarshal(raw, &policy); err != nil {
+	policy, err := decodeProfileContextPolicy(raw)
+	if err != nil {
 		return cfg
 	}
 	if cfg.MaxInputChars > 0 || cfg.MaxInputTokens > 0 {
@@ -980,8 +1064,8 @@ func applyNodeContextPolicy(cfg agentRuntimeConfig, raw json.RawMessage) agentRu
 	if len(raw) == 0 || string(bytes.TrimSpace(raw)) == "{}" || string(bytes.TrimSpace(raw)) == "null" {
 		return cfg
 	}
-	var policy profileContextPolicy
-	if err := json.Unmarshal(raw, &policy); err != nil {
+	policy, err := decodeProfileContextPolicy(raw)
+	if err != nil {
 		return cfg
 	}
 	if policy.MaxInputChars > 0 {
@@ -1193,15 +1277,15 @@ func validateAgentContextPolicyJSON(raw json.RawMessage, nodeType string) error 
 	if len(raw) == 0 || string(bytes.TrimSpace(raw)) == "{}" || string(bytes.TrimSpace(raw)) == "null" {
 		return nil
 	}
-	var policy profileContextPolicy
-	if err := json.Unmarshal(raw, &policy); err != nil {
+	policy, err := decodeProfileContextPolicy(raw)
+	if err != nil {
 		return fmt.Errorf("%w: %s context_policy_json is invalid", agenterrors.ErrInvalidInput, nodeType)
 	}
 	if policy.MaxInputChars < 0 || policy.MaxInputTokens < 0 || policy.ContextWindowTokens < 0 || policy.ReservedOutputTokens < 0 || policy.ContextSafetyMarginTokens < 0 || policy.MaxRuleTokens < 0 {
 		return fmt.Errorf("%w: %s context policy limits must be positive", agenterrors.ErrInvalidInput, nodeType)
 	}
-	if err := rules.ValidateCustomRules(policy.Rules); err != nil {
-		return fmt.Errorf("%w: %s custom rules are invalid: %v", agenterrors.ErrInvalidInput, nodeType, err)
+	if len(policy.LegacyRules) > 0 {
+		return fmt.Errorf("%w: %s context_policy_json.rules is read-only legacy data; use a versioned rule set", agenterrors.ErrInvalidInput, nodeType)
 	}
 	return nil
 }
@@ -1284,9 +1368,33 @@ func agentStepRecord(step runtimeagent.RunStep, nodeID string) engine.AgentStepR
 	}
 }
 
-func (n AgentNode) loadTools(ctx context.Context, ownerID int64, cfg agentRuntimeConfig, provider *LoadedProvider) ([]toolruntime.RuntimeTool, error) {
+func (n AgentNode) loadTools(ctx context.Context, ownerID int64, cfg agentRuntimeConfig, provider *LoadedProvider, workspaceExecutions ...*toolruntime.WorkspaceExecution) ([]toolruntime.RuntimeTool, error) {
+	var workspaceExecution *toolruntime.WorkspaceExecution
+	if len(workspaceExecutions) > 0 {
+		workspaceExecution = workspaceExecutions[0]
+	}
 	tools := make([]toolruntime.RuntimeTool, 0, len(cfg.ToolIDs)+2)
 	tools = append(tools, toolruntime.HumanApprovalTool{})
+	if cfg.WorkspaceEnabled {
+		if cfg.WorkspacePackID == nil || *cfg.WorkspacePackID <= 0 {
+			return nil, fmt.Errorf("agent_runtime workspace_pack_id is required")
+		}
+		if n.Workspaces == nil {
+			return nil, fmt.Errorf("agent_runtime workspace repository is not configured")
+		}
+		pack, err := n.Workspaces.FindPack(ctx, ownerID, *cfg.WorkspacePackID)
+		if err != nil || pack.Status != workspace.StatusActive || pack.DeletedAt != nil {
+			return nil, fmt.Errorf("agent_runtime workspace pack is unavailable")
+		}
+		workspaceItem, err := n.Workspaces.FindWorkspace(ctx, ownerID, pack.WorkspaceID)
+		if err != nil || workspaceItem.Status != workspace.StatusActive || workspaceItem.DeletedAt != nil {
+			return nil, fmt.Errorf("agent_runtime workspace is unavailable")
+		}
+		if workspaceExecution != nil && workspaceExecution.Workspace != nil {
+			workspaceItem = workspaceExecution.Workspace
+		}
+		tools = append(tools, toolruntime.NewWorkspaceTools(workspaceItem, pack, nil)...)
+	}
 	loadedSkills, err := n.loadSkillDefinitions(ctx, ownerID, cfg.SkillIDs)
 	if err != nil {
 		return nil, err
@@ -1318,12 +1426,22 @@ func (n AgentNode) loadTools(ctx context.Context, ownerID int64, cfg agentRuntim
 		if n.WorkflowCaller == nil {
 			return nil, fmt.Errorf("agent_loop workflow caller is not configured")
 		}
+		toolName := strings.TrimSpace(cfg.CallWorkflowToolName)
+		if toolName == "" {
+			toolName = "call_agent"
+		}
 		tools = append(tools, toolruntime.WorkflowCallTool{
 			Caller:             n.WorkflowCaller,
 			AllowedWorkflowIDs: cfg.CallWorkflowIDs,
 			MaxDepth:           cfg.MaxWorkflowCallDepth,
-			ToolName:           "call_agent",
+			ToolName:           toolName,
 		})
+	}
+	if len(cfg.CallAgentIDs) > 0 {
+		if n.AgentCaller == nil {
+			return nil, fmt.Errorf("agent_runtime agent caller is not configured")
+		}
+		tools = append(tools, toolruntime.AgentCallTool{Caller: n.AgentCaller, AllowedAgentIDs: cfg.CallAgentIDs, MaxDepth: cfg.MaxWorkflowCallDepth})
 	}
 	if cfg.AllowInlineAgents {
 		if n.InlineAgentCaller == nil {
@@ -1361,6 +1479,9 @@ func (n AgentNode) loadTools(ctx context.Context, ownerID int64, cfg agentRuntim
 			toolruntime.MemoryReadTool{Memories: n.Memories, Retriever: n.MemoryRetriever, Archival: archival},
 			toolruntime.MemoryWriteTool{Memories: n.Memories, Logs: n.MemoryLogs, Retriever: n.MemoryRetriever, Archival: archival},
 		)
+		if n.SessionSearch != nil {
+			tools = append(tools, toolruntime.SessionSearchTool{Index: n.SessionSearch})
+		}
 	}
 	if len(cfg.ToolIDs) == 0 {
 		return tools, nil
@@ -1373,6 +1494,24 @@ func (n AgentNode) loadTools(ctx context.Context, ownerID int64, cfg agentRuntim
 		return nil, err
 	}
 	return append(tools, loaded...), nil
+}
+
+func (n AgentNode) acquireWorkspaceExecution(ctx context.Context, ownerID, runID int64, cfg agentRuntimeConfig) (*toolruntime.WorkspaceExecution, error) {
+	if !cfg.WorkspaceEnabled {
+		return nil, nil
+	}
+	if cfg.WorkspacePackID == nil || *cfg.WorkspacePackID <= 0 || n.Workspaces == nil || n.WorkspaceManager == nil {
+		return nil, fmt.Errorf("agent_runtime workspace manager is not configured")
+	}
+	pack, err := n.Workspaces.FindPack(ctx, ownerID, *cfg.WorkspacePackID)
+	if err != nil || pack.Status != workspace.StatusActive || pack.DeletedAt != nil {
+		return nil, fmt.Errorf("agent_runtime workspace pack is unavailable")
+	}
+	workspaceItem, err := n.Workspaces.FindWorkspace(ctx, ownerID, pack.WorkspaceID)
+	if err != nil || workspaceItem.Status != workspace.StatusActive || workspaceItem.DeletedAt != nil {
+		return nil, fmt.Errorf("agent_runtime workspace is unavailable")
+	}
+	return n.WorkspaceManager.Acquire(ctx, ownerID, runID, workspaceItem)
 }
 
 func (n AgentNode) loadSkillDefinitions(ctx context.Context, ownerID int64, ids []int64) ([]skill.Skill, error) {
@@ -1711,10 +1850,7 @@ func buildRuleContextBlocks(
 		risk = highestConfiguredRisk(cfg.RequireApprovalForRisk)
 	}
 	tags := inferRuleTags(task, mode, cfg, tools, conversation)
-	toolNames := runtimeToolNames(tools)
-	selected, trace := rules.ResolvePersistentWithRules(
-		systemPrompt, task, mode, risk, toolNames, tags, cfg.CustomRules, nil, rules.AuditPolicy{},
-	)
+	selected, trace := rules.ResolvePersistentWithRules(cfg.CustomRules)
 	trace.RuleSetID = cfg.RuleSetID
 	trace.RuleSetVersion = cfg.RuleSetVersion
 	trace.CompiledHash = cfg.CompiledRuleHash
@@ -1723,7 +1859,7 @@ func buildRuleContextBlocks(
 	}
 	blocks := make([]runtimeagent.ContextBlock, 0, 2)
 	for _, item := range selected {
-		if item.EffectiveStrength() != rules.RuleMandatory {
+		if item.Strength != rules.RuleMandatory {
 			continue
 		}
 		content := strings.TrimSpace(item.Content)
@@ -1731,7 +1867,7 @@ func buildRuleContextBlocks(
 			continue
 		}
 		blocks = append(blocks, runtimeagent.ContextBlock{
-			Name:    ruleBlockName(item.Level, item.ID),
+			Name:    ruleBlockName(item.ID),
 			Role:    "system",
 			Content: content,
 			Pinned:  true,
@@ -1834,25 +1970,8 @@ func conversationText(blocks []runtimeagent.ContextBlock) string {
 	return strings.Join(parts, "\n")
 }
 
-func ruleBlockName(level rules.RuleLevel, ruleID string) string {
-	return fmt.Sprintf("rules_%s:%s", levelSuffix(level), strings.TrimSpace(ruleID))
-}
-
-func levelSuffix(level rules.RuleLevel) string {
-	switch level {
-	case rules.LevelL0Safety:
-		return "l0"
-	case rules.LevelL1Core:
-		return "l1"
-	case rules.LevelL2Scenario:
-		return "l2"
-	case rules.LevelL3Tool:
-		return "l3"
-	case rules.LevelL4Ephemeral:
-		return "l4"
-	default:
-		return "l2"
-	}
+func ruleBlockName(ruleID string) string {
+	return "rules_mandatory:" + strings.TrimSpace(ruleID)
 }
 
 func dedupeLower(values []string) []string {

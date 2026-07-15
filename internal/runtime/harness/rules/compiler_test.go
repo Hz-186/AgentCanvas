@@ -25,6 +25,16 @@ func TestCompileRuleSetRejectsCycleAndMandatoryDependingOnOptional(t *testing.T)
 	}
 }
 
+func TestRuleRejectsLegacyLevelAndRequiresStrength(t *testing.T) {
+	var rule Rule
+	if err := json.Unmarshal([]byte(`{"id":"tenant.legacy","level":"l2_scenario","content":"legacy"}`), &rule); err == nil || !strings.Contains(err.Error(), "strength") {
+		t.Fatalf("expected legacy level to be rejected, got %v", err)
+	}
+	if _, err := CompileRuleSet([]Rule{{ID: "tenant.missing", Content: "missing"}}, CompileOptions{}); err == nil || !strings.Contains(err.Error(), "requires strength") {
+		t.Fatalf("expected missing strength to be rejected, got %v", err)
+	}
+}
+
 func TestCompileRuleSetRequiresBindingForSafetyCriticalRule(t *testing.T) {
 	_, err := CompileRuleSet([]Rule{{
 		ID: "tenant.safety", Content: "never delete production", Strength: RuleMandatory, SafetyCritical: true,
@@ -43,7 +53,7 @@ func TestCompileRuleSetRequiresBindingForSafetyCriticalRule(t *testing.T) {
 			Params:    json.RawMessage(`{}`),
 		},
 	}}, CompileOptions{})
-	if err != nil || compiled.CompiledHash == "" || compiled.MandatoryTokens == 0 {
+	if err != nil || compiled.SchemaVersion != CurrentSnapshotSchemaVersion || compiled.CompiledHash == "" || compiled.MandatoryTokens == 0 {
 		t.Fatalf("expected compiled safety rule, compiled=%+v err=%v", compiled, err)
 	}
 }
@@ -117,17 +127,17 @@ func TestCompileRuleSetRejectsMalformedPolicyParams(t *testing.T) {
 	}
 }
 
-func TestCompiledOptionalSelectionIgnoresLegacyLevelScore(t *testing.T) {
+func TestCompiledOptionalSelectionUsesPriorityWithoutTierScore(t *testing.T) {
 	compiled, err := CompileRuleSet([]Rule{
-		{ID: "tenant.a", Content: "a", Strength: RuleOptional, Level: LevelL4Ephemeral, TokenBudget: 1, Activation: Activation{Always: true}},
-		{ID: "tenant.b", Content: "b", Strength: RuleOptional, Level: LevelL2Scenario, TokenBudget: 1, Activation: Activation{Always: true}},
+		{ID: "tenant.a", Content: "a", Strength: RuleOptional, Priority: 2, TokenBudget: 1, Activation: Activation{Always: true}},
+		{ID: "tenant.b", Content: "b", Strength: RuleOptional, Priority: 1, TokenBudget: 1, Activation: Activation{Always: true}},
 	}, CompileOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	loaded, _ := SelectOptionalRules(compiled, LoadContext{TokenBudget: 1}, 100)
 	if len(loaded) != 1 || loaded[0].ID != "tenant.a" {
-		t.Fatalf("legacy level must not influence compiled optional ranking, got %+v", loaded)
+		t.Fatalf("priority must determine optional ranking without tiers, got %+v", loaded)
 	}
 }
 
@@ -143,26 +153,11 @@ func TestConservativeRuleCostCannotBeLoweredByLegacyBudget(t *testing.T) {
 	}
 }
 
-func TestCompileRuleSetNormalizesLegacyLevelToExplicitStrength(t *testing.T) {
-	compiled, err := CompileRuleSet([]Rule{
-		{ID: "tenant.mandatory", Content: "mandatory", Strength: RuleMandatory, Level: LevelL3Tool},
-		{ID: "tenant.optional", Content: "optional", Strength: RuleOptional, Level: LevelL0Safety},
-	}, CompileOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	mandatory, _ := compiled.RuleByID("tenant.mandatory")
-	optional, _ := compiled.RuleByID("tenant.optional")
-	if mandatory.Rule.Level != LevelL1Core || optional.Rule.Level != LevelL2Scenario {
-		t.Fatalf("legacy levels must not contradict explicit strength: mandatory=%s optional=%s", mandatory.Rule.Level, optional.Rule.Level)
-	}
-}
-
 func TestCompileRuleSetPersistsDependencyProvenanceAndClosureBits(t *testing.T) {
 	compiled, err := CompileRuleSet([]Rule{
 		{ID: "tenant.base", Content: "base", Strength: RuleOptional},
-		{ID: "tenant.llm", Content: "llm", Strength: RuleOptional},
-		{ID: "tenant.manual", Content: "manual", Strength: RuleOptional, ManualDependsOn: []string{"tenant.base"}},
+		{ID: "tenant.llm", Content: "llm", Strength: RuleOptional, Activation: Activation{Always: true}},
+		{ID: "tenant.manual", Content: "manual", Strength: RuleOptional, Activation: Activation{Always: true}, ManualDependsOn: []string{"tenant.base"}},
 	}, CompileOptions{Edges: []DependencyEdge{
 		{RuleID: "tenant.llm", DependsOn: "tenant.base", Source: "llm", Decision: "accepted"},
 	}})

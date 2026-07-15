@@ -12,8 +12,7 @@ import (
 
 const defaultRuleSafetyMarginTokens = 256
 
-// RulePlanner selects only the non-persistent rules required for one model turn.
-// L0/L1 stay in the static context assembled by the node.
+// RulePlanner selects only optional rules required for one model turn.
 type RulePlanner struct{}
 
 type RulePlanningState struct {
@@ -78,19 +77,7 @@ func (RulePlanner) Plan(state RulePlanningState) RulePlan {
 			tags,
 			budget.AvailableRuleTokens,
 			state.CustomRules,
-			nil,
-			rules.AuditPolicy{},
 		)
-	}
-	// Tool guidance is useful only after the tool has become part of this run.
-	// It must not consume every initial prompt merely because a tool is available.
-	kept := selected[:0]
-	for _, rule := range selected {
-		if rule.Level == rules.LevelL3Tool && len(state.UsedToolNames) == 0 {
-			trace.RemoveLoaded(rule, rules.ReasonDeferredUntilToolUse)
-			continue
-		}
-		kept = append(kept, rule)
 	}
 	closureRejected := 0
 	for _, reason := range trace.SkipReasons {
@@ -99,7 +86,7 @@ func (RulePlanner) Plan(state RulePlanningState) RulePlan {
 		}
 	}
 	observability.RuleSystemMetrics.RecordPlanner(time.Since(started), trace.OptimizerLimited, closureRejected)
-	return RulePlan{Rules: kept, Trace: trace, Budget: budget}
+	return RulePlan{Rules: selected, Trace: trace, Budget: budget}
 }
 
 func calculateRuleBudget(state RulePlanningState) RuleBudget {

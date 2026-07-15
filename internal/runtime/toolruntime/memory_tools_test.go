@@ -5,8 +5,40 @@ import (
 	"encoding/json"
 	"testing"
 
+	"agentcanvas/internal/domain/conversation"
 	"agentcanvas/internal/domain/memory"
 )
+
+type fakeSessionSearchIndex struct {
+	request conversation.MessageSearchRequest
+}
+
+func (*fakeSessionSearchIndex) EnsureIndex(context.Context) error { return nil }
+func (*fakeSessionSearchIndex) IndexMessage(context.Context, int64, int64, *conversation.Message) error {
+	return nil
+}
+func (f *fakeSessionSearchIndex) SearchMessages(_ context.Context, request conversation.MessageSearchRequest) ([]conversation.MessageSearchResult, error) {
+	f.request = request
+	return []conversation.MessageSearchResult{{MessageID: 9, AgentID: request.AgentID, Content: "prior decision"}}, nil
+}
+func (*fakeSessionSearchIndex) DeleteConversation(context.Context, int64, int64, int64) error {
+	return nil
+}
+
+func TestSessionSearchToolForcesTenantAndAgentScope(t *testing.T) {
+	index := &fakeSessionSearchIndex{}
+	tool := SessionSearchTool{Index: index}
+	result, err := tool.Execute(context.Background(), ToolRunContext{OwnerID: 3, AgentID: 7}, json.RawMessage(`{"query":"decision","limit":5}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if index.request.OwnerID != 3 || index.request.AgentID != 7 || index.request.Query != "decision" {
+		t.Fatalf("unexpected search scope: %+v", index.request)
+	}
+	if result == nil || result.IsError {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+}
 
 type fakeMemoryRepo struct {
 	items   map[int64]*memory.Memory

@@ -117,7 +117,7 @@ func (a ContextAssembler) Build(req RunRequest) ([]llm.ChatMessage, ContextTrace
 			Pinned:        block.Pinned,
 			OriginalChars: originalChars,
 		}
-		if isCoreRuleBlock(name) {
+		if isMandatoryRuleBlock(name) {
 			available := maxTokens - usedTokens
 			if available < 0 {
 				available = 0
@@ -128,7 +128,7 @@ func (a ContextAssembler) Build(req RunRequest) ([]llm.ChatMessage, ContextTrace
 			trace.MandatoryTokens += originalTokens
 		}
 		if used+len(content) > maxChars || usedTokens+originalTokens > maxTokens {
-			if isCoreRuleBlock(name) {
+			if isMandatoryRuleBlock(name) {
 				trace.CoreOverflow = true
 				deficit := usedTokens + originalTokens - maxTokens
 				if charOverflow := used + len(content) - maxChars; charOverflow > 0 {
@@ -185,14 +185,13 @@ func (a ContextAssembler) Build(req RunRequest) ([]llm.ChatMessage, ContextTrace
 	return messages, trace
 }
 
-func isCoreRuleBlock(name string) bool {
-	category := tokenAuditCategory(name)
-	return category == "rules_l0" || category == "rules_l1"
+func isMandatoryRuleBlock(name string) bool {
+	return tokenAuditCategory(name) == "rules_mandatory"
 }
 
 func blockSortPriority(name string) int {
 	switch tokenAuditCategory(name) {
-	case "system", "rules_l0", "rules_l1", "rules_l2", "rules_l3", "rules_l4":
+	case "system", "rules_mandatory", "rules_optional":
 		return 0
 	case "tool_schema":
 		return 1
@@ -342,16 +341,10 @@ func (a *TokenAudit) add(name string, tokens int) {
 	switch tokenAuditCategory(name) {
 	case "system":
 		a.System += tokens
-	case "rules_l0":
-		a.RulesL0 += tokens
-	case "rules_l1":
-		a.RulesL1 += tokens
-	case "rules_l2":
-		a.RulesL2 += tokens
-	case "rules_l3":
-		a.RulesL3 += tokens
-	case "rules_l4":
-		a.RulesL4 += tokens
+	case "rules_mandatory":
+		a.RulesMandatory += tokens
+	case "rules_optional":
+		a.RulesOptional += tokens
 	case "tool_schema":
 		a.ToolSchema += tokens
 	case "history":
@@ -376,16 +369,10 @@ func tokenAuditCategory(name string) string {
 	switch {
 	case name == "system" || name == "agent_mode":
 		return "system"
-	case strings.HasPrefix(name, "rule_l0") || strings.HasPrefix(name, "rules_l0"):
-		return "rules_l0"
-	case strings.HasPrefix(name, "rule_l1") || strings.HasPrefix(name, "rules_l1"):
-		return "rules_l1"
-	case strings.HasPrefix(name, "rule_l2") || strings.HasPrefix(name, "rules_l2"):
-		return "rules_l2"
-	case strings.HasPrefix(name, "rule_l3") || strings.HasPrefix(name, "rules_l3"):
-		return "rules_l3"
-	case strings.HasPrefix(name, "rule_l4") || strings.HasPrefix(name, "rules_l4"):
-		return "rules_l4"
+	case strings.HasPrefix(name, "rule_mandatory") || strings.HasPrefix(name, "rules_mandatory"):
+		return "rules_mandatory"
+	case strings.HasPrefix(name, "rule_optional") || strings.HasPrefix(name, "rules_optional"):
+		return "rules_optional"
 	case strings.Contains(name, "tool_schema"):
 		return "tool_schema"
 	case strings.Contains(name, "history") || strings.Contains(name, "conversation"):

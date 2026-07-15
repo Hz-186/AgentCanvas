@@ -13,6 +13,7 @@ import (
 	"agentcanvas/internal/domain/skill"
 	"agentcanvas/internal/domain/tool"
 	"agentcanvas/internal/domain/workflow"
+	"agentcanvas/internal/domain/workspace"
 	"agentcanvas/internal/infrastructure/llm"
 	"agentcanvas/internal/infrastructure/vectorstore"
 	"agentcanvas/internal/runtime/engine"
@@ -56,6 +57,7 @@ type Deps struct {
 	Providers               ProviderConfigLoader
 	Messages                MessageWriter
 	MessageHistory          MessageHistoryReader
+	SessionSearch           conversation.MessageSearchIndex
 	Memories                memory.Repository
 	MemoryWriteLogs         memory.WriteLogRepository
 	MemoryRetriever         memory.SemanticRetriever
@@ -71,13 +73,16 @@ type Deps struct {
 	ToolRegistry            toolruntime.Registry
 	WorkflowCaller          toolruntime.WorkflowCaller
 	InlineAgentCaller       toolruntime.InlineAgentCaller
+	AgentCaller             toolruntime.AgentCaller
 	Profiles                AgentProfileLoader
 	RuleSets                ActiveRuleSetLoader
 	Reflections             reflection.Advisor
 	Teams                   workflow.TeamRepository
+	Workspaces              workspace.Repository
 	Sandbox                 sandbox.Runner
 	ArchivalVecStore        vectorstore.Store
 	Embedder                llm.EmbeddingClient
+	SharedAgentRuntime      *SharedAgentRuntime
 }
 
 func DefaultNodes(deps Deps) ([]engine.Node, error) {
@@ -87,32 +92,15 @@ func DefaultNodes(deps Deps) ([]engine.Node, error) {
 	if deps.Sandbox == nil {
 		return nil, fmt.Errorf("sandbox runner is required")
 	}
-	workspaceRoot, _ := os.Getwd()
-	agentNode := AgentNode{
-		LLM:               deps.ToolCalling,
-		Providers:         deps.Providers,
-		Tools:             deps.ToolRegistry,
-		ToolPacks:         deps.ToolPacks,
-		Skills:            deps.Skills,
-		Audits:            deps.Audits,
-		MCPServers:        deps.MCPServers,
-		Retriever:         deps.Retriever,
-		MemoryRetriever:   deps.MemoryRetriever,
-		Memories:          deps.Memories,
-		MemoryLogs:        deps.MemoryWriteLogs,
-		WorkingMemory:     deps.WorkingMemory,
-		WorkflowCaller:    deps.WorkflowCaller,
-		InlineAgentCaller: deps.InlineAgentCaller,
-		Profiles:          deps.Profiles,
-		RuleSets:          deps.RuleSets,
-		Reflections:       deps.Reflections,
-		Sandbox:           deps.Sandbox,
-		MessageHistory:    deps.MessageHistory,
-		ArchivalVecStore:  deps.ArchivalVecStore,
-		Embedder:          deps.Embedder,
-		WorkspaceRoot:     workspaceRoot,
-		OnExtractTrigger:  deps.MemoryExtractionTrigger,
+	agentRuntime := deps.SharedAgentRuntime
+	if agentRuntime == nil {
+		var err error
+		agentRuntime, err = NewSharedAgentRuntime(deps)
+		if err != nil {
+			return nil, err
+		}
 	}
+	agentNode := agentRuntime.node
 	return []engine.Node{
 		BeginNode{},
 		RetrievalNode{Retriever: deps.Retriever},
@@ -132,4 +120,41 @@ func DefaultNodes(deps Deps) ([]engine.Node, error) {
 		JSONOutputNode{},
 		GuardrailNode{},
 	}, nil
+}
+
+func buildAgentNode(deps Deps) AgentNode {
+	workspaceRoot, _ := os.Getwd()
+	var workspaceManager *toolruntime.WorkspaceManager
+	if deps.Workspaces != nil {
+		workspaceManager = toolruntime.NewWorkspaceManager(deps.Workspaces)
+	}
+	return AgentNode{
+		LLM:               deps.ToolCalling,
+		Providers:         deps.Providers,
+		Tools:             deps.ToolRegistry,
+		ToolPacks:         deps.ToolPacks,
+		Skills:            deps.Skills,
+		Audits:            deps.Audits,
+		MCPServers:        deps.MCPServers,
+		Retriever:         deps.Retriever,
+		MemoryRetriever:   deps.MemoryRetriever,
+		Memories:          deps.Memories,
+		MemoryLogs:        deps.MemoryWriteLogs,
+		WorkingMemory:     deps.WorkingMemory,
+		WorkflowCaller:    deps.WorkflowCaller,
+		InlineAgentCaller: deps.InlineAgentCaller,
+		AgentCaller:       deps.AgentCaller,
+		Profiles:          deps.Profiles,
+		RuleSets:          deps.RuleSets,
+		Reflections:       deps.Reflections,
+		Workspaces:        deps.Workspaces,
+		WorkspaceManager:  workspaceManager,
+		Sandbox:           deps.Sandbox,
+		MessageHistory:    deps.MessageHistory,
+		SessionSearch:     deps.SessionSearch,
+		ArchivalVecStore:  deps.ArchivalVecStore,
+		Embedder:          deps.Embedder,
+		WorkspaceRoot:     workspaceRoot,
+		OnExtractTrigger:  deps.MemoryExtractionTrigger,
+	}
 }

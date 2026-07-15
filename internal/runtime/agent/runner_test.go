@@ -320,8 +320,8 @@ func TestRunnerRecordsProviderPromptTokenCalibration(t *testing.T) {
 
 func TestMergeRuleTracesPreservesPermanentAndDynamicRules(t *testing.T) {
 	merged := mergeRuleTraces(
-		rules.Trace{Loaded: []string{"safety.output.boundary", "core.task.completion"}, EstimatedUsed: 10, LevelUsage: map[string]int{"l1_core": 10}},
-		rules.Trace{Loaded: []string{"scenario.code.change_verification"}, EstimatedUsed: 8, LevelUsage: map[string]int{"l2_scenario": 8}},
+		rules.Trace{Loaded: []string{"safety.output.boundary", "core.task.completion"}, EstimatedUsed: 10},
+		rules.Trace{Loaded: []string{"scenario.code.change_verification"}, EstimatedUsed: 8},
 	)
 	if !containsRule(merged.Loaded, "core.task.completion") || !containsRule(merged.Loaded, "scenario.code.change_verification") || merged.EstimatedUsed != 18 {
 		t.Fatalf("expected merged persistent and dynamic trace, got %+v", merged)

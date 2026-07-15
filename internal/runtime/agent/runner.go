@@ -476,14 +476,10 @@ func truncateToEstimatedTokens(content string, maxTokens int) string {
 func mergeRuleTraces(persistent, dynamic rules.Trace) rules.Trace {
 	merged := dynamic
 	merged.Loaded = appendUniqueStrings(persistent.Loaded, dynamic.Loaded)
-	merged.Levels = appendUniqueStrings(persistent.Levels, dynamic.Levels)
 	merged.EstimatedUsed += persistent.EstimatedUsed
 	merged.SavedTokens += persistent.SavedTokens
 	merged.CandidateCount += persistent.CandidateCount
 	merged.ConsideredCount += persistent.ConsideredCount
-	merged.LevelUsage = mergeIntMaps(persistent.LevelUsage, dynamic.LevelUsage)
-	merged.LevelLoaded = mergeIntMaps(persistent.LevelLoaded, dynamic.LevelLoaded)
-	merged.PrunedTokensByLevel = mergeIntMaps(persistent.PrunedTokensByLevel, dynamic.PrunedTokensByLevel)
 	return merged
 }
 
@@ -497,20 +493,6 @@ func appendUniqueStrings(left, right []string) []string {
 				merged = append(merged, value)
 			}
 		}
-	}
-	return merged
-}
-
-func mergeIntMaps(left, right map[string]int) map[string]int {
-	if len(left) == 0 && len(right) == 0 {
-		return nil
-	}
-	merged := make(map[string]int, len(left)+len(right))
-	for key, value := range left {
-		merged[key] = value
-	}
-	for key, value := range right {
-		merged[key] += value
 	}
 	return merged
 }
@@ -600,7 +582,7 @@ func (r *Runner) executeToolBatch(
 	}
 	execute := func(item *preparedToolCall) {
 		started := r.now()
-		item.result, item.err = item.tool.Execute(item.execCtx, toolruntime.ToolRunContext{OwnerID: req.OwnerID, WorkflowID: req.WorkflowID, RunID: req.RunID, NodeID: req.NodeID, CallDepth: req.CallDepth, WorkflowCallChain: append([]int64(nil), req.WorkflowCallChain...), ConversationID: req.ConversationID}, item.call.Arguments)
+		item.result, item.err = item.tool.Execute(item.execCtx, toolruntime.ToolRunContext{OwnerID: req.OwnerID, WorkflowID: req.WorkflowID, AgentID: req.AgentID, AgentReleaseID: req.AgentReleaseID, RunID: req.RunID, NodeID: req.NodeID, CallDepth: req.CallDepth, WorkflowCallChain: append([]int64(nil), req.WorkflowCallChain...), ConversationID: req.ConversationID}, item.call.Arguments)
 		if item.execCancel != nil {
 			item.execCancel()
 		}

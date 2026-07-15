@@ -26,7 +26,9 @@ func (r *fakeSkillRepo) FindByID(ctx context.Context, ownerID, id int64) (*skill
 	clone := *item
 	return &clone, nil
 }
-func (r *fakeSkillRepo) List(context.Context, int64, int, int) ([]skill.Skill, error) { return nil, nil }
+func (r *fakeSkillRepo) List(context.Context, int64, int, int) ([]skill.Skill, error) {
+	return nil, nil
+}
 func (r *fakeSkillRepo) ListByIDs(ctx context.Context, ownerID int64, ids []int64) ([]skill.Skill, error) {
 	items := make([]skill.Skill, 0, len(ids))
 	for _, id := range ids {

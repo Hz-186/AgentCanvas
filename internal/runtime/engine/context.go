@@ -38,6 +38,8 @@ type RunContext struct {
 	OwnerID           int64                  `json:"owner_id" tag:"multi-tenant user ID"`
 	WorkflowID        int64                  `json:"workflow_id" tag:"parent agent ID"`
 	FlowVersionID     int64                  `json:"flow_version_id" tag:"DSL version ID"`
+	AgentID           int64                  `json:"agent_id,omitempty" tag:"independent agent ID"`
+	AgentReleaseID    int64                  `json:"agent_release_id,omitempty" tag:"pinned independent agent release ID"`
 	RuleSetID         int64                  `json:"rule_set_id,omitempty" tag:"pinned rule set ID"`
 	RuleSetVersion    string                 `json:"rule_set_version,omitempty" tag:"pinned rule set version"`
 	CompiledRuleHash  string                 `json:"compiled_rule_hash,omitempty" tag:"pinned compiled rule hash"`

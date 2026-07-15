@@ -51,7 +51,7 @@ func TestContextAssemblerDoesNotSilentlyTruncateCoreRules(t *testing.T) {
 	messages, trace := ContextAssembler{MaxInputTokens: 4}.Build(RunRequest{
 		Task: "task",
 		ContextBlocks: []ContextBlock{{
-			Name:    "rules_l1:core",
+			Name:    "rules_mandatory:core",
 			Role:    "system",
 			Content: strings.Repeat("core ", 20),
 			Pinned:  true,
@@ -72,7 +72,7 @@ func TestRunnerReturnsTypedMandatoryBudgetErrorBeforeCallingModel(t *testing.T) 
 	runner := NewRunner(client)
 	_, err := runner.Run(context.Background(), RunRequest{
 		Model: "test", Task: "task", MaxInputTokens: 4,
-		ContextBlocks: []ContextBlock{{Name: "rules_l1:tenant.mandatory", Role: "system", Content: strings.Repeat("mandatory ", 20), Pinned: true}},
+		ContextBlocks: []ContextBlock{{Name: "rules_mandatory:tenant.mandatory", Role: "system", Content: strings.Repeat("mandatory ", 20), Pinned: true}},
 	})
 	if !errors.Is(err, ErrMandatoryRuleBudgetExceeded) {
 		t.Fatalf("expected typed mandatory overflow, got %v", err)
@@ -181,18 +181,18 @@ func TestContextAssemblerBuildsTokenAuditByCategory(t *testing.T) {
 		SystemPrompt: "system prompt text",
 		Task:         "answer the task",
 		ContextBlocks: []ContextBlock{
-			{Name: "rules_l0:safety", Role: "system", Content: "never fabricate outputs"},
+			{Name: "rules_mandatory:safety", Role: "system", Content: "never fabricate outputs"},
 			{Name: "conversation", Role: "user", Content: "previous turn"},
 			{Name: "memory", Role: "user", Content: "remembered preference"},
 			{Name: "retrieval:kb", Role: "user", Content: "knowledge chunk content"},
-			{Name: "rules_l2:rag", Role: "system", Content: "cite retrieved chunks"},
-			{Name: "rules_l4:compression", Role: "system", Content: "summarize repeated context when safe"},
+			{Name: "rules_optional:rag", Role: "system", Content: "cite retrieved chunks"},
+			{Name: "rules_optional:compression", Role: "system", Content: "summarize repeated context when safe"},
 		},
 	})
 	if trace.TokenAudit.Total != trace.EstimatedTokens {
 		t.Fatalf("token audit total = %d, estimated = %d", trace.TokenAudit.Total, trace.EstimatedTokens)
 	}
-	if trace.TokenAudit.System == 0 || trace.TokenAudit.History == 0 || trace.TokenAudit.Memory == 0 || trace.TokenAudit.Retrieval == 0 || trace.TokenAudit.Task == 0 || trace.TokenAudit.RulesL0 == 0 || trace.TokenAudit.RulesL2 == 0 || trace.TokenAudit.RulesL4 == 0 {
+	if trace.TokenAudit.System == 0 || trace.TokenAudit.History == 0 || trace.TokenAudit.Memory == 0 || trace.TokenAudit.Retrieval == 0 || trace.TokenAudit.Task == 0 || trace.TokenAudit.RulesMandatory == 0 || trace.TokenAudit.RulesOptional == 0 {
 		t.Fatalf("missing token audit categories: %+v", trace.TokenAudit)
 	}
 }
@@ -203,14 +203,14 @@ func TestContextAssemblerDropsReflectionBeforeMandatoryRules(t *testing.T) {
 		MaxInputTokens: 12,
 		ContextBlocks: []ContextBlock{
 			{Name: "reflection_memory", Role: "system", Content: strings.Repeat("lesson ", 30)},
-			{Name: "rules_l0:safety", Role: "system", Content: "never bypass safety", Pinned: true},
-			{Name: "rules_l1:tenant", Role: "system", Content: "respect tenant policy", Pinned: true},
+			{Name: "rules_mandatory:safety", Role: "system", Content: "never bypass safety", Pinned: true},
+			{Name: "rules_mandatory:tenant", Role: "system", Content: "respect tenant policy", Pinned: true},
 		},
 	})
 	if trace.CoreOverflow {
 		t.Fatalf("reflection memory must not consume the mandatory rule budget: %+v", trace)
 	}
-	if trace.TokenAudit.RulesL0 == 0 || trace.TokenAudit.RulesL1 == 0 {
+	if trace.TokenAudit.RulesMandatory == 0 {
 		t.Fatalf("mandatory rules were not retained: %+v", trace.TokenAudit)
 	}
 	if trace.TokenAudit.ReflectionMemory != 0 {
@@ -240,10 +240,10 @@ func TestContextAssemblerCarriesRuleTrace(t *testing.T) {
 		Task: "answer the task",
 		RuleTrace: rules.Trace{
 			Loaded:            []string{"core.task.completion"},
-			SelectionStrategy: "mcts_pruning:tiered_budgeted_scoring",
+			SelectionStrategy: "dag_branch_and_bound:v1",
 		},
 	})
-	if trace.RuleTrace.SelectionStrategy != "mcts_pruning:tiered_budgeted_scoring" || len(trace.RuleTrace.Loaded) != 1 {
+	if trace.RuleTrace.SelectionStrategy != "dag_branch_and_bound:v1" || len(trace.RuleTrace.Loaded) != 1 {
 		t.Fatalf("expected rule trace to be preserved, got %+v", trace.RuleTrace)
 	}
 }

@@ -193,12 +193,39 @@ func appendUniqueString(values []string, value string) []string {
 }
 
 func CheckpointFromJSON(data json.RawMessage) (*Checkpoint, error) {
-	var cp Checkpoint
-	if err := json.Unmarshal(data, &cp); err != nil {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
 		return nil, err
 	}
-	if cp.CompiledRules != nil {
-		cp.CompiledRules.Prepare()
+	compiledRaw := fields["compiled_rules"]
+	customRaw := fields["custom_rules"]
+	delete(fields, "compiled_rules")
+	delete(fields, "custom_rules")
+	base, err := json.Marshal(fields)
+	if err != nil {
+		return nil, err
+	}
+	var cp Checkpoint
+	if err := json.Unmarshal(base, &cp); err != nil {
+		return nil, err
+	}
+	if len(compiledRaw) > 0 && string(compiledRaw) != "null" {
+		compiled, decodeErr := rules.DecodeCompiledRuleSet(compiledRaw)
+		if decodeErr != nil {
+			return nil, decodeErr
+		}
+		cp.CompiledRules = compiled
+	}
+	if len(customRaw) > 0 && string(customRaw) != "null" {
+		var legacy []rules.LegacyRuleDTO
+		if err := json.Unmarshal(customRaw, &legacy); err != nil {
+			return nil, err
+		}
+		converted, _, convertErr := rules.ConvertLegacyRules(legacy)
+		if convertErr != nil {
+			return nil, convertErr
+		}
+		cp.CustomRules = converted
 	}
 	return &cp, nil
 }

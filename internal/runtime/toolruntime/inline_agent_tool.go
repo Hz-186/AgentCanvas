@@ -36,6 +36,7 @@ type InlineAgentCallRequest struct {
 	OwnerID           int64                 `json:"owner_id"`
 	ParentRunID       int64                 `json:"parent_run_id"`
 	CallerWorkflowID  int64                 `json:"caller_workflow_id"`
+	CallerAgentID     int64                 `json:"caller_agent_id"`
 	CallerNodeID      string                `json:"caller_node_id"`
 	FlowVersionID     int64                 `json:"flow_version_id"`
 	ConversationID    *int64                `json:"conversation_id,omitempty"`
@@ -130,7 +131,7 @@ func (t InlineAgentTool) Execute(ctx context.Context, rc ToolRunContext, input j
 	definition.MaxToolTimeoutMS = t.Default.MaxToolTimeoutMS
 	definition.MaxToolOutputBytes = t.Default.MaxToolOutputBytes
 	definition.AllowedHosts = append([]string(nil), t.Default.AllowedHosts...)
-	result, err := t.Caller.CallInlineAgent(ctx, InlineAgentCallRequest{OwnerID: rc.OwnerID, ParentRunID: rc.RunID, CallerWorkflowID: rc.WorkflowID, CallerNodeID: rc.NodeID, ConversationID: rc.ConversationID, CallDepth: rc.CallDepth, WorkflowCallChain: append([]int64(nil), rc.WorkflowCallChain...), MaxDepth: definition.MaxDepth, Definition: definition})
+	result, err := t.Caller.CallInlineAgent(ctx, InlineAgentCallRequest{OwnerID: rc.OwnerID, ParentRunID: rc.RunID, CallerWorkflowID: rc.WorkflowID, CallerAgentID: rc.AgentID, CallerNodeID: rc.NodeID, ConversationID: rc.ConversationID, CallDepth: rc.CallDepth, WorkflowCallChain: append([]int64(nil), rc.WorkflowCallChain...), MaxDepth: definition.MaxDepth, Definition: definition})
 	if err != nil {
 		return &ToolResult{ContentText: err.Error(), IsError: true}, err
 	}

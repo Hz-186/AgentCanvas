@@ -8,11 +8,37 @@ import (
 type ToolRunContext struct {
 	OwnerID           int64
 	WorkflowID        int64
+	AgentID           int64
+	AgentReleaseID    int64
 	RunID             int64
 	NodeID            string
 	CallDepth         int
 	WorkflowCallChain []int64
 	ConversationID    *int64
+}
+
+type AgentCallRequest struct {
+	OwnerID       int64
+	ParentRunID   int64
+	CallerAgentID int64
+	AgentID       int64
+	Task          string
+	CallDepth     int
+	MaxDepth      int
+}
+
+type AgentCallResult struct {
+	RunID          int64          `json:"run_id"`
+	AgentID        int64          `json:"agent_id"`
+	AgentReleaseID int64          `json:"agent_release_id"`
+	Status         string         `json:"status"`
+	Output         map[string]any `json:"output"`
+	Error          string         `json:"error,omitempty"`
+	LatencyMS      int            `json:"latency_ms"`
+}
+
+type AgentCaller interface {
+	CallAgent(context.Context, AgentCallRequest) (*AgentCallResult, error)
 }
 
 type ToolResult struct {
@@ -103,6 +129,10 @@ type WorkflowCallRequest struct {
 	CallDepth         int            `json:"call_depth"`
 	WorkflowCallChain []int64        `json:"workflow_call_chain"`
 	MaxDepth          int            `json:"max_depth"`
+	RunKind           string         `json:"run_kind,omitempty"`
+	Lifecycle         bool           `json:"lifecycle,omitempty"`
+	CallerAgentID     int64          `json:"caller_agent_id,omitempty"`
+	AgentReleaseID    int64          `json:"agent_release_id,omitempty"`
 }
 
 type WorkflowCallResult struct {
