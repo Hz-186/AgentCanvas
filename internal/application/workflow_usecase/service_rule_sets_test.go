@@ -40,7 +40,7 @@ func TestLoadActiveRuleSetRecomputesSnapshotHash(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = service.LoadActiveRuleSet(context.Background(), 1, 20)
-	if err == nil || !strings.Contains(err.Error(), "integrity") {
+	if err == nil || !strings.Contains(err.Error(), "mismatch") {
 		t.Fatalf("expected content tampering to fail integrity verification, got %v", err)
 	}
 }
@@ -48,7 +48,7 @@ func TestLoadActiveRuleSetRecomputesSnapshotHash(t *testing.T) {
 func TestRollbackRuleSetRecompilesSnapshotWithNewIdentity(t *testing.T) {
 	original, err := rules.CompileRuleSet([]rules.Rule{
 		{ID: "tenant.base", Content: "base", Strength: rules.RuleOptional},
-		{ID: "tenant.report", Content: "report", Strength: rules.RuleOptional},
+		{ID: "tenant.report", Content: "report", Strength: rules.RuleOptional, Activation: rules.Activation{Always: true}},
 	}, rules.CompileOptions{RuleSetID: 12, Version: "4", Edges: []rules.DependencyEdge{{
 		RuleID: "tenant.report", DependsOn: "tenant.base", Source: "llm", Decision: "accepted",
 	}}})
@@ -77,15 +77,15 @@ func TestRollbackRuleSetRecompilesSnapshotWithNewIdentity(t *testing.T) {
 	if rolledBack.ID != 99 || rolledBack.VersionNo != 5 {
 		t.Fatalf("expected new monotonic rollback identity, got %+v", rolledBack)
 	}
-	var recompiled rules.CompiledRuleSet
-	if err := json.Unmarshal(rolledBack.CompiledSnapshotJSON, &recompiled); err != nil {
+	recompiled, err := rules.DecodeCompiledRuleSet(rolledBack.CompiledSnapshotJSON)
+	if err != nil {
 		t.Fatal(err)
 	}
 	llmRule, ok := recompiled.RuleByID("tenant.report")
 	if recompiled.ID != 99 || recompiled.Version != "5" || !ok || llmRule.DependencySources["tenant.base"] != "llm_confirmed" {
 		t.Fatalf("rollback snapshot identity/provenance was not rebuilt: %+v rule=%+v", recompiled, llmRule)
 	}
-	if err := rules.VerifyCompiledHash(&recompiled); err != nil {
+	if err := rules.VerifyCompiledHash(recompiled); err != nil {
 		t.Fatalf("recompiled rollback hash must verify: %v", err)
 	}
 }

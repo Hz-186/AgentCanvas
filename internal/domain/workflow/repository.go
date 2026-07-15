@@ -101,6 +101,14 @@ type ApprovalRepository interface {
 	FindLatestCheckpointByRun(ctx context.Context, ownerID, runID int64) (*WorkflowCheckpoint, error)
 }
 
+type IndependentRunResumer interface {
+	ResumeIndependentRun(context.Context, *Run, *WorkflowCheckpoint, *ApprovalRequest) (*Run, error)
+}
+
+type IndependentRunCanceller interface {
+	CancelIndependentRun(int64) bool
+}
+
 type TeamRepository interface {
 	CreateTeam(ctx context.Context, item *Team) error
 	FindTeamByID(ctx context.Context, ownerID, id int64) (*Team, error)

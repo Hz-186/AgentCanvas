@@ -31,6 +31,8 @@ type RouterDeps struct {
 	DocumentHandler   *handler.DocumentHandler
 	DialogHandler     *handler.DialogHandler
 	ChatHandler       *handler.ChatHandler
+	AgentHandler      *handler.AgentHandler
+	WorkspaceHandler  *handler.WorkspaceHandler
 	WorkflowHandler   *handler.WorkflowHandler
 	ResourceHandler   *handler.ResourceHandler
 	AuthService       *authusecase.Service
@@ -72,6 +74,35 @@ func NewRouter(deps RouterDeps) *gin.Engine {
 			protected.GET("/auth/me", deps.AuthHandler.Me)
 			protected.GET("/resource-summaries/:kind", deps.ResourceHandler.List)
 
+			registerCRUD(protected, "/agents", ":id", deps.AgentHandler.Create, deps.AgentHandler.List, deps.AgentHandler.Get, deps.AgentHandler.Update, deps.AgentHandler.Delete)
+			protected.POST("/agents/:id/validate", deps.AgentHandler.Validate)
+			protected.POST("/agents/:id/releases", deps.AgentHandler.Publish)
+			protected.GET("/agents/:id/releases", deps.AgentHandler.ListReleases)
+			protected.GET("/agent-releases/:id", deps.AgentHandler.GetRelease)
+			protected.GET("/agent-releases/:id/capabilities", deps.AgentHandler.Capabilities)
+			protected.POST("/agents/:id/conversations", deps.AgentHandler.CreateConversation)
+			protected.GET("/agents/:id/conversations", deps.AgentHandler.ListConversations)
+			protected.GET("/agents/:id/conversations/:conversation_id/messages", deps.AgentHandler.ListMessages)
+			protected.POST("/agents/:id/conversations/:conversation_id/turns", deps.AgentHandler.StartTurn)
+			protected.POST("/agents/:id/conversations/:conversation_id/fork", deps.AgentHandler.ForkConversation)
+			protected.POST("/agents/:id/conversations/:conversation_id/upgrade", deps.AgentHandler.UpgradeConversation)
+			protected.DELETE("/agents/:id/conversations/:conversation_id", deps.AgentHandler.DeleteConversation)
+			protected.GET("/agent-turns/:id", deps.AgentHandler.GetTurn)
+			protected.GET("/agents/:id/session-search", deps.AgentHandler.SearchSessions)
+			protected.GET("/agents/:id/improvement-reviews", deps.AgentHandler.ListImprovementReviews)
+			protected.GET("/agents/:id/change-proposals", deps.AgentHandler.ListChangeProposals)
+			protected.POST("/agent-change-proposals/:id/approve", deps.AgentHandler.ApproveChangeProposal)
+			protected.POST("/agent-change-proposals/:id/reject", deps.AgentHandler.RejectChangeProposal)
+			protected.GET("/runs/:id/events/stream", deps.AgentHandler.StreamRunEvents)
+			protected.POST("/workspaces", deps.WorkspaceHandler.Create)
+			protected.GET("/workspaces", deps.WorkspaceHandler.List)
+			protected.GET("/workspaces/:id", deps.WorkspaceHandler.Get)
+			protected.DELETE("/workspaces/:id", deps.WorkspaceHandler.Delete)
+			protected.POST("/workspaces/:id/packs", deps.WorkspaceHandler.CreatePack)
+			protected.GET("/workspaces/:id/packs", deps.WorkspaceHandler.ListPacks)
+			protected.GET("/workspace-packs/:id", deps.WorkspaceHandler.GetPack)
+			protected.DELETE("/workspace-packs/:id", deps.WorkspaceHandler.DeletePack)
+
 			protected.GET("/provider-catalog", deps.ProviderHandler.ListCatalog)
 			registerCRUD(protected, "/model-providers", ":id", deps.ProviderHandler.Create, deps.ProviderHandler.List, deps.ProviderHandler.Get, deps.ProviderHandler.Update, deps.ProviderHandler.Delete)
 			protected.POST("/model-providers/:id/test", deps.ProviderHandler.Test)
@@ -110,13 +141,13 @@ func NewRouter(deps RouterDeps) *gin.Engine {
 
 			protected.GET("/ingestion-jobs/:id", deps.KnowledgeHandler.GetIngestionJob)
 
-			registerCRUD(protected, "/dialogs", ":dialog_id", deps.DialogHandler.Create, deps.DialogHandler.List, deps.DialogHandler.Get, deps.DialogHandler.Update, deps.DialogHandler.Delete)
-			protected.POST("/dialogs/:dialog_id/rag/chat", deps.ChatHandler.Chat)
-			protected.POST("/dialogs/:dialog_id/rag/chat/stream", deps.ChatHandler.StreamChat)
-			protected.GET("/dialogs/:dialog_id/conversations", deps.ChatHandler.ListConversations)
-			protected.GET("/dialogs/:dialog_id/conversations/:id", deps.ChatHandler.GetConversation)
-			protected.GET("/dialogs/:dialog_id/conversations/:id/messages", deps.ChatHandler.ListMessages)
-			protected.DELETE("/dialogs/:dialog_id/conversations/:id", deps.ChatHandler.DeleteConversation)
+			registerCRUD(protected, "/dialogs", ":dialog_id", deprecatedHandler(deps.DialogHandler.Create), deprecatedHandler(deps.DialogHandler.List), deprecatedHandler(deps.DialogHandler.Get), deprecatedHandler(deps.DialogHandler.Update), deprecatedHandler(deps.DialogHandler.Delete))
+			protected.POST("/dialogs/:dialog_id/rag/chat", deprecatedHandler(deps.ChatHandler.Chat))
+			protected.POST("/dialogs/:dialog_id/rag/chat/stream", deprecatedHandler(deps.ChatHandler.StreamChat))
+			protected.GET("/dialogs/:dialog_id/conversations", deprecatedHandler(deps.ChatHandler.ListConversations))
+			protected.GET("/dialogs/:dialog_id/conversations/:id", deprecatedHandler(deps.ChatHandler.GetConversation))
+			protected.GET("/dialogs/:dialog_id/conversations/:id/messages", deprecatedHandler(deps.ChatHandler.ListMessages))
+			protected.DELETE("/dialogs/:dialog_id/conversations/:id", deprecatedHandler(deps.ChatHandler.DeleteConversation))
 
 			registerCRUD(protected, "/workflows", ":id", deps.WorkflowHandler.Create, deps.WorkflowHandler.List, deps.WorkflowHandler.Get, deps.WorkflowHandler.Update, deps.WorkflowHandler.Delete)
 			protected.GET("/workflows/:id/profile", deps.WorkflowHandler.GetProfile)
@@ -179,6 +210,15 @@ func NewRouter(deps RouterDeps) *gin.Engine {
 	registerWebUI(r)
 
 	return r
+}
+
+func deprecatedHandler(next gin.HandlerFunc) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Header("Deprecation", "true")
+		c.Header("Sunset", "Wed, 15 Jan 2027 00:00:00 GMT")
+		c.Header("Link", `</api/v1/agents>; rel="successor-version"`)
+		next(c)
+	}
 }
 
 func registerCRUD(rg *gin.RouterGroup, basePath string, idSegment string, create, list, get, update, delete gin.HandlerFunc) {

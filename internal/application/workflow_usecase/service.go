@@ -22,6 +22,7 @@ import (
 	"agentcanvas/internal/domain/skill"
 	"agentcanvas/internal/domain/tool"
 	"agentcanvas/internal/domain/workflow"
+	"agentcanvas/internal/domain/workspace"
 	cryptoinfra "agentcanvas/internal/infrastructure/crypto"
 	"agentcanvas/internal/infrastructure/llm"
 	queueinfra "agentcanvas/internal/infrastructure/queue"
@@ -42,45 +43,49 @@ import (
 )
 
 type Service struct {
-	workflows        workflow.Repository
-	profiles         workflow.ProfileRepository
-	versions         workflow.WorkflowVersionRepository
-	runs             workflow.RunRepository
-	events           workflow.RunEventRepository
-	nodeLogs         workflow.NodeLogRepository
-	runSteps         workflow.RunStepRepository
-	evals            workflow.EvalDatasetRepository
-	approvals        workflow.ApprovalRepository
-	audits           audit.Repository
-	teams            workflow.TeamRepository
-	memories         memory.Repository
-	memoryLogs       memory.WriteLogRepository
-	memoryRetriever  memory.SemanticRetriever
-	workingMemory    memory.WorkingMemoryRepository
-	extractions      *memoryusecase.ExtractionService
-	tools            tool.DefinitionRepository
-	toolPacks        tool.PackRepository
-	skills           skill.Repository
-	mcpServers       tool.MCPRepository
-	toolRegistry     toolruntime.Registry
-	toolInvocations  tool.InvocationRepository
-	providers        providerdomain.Repository
-	conversations    conversation.Repository
-	messages         conversation.MessageRepository
-	retriever        retrieval.Retriever
-	llm              llm.ChatClient
-	embedder         llm.EmbeddingClient
-	archivalVecStore vectorstore.Store
-	reflections      reflection.Advisor
-	secrets          *cryptoinfra.SecretBox
-	executor         *engine.Executor
-	validator        *flow.Validator
-	runCancels       *runCancelRegistry
-	dreamQueue       queueinfra.JobQueue
-	ruleSets         workflow.RuleSetRepository
-	ruleCompileQueue queueinfra.JobQueue
-	redisClient      *redis.Client
-	dreamCfg         memoryusecase.DreamConfig
+	workflows         workflow.Repository
+	profiles          workflow.ProfileRepository
+	versions          workflow.WorkflowVersionRepository
+	runs              workflow.RunRepository
+	events            workflow.RunEventRepository
+	nodeLogs          workflow.NodeLogRepository
+	runSteps          workflow.RunStepRepository
+	evals             workflow.EvalDatasetRepository
+	approvals         workflow.ApprovalRepository
+	audits            audit.Repository
+	teams             workflow.TeamRepository
+	memories          memory.Repository
+	memoryLogs        memory.WriteLogRepository
+	memoryRetriever   memory.SemanticRetriever
+	workingMemory     memory.WorkingMemoryRepository
+	extractions       *memoryusecase.ExtractionService
+	tools             tool.DefinitionRepository
+	toolPacks         tool.PackRepository
+	skills            skill.Repository
+	mcpServers        tool.MCPRepository
+	toolRegistry      toolruntime.Registry
+	toolInvocations   tool.InvocationRepository
+	workspaces        workspace.Repository
+	providers         providerdomain.Repository
+	conversations     conversation.Repository
+	messages          conversation.MessageRepository
+	retriever         retrieval.Retriever
+	llm               llm.ChatClient
+	embedder          llm.EmbeddingClient
+	archivalVecStore  vectorstore.Store
+	reflections       reflection.Advisor
+	secrets           *cryptoinfra.SecretBox
+	executor          *engine.Executor
+	agentRuntime      runtimenode.AgentRuntime
+	agentRunResumer   workflow.IndependentRunResumer
+	agentRunCanceller workflow.IndependentRunCanceller
+	validator         *flow.Validator
+	runCancels        *runCancelRegistry
+	dreamQueue        queueinfra.JobQueue
+	ruleSets          workflow.RuleSetRepository
+	ruleCompileQueue  queueinfra.JobQueue
+	redisClient       *redis.Client
+	dreamCfg          memoryusecase.DreamConfig
 }
 
 // RunTrace is a complete tracing snapshot of a workflow execution (Run).
@@ -153,6 +158,7 @@ func NewService(
 	archivalVecStore vectorstore.Store,
 	secrets *cryptoinfra.SecretBox,
 	reflectionAdvisor reflection.Advisor,
+	workspaceRepositories ...workspace.Repository,
 ) (*Service, error) {
 	toolCalling, ok := llmClient.(llm.ToolCallingClient)
 	if !ok {
@@ -161,6 +167,10 @@ func NewService(
 	var registry toolruntime.Registry
 	if tools != nil {
 		registry = toolruntime.BasicRegistry{Tools: tools, Invocations: toolInvocations}
+	}
+	var workspaceRepository workspace.Repository
+	if len(workspaceRepositories) > 0 {
+		workspaceRepository = workspaceRepositories[0]
 	}
 	s := &Service{
 		workflows:        workflows,
@@ -184,6 +194,7 @@ func NewService(
 		mcpServers:       mcpServers,
 		toolRegistry:     registry,
 		toolInvocations:  toolInvocations,
+		workspaces:       workspaceRepository,
 		providers:        providers,
 		conversations:    conversations,
 		messages:         messages,
@@ -197,7 +208,7 @@ func NewService(
 	if extractionJobs != nil && mergeLogs != nil {
 		s.extractions = memoryusecase.NewExtractionService(memories, extractionJobs, mergeLogs)
 	}
-	nodes, err := runtimenode.DefaultNodes(runtimenode.Deps{
+	nodeDeps := runtimenode.Deps{
 		Retriever:               retriever,
 		LLM:                     llmClient,
 		Embedder:                embedder,
@@ -223,26 +234,52 @@ func NewService(
 		Reflections:             reflectionAdvisor,
 		Audits:                  audits,
 		Teams:                   teams,
+		Workspaces:              workspaceRepository,
 		Sandbox:                 sandbox.NewDockerRunner(),
 		ArchivalVecStore:        archivalVecStore,
-	})
+	}
+	sharedAgentRuntime, err := runtimenode.NewSharedAgentRuntime(nodeDeps)
+	if err != nil {
+		return nil, err
+	}
+	nodeDeps.SharedAgentRuntime = sharedAgentRuntime
+	nodes, err := runtimenode.DefaultNodes(nodeDeps)
 	if err != nil {
 		return nil, err
 	}
 	s.executor = engine.NewExecutor(nodes)
+	s.agentRuntime = sharedAgentRuntime
 	s.validator = flow.NewValidator(s.executor)
 	s.runCancels = newRunCancelRegistry()
 	return s, nil
 }
 
+func (s *Service) AgentRuntime() runtimenode.AgentRuntime { return s.agentRuntime }
+
+func (s *Service) ConfigureAgentCaller(caller toolruntime.AgentCaller) {
+	if runtime, ok := s.agentRuntime.(*runtimenode.SharedAgentRuntime); ok {
+		runtime.ConfigureAgentCaller(caller)
+	}
+}
+
+func (s *Service) ConfigureSessionSearch(index conversation.MessageSearchIndex) {
+	if runtime, ok := s.agentRuntime.(*runtimenode.SharedAgentRuntime); ok {
+		runtime.ConfigureSessionSearch(index)
+	}
+}
+
+func (s *Service) ConfigureIndependentRunResumer(resumer workflow.IndependentRunResumer) {
+	s.agentRunResumer = resumer
+}
+
+func (s *Service) ConfigureIndependentRunCanceller(canceller workflow.IndependentRunCanceller) {
+	s.agentRunCanceller = canceller
+}
+
 func (s *Service) triggerMemoryExtraction(ctx context.Context, ownerID int64, conversationID int64) {
-	if s.extractions == nil || ownerID <= 0 || conversationID <= 0 {
-		if ownerID > 0 && conversationID > 0 {
-			s.publishDream(ctx, ownerID, conversationID)
-		}
+	if ownerID <= 0 || conversationID <= 0 {
 		return
 	}
-	_, _ = s.extractions.StartExtraction(ctx, ownerID, conversationID, nil)
 	s.publishDream(ctx, ownerID, conversationID)
 }
 
@@ -276,6 +313,10 @@ type runOptions struct {
 	CallerNodeID      string // "" or like "node_3a7f2b1c"
 	CallDepth         int
 	WorkflowCallChain []int64
+	RunKind           string
+	Lifecycle         bool
+	AgentID           int64
+	AgentReleaseID    int64
 }
 
 type CreateWorkflowRequest struct {
@@ -781,6 +822,10 @@ func (s *Service) CallWorkflow(ctx context.Context, req toolruntime.WorkflowCall
 		CallerNodeID:      req.CallerNodeID,
 		CallDepth:         req.CallDepth + 1,
 		WorkflowCallChain: append(callChain, req.WorkflowID),
+		RunKind:           req.RunKind,
+		Lifecycle:         req.Lifecycle,
+		AgentID:           req.CallerAgentID,
+		AgentReleaseID:    req.AgentReleaseID,
 	})
 	if run == nil {
 		return nil, err
@@ -802,14 +847,20 @@ func (s *Service) CallInlineAgent(ctx context.Context, req toolruntime.InlineAge
 	if maxDepth <= 0 {
 		maxDepth = 2
 	}
-	if req.OwnerID <= 0 || req.ParentRunID <= 0 || req.CallerWorkflowID <= 0 || req.CallDepth >= maxDepth {
+	if req.OwnerID <= 0 || req.ParentRunID <= 0 || (req.CallerWorkflowID <= 0 && req.CallerAgentID <= 0) || req.CallDepth >= maxDepth {
 		return nil, fmt.Errorf("%w: inline agent call is not allowed", agenterrors.ErrForbidden)
 	}
 	parent, err := s.GetRun(ctx, req.OwnerID, req.ParentRunID)
 	if err != nil {
 		return nil, err
 	}
-	if parent.WorkflowID != req.CallerWorkflowID || parent.CallDepth != req.CallDepth {
+	parentMatches := parent.CallDepth == req.CallDepth
+	if req.CallerWorkflowID > 0 {
+		parentMatches = parentMatches && parent.WorkflowID == req.CallerWorkflowID
+	} else {
+		parentMatches = parentMatches && parent.AgentID != nil && *parent.AgentID == req.CallerAgentID
+	}
+	if !parentMatches {
 		return nil, fmt.Errorf("%w: inline agent parent run context does not match", agenterrors.ErrForbidden)
 	}
 	var pinnedRules *rules.CompiledRuleSet
@@ -833,14 +884,14 @@ func (s *Service) CallInlineAgent(ctx context.Context, req toolruntime.InlineAge
 	callChain := normalizeWorkflowCallChain(req.WorkflowCallChain, req.CallerWorkflowID)
 	callChainJSON, _ := json.Marshal(callChain)
 	now := time.Now().UTC()
-	run := &workflow.Run{OwnerID: req.OwnerID, WorkflowID: req.CallerWorkflowID, FlowVersionID: parent.FlowVersionID, RuleSetID: parent.RuleSetID, RuleSetVersion: parent.RuleSetVersion, CompiledRuleHash: parent.CompiledRuleHash, ConversationID: req.ConversationID, ParentRunID: &req.ParentRunID, CallerNodeID: req.CallerNodeID, CallDepth: req.CallDepth + 1, CallChainJSON: callChainJSON, RunKind: workflow.RunKindInlineAgent, DefinitionJSON: definitionJSON, DefinitionHash: hex.EncodeToString(definitionHash[:]), Status: workflow.RunStatusRunning, InputJSON: inputJSON, StartedAt: now}
+	run := &workflow.Run{OwnerID: req.OwnerID, WorkflowID: req.CallerWorkflowID, FlowVersionID: parent.FlowVersionID, AgentID: parent.AgentID, AgentReleaseID: parent.AgentReleaseID, RuleSetID: parent.RuleSetID, RuleSetVersion: parent.RuleSetVersion, CompiledRuleHash: parent.CompiledRuleHash, ConversationID: req.ConversationID, ParentRunID: &req.ParentRunID, CallerNodeID: req.CallerNodeID, CallDepth: req.CallDepth + 1, CallChainJSON: callChainJSON, RunKind: workflow.RunKindInlineAgent, DefinitionJSON: definitionJSON, DefinitionHash: hex.EncodeToString(definitionHash[:]), Status: workflow.RunStatusRunning, InputJSON: inputJSON, StartedAt: now}
 	if err := s.runs.Create(ctx, run); err != nil {
 		return nil, err
 	}
 	execCtx, cancel := context.WithCancel(ctx)
 	s.runCancels.Register(run.ID, cancel)
 	defer func() { cancel(); s.runCancels.Unregister(run.ID) }()
-	rc := &engine.RunContext{OwnerID: req.OwnerID, WorkflowID: req.CallerWorkflowID, FlowVersionID: parent.FlowVersionID, RuleSetID: ruleSetIDValue(parent.RuleSetID), RuleSetVersion: parent.RuleSetVersion, CompiledRuleHash: parent.CompiledRuleHash, CompiledRules: pinnedRules, RunID: run.ID, ParentRunID: &req.ParentRunID, CallDepth: req.CallDepth + 1, WorkflowCallChain: callChain, ConversationID: req.ConversationID, AgentSteps: s, Input: input, Events: &eventEmitter{repo: s.events, ownerID: req.OwnerID, runID: run.ID}}
+	rc := &engine.RunContext{OwnerID: req.OwnerID, WorkflowID: req.CallerWorkflowID, FlowVersionID: parent.FlowVersionID, AgentID: req.CallerAgentID, AgentReleaseID: ruleSetIDValue(parent.AgentReleaseID), RuleSetID: ruleSetIDValue(parent.RuleSetID), RuleSetVersion: parent.RuleSetVersion, CompiledRuleHash: parent.CompiledRuleHash, CompiledRules: pinnedRules, RunID: run.ID, ParentRunID: &req.ParentRunID, CallDepth: req.CallDepth + 1, WorkflowCallChain: callChain, ConversationID: req.ConversationID, AgentSteps: s, Input: input, Events: &eventEmitter{repo: s.events, ownerID: req.OwnerID, runID: run.ID}}
 	output, execErr := s.executor.Execute(execCtx, rc, dsl)
 	finished := time.Now().UTC()
 	run.FinishedAt = &finished
@@ -1057,14 +1108,19 @@ func (s *Service) CancelRun(ctx context.Context, ownerID, id int64) (*workflow.R
 	if err != nil {
 		return nil, err
 	}
-	if item.Status == workflow.RunStatusRunning {
-		_ = s.runCancels.Cancel(id)
+	if item.Status == workflow.RunStatusRunning || item.Status == workflow.RunStatusQueued {
+		wasRunning := item.Status == workflow.RunStatusRunning
 		now := time.Now().UTC()
 		item.Status = workflow.RunStatusCancelled
 		item.FinishedAt = &now
 		item.LatencyMS = int(now.Sub(item.StartedAt).Milliseconds())
 		if err := s.runs.Update(ctx, item); err != nil {
 			return nil, err
+		}
+		if wasRunning && item.RunKind == workflow.RunKindAgent && s.agentRunCanceller != nil {
+			s.agentRunCanceller.CancelIndependentRun(id)
+		} else if wasRunning {
+			_ = s.runCancels.Cancel(id)
 		}
 	}
 	return item, nil
@@ -1077,6 +1133,9 @@ func (s *Service) PauseRun(ctx context.Context, ownerID, id int64) (*workflow.Ru
 	}
 	if item.Status != workflow.RunStatusRunning {
 		return nil, fmt.Errorf("%w: run is not running", agenterrors.ErrInvalidInput)
+	}
+	if item.RunKind == workflow.RunKindAgent {
+		return nil, fmt.Errorf("%w: independent Agent Runs pause only at approval checkpoints; use cancel for an active turn", agenterrors.ErrInvalidInput)
 	}
 	_ = s.runCancels.Pause(id)
 	now := time.Now().UTC()
@@ -1175,6 +1234,11 @@ func (s *Service) run(
 	if err := s.validator.Validate(dsl); err != nil {
 		return nil, nil, err
 	}
+	if opts.Lifecycle {
+		if err := validateLifecycleDSL(dsl); err != nil {
+			return nil, nil, err
+		}
+	}
 	inputJSON, _ := json.Marshal(req.Input)
 	callChain := opts.WorkflowCallChain
 	if len(callChain) == 0 {
@@ -1194,6 +1258,17 @@ func (s *Service) run(
 		activeRuleSetVersion = active.Version
 		activeCompiledHash = active.CompiledHash
 	}
+	runKind := opts.RunKind
+	if runKind == "" {
+		runKind = workflow.RunKindWorkflow
+	}
+	var agentID, agentReleaseID *int64
+	if opts.AgentID > 0 {
+		agentID = &opts.AgentID
+	}
+	if opts.AgentReleaseID > 0 {
+		agentReleaseID = &opts.AgentReleaseID
+	}
 	run := &workflow.Run{
 		OwnerID:          ownerID,
 		WorkflowID:       workflowID,
@@ -1201,7 +1276,9 @@ func (s *Service) run(
 		RuleSetID:        activeRuleSetID,
 		RuleSetVersion:   activeRuleSetVersion,
 		CompiledRuleHash: activeCompiledHash,
-		RunKind:          workflow.RunKindWorkflow,
+		RunKind:          runKind,
+		AgentID:          agentID,
+		AgentReleaseID:   agentReleaseID,
 		ConversationID:   req.ConversationID,
 		ParentRunID:      opts.ParentRunID,
 		CallerNodeID:     opts.CallerNodeID,
@@ -1227,6 +1304,8 @@ func (s *Service) run(
 		OwnerID:           ownerID,
 		WorkflowID:        workflowID,
 		FlowVersionID:     version.ID,
+		AgentID:           opts.AgentID,
+		AgentReleaseID:    opts.AgentReleaseID,
 		RuleSetID:         ruleSetIDValue(activeRuleSetID),
 		RuleSetVersion:    activeRuleSetVersion,
 		CompiledRuleHash:  activeCompiledHash,
@@ -1442,14 +1521,8 @@ func validateContextPolicyRules(raw json.RawMessage) error {
 	if len(raw) == 0 || string(raw) == "{}" {
 		return nil
 	}
-	var policy struct {
-		Rules []rules.Rule `json:"rules"`
-	}
-	if err := json.Unmarshal(raw, &policy); err != nil {
-		return fmt.Errorf("%w: context_policy_json is invalid", agenterrors.ErrInvalidInput)
-	}
-	if err := rules.ValidateCustomRules(policy.Rules); err != nil {
-		return fmt.Errorf("%w: context_policy_json rules are invalid: %v", agenterrors.ErrInvalidInput, err)
+	if contextPolicyRuleCount(raw) > 0 {
+		return fmt.Errorf("%w: context_policy_json.rules is read-only legacy data; use a versioned rule set", agenterrors.ErrInvalidInput)
 	}
 	return nil
 }

@@ -10,6 +10,7 @@ import (
 	"agentcanvas/internal/domain/reflection"
 	cryptoinfra "agentcanvas/internal/infrastructure/crypto"
 	"agentcanvas/internal/infrastructure/llm"
+	"agentcanvas/internal/pkg/config"
 
 	"gorm.io/gorm"
 )
@@ -127,5 +128,79 @@ func TestWorkerRetriesMalformedAnalysisAndCompletesQualifiedJob(t *testing.T) {
 	processed, processErr = goodWorker.ProcessNext(context.Background(), "worker")
 	if !processed || processErr != nil || !goodJobs.completed || goodJobs.failed {
 		t.Fatalf("valid empty analysis should complete: processed=%v err=%v jobs=%+v", processed, processErr, goodJobs)
+	}
+}
+
+type reliableWorkerRepo struct {
+	workerJobRepo
+	job       *reflection.Job
+	state     reflection.ClaimState
+	committed bool
+	retried   bool
+	failedDLQ bool
+}
+
+func (r *reliableWorkerRepo) CreateAndDispatch(context.Context, *reflection.Job) (*reflection.Job, error) {
+	return r.job, nil
+}
+func (r *reliableWorkerRepo) ClaimByID(_ context.Context, _ int64, workerID, token string, lease time.Time) (*reflection.Job, reflection.ClaimState, error) {
+	job := *r.job
+	job.LockedBy, job.LockToken, job.LeaseExpiresAt = workerID, token, &lease
+	job.Status = reflection.JobRunning
+	job.AttemptCount++
+	r.job = &job
+	return &job, r.state, nil
+}
+func (r *reliableWorkerRepo) RenewLease(context.Context, int64, string, time.Time) error { return nil }
+func (r *reliableWorkerRepo) CommitResult(context.Context, int64, string, []reflection.Reflection) error {
+	r.committed = true
+	return nil
+}
+func (r *reliableWorkerRepo) RetryAndDispatch(context.Context, int64, string, error, time.Time) error {
+	r.retried = true
+	return nil
+}
+func (r *reliableWorkerRepo) FailAndDispatchDLQ(context.Context, int64, string, error, string) error {
+	r.failedDLQ = true
+	return nil
+}
+func (r *reliableWorkerRepo) ReleaseInterrupted(context.Context, int64, string) error { return nil }
+func (r *reliableWorkerRepo) BackfillPendingDispatches(context.Context, int) (int64, error) {
+	return 0, nil
+}
+
+type workerDelivery struct {
+	envelope reflection.Envelope
+	acked    bool
+	nacked   bool
+	term     bool
+}
+
+func (d *workerDelivery) Envelope() reflection.Envelope { return d.envelope }
+func (d *workerDelivery) ValidationError() error        { return nil }
+func (d *workerDelivery) Ack(context.Context) error     { d.acked = true; return nil }
+func (d *workerDelivery) Nak(context.Context, time.Duration) error {
+	d.nacked = true
+	return nil
+}
+func (d *workerDelivery) InProgress(context.Context) error { return nil }
+func (d *workerDelivery) Term(context.Context) error       { d.term = true; return nil }
+
+func TestQueueRuntimeCommitsBeforeAck(t *testing.T) {
+	box, err := cryptoinfra.NewSecretBox("01234567890123456789012345678901")
+	if err != nil {
+		t.Fatal(err)
+	}
+	encrypted, _ := box.Encrypt("key")
+	repo := &reliableWorkerRepo{job: &reflection.Job{ID: 9, OwnerID: 2, WorkflowID: 3, RunID: 4, ProviderID: 1, Model: "m", MaxAttempts: 3,
+		PayloadJSON: json.RawMessage(`{"stop_reason":"max_iterations_exceeded"}`)}, state: reflection.ClaimAcquired}
+	worker := Worker{Jobs: repo, DispatchEnabled: true, Providers: workerProviders{item: providerdomain.ModelProvider{ID: 1, OwnerID: 2,
+		Status: providerdomain.StatusActive, ProviderType: providerdomain.TypeOpenAICompatible, EncryptedAPIKey: encrypted, DefaultChatModel: "m"}},
+		Secrets: box, LLM: workerChat{response: `{"candidates":[]}`}}
+	delivery := &workerDelivery{envelope: reflection.Envelope{SchemaVersion: 1, EventID: "event-1", JobID: 9, DispatchSeq: 1}}
+	runtime := &QueueRuntime{Worker: worker, Jobs: repo, Config: config.ReflectionQueueConfig{LeaseSeconds: 180, HeartbeatSeconds: 30}}
+	runtime.handleDelivery(context.Background(), "worker", delivery)
+	if !repo.committed || !delivery.acked || delivery.nacked {
+		t.Fatalf("expected commit before ack: repo=%+v delivery=%+v", repo, delivery)
 	}
 }

@@ -53,7 +53,8 @@ func (r *ExtractionJobRepository) ListPending(ctx context.Context, limit int) ([
 	}
 	var jobs []memory.ExtractionJob
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Where("status = ?", memory.ExtractionPending).
+		staleBefore := time.Now().UTC().Add(-10 * time.Minute)
+		if err := tx.Where("status = ? OR (status = ? AND created_at < ?)", memory.ExtractionPending, memory.ExtractionRunning, staleBefore).
 			Order("id ASC").Limit(limit).Find(&jobs).Error; err != nil {
 			return err
 		}
@@ -66,7 +67,7 @@ func (r *ExtractionJobRepository) ListPending(ctx context.Context, limit int) ([
 			jobs[i].Status = string(memory.ExtractionRunning)
 		}
 		return tx.Model(&memory.ExtractionJob{}).
-			Where("id IN ? AND status = ?", ids, memory.ExtractionPending).
+			Where("id IN ?", ids).
 			Update("status", string(memory.ExtractionRunning)).Error
 	})
 	return jobs, err

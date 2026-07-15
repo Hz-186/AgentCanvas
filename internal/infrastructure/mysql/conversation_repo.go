@@ -69,6 +69,18 @@ func (r *ConversationRepository) ListByWorkflow(ctx context.Context, ownerID, wo
 	return items, err
 }
 
+func (r *ConversationRepository) ListByAgent(ctx context.Context, ownerID, agentID int64) ([]conversation.Conversation, error) {
+	var items []conversation.Conversation
+	err := r.db.WithContext(ctx).
+		Where("owner_id = ? AND agent_id = ? AND source = ? AND deleted_at IS NULL", ownerID, agentID, conversation.SourceAgent).
+		Order("last_message_at DESC, id DESC").
+		Find(&items).Error
+	for i := range items {
+		hydrateConversation(&items[i])
+	}
+	return items, err
+}
+
 func (r *ConversationRepository) FindByID(ctx context.Context, ownerID, id int64) (*conversation.Conversation, error) {
 	var item conversation.Conversation
 	err := r.db.WithContext(ctx).

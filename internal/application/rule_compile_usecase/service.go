@@ -332,7 +332,7 @@ func compiledRows(compiled *rules.CompiledRuleSet) ([]workflow.RuleNode, error) 
 		}
 		nodes = append(nodes, workflow.RuleNode{
 			RuleID: item.Rule.ID, Name: item.Rule.Name, Content: item.Rule.Content,
-			Strength: string(item.Rule.EffectiveStrength()), ActivationJSON: activation,
+			Strength: string(item.Rule.Strength), ActivationJSON: activation,
 			Priority: item.Rule.Priority, SafetyCritical: item.Rule.SafetyCritical,
 			PolicyBindingJSON: binding, TokenCost: item.TokenCost,
 			TopologicalOrder: item.TopologicalOrder, ContentHash: item.ContentHash,

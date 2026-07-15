@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -166,7 +167,7 @@ func (h *WorkflowHandler) CreateRuleSet(c *gin.Context) {
 	}
 	var req agentusecase.CreateRuleSetRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		writeAppError(c, err)
+		writeAppError(c, fmt.Errorf("%w: %v", agenterrors.ErrInvalidInput, err))
 		return
 	}
 	item, err := h.ruleSets.CreateRuleSet(c.Request.Context(), ownerID, workflowID, req)
@@ -207,7 +208,7 @@ func (h *WorkflowHandler) UpdateRuleSet(c *gin.Context) {
 	}
 	var req agentusecase.UpdateRuleSetRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		writeAppError(c, err)
+		writeAppError(c, fmt.Errorf("%w: %v", agenterrors.ErrInvalidInput, err))
 		return
 	}
 	item, err := h.ruleSets.UpdateRuleSet(c.Request.Context(), ownerID, workflowID, ruleSetID, req)

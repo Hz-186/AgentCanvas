@@ -63,6 +63,16 @@ func (s *Service) ResumeRun(ctx context.Context, ownerID, runID int64) (*workflo
 	if err := s.runs.Update(ctx, item); err != nil {
 		return nil, err
 	}
+	if item.RunKind == workflow.RunKindAgent {
+		if s.agentRunResumer == nil {
+			return nil, fmt.Errorf("%w: independent agent resumer is not configured", agenterrors.ErrInvalidInput)
+		}
+		decision, decisionErr := s.latestApprovalDecision(ctx, ownerID, runID)
+		if decisionErr != nil {
+			return nil, decisionErr
+		}
+		return s.agentRunResumer.ResumeIndependentRun(ctx, item, checkpoint, decision)
+	}
 	return s.resumeRunFromCheckpoint(ctx, item, checkpoint)
 }
 

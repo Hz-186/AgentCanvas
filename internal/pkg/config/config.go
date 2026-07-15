@@ -9,20 +9,36 @@ import (
 )
 
 type Config struct {
-	App           AppConfig           `yaml:"app"`
-	MySQL         MySQLConfig         `yaml:"mysql"`
-	Redis         RedisConfig         `yaml:"redis"`
-	Queue         QueueConfig         `yaml:"queue"`
-	LLMCache      LLMCacheConfig      `yaml:"llm_cache"`
-	ResourceCache ResourceCacheConfig `yaml:"resource_cache"`
-	MemoryDream   MemoryDreamConfig   `yaml:"memory_dream"`
-	NATS          NATSConfig          `yaml:"nats"`
-	MinIO         MinIOConfig         `yaml:"minio"`
-	Elasticsearch ElasticsearchConfig `yaml:"elasticsearch"`
-	Milvus        MilvusConfig        `yaml:"milvus"`
-	OCR           OCRConfig           `yaml:"ocr"`
-	Security      SecurityConfig      `yaml:"security"`
-	OAuth         OAuthConfig         `yaml:"oauth"`
+	App             AppConfig             `yaml:"app"`
+	MySQL           MySQLConfig           `yaml:"mysql"`
+	Redis           RedisConfig           `yaml:"redis"`
+	Queue           QueueConfig           `yaml:"queue"`
+	LLMCache        LLMCacheConfig        `yaml:"llm_cache"`
+	ResourceCache   ResourceCacheConfig   `yaml:"resource_cache"`
+	MemoryDream     MemoryDreamConfig     `yaml:"memory_dream"`
+	NATS            NATSConfig            `yaml:"nats"`
+	ReflectionQueue ReflectionQueueConfig `yaml:"reflection_queue"`
+	AgentRuntime    AgentRuntimeConfig    `yaml:"agent_runtime"`
+	MinIO           MinIOConfig           `yaml:"minio"`
+	Elasticsearch   ElasticsearchConfig   `yaml:"elasticsearch"`
+	Milvus          MilvusConfig          `yaml:"milvus"`
+	OCR             OCRConfig             `yaml:"ocr"`
+	Security        SecurityConfig        `yaml:"security"`
+	OAuth           OAuthConfig           `yaml:"oauth"`
+}
+
+type AgentRuntimeConfig struct {
+	WorkerEnabled           bool     `yaml:"worker_enabled"`
+	WorkerConcurrency       int      `yaml:"worker_concurrency"`
+	LeaseSeconds            int      `yaml:"lease_seconds"`
+	WorkspaceEnabled        bool     `yaml:"workspace_enabled"`
+	WorkspaceAllowedRoots   []string `yaml:"workspace_allowed_roots"`
+	WorkspaceDockerImage    string   `yaml:"workspace_docker_image"`
+	SelfImprovementEnabled  bool     `yaml:"self_improvement_enabled"`
+	MemoryReviewMode        string   `yaml:"memory_review_mode"`
+	ReviewWorkerConcurrency int      `yaml:"review_worker_concurrency"`
+	ReviewProviderID        int64    `yaml:"review_provider_id"`
+	ReviewModel             string   `yaml:"review_model"`
 }
 
 type AppConfig struct {
@@ -82,12 +98,36 @@ type MemoryDreamConfig struct {
 }
 
 type NATSConfig struct {
-	URL            string `yaml:"url"`
-	Stream         string `yaml:"stream"`
-	Subject        string `yaml:"subject"`
-	Consumer       string `yaml:"consumer"`
-	Durable        string `yaml:"durable"`
-	AckWaitSeconds int    `yaml:"ack_wait_seconds"`
+	URL                  string `yaml:"url"`
+	Stream               string `yaml:"stream"`
+	Subject              string `yaml:"subject"`
+	Consumer             string `yaml:"consumer"`
+	Durable              string `yaml:"durable"`
+	AckWaitSeconds       int    `yaml:"ack_wait_seconds"`
+	CredentialsFile      string `yaml:"credentials_file"`
+	TLSCAFile            string `yaml:"tls_ca_file"`
+	TLSCertFile          string `yaml:"tls_cert_file"`
+	TLSKeyFile           string `yaml:"tls_key_file"`
+	ReconnectWaitSeconds int    `yaml:"reconnect_wait_seconds"`
+}
+
+type ReflectionQueueConfig struct {
+	Backend                string `yaml:"backend"`
+	Stream                 string `yaml:"stream"`
+	Subject                string `yaml:"subject"`
+	DLQStream              string `yaml:"dlq_stream"`
+	DLQSubject             string `yaml:"dlq_subject"`
+	Durable                string `yaml:"durable"`
+	AckWaitSeconds         int    `yaml:"ack_wait_seconds"`
+	HeartbeatSeconds       int    `yaml:"heartbeat_seconds"`
+	LeaseSeconds           int    `yaml:"lease_seconds"`
+	Concurrency            int    `yaml:"concurrency"`
+	MaxAckPending          int    `yaml:"max_ack_pending"`
+	OutboxBatchSize        int    `yaml:"outbox_batch_size"`
+	OutboxPollMilliseconds int    `yaml:"outbox_poll_milliseconds"`
+	StreamMaxAgeDays       int    `yaml:"stream_max_age_days"`
+	StreamMaxBytes         int64  `yaml:"stream_max_bytes"`
+	StreamReplicas         int    `yaml:"stream_replicas"`
 }
 
 type MinIOConfig struct {
@@ -99,10 +139,11 @@ type MinIOConfig struct {
 }
 
 type ElasticsearchConfig struct {
-	Addresses  []string `yaml:"addresses"`
-	Username   string   `yaml:"username"`
-	Password   string   `yaml:"password"`
-	ChunkIndex string   `yaml:"chunk_index"`
+	Addresses    []string `yaml:"addresses"`
+	Username     string   `yaml:"username"`
+	Password     string   `yaml:"password"`
+	ChunkIndex   string   `yaml:"chunk_index"`
+	MessageIndex string   `yaml:"message_index"`
 }
 
 type MilvusConfig struct {
@@ -183,6 +224,9 @@ func (c *Config) setDefaults() {
 	if c.Elasticsearch.ChunkIndex == "" {
 		c.Elasticsearch.ChunkIndex = "agentcanvas_chunks_v1"
 	}
+	if c.Elasticsearch.MessageIndex == "" {
+		c.Elasticsearch.MessageIndex = "agentcanvas_messages_v1"
+	}
 	if c.Queue.Backend == "" {
 		c.Queue.Backend = "mysql"
 	}
@@ -239,6 +283,72 @@ func (c *Config) setDefaults() {
 	if c.NATS.AckWaitSeconds == 0 {
 		c.NATS.AckWaitSeconds = 60
 	}
+	if c.NATS.ReconnectWaitSeconds == 0 {
+		c.NATS.ReconnectWaitSeconds = 2
+	}
+	if c.ReflectionQueue.Backend == "" {
+		c.ReflectionQueue.Backend = "mysql"
+	}
+	if c.ReflectionQueue.Stream == "" {
+		c.ReflectionQueue.Stream = "AGENTCANVAS_REFLECTION"
+	}
+	if c.ReflectionQueue.Subject == "" {
+		c.ReflectionQueue.Subject = "agentcanvas.reflection.jobs"
+	}
+	if c.ReflectionQueue.DLQStream == "" {
+		c.ReflectionQueue.DLQStream = "AGENTCANVAS_REFLECTION_DLQ"
+	}
+	if c.ReflectionQueue.DLQSubject == "" {
+		c.ReflectionQueue.DLQSubject = "agentcanvas.reflection.dlq"
+	}
+	if c.ReflectionQueue.Durable == "" {
+		c.ReflectionQueue.Durable = "reflection-workers"
+	}
+	if c.ReflectionQueue.AckWaitSeconds == 0 {
+		c.ReflectionQueue.AckWaitSeconds = 120
+	}
+	if c.ReflectionQueue.HeartbeatSeconds == 0 {
+		c.ReflectionQueue.HeartbeatSeconds = 30
+	}
+	if c.ReflectionQueue.LeaseSeconds == 0 {
+		c.ReflectionQueue.LeaseSeconds = 180
+	}
+	if c.ReflectionQueue.Concurrency == 0 {
+		c.ReflectionQueue.Concurrency = 2
+	}
+	if c.ReflectionQueue.MaxAckPending == 0 {
+		c.ReflectionQueue.MaxAckPending = c.ReflectionQueue.Concurrency
+	}
+	if c.ReflectionQueue.OutboxBatchSize == 0 {
+		c.ReflectionQueue.OutboxBatchSize = 100
+	}
+	if c.ReflectionQueue.OutboxPollMilliseconds == 0 {
+		c.ReflectionQueue.OutboxPollMilliseconds = 500
+	}
+	if c.ReflectionQueue.StreamMaxAgeDays == 0 {
+		c.ReflectionQueue.StreamMaxAgeDays = 30
+	}
+	if c.ReflectionQueue.StreamMaxBytes == 0 {
+		c.ReflectionQueue.StreamMaxBytes = 1 << 30
+	}
+	if c.ReflectionQueue.StreamReplicas == 0 {
+		c.ReflectionQueue.StreamReplicas = 1
+	}
+	if c.AgentRuntime.WorkerConcurrency == 0 {
+		c.AgentRuntime.WorkerConcurrency = 2
+	}
+	if c.AgentRuntime.LeaseSeconds == 0 {
+		c.AgentRuntime.LeaseSeconds = 30
+	}
+	if c.AgentRuntime.WorkspaceDockerImage == "" {
+		c.AgentRuntime.WorkspaceDockerImage = "agentcanvas/workspace:latest"
+	}
+	if c.AgentRuntime.MemoryReviewMode == "" {
+		c.AgentRuntime.MemoryReviewMode = "suggest"
+	}
+	if c.AgentRuntime.ReviewWorkerConcurrency == 0 {
+		c.AgentRuntime.ReviewWorkerConcurrency = 1
+	}
 	if c.Milvus.Collection == "" {
 		c.Milvus.Collection = "agentcanvas_chunks"
 	}
@@ -278,6 +388,27 @@ func (c *Config) Validate() error {
 	if c.Queue.Backend == "nats" && c.NATS.URL == "" {
 		return fmt.Errorf("nats.url is required when queue.backend is nats")
 	}
+	if c.ReflectionQueue.Backend != "mysql" && c.ReflectionQueue.Backend != "nats" {
+		return fmt.Errorf("reflection_queue.backend must be mysql or nats")
+	}
+	if c.ReflectionQueue.Backend == "nats" && c.NATS.URL == "" {
+		return fmt.Errorf("nats.url is required when reflection_queue.backend is nats")
+	}
+	if c.ReflectionQueue.AckWaitSeconds <= 0 || c.ReflectionQueue.HeartbeatSeconds <= 0 || c.ReflectionQueue.LeaseSeconds <= 0 {
+		return fmt.Errorf("reflection_queue ack, heartbeat, and lease durations must be positive")
+	}
+	if c.ReflectionQueue.HeartbeatSeconds*2 >= c.ReflectionQueue.AckWaitSeconds {
+		return fmt.Errorf("reflection_queue.heartbeat_seconds must be less than half ack_wait_seconds")
+	}
+	if c.ReflectionQueue.LeaseSeconds < c.ReflectionQueue.AckWaitSeconds {
+		return fmt.Errorf("reflection_queue.lease_seconds must be at least ack_wait_seconds")
+	}
+	if c.ReflectionQueue.Concurrency <= 0 || c.ReflectionQueue.MaxAckPending != c.ReflectionQueue.Concurrency {
+		return fmt.Errorf("reflection_queue.max_ack_pending must equal concurrency and both must be positive")
+	}
+	if c.ReflectionQueue.OutboxBatchSize <= 0 || c.ReflectionQueue.OutboxPollMilliseconds <= 0 || c.ReflectionQueue.StreamReplicas <= 0 {
+		return fmt.Errorf("reflection_queue outbox and stream settings must be positive")
+	}
 	if c.Milvus.Enabled && c.Milvus.Address == "" {
 		return fmt.Errorf("milvus.address is required when milvus.enabled is true")
 	}
@@ -286,6 +417,18 @@ func (c *Config) Validate() error {
 	}
 	if c.ResourceCache.TTLSeconds < 1 {
 		return fmt.Errorf("resource_cache.ttl_seconds must be positive")
+	}
+	if c.AgentRuntime.WorkerConcurrency <= 0 || c.AgentRuntime.WorkerConcurrency > 64 || c.AgentRuntime.LeaseSeconds < 10 {
+		return fmt.Errorf("agent_runtime worker concurrency or lease duration is invalid")
+	}
+	if c.AgentRuntime.WorkspaceEnabled && len(c.AgentRuntime.WorkspaceAllowedRoots) == 0 {
+		return fmt.Errorf("agent_runtime.workspace_allowed_roots is required when workspace is enabled")
+	}
+	if c.AgentRuntime.MemoryReviewMode != "off" && c.AgentRuntime.MemoryReviewMode != "suggest" && c.AgentRuntime.MemoryReviewMode != "auto" {
+		return fmt.Errorf("agent_runtime.memory_review_mode must be off, suggest, or auto")
+	}
+	if c.AgentRuntime.ReviewWorkerConcurrency <= 0 || c.AgentRuntime.ReviewWorkerConcurrency > 16 {
+		return fmt.Errorf("agent_runtime.review_worker_concurrency is invalid")
 	}
 	return nil
 }

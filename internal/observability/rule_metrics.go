@@ -18,6 +18,7 @@ type RuleMetricSnapshot struct {
 	RolledBack            uint64 `json:"rolled_back"`
 	MandatoryOverflow     uint64 `json:"mandatory_overflow"`
 	SnapshotIntegrityFail uint64 `json:"snapshot_integrity_fail"`
+	LegacySnapshotLoads   uint64 `json:"legacy_snapshot_loads"`
 	OptimizerLimited      uint64 `json:"optimizer_limited"`
 	ClosureRejected       uint64 `json:"closure_rejected"`
 	HookDenied            uint64 `json:"hook_denied"`
@@ -39,6 +40,7 @@ type RuleMetrics struct {
 	rolledBack            atomic.Uint64
 	mandatoryOverflow     atomic.Uint64
 	snapshotIntegrityFail atomic.Uint64
+	legacySnapshotLoads   atomic.Uint64
 	optimizerLimited      atomic.Uint64
 	closureRejected       atomic.Uint64
 	hookDenied            atomic.Uint64
@@ -82,6 +84,8 @@ func (m *RuleMetrics) RecordMandatoryOverflow() { m.mandatoryOverflow.Add(1) }
 
 func (m *RuleMetrics) RecordSnapshotIntegrityFailure() { m.snapshotIntegrityFail.Add(1) }
 
+func (m *RuleMetrics) RecordLegacySnapshotLoad() { m.legacySnapshotLoads.Add(1) }
+
 func (m *RuleMetrics) RecordPlanner(duration time.Duration, optimizerLimited bool, closureRejected int) {
 	ns := uint64(max(duration.Nanoseconds(), 0))
 	m.plannerCount.Add(1)
@@ -122,6 +126,7 @@ func (m *RuleMetrics) Snapshot() RuleMetricSnapshot {
 		RolledBack:            m.rolledBack.Load(),
 		MandatoryOverflow:     m.mandatoryOverflow.Load(),
 		SnapshotIntegrityFail: m.snapshotIntegrityFail.Load(),
+		LegacySnapshotLoads:   m.legacySnapshotLoads.Load(),
 		OptimizerLimited:      m.optimizerLimited.Load(),
 		ClosureRejected:       m.closureRejected.Load(),
 		HookDenied:            m.hookDenied.Load(),

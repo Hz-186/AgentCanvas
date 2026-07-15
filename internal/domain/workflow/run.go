@@ -6,10 +6,13 @@ import (
 )
 
 const (
-	RunKindWorkflow    = "workflow"
-	RunKindInlineAgent = "inline_agent"
+	RunKindWorkflow          = "workflow"
+	RunKindInlineAgent       = "inline_agent"
+	RunKindAgent             = "agent"
+	RunKindLifecycleWorkflow = "lifecycle_workflow"
 
 	RunStatusRunning      = "running"
+	RunStatusQueued       = "queued"
 	RunStatusSucceeded    = "succeeded"
 	RunStatusFailed       = "failed"
 	RunStatusCancelled    = "cancelled"
@@ -24,6 +27,8 @@ type Run struct {
 	OwnerID          int64           `json:"owner_id" gorm:"column:owner_id"`
 	WorkflowID       int64           `json:"workflow_id" gorm:"column:workflow_id"`
 	FlowVersionID    int64           `json:"flow_version_id" gorm:"column:flow_version_id"`
+	AgentID          *int64          `json:"agent_id,omitempty" gorm:"column:agent_id"`
+	AgentReleaseID   *int64          `json:"agent_release_id,omitempty" gorm:"column:agent_release_id"`
 	RuleSetID        *int64          `json:"rule_set_id,omitempty" gorm:"column:rule_set_id"`
 	RuleSetVersion   string          `json:"rule_set_version,omitempty" gorm:"column:rule_set_version"`
 	CompiledRuleHash string          `json:"compiled_rule_hash,omitempty" gorm:"column:compiled_rule_hash"`

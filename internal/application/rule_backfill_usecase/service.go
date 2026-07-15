@@ -26,16 +26,22 @@ const (
 )
 
 type Result struct {
-	Scanned  int
-	Imported int
-	Skipped  int
-	Failed   int
+	Scanned     int
+	Converted   int
+	Ignored     int
+	WouldImport int
+	Imported    int
+	Skipped     int
+	Failed      int
 }
 
 type Service struct {
 	db        *gorm.DB
 	batchSize int
+	dryRun    bool
 }
+
+func (s *Service) SetDryRun(enabled bool) { s.dryRun = enabled }
 
 func NewService(db *gorm.DB) *Service {
 	return &Service{db: db, batchSize: defaultBatchSize}
@@ -70,14 +76,25 @@ func (s *Service) Run(ctx context.Context) (Result, error) {
 			profile := &profiles[index]
 			cursor = profile.ID
 			result.Scanned++
-			items, err := decodeLegacyRules(profile.ContextPolicyJSON)
+			items, ignored, err := decodeLegacyRules(profile.ContextPolicyJSON)
 			if err != nil {
 				result.Failed++
 				failures = append(failures, fmt.Errorf("profile %d: %w", profile.ID, err))
 				continue
 			}
+			result.Converted += len(items)
+			result.Ignored += len(ignored)
 			if len(items) == 0 {
 				result.Skipped++
+				continue
+			}
+			if s.dryRun {
+				if err := rules.ValidateCustomRules(items); err != nil {
+					result.Failed++
+					failures = append(failures, fmt.Errorf("profile %d: %w", profile.ID, err))
+					continue
+				}
+				result.WouldImport++
 				continue
 			}
 			imported, err := s.importProfile(ctx, profile.ID, items)
@@ -151,7 +168,6 @@ func (s *Service) importProfile(ctx context.Context, profileID int64, items []ru
 
 		compiled, err := rules.CompileRuleSet(items, rules.CompileOptions{
 			RuleSetID: set.ID, Version: strconv.Itoa(set.VersionNo),
-			RejectLegacyPermanentLevels: true,
 		})
 		if err != nil {
 			return err
@@ -221,17 +237,8 @@ func (s *Service) importProfile(ctx context.Context, profileID int64, items []ru
 	return imported, err
 }
 
-func decodeLegacyRules(raw json.RawMessage) ([]rules.Rule, error) {
-	if len(raw) == 0 || string(raw) == "null" {
-		return nil, nil
-	}
-	var policy struct {
-		Rules []rules.Rule `json:"rules"`
-	}
-	if err := json.Unmarshal(raw, &policy); err != nil {
-		return nil, fmt.Errorf("decode context_policy_json: %w", err)
-	}
-	return policy.Rules, nil
+func decodeLegacyRules(raw json.RawMessage) ([]rules.Rule, []string, error) {
+	return rules.DecodeLegacyPolicyRules(raw)
 }
 
 func legacySourceHash(items []rules.Rule) string {
@@ -259,7 +266,7 @@ func legacyRows(compiled *rules.CompiledRuleSet) ([]workflow.RuleNode, []workflo
 		}
 		nodes = append(nodes, workflow.RuleNode{
 			RuleID: item.Rule.ID, Name: item.Rule.Name, Content: item.Rule.Content,
-			Strength: string(item.Rule.EffectiveStrength()), ActivationJSON: activation,
+			Strength: string(item.Rule.Strength), ActivationJSON: activation,
 			Priority: item.Rule.Priority, SafetyCritical: item.Rule.SafetyCritical,
 			PolicyBindingJSON: binding, TokenCost: item.TokenCost,
 			TopologicalOrder: item.TopologicalOrder, ContentHash: item.ContentHash,

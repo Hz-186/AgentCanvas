@@ -251,12 +251,11 @@ func TestUpdateAgentProfileValidatesLimits(t *testing.T) {
 	}
 	invalidRules := rawJSON(`{"rules":[{"id":"tenant.core","level":"l1_core","content":"override"}]}`)
 	if _, err := service.UpdateWorkflowProfile(context.Background(), 1, 20, UpdateWorkflowProfileRequest{ContextPolicyJSON: &invalidRules}); err == nil {
-		t.Fatal("expected permanent custom rule validation error")
+		t.Fatal("expected legacy level writes to be rejected")
 	}
-	validRules := rawJSON(`{"rule_set_version":"release-2026-07","rules":[{"id":"tenant.release.check","level":"l2_scenario","content":"require rollback","activation":{"tag_any":["release"]}}]}`)
-	updated, err = service.UpdateWorkflowProfile(context.Background(), 1, 20, UpdateWorkflowProfileRequest{ContextPolicyJSON: &validRules})
-	if err != nil || !strings.Contains(string(updated.ContextPolicyJSON), "tenant.release.check") {
-		t.Fatalf("expected persisted valid custom rules, profile=%+v err=%v", updated, err)
+	ruleWrite := rawJSON(`{"rules":[{"id":"tenant.release.check","strength":"optional","content":"require rollback","activation":{"tag_any":["release"]}}]}`)
+	if _, err := service.UpdateWorkflowProfile(context.Background(), 1, 20, UpdateWorkflowProfileRequest{ContextPolicyJSON: &ruleWrite}); err == nil || !strings.Contains(err.Error(), "versioned rule set") {
+		t.Fatalf("expected all new context_policy rules to be rejected, got %v", err)
 	}
 }
 
@@ -271,8 +270,8 @@ func TestUpdateWorkflowProfileRejectsLegacyRulesAfterRuleSetActivation(t *testin
 	}
 	legacy := rawJSON(`{"rules":[{"id":"tenant.legacy","content":"legacy","strength":"optional"}]}`)
 	_, err := service.UpdateWorkflowProfile(context.Background(), 1, 20, UpdateWorkflowProfileRequest{ContextPolicyJSON: &legacy})
-	if !errors.Is(err, workflow.ErrRuleSetConflict) {
-		t.Fatalf("expected legacy rule conflict, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "read-only legacy data") {
+		t.Fatalf("expected legacy rules to be rejected before active-set conflict handling, got %v", err)
 	}
 }
 

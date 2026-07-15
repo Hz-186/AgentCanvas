@@ -145,8 +145,8 @@ func compiledRuleSetFromRecord(item *workflow.RuleSet) (*rules.CompiledRuleSet, 
 	if item == nil {
 		return nil, fmt.Errorf("rule set record is nil")
 	}
-	var compiled rules.CompiledRuleSet
-	if err := json.Unmarshal(item.CompiledSnapshotJSON, &compiled); err != nil {
+	compiled, err := rules.DecodeCompiledRuleSet(item.CompiledSnapshotJSON)
+	if err != nil {
 		observability.RuleSystemMetrics.RecordSnapshotIntegrityFailure()
 		return nil, fmt.Errorf("rule set snapshot is invalid: %w", err)
 	}
@@ -158,12 +158,12 @@ func compiledRuleSetFromRecord(item *workflow.RuleSet) (*rules.CompiledRuleSet, 
 		observability.RuleSystemMetrics.RecordSnapshotIntegrityFailure()
 		return nil, fmt.Errorf("rule set snapshot identity mismatch")
 	}
-	if err := rules.VerifyCompiledHash(&compiled); err != nil {
+	if err := rules.VerifyCompiledHash(compiled); err != nil {
 		observability.RuleSystemMetrics.RecordSnapshotIntegrityFailure()
 		return nil, fmt.Errorf("rule set snapshot integrity check failed: %w", err)
 	}
 	compiled.Prepare()
-	return &compiled, nil
+	return compiled, nil
 }
 
 func ruleSetIDValue(value *int64) int64 {
@@ -275,18 +275,18 @@ func (s *Service) RollbackRuleSet(ctx context.Context, ownerID, workflowID, rule
 	if target.Status != workflow.RuleSetStatusPublished && target.Status != workflow.RuleSetStatusSuperseded {
 		return nil, fmt.Errorf("%w: rollback target is not published", agenterrors.ErrInvalidInput)
 	}
-	var compiled rules.CompiledRuleSet
-	if err := json.Unmarshal(target.CompiledSnapshotJSON, &compiled); err != nil {
+	compiled, err := rules.DecodeCompiledRuleSet(target.CompiledSnapshotJSON)
+	if err != nil {
 		return nil, fmt.Errorf("published rule snapshot is invalid: %w", err)
 	}
 	if compiled.CompiledHash != target.CompiledHash {
 		return nil, fmt.Errorf("published rule snapshot hash mismatch")
 	}
-	if err := rules.VerifyCompiledHash(&compiled); err != nil {
+	if err := rules.VerifyCompiledHash(compiled); err != nil {
 		return nil, fmt.Errorf("published rule snapshot integrity check failed: %w", err)
 	}
 	compiled.Prepare()
-	items := rules.RulesFromCompiled(&compiled)
+	items := rules.RulesFromCompiled(compiled)
 	for index := range items {
 		items[index].ManualDependsOn = nil
 	}
@@ -295,7 +295,7 @@ func (s *Service) RollbackRuleSet(ctx context.Context, ownerID, workflowID, rule
 	if err != nil {
 		return nil, err
 	}
-	if err := preflightMandatoryRules(profile, &compiled); err != nil {
+	if err := preflightMandatoryRules(profile, compiled); err != nil {
 		return nil, err
 	}
 	clone := &workflow.RuleSet{}
@@ -389,7 +389,7 @@ func draftRows(items []rules.Rule) ([]workflow.RuleNode, []workflow.RuleEdge, er
 		}
 		nodes = append(nodes, workflow.RuleNode{
 			RuleID: rule.ID, Name: rule.Name, Content: rule.Content,
-			Strength: string(rule.EffectiveStrength()), ActivationJSON: activation,
+			Strength: string(rule.Strength), ActivationJSON: activation,
 			Priority: rule.Priority, SafetyCritical: rule.SafetyCritical, PolicyBindingJSON: binding,
 		})
 		for _, dependency := range rule.ManualDependsOn {
@@ -469,7 +469,7 @@ func compiledRows(compiled *rules.CompiledRuleSet) ([]workflow.RuleNode, error) 
 		}
 		nodes = append(nodes, workflow.RuleNode{
 			RuleID: item.Rule.ID, Name: item.Rule.Name, Content: item.Rule.Content,
-			Strength: string(item.Rule.EffectiveStrength()), ActivationJSON: activation,
+			Strength: string(item.Rule.Strength), ActivationJSON: activation,
 			Priority: item.Rule.Priority, SafetyCritical: item.Rule.SafetyCritical,
 			PolicyBindingJSON: binding, TokenCost: item.TokenCost,
 			TopologicalOrder: item.TopologicalOrder, ContentHash: item.ContentHash,

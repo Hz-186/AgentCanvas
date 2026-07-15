@@ -110,6 +110,7 @@ func (h *HealthHandler) RuleSystem(c *gin.Context) {
 		OldestReviewSeconds    int64   `json:"oldest_review_seconds"`
 		PublishedRuleSets      int64   `json:"published_rule_sets"`
 		RollbackRuleSets       int64   `json:"rollback_rule_sets"`
+		LegacyRuleProfiles     int64   `json:"legacy_rule_profiles_remaining"`
 	}
 	var metrics databaseMetrics
 	jobQuery := `SELECT
@@ -136,12 +137,21 @@ func (h *HealthHandler) RuleSystem(c *gin.Context) {
 		response.Error(c, http.StatusServiceUnavailable, errors.CodeDependencyUnavailable, err.Error())
 		return
 	}
+	legacyProfileQuery := `SELECT COUNT(*) AS legacy_rule_profiles
+		FROM workflow_profiles
+		WHERE active_rule_set_id IS NULL AND deleted_at IS NULL
+		AND JSON_LENGTH(JSON_EXTRACT(context_policy_json, '$.rules')) > 0`
+	if err := h.db.WithContext(c.Request.Context()).Raw(legacyProfileQuery).Scan(&metrics).Error; err != nil {
+		response.Error(c, http.StatusServiceUnavailable, errors.CodeDependencyUnavailable, err.Error())
+		return
+	}
 	process := observability.RuleSystemMetrics.Snapshot()
 	alerts := gin.H{
 		"compile_backlog":       metrics.QueuedJobs >= compileBacklogAlertThreshold,
 		"compile_queue_stalled": metrics.OldestQueuedSeconds >= compileAgeAlertSeconds,
 		"mandatory_overflow":    process.MandatoryOverflow > 0,
 		"snapshot_integrity":    process.SnapshotIntegrityFail > 0,
+		"legacy_rule_profiles":  metrics.LegacyRuleProfiles > 0,
 	}
 	response.OK(c, gin.H{"component": "rule_system", "database": metrics, "process": process, "alerts": alerts})
 }
@@ -162,6 +172,10 @@ func (h *HealthHandler) ReflectionSystem(c *gin.Context) {
 		DisputedReflections  int64 `json:"disputed_reflections"`
 		HelpfulFeedback      int64 `json:"helpful_feedback"`
 		HarmfulFeedback      int64 `json:"harmful_feedback"`
+		OutboxPending        int64 `json:"outbox_pending"`
+		OldestOutboxSeconds  int64 `json:"oldest_outbox_seconds"`
+		StaleRunningJobs     int64 `json:"stale_running_jobs"`
+		DLQJobs              int64 `json:"dlq_jobs"`
 	}
 	var metrics databaseMetrics
 	jobQuery := `SELECT
@@ -169,9 +183,19 @@ func (h *HealthHandler) ReflectionSystem(c *gin.Context) {
 		COALESCE(SUM(status = 'running'), 0) AS running_jobs,
 		COALESCE(SUM(status = 'failed'), 0) AS failed_jobs,
 		COALESCE(SUM(GREATEST(attempt_count - 1, 0)), 0) AS retry_attempts,
-		COALESCE(TIMESTAMPDIFF(SECOND, MIN(CASE WHEN status = 'pending' THEN created_at END), UTC_TIMESTAMP()), 0) AS oldest_pending_seconds
+		COALESCE(TIMESTAMPDIFF(SECOND, MIN(CASE WHEN status = 'pending' THEN created_at END), UTC_TIMESTAMP()), 0) AS oldest_pending_seconds,
+		COALESCE(SUM(status = 'running' AND lease_expires_at IS NOT NULL AND lease_expires_at < UTC_TIMESTAMP()), 0) AS stale_running_jobs,
+		COALESCE(SUM(status = 'failed' AND failure_type IN ('permanent','exhausted')), 0) AS dlq_jobs
 		FROM agent_reflection_jobs`
 	if err := h.db.WithContext(c.Request.Context()).Raw(jobQuery).Scan(&metrics).Error; err != nil {
+		response.Error(c, http.StatusServiceUnavailable, errors.CodeDependencyUnavailable, err.Error())
+		return
+	}
+	outboxQuery := `SELECT
+		COALESCE(SUM(status IN ('pending','publishing')), 0) AS outbox_pending,
+		COALESCE(TIMESTAMPDIFF(SECOND, MIN(CASE WHEN status IN ('pending','publishing') THEN created_at END), UTC_TIMESTAMP()), 0) AS oldest_outbox_seconds
+		FROM agent_reflection_job_outbox`
+	if err := h.db.WithContext(c.Request.Context()).Raw(outboxQuery).Scan(&metrics).Error; err != nil {
 		response.Error(c, http.StatusServiceUnavailable, errors.CodeDependencyUnavailable, err.Error())
 		return
 	}
@@ -194,9 +218,12 @@ func (h *HealthHandler) ReflectionSystem(c *gin.Context) {
 	}
 	process := observability.ReflectionSystemMetrics.Snapshot()
 	alerts := gin.H{
-		"job_backlog":       metrics.PendingJobs >= jobBacklogAlertThreshold,
-		"job_queue_stalled": metrics.OldestPendingSeconds >= jobAgeAlertSeconds,
-		"failed_jobs":       metrics.FailedJobs > 0,
+		"job_backlog":        metrics.PendingJobs >= jobBacklogAlertThreshold,
+		"job_queue_stalled":  metrics.OldestPendingSeconds >= jobAgeAlertSeconds,
+		"failed_jobs":        metrics.FailedJobs > 0,
+		"outbox_stalled":     metrics.OldestOutboxSeconds >= 60,
+		"stale_running_jobs": metrics.StaleRunningJobs > 0,
+		"dlq_jobs":           metrics.DLQJobs > 0,
 	}
 	response.OK(c, gin.H{"component": "reflection_system", "database": metrics, "process": process, "alerts": alerts})
 }

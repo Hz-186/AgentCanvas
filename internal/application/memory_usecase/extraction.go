@@ -40,6 +40,25 @@ func (s *ExtractionService) StartExtraction(ctx context.Context, ownerID, conver
 	return job.ID, nil
 }
 
+// ProcessNextDream drains legacy extraction rows through the canonical Dream
+// pipeline. New turns publish Dream jobs directly, so this compatibility
+// consumer closes old pending jobs without applying a second extraction pass.
+func (s *ExtractionService) ProcessNextDream(ctx context.Context, dream *DreamWorker) (bool, error) {
+	if s == nil || s.extractions == nil || dream == nil {
+		return false, nil
+	}
+	jobs, err := s.extractions.ListPending(ctx, 1)
+	if err != nil || len(jobs) == 0 {
+		return false, err
+	}
+	job := jobs[0]
+	if err := dream.HandleDreamJob(ctx, DreamPayload{OwnerID: job.OwnerID, ConversationID: job.ConversationID}); err != nil {
+		_ = s.FailExtraction(ctx, job.ID, job.OwnerID, err.Error())
+		return true, err
+	}
+	return true, s.CompleteExtraction(ctx, job.ID, job.OwnerID, nil)
+}
+
 func (s *ExtractionService) findOpenJob(ctx context.Context, ownerID, conversationID int64) (int64, bool) {
 	for _, status := range []string{string(memory.ExtractionPending), string(memory.ExtractionRunning)} {
 		jobs, err := s.extractions.ListByStatus(ctx, ownerID, status, 20)

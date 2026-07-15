@@ -44,6 +44,20 @@ func TestPublishRuleSetMapsRevisionConflictToHTTP409(t *testing.T) {
 	}
 }
 
+func TestCreateRuleSetRejectsLegacyLevelWithHTTP400(t *testing.T) {
+	handler := &WorkflowHandler{ruleSets: &fakeRuleSetHTTPService{}}
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/v1/workflows/20/rule-sets", strings.NewReader(`{"rules":[{"id":"tenant.legacy","level":"l2_scenario","content":"legacy"}]}`))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+	ctx.Params = gin.Params{{Key: "id", Value: "20"}}
+	ctx.Set("user_id", int64(1))
+	handler.CreateRuleSet(ctx)
+	if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), "strength") {
+		t.Fatalf("expected HTTP 400 with migration guidance, got %d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
 type fakeRuleSetHTTPService struct {
 	workflowRuleSetHTTPService
 	job              *workflow.RuleCompileJob

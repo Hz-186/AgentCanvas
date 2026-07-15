@@ -2,16 +2,32 @@ package reflection
 
 import (
 	"context"
+	"errors"
 	"time"
+)
+
+var ErrLeaseLost = errors.New("reflection job lease lost")
+
+type ClaimState string
+
+const (
+	ClaimAcquired ClaimState = "acquired"
+	ClaimBusy     ClaimState = "busy"
+	ClaimTerminal ClaimState = "terminal"
 )
 
 type CandidateQuery struct {
 	OwnerID       int64
 	WorkflowID    int64
+	AgentID       int64
 	NodeID        string
 	Mode          string
 	IncludeGlobal bool
 	Limit         int
+}
+
+type ScopedRepository interface {
+	FindActiveByAgentHash(context.Context, int64, int64, string) (*Reflection, error)
 }
 
 type Repository interface {
@@ -34,6 +50,52 @@ type JobRepository interface {
 	Fail(context.Context, *Job, error, *time.Time) error
 }
 
+// ReliableJobRepository adds lease fencing, transactional result persistence,
+// and outbox dispatch while retaining JobRepository for the MySQL rollback path.
+type ReliableJobRepository interface {
+	JobRepository
+	CreateAndDispatch(context.Context, *Job) (*Job, error)
+	ClaimByID(context.Context, int64, string, string, time.Time) (*Job, ClaimState, error)
+	RenewLease(context.Context, int64, string, time.Time) error
+	CommitResult(context.Context, int64, string, []Reflection) error
+	RetryAndDispatch(context.Context, int64, string, error, time.Time) error
+	FailAndDispatchDLQ(context.Context, int64, string, error, string) error
+	ReleaseInterrupted(context.Context, int64, string) error
+	BackfillPendingDispatches(context.Context, int) (int64, error)
+}
+
+type OutboxRepository interface {
+	ClaimOutbox(context.Context, string, int, time.Duration) ([]JobOutbox, error)
+	MarkOutboxPublished(context.Context, int64, string) error
+	MarkOutboxFailed(context.Context, int64, string, error, time.Time) error
+	DeletePublishedOutboxBefore(context.Context, time.Time, int) (int64, error)
+}
+
+type Envelope struct {
+	SchemaVersion  int       `json:"schema_version"`
+	EventID        string    `json:"event_id"`
+	JobID          int64     `json:"job_id"`
+	DispatchSeq    int       `json:"dispatch_seq"`
+	DispatchReason string    `json:"dispatch_reason"`
+	OccurredAt     time.Time `json:"occurred_at"`
+}
+
+type Delivery interface {
+	Envelope() Envelope
+	ValidationError() error
+	Ack(context.Context) error
+	Nak(context.Context, time.Duration) error
+	InProgress(context.Context) error
+	Term(context.Context) error
+}
+
+type Transport interface {
+	PublishOutbox(context.Context, JobOutbox) error
+	Fetch(context.Context, int) ([]Delivery, error)
+	PublishDLQ(context.Context, Envelope, string) error
+	Drain() error
+}
+
 type RecallLogRepository interface {
 	Create(context.Context, *RecallLog) error
 	ListByRun(context.Context, int64, int64) ([]RecallLog, error)
@@ -48,6 +110,7 @@ type EventSink interface {
 type RecallRequest struct {
 	OwnerID    int64
 	WorkflowID int64
+	AgentID    int64
 	RunID      int64
 	NodeID     string
 	Mode       string

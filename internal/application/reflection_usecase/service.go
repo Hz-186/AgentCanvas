@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 	"time"
@@ -20,11 +21,12 @@ import (
 )
 
 type Service struct {
-	Reflections reflection.Repository
-	Jobs        reflection.JobRepository
-	RecallLogs  reflection.RecallLogRepository
-	Index       reflection.SearchIndex
-	Events      reflection.EventSink
+	Reflections     reflection.Repository
+	Jobs            reflection.JobRepository
+	RecallLogs      reflection.RecallLogRepository
+	Index           reflection.SearchIndex
+	Events          reflection.EventSink
+	DispatchEnabled bool
 }
 
 type UpdateStatusRequest struct {
@@ -124,11 +126,11 @@ func (s Service) Feedback(ctx context.Context, ownerID, runID, reflectionID int6
 
 func (s Service) Recall(ctx context.Context, req reflection.RecallRequest) (reflection.RecallResult, error) {
 	policy := req.Policy.Normalize()
-	if !policy.Active() || s.Reflections == nil || req.OwnerID <= 0 || req.WorkflowID <= 0 {
+	if !policy.Active() || s.Reflections == nil || req.OwnerID <= 0 || (req.WorkflowID <= 0 && req.AgentID <= 0) {
 		return reflection.RecallResult{}, nil
 	}
 	fingerprint := TaskFingerprint(req.Task)
-	query := reflection.CandidateQuery{OwnerID: req.OwnerID, WorkflowID: req.WorkflowID, NodeID: req.NodeID, Mode: req.Mode,
+	query := reflection.CandidateQuery{OwnerID: req.OwnerID, WorkflowID: req.WorkflowID, AgentID: req.AgentID, NodeID: req.NodeID, Mode: req.Mode,
 		IncludeGlobal: policy.AllowValidatedGlobalFallback, Limit: 50}
 	var ranked []reflection.SearchResult
 	if s.Index != nil {
@@ -195,11 +197,15 @@ func (s Service) Store(ctx context.Context, item *reflection.Reflection) (*refle
 		return nil, fmt.Errorf("reflection repository is not configured")
 	}
 	item.Lesson, item.CorrectiveAction = strings.TrimSpace(item.Lesson), strings.TrimSpace(item.CorrectiveAction)
-	if item.OwnerID <= 0 || item.WorkflowID <= 0 || item.Lesson == "" || item.CorrectiveAction == "" {
-		return nil, fmt.Errorf("owner_id, workflow_id, lesson and corrective_action are required")
+	if item.OwnerID <= 0 || (item.WorkflowID <= 0 && item.AgentID == nil) || item.Lesson == "" || item.CorrectiveAction == "" {
+		return nil, fmt.Errorf("owner_id, workflow_id or agent_id, lesson and corrective_action are required")
 	}
 	if item.Scope == "" {
-		item.Scope = reflection.ScopeWorkflow
+		if item.AgentID != nil {
+			item.Scope = reflection.ScopeAgent
+		} else {
+			item.Scope = reflection.ScopeWorkflow
+		}
 	}
 	if item.Status == "" {
 		if item.Kind == reflection.KindErrorLesson {
@@ -211,7 +217,15 @@ func (s Service) Store(ctx context.Context, item *reflection.Reflection) (*refle
 		}
 	}
 	item.ContentHash = ContentHash(item.RootCauseCategory, item.Lesson, item.CorrectiveAction, item.Applicability)
-	existing, err := s.Reflections.FindActiveByHash(ctx, item.OwnerID, item.WorkflowID, item.ContentHash)
+	var existing *reflection.Reflection
+	var err error
+	if item.AgentID != nil && *item.AgentID > 0 {
+		if scoped, ok := s.Reflections.(reflection.ScopedRepository); ok {
+			existing, err = scoped.FindActiveByAgentHash(ctx, item.OwnerID, *item.AgentID, item.ContentHash)
+		}
+	} else {
+		existing, err = s.Reflections.FindActiveByHash(ctx, item.OwnerID, item.WorkflowID, item.ContentHash)
+	}
 	if err == nil && existing != nil {
 		if item.Importance > existing.Importance {
 			existing.Importance = item.Importance
@@ -246,11 +260,23 @@ func (s Service) Enqueue(ctx context.Context, job *reflection.Job) error {
 	if job.TriggerHash == "" {
 		job.TriggerHash = ContentHash(fmt.Sprint(job.RunID), job.NodeID, string(job.PayloadJSON))
 	}
-	if err := s.Jobs.Create(ctx, job); err != nil {
+	if err := s.createJob(ctx, job); err != nil {
+		observability.ReflectionSystemMetrics.RecordJobEnqueueFailure()
+		slog.Default().Error("reflection job enqueue failed", "run_id", job.RunID, "node_id", job.NodeID, "error", err)
 		return err
 	}
 	observability.ReflectionSystemMetrics.RecordJobEnqueued()
 	return nil
+}
+
+func (s Service) createJob(ctx context.Context, job *reflection.Job) error {
+	if s.DispatchEnabled {
+		if jobs, ok := s.Jobs.(reflection.ReliableJobRepository); ok {
+			_, err := jobs.CreateAndDispatch(ctx, job)
+			return err
+		}
+	}
+	return s.Jobs.Create(ctx, job)
 }
 
 func (s Service) ResolveRun(ctx context.Context, ownerID, runID int64, outcome string) {
@@ -346,9 +372,7 @@ func (s Service) enqueueRunEvidence(ctx context.Context, ownerID, runID int64, e
 		PayloadJSON: payloadJSON, Status: reflection.JobPending, MaxAttempts: source.MaxAttempts,
 		TriggerHash: ContentHash(append([]string{evidenceKey, fmt.Sprint(runID)}, triggerParts...)...),
 	}
-	if s.Jobs.Create(ctx, job) == nil {
-		observability.ReflectionSystemMetrics.RecordJobEnqueued()
-	}
+	_ = s.Enqueue(ctx, job)
 }
 
 func TaskFingerprint(task string) string { return hashText(normalizeText(task)) }

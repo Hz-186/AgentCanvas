@@ -8,11 +8,14 @@ import (
 )
 
 func TestDecodeLegacyRulesAndRowsPreserveActivationAndDependencies(t *testing.T) {
-	items, err := decodeLegacyRules(json.RawMessage(`{"rules":[{"id":"tenant.release","level":"l2_scenario","content":"check release","activation":{"tag_any":["release"]},"manual_depends_on":["tenant.audit"]},{"id":"tenant.audit","level":"l2_scenario","content":"audit"}]}`))
+	items, ignored, err := decodeLegacyRules(json.RawMessage(`{"rules":[{"id":"tenant.release","level":"l2_scenario","content":"check release","activation":{"tag_any":["release"]},"manual_depends_on":["tenant.audit"]},{"id":"tenant.audit","level":"l2_scenario","content":"audit"}]}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	compiled, err := rules.CompileRuleSet(items, rules.CompileOptions{RuleSetID: 9, Version: "2", RejectLegacyPermanentLevels: true})
+	if len(ignored) != 0 {
+		t.Fatalf("unexpected ignored rules: %+v", ignored)
+	}
+	compiled, err := rules.CompileRuleSet(items, rules.CompileOptions{RuleSetID: 9, Version: "2"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -29,7 +32,7 @@ func TestDecodeLegacyRulesAndRowsPreserveActivationAndDependencies(t *testing.T)
 }
 
 func TestDecodeLegacyRulesRejectsInvalidJSON(t *testing.T) {
-	if _, err := decodeLegacyRules(json.RawMessage(`{"rules":`)); err == nil {
+	if _, _, err := decodeLegacyRules(json.RawMessage(`{"rules":`)); err == nil {
 		t.Fatal("expected invalid legacy policy to fail")
 	}
 }

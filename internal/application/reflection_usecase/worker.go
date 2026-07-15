@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/rand"
 	"strings"
 	"time"
 
@@ -19,11 +20,12 @@ import (
 )
 
 type Worker struct {
-	Service   Service
-	Jobs      reflection.JobRepository
-	Providers provider.Repository
-	Secrets   *cryptoinfra.SecretBox
-	LLM       llm.ChatClient
+	Service         Service
+	Jobs            reflection.JobRepository
+	Providers       provider.Repository
+	Secrets         *cryptoinfra.SecretBox
+	LLM             llm.ChatClient
+	DispatchEnabled bool
 }
 
 type terminalAnalysis struct {
@@ -57,13 +59,23 @@ func (w Worker) ProcessNext(ctx context.Context, workerID string) (bool, error) 
 	if err != nil {
 		return false, err
 	}
-	if err := w.process(ctx, job); err != nil {
-		retry := time.Now().UTC().Add(time.Duration(max(1, job.AttemptCount)) * time.Minute)
-		_ = w.Jobs.Fail(ctx, job, err, &retry)
-		observability.ReflectionSystemMetrics.RecordJobFailure(job.AttemptCount < job.MaxAttempts)
+	results, err := w.analyze(ctx, job)
+	if err != nil {
+		w.handleFailure(ctx, job, err)
 		return true, err
 	}
-	if err := w.Jobs.Complete(ctx, job); err != nil {
+	if jobs, ok := w.Jobs.(reflection.ReliableJobRepository); ok && job.LockToken != "" {
+		err = jobs.CommitResult(ctx, job.ID, job.LockToken, results)
+	} else {
+		for i := range results {
+			if _, storeErr := w.Service.Store(ctx, &results[i]); storeErr != nil {
+				w.handleFailure(ctx, job, storeErr)
+				return true, storeErr
+			}
+		}
+		err = w.Jobs.Complete(ctx, job)
+	}
+	if err != nil {
 		observability.ReflectionSystemMetrics.RecordJobFailure(false)
 		return true, err
 	}
@@ -72,26 +84,42 @@ func (w Worker) ProcessNext(ctx context.Context, workerID string) (bool, error) 
 }
 
 func (w Worker) process(ctx context.Context, job *reflection.Job) error {
+	items, err := w.analyze(ctx, job)
+	if err != nil {
+		return err
+	}
+	for i := range items {
+		if _, err := w.Service.Store(ctx, &items[i]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (w Worker) analyze(ctx context.Context, job *reflection.Job) ([]reflection.Reflection, error) {
 	if w.LLM == nil || w.Providers == nil || w.Secrets == nil {
-		return fmt.Errorf("reflection worker dependencies are not configured")
+		return nil, fmt.Errorf("reflection worker dependencies are not configured")
+	}
+	if job == nil || job.OwnerID <= 0 || (job.WorkflowID <= 0 && job.AgentID == nil) || job.RunID <= 0 || !json.Valid(job.PayloadJSON) {
+		return nil, permanentReflectionError{cause: fmt.Errorf("invalid persisted reflection job")}
 	}
 	p, err := w.Providers.FindByID(ctx, job.OwnerID, job.ProviderID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if p.Status != provider.StatusActive {
-		return fmt.Errorf("reflection provider is not active")
+		return nil, fmt.Errorf("reflection provider is not active")
 	}
 	apiKey, err := w.Secrets.Decrypt(p.EncryptedAPIKey)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	model := strings.TrimSpace(job.Model)
 	if model == "" {
 		model = strings.TrimSpace(p.DefaultChatModel)
 	}
 	if model == "" {
-		return fmt.Errorf("reflection model is required")
+		return nil, fmt.Errorf("reflection model is required")
 	}
 	prompt := terminalReflectionPrompt(job)
 	zero := 0.0
@@ -102,14 +130,15 @@ func (w Worker) process(ctx context.Context, job *reflection.Job) error {
 		},
 	})
 	if err != nil {
-		return err
+		return nil, err
 	}
 	var analysis terminalAnalysis
 	if err := json.Unmarshal([]byte(extractJSONObject(resp.Content)), &analysis); err != nil {
-		return fmt.Errorf("parse terminal reflection: %w", err)
+		return nil, fmt.Errorf("parse terminal reflection: %w", err)
 	}
 	stopReason := payloadStopReason(job.PayloadJSON)
 	policy := payloadReflectionPolicy(job.PayloadJSON)
+	items := make([]reflection.Reflection, 0, len(analysis.Candidates))
 	for _, candidate := range analysis.Candidates {
 		candidate.Kind = normalizeCandidateKind(candidate.Kind)
 		if !terminalCandidateAllowed(job.PayloadJSON, stopReason, candidate, policy) {
@@ -129,16 +158,75 @@ func (w Worker) process(ctx context.Context, job *reflection.Job) error {
 		if scope != reflection.ScopeNode && scope != reflection.ScopeWorkflow {
 			scope = reflection.ScopeWorkflow
 		}
-		_, err := w.Service.Store(ctx, &reflection.Reflection{OwnerID: job.OwnerID, WorkflowID: job.WorkflowID, NodeID: job.NodeID,
+		if job.AgentID != nil && scope == reflection.ScopeWorkflow {
+			scope = reflection.ScopeAgent
+		}
+		item := reflection.Reflection{OwnerID: job.OwnerID, WorkflowID: job.WorkflowID, AgentID: job.AgentID, NodeID: job.NodeID,
 			SourceRunID: job.RunID, Scope: scope, Kind: candidate.Kind, Mode: job.Mode, TriggerType: candidate.TriggerType,
 			TaskFingerprint: TaskFingerprint(job.Task), TaskSummary: compactText(job.Task, 1000), RootCauseCategory: candidate.RootCauseCategory,
 			RootCause: candidate.RootCause, CorrectiveAction: candidate.CorrectiveAction, Lesson: candidate.Lesson,
-			Applicability: candidate.Applicability, EvidenceJSON: evidence, TagsJSON: tags, Importance: score.Importance(), Confidence: candidate.Confidence})
-		if err != nil {
+			Applicability: candidate.Applicability, EvidenceJSON: evidence, TagsJSON: tags, Importance: score.Importance(), Confidence: candidate.Confidence}
+		if item.Kind == reflection.KindErrorLesson || (item.Kind == reflection.KindImportantStrategy && item.Importance >= .80 && item.Confidence >= .80) {
+			item.Status = reflection.StatusActive
+		} else {
+			item.Status = reflection.StatusCandidate
+		}
+		item.ContentHash = ContentHash(item.RootCauseCategory, item.Lesson, item.CorrectiveAction, item.Applicability)
+		items = append(items, item)
+	}
+	return items, nil
+}
+
+type permanentReflectionError struct{ cause error }
+
+func (e permanentReflectionError) Error() string { return e.cause.Error() }
+func (e permanentReflectionError) Unwrap() error { return e.cause }
+
+func (w Worker) handleFailure(ctx context.Context, job *reflection.Job, cause error) {
+	_ = w.scheduleFailure(ctx, job, cause)
+}
+
+func (w Worker) scheduleFailure(ctx context.Context, job *reflection.Job, cause error) error {
+	jobs, reliable := w.Jobs.(reflection.ReliableJobRepository)
+	if w.DispatchEnabled && reliable && job.LockToken != "" {
+		if errors.Is(cause, context.Canceled) {
+			err := jobs.ReleaseInterrupted(context.WithoutCancel(ctx), job.ID, job.LockToken)
 			return err
 		}
+		var permanent permanentReflectionError
+		if errors.As(cause, &permanent) {
+			err := jobs.FailAndDispatchDLQ(context.WithoutCancel(ctx), job.ID, job.LockToken, cause, reflection.FailurePermanent)
+			observability.ReflectionSystemMetrics.RecordJobFailure(false)
+			observability.ReflectionSystemMetrics.RecordDLQJob()
+			return err
+		}
+		if job.MaxAttempts > 0 && job.AttemptCount >= job.MaxAttempts {
+			err := jobs.FailAndDispatchDLQ(context.WithoutCancel(ctx), job.ID, job.LockToken, cause, reflection.FailureExhausted)
+			observability.ReflectionSystemMetrics.RecordJobFailure(false)
+			observability.ReflectionSystemMetrics.RecordDLQJob()
+			return err
+		}
+		retry := time.Now().UTC().Add(reflectionRetryDelay(job.AttemptCount))
+		err := jobs.RetryAndDispatch(context.WithoutCancel(ctx), job.ID, job.LockToken, cause, retry)
+		observability.ReflectionSystemMetrics.RecordJobFailure(true)
+		return err
 	}
-	return nil
+	retry := time.Now().UTC().Add(reflectionRetryDelay(job.AttemptCount))
+	err := w.Jobs.Fail(context.WithoutCancel(ctx), job, cause, &retry)
+	observability.ReflectionSystemMetrics.RecordJobFailure(job.AttemptCount < job.MaxAttempts)
+	return err
+}
+
+func reflectionRetryDelay(attempt int) time.Duration {
+	if attempt < 1 {
+		attempt = 1
+	}
+	delay := time.Minute << min(attempt-1, 3)
+	if delay > 15*time.Minute {
+		delay = 15 * time.Minute
+	}
+	jitter := .8 + rand.Float64()*.4
+	return time.Duration(float64(delay) * jitter)
 }
 
 func terminalReflectionPrompt(job *reflection.Job) string {
