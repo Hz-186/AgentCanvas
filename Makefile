@@ -6,9 +6,6 @@ dev:
 dev-v1:
 	npm --prefix web run dev
 
-dev-v2:
-	npm --prefix web_v2 run dev
-
 run: migrate verify-tables build-web
 	go run ./cmd/api
 
