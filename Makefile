@@ -1,13 +1,10 @@
-.PHONY: dev dev-v1 dev-v2 run worker backfill-rule-sets build build-web typecheck-web test-web docker-up docker-down tidy test migrate lint fmt verify clean
+.PHONY: dev dev-v1 run worker backfill-rule-sets build build-web typecheck-web test-web docker-up docker-down tidy test migrate lint fmt verify clean
 
 dev:
 	./scripts/dev.sh
 
 dev-v1:
 	npm --prefix web run dev
-
-dev-v2:
-	npm --prefix web_v2 run dev
 
 run: migrate verify-tables build-web
 	go run ./cmd/api
