@@ -1,4 +1,4 @@
-.PHONY: dev dev-v1 dev-v2 run worker backfill-rule-sets build build-web typecheck-web test-web docker-up docker-down tidy test migrate lint fmt verify clean
+.PHONY: dev dev-v1 dev-v2 run worker backfill-rule-sets backfill-agents backfill-context-index build build-web typecheck-web test-web docker-up docker-down tidy test migrate lint fmt verify clean
 
 dev:
 	./scripts/dev.sh
@@ -29,6 +29,12 @@ worker: migrate
 
 backfill-rule-sets: migrate
 	go run ./cmd/backfill-rule-sets
+
+backfill-agents: migrate
+	go run ./cmd/backfill-agents
+
+backfill-context-index: migrate
+	go run ./cmd/backfill-context-index
 
 docker-up:
 	docker compose -f deployments/docker-compose.yml up -d

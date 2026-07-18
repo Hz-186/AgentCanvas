@@ -386,6 +386,37 @@ export interface RetrievalResult {
 export interface RetrievalResponse {
   results: RetrievalResult[];
   latency_ms: number;
+  query_plan?: QueryPlan;
+  clarification?: RetrievalClarification;
+  diagnostics?: Record<string, unknown>;
+  trace?: Array<Record<string, unknown>>;
+}
+
+export interface QueryHardConstraint {
+  kind: string;
+  value: string;
+}
+
+export interface QueryPlan {
+  original_query: string;
+  normalized_query: string;
+  resolved_query?: string;
+  precise_query?: string;
+  hard_constraints?: QueryHardConstraint[];
+  paraphrases?: string[];
+  synonym_queries?: string[];
+  subqueries?: string[];
+  unresolved_references?: string[];
+  needs_clarification: boolean;
+  rewrite_invoked: boolean;
+  confidence: number;
+  clarification_question?: string;
+}
+
+export interface RetrievalClarification {
+  required: boolean;
+  question: string;
+  unresolved_references?: string[];
 }
 
 // —— 会话 / 消息 ——
@@ -396,7 +427,186 @@ export interface Conversation {
   title: string;
   source: string;
   workflow_id?: number | null;
+  agent_id?: number | null;
+  agent_release_id?: number | null;
+  parent_conversation_id?: number | null;
   last_message_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AgentDefinition {
+  provider_id: number;
+  model: string;
+  system_prompt: string;
+  role?: string;
+  goal?: string;
+  backstory?: string;
+  mode: 'react' | 'plan_execute';
+  temperature?: number;
+  tool_pack_ids?: number[];
+  tool_ids?: number[];
+  skill_ids?: number[];
+  skill_loading_mode?: 'auto' | 'metadata_only' | 'search';
+  knowledge_ids?: number[];
+  knowledge_top_k?: number;
+  knowledge_mode?: 'keyword' | 'vector' | 'hybrid';
+  mcp_server_ids?: number[];
+  callable_agent_ids?: number[];
+  call_workflow_ids?: number[];
+  allow_inline_agents?: boolean;
+  max_parallel_sub_agents?: number;
+  max_workflow_call_depth?: number;
+  memory_enabled?: boolean;
+  reflection_enabled?: boolean;
+  memory_policy_json?: unknown;
+  reflection_policy_json?: unknown;
+  tool_policy_json?: unknown;
+  context_policy_json?: unknown;
+  rules_json?: unknown;
+  output_schema_json?: unknown;
+  output_mode?: 'final_answer' | 'full';
+  return_intermediate_steps?: boolean;
+  max_iterations?: number;
+  max_tool_calls?: number;
+  max_execution_time_ms?: number;
+  max_tool_timeout_ms?: number;
+  max_tool_output_bytes?: number;
+  max_input_chars?: number;
+  max_input_tokens?: number;
+  context_window_tokens?: number;
+  reserved_output_tokens?: number;
+  context_safety_margin_tokens?: number;
+  max_rule_tokens?: number;
+  workspace_enabled?: boolean;
+  workspace_pack_id?: number | null;
+  pre_turn_workflow_id?: number | null;
+  pre_turn_workflow_version_id?: number | null;
+  post_turn_workflow_id?: number | null;
+  post_turn_workflow_version_id?: number | null;
+}
+
+export interface Workspace {
+  id: number;
+  owner_id: number;
+  name: string;
+  root_path: string;
+  default_branch: string;
+  status: 'active' | 'disabled';
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WorkspacePack {
+  id: number;
+  owner_id: number;
+  workspace_id: number;
+  name: string;
+  allowed_paths: string[];
+  command_allowlist: string[];
+  network_enabled: boolean;
+  allowed_domains: string[];
+  docker_image: string;
+  timeout_seconds: number;
+  cpu_limit: string;
+  memory_limit_mb: number;
+  process_limit: number;
+  max_output_bytes: number;
+  checksum: string;
+  status: 'active' | 'disabled';
+  created_at: string;
+  updated_at: string;
+}
+
+export interface Agent {
+  id: number;
+  owner_id: number;
+  name: string;
+  description: string;
+  avatar_url: string;
+  status: 'draft' | 'active' | 'archived';
+  definition: AgentDefinition;
+  current_release_id?: number | null;
+  legacy_dialog_id?: number | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AgentRelease {
+  id: number;
+  owner_id: number;
+  agent_id: number;
+  version_no: number;
+  definition: AgentDefinition;
+  checksum: string;
+  rule_set_hash: string;
+  tool_schema_hash: string;
+  resource_versions?: unknown;
+  created_by: number;
+  created_at: string;
+}
+
+export interface AgentTurn {
+  id: number;
+  owner_id: number;
+  agent_id: number;
+  agent_release_id: number;
+  conversation_id: number;
+  run_id?: number | null;
+  user_message_id: number;
+  assistant_message_id?: number | null;
+  idempotency_key: string;
+  status: 'queued' | 'retry_wait' | 'running' | 'waiting_human' | 'paused' | 'succeeded' | 'failed' | 'cancelled';
+  input_json?: unknown;
+  output_json?: unknown;
+  error_message: string;
+  started_at?: string | null;
+  finished_at?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AgentTurnAccepted {
+  turn: AgentTurn;
+  run: Run;
+}
+
+export interface ImprovementReview {
+  id: number;
+  owner_id: number;
+  agent_id: number;
+  agent_release_id: number;
+  conversation_id: number;
+  turn_id: number;
+  run_id: number;
+  provider_id: number;
+  model: string;
+  status: 'pending' | 'running' | 'completed' | 'failed';
+  attempt_count: number;
+  error_message?: string;
+  created_at: string;
+  completed_at?: string | null;
+}
+
+export interface ChangeProposal {
+  id: number;
+  owner_id: number;
+  agent_id: number;
+  review_id: number;
+  turn_id: number;
+  run_id: number;
+  kind: 'memory' | 'reflection' | 'skill' | 'rule';
+  title: string;
+  content: string;
+  payload_json?: unknown;
+  evidence_json?: unknown;
+  diff_json?: unknown;
+  confidence: number;
+  checksum: string;
+  security_status: string;
+  security_reason?: string;
+  status: 'pending' | 'approved' | 'rejected' | 'applied' | 'rejected_security';
+  decision_note?: string;
   created_at: string;
   updated_at: string;
 }
@@ -413,6 +623,16 @@ export interface Message {
   run_id?: number | null;
   token_count: number;
   metadata_json?: string;
+  created_at: string;
+}
+
+export interface MessageSearchResult {
+  message_id: number;
+  agent_id: number;
+  conversation_id: number;
+  role: string;
+  content: string;
+  score: number;
   created_at: string;
 }
 
@@ -438,6 +658,25 @@ export interface ChatRequest {
   conversation_id?: number;
   model?: string;
   top_k?: number;
+  context_window_tokens?: number;
+  reserved_output_tokens?: number;
+  context_safety_margin_tokens?: number;
+  model_auto_compact_token_limit?: number;
+  model_auto_compact_token_limit_scope?: 'total' | 'body_after_prefix';
+  compact_prompt?: string;
+}
+
+export interface ConversationCompaction {
+  id: number;
+  conversation_id: number;
+  trigger_type: 'auto' | 'manual';
+  status: 'completed' | 'fallback' | 'failed';
+  provider_id: number;
+  model: string;
+  before_tokens: number;
+  after_tokens: number;
+  error_message?: string;
+  created_at: string;
 }
 
 export interface Dialog {
@@ -464,6 +703,10 @@ export interface ChatResponse {
   assistant_message: Message;
   references: MessageReference[];
   usage?: Record<string, unknown>;
+  retrieval_latency_ms?: number;
+  query_plan?: QueryPlan;
+  clarification?: RetrievalClarification;
+  compaction?: ConversationCompaction;
 }
 
 export interface WorkflowMessageResponse {
@@ -847,13 +1090,16 @@ export interface CreateFlowVersionRequest {
   description?: string;
 }
 
-export type RunStatus = 'running' | 'succeeded' | 'failed' | 'cancelled' | 'waiting_human' | 'paused' | 'resuming' | 'timeout';
+export type RunStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'waiting_human' | 'paused' | 'resuming' | 'timeout';
 
 export interface Run {
   id: number;
   owner_id: number;
   workflow_id: number;
   flow_version_id: number;
+  agent_id?: number | null;
+  agent_release_id?: number | null;
+  run_kind?: 'agent' | 'workflow' | 'inline_agent' | 'lifecycle_workflow';
   rule_set_id?: number | null;
   rule_set_version?: string;
   compiled_rule_hash?: string;

@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"time"
 
+	"agentcanvas/internal/domain/contextresource"
 	"agentcanvas/internal/domain/conversation"
 
 	"gorm.io/gorm"
@@ -27,6 +28,13 @@ func (r *MessageRepository) Create(ctx context.Context, message *conversation.Me
 	normalizeMessage(message)
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(message).Error; err != nil {
+			return err
+		}
+		workflowID := int64(0)
+		if err := tx.Raw("SELECT COALESCE(workflow_id, 0) FROM conversations WHERE owner_id = ? AND id = ?", message.OwnerID, message.ConversationID).Scan(&workflowID).Error; err != nil {
+			return err
+		}
+		if err := enqueueContextResource(ctx, tx, message.OwnerID, workflowID, contextresource.TypeConversationMessage, message.ID, contextresource.OperationUpsert, messageContextText(*message)); err != nil {
 			return err
 		}
 		return syncConversationMessageJSON(ctx, tx, message.OwnerID, message.ConversationID, message.CreatedAt)
@@ -64,10 +72,26 @@ func (r *MessageRepository) ArchiveConversationMessages(ctx context.Context, own
 	if archivedAt.IsZero() {
 		archivedAt = time.Now().UTC()
 	}
-	result := r.db.WithContext(ctx).Model(&conversation.Message{}).
-		Where("owner_id = ? AND conversation_id = ? AND archived_at IS NULL", ownerID, conversationID).
-		Updates(map[string]any{"archived_at": archivedAt})
-	return result.RowsAffected, result.Error
+	var affected int64
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var messages []conversation.Message
+		if err := tx.Where("owner_id = ? AND conversation_id = ? AND archived_at IS NULL", ownerID, conversationID).Find(&messages).Error; err != nil {
+			return err
+		}
+		result := tx.Model(&conversation.Message{}).Where("owner_id = ? AND conversation_id = ? AND archived_at IS NULL", ownerID, conversationID).
+			Updates(map[string]any{"archived_at": archivedAt})
+		if result.Error != nil {
+			return result.Error
+		}
+		affected = result.RowsAffected
+		for i := range messages {
+			if err := enqueueContextResource(ctx, tx, ownerID, 0, contextresource.TypeConversationMessage, messages[i].ID, contextresource.OperationDelete, ""); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	return affected, err
 }
 
 func (r *MessageRepository) CreateReferences(ctx context.Context, refs []conversation.MessageReference) error {

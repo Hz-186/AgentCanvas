@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"agentcanvas/internal/domain/contextresource"
 	"agentcanvas/internal/domain/workflow"
 
 	"gorm.io/gorm"
@@ -382,6 +383,10 @@ func (r *WorkflowRuleSetRepository) PublishCompiled(ctx context.Context, item *w
 		if stored.Revision != item.Revision || stored.SourceHash != item.SourceHash {
 			return workflow.ErrRuleSetConflict
 		}
+		previous, err := listPublishedOptionalRuleNodes(tx, stored.OwnerID, stored.WorkflowID, stored.ID)
+		if err != nil {
+			return err
+		}
 		if err := tx.Model(&workflow.RuleSet{}).
 			Where("owner_id = ? AND workflow_id = ? AND status = ? AND id <> ?", stored.OwnerID, stored.WorkflowID, workflow.RuleSetStatusPublished, stored.ID).
 			Update("status", workflow.RuleSetStatusSuperseded).Error; err != nil {
@@ -413,6 +418,12 @@ func (r *WorkflowRuleSetRepository) PublishCompiled(ctx context.Context, item *w
 		if updated.RowsAffected != 1 {
 			return fmt.Errorf("workflow profile not found while publishing rule set")
 		}
+		if err := enqueueOptionalRuleDeletes(ctx, tx, stored.OwnerID, stored.WorkflowID, previous); err != nil {
+			return err
+		}
+		if err := enqueuePublishedOptionalRules(ctx, tx, stored); err != nil {
+			return err
+		}
 		*item = stored
 		return nil
 	})
@@ -428,6 +439,10 @@ func (r *WorkflowRuleSetRepository) RollbackPublished(ctx context.Context, targe
 		}
 		if stored.Status != workflow.RuleSetStatusPublished && stored.Status != workflow.RuleSetStatusSuperseded {
 			return fmt.Errorf("%w: rollback target status is %s", workflow.ErrRuleSetConflict, stored.Status)
+		}
+		previous, err := listPublishedOptionalRuleNodes(tx, stored.OwnerID, stored.WorkflowID, 0)
+		if err != nil {
+			return err
 		}
 		var latest int
 		if err := tx.Model(&workflow.RuleSet{}).
@@ -484,8 +499,49 @@ func (r *WorkflowRuleSetRepository) RollbackPublished(ctx context.Context, targe
 			}
 			return fmt.Errorf("workflow profile not found while rolling back rule set")
 		}
+		if err := enqueueOptionalRuleDeletes(ctx, tx, stored.OwnerID, stored.WorkflowID, previous); err != nil {
+			return err
+		}
+		if err := enqueuePublishedOptionalRules(ctx, tx, *clone); err != nil {
+			return err
+		}
 		return nil
 	})
+}
+
+func listPublishedOptionalRuleNodes(tx *gorm.DB, ownerID, workflowID, excludeSetID int64) ([]workflow.RuleNode, error) {
+	var nodes []workflow.RuleNode
+	query := tx.Table("workflow_rule_nodes AS n").Select("n.*").
+		Joins("JOIN workflow_rule_sets s ON s.id = n.rule_set_id").
+		Where("s.owner_id = ? AND s.workflow_id = ? AND s.status = ? AND n.strength = ? AND n.safety_critical = 0", ownerID, workflowID, workflow.RuleSetStatusPublished, "optional").
+		Where("n.policy_binding_json IS NULL OR JSON_LENGTH(n.policy_binding_json) = 0")
+	if excludeSetID > 0 {
+		query = query.Where("s.id <> ?", excludeSetID)
+	}
+	return nodes, query.Find(&nodes).Error
+}
+
+func enqueueOptionalRuleDeletes(ctx context.Context, tx *gorm.DB, ownerID, workflowID int64, nodes []workflow.RuleNode) error {
+	for i := range nodes {
+		if err := enqueueContextResource(ctx, tx, ownerID, workflowID, contextresource.TypeOptionalRule, nodes[i].ID, contextresource.OperationDelete, ruleContextText(nodes[i])); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func enqueuePublishedOptionalRules(ctx context.Context, tx *gorm.DB, set workflow.RuleSet) error {
+	var nodes []workflow.RuleNode
+	if err := tx.Where("rule_set_id = ? AND strength = ? AND safety_critical = 0", set.ID, "optional").
+		Where("policy_binding_json IS NULL OR JSON_LENGTH(policy_binding_json) = 0").Find(&nodes).Error; err != nil {
+		return err
+	}
+	for i := range nodes {
+		if err := enqueueContextResource(ctx, tx, set.OwnerID, set.WorkflowID, contextresource.TypeOptionalRule, nodes[i].ID, contextresource.OperationUpsert, ruleContextText(nodes[i])); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func replaceRuleSetChildren(tx *gorm.DB, ruleSetID int64, nodes []workflow.RuleNode, edges []workflow.RuleEdge) error {

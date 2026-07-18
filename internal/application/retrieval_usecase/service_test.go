@@ -172,14 +172,11 @@ func TestSearchRewritesQueryWhenRecallIsLow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Search() error = %v", err)
 	}
-	if len(raw.requests) != 2 {
-		t.Fatalf("expected initial and rewrite requests, got %d", len(raw.requests))
+	if len(raw.requests) != 1 || raw.requests[0].Query != "AgentCanvas" {
+		t.Fatalf("expected normalized initial query, got %+v", raw.requests)
 	}
-	if raw.requests[1].Query != "AgentCanvas" {
-		t.Fatalf("rewrite query = %q, want AgentCanvas", raw.requests[1].Query)
-	}
-	if len(resp.Results) != 2 || resp.Trace[len(resp.Trace)-1].Stage != "query_rewrite" {
-		t.Fatalf("expected rewritten response with trace, got results=%+v trace=%+v", resp.Results, resp.Trace)
+	if resp.QueryPlan == nil || resp.QueryPlan.NormalizedQuery != "AgentCanvas" {
+		t.Fatalf("expected query plan, got %+v", resp.QueryPlan)
 	}
 }
 

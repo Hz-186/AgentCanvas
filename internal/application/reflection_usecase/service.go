@@ -134,7 +134,7 @@ func (s Service) Recall(ctx context.Context, req reflection.RecallRequest) (refl
 		IncludeGlobal: policy.AllowValidatedGlobalFallback, Limit: 50}
 	var ranked []reflection.SearchResult
 	if s.Index != nil {
-		indexed, err := s.Index.Search(ctx, reflection.SearchRequest{CandidateQuery: query, Task: req.Task, TaskFingerprint: fingerprint, TopK: policy.RecallTopK * 3})
+		indexed, err := s.Index.Search(ctx, reflection.SearchRequest{CandidateQuery: query, Task: req.Task, TaskFingerprint: fingerprint, TopK: policy.RecallTopK * 3, EmbeddingProviderID: req.EmbeddingProviderID, EmbeddingModel: req.EmbeddingModel})
 		if err == nil {
 			ranked = indexed
 		}

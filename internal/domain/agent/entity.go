@@ -62,6 +62,8 @@ type Definition struct {
 	MaxIterations             int             `json:"max_iterations,omitempty"`
 	MaxToolCalls              int             `json:"max_tool_calls,omitempty"`
 	MaxExecutionTimeMS        int             `json:"max_execution_time_ms,omitempty"`
+	MaxToolTimeoutMS          int             `json:"max_tool_timeout_ms,omitempty"`
+	MaxToolOutputBytes        int             `json:"max_tool_output_bytes,omitempty"`
 	MaxInputChars             int             `json:"max_input_chars,omitempty"`
 	MaxInputTokens            int             `json:"max_input_tokens,omitempty"`
 	ContextWindowTokens       int             `json:"context_window_tokens,omitempty"`
@@ -89,8 +91,17 @@ func (d Definition) Normalize() Definition {
 	if d.MaxExecutionTimeMS == 0 {
 		d.MaxExecutionTimeMS = 120000
 	}
+	if d.MaxToolTimeoutMS == 0 {
+		d.MaxToolTimeoutMS = 30000
+	}
+	if d.MaxToolOutputBytes == 0 {
+		d.MaxToolOutputBytes = 512 * 1024
+	}
 	if d.MaxParallelSubAgents == 0 {
 		d.MaxParallelSubAgents = 4
+	}
+	if d.MaxWorkflowCallDepth == 0 {
+		d.MaxWorkflowCallDepth = 3
 	}
 	if d.KnowledgeTopK == 0 {
 		d.KnowledgeTopK = 5
@@ -100,6 +111,9 @@ func (d Definition) Normalize() Definition {
 	}
 	if strings.TrimSpace(d.SkillLoadingMode) == "" {
 		d.SkillLoadingMode = "auto"
+	}
+	if strings.TrimSpace(d.OutputMode) == "" {
+		d.OutputMode = "final_answer"
 	}
 	return d
 }
@@ -112,14 +126,44 @@ func (d Definition) Validate() error {
 	if d.Mode != "react" && d.Mode != "plan_execute" {
 		return fmt.Errorf("mode must be react or plan_execute")
 	}
+	if d.Temperature != nil && (*d.Temperature < 0 || *d.Temperature > 2) {
+		return fmt.Errorf("temperature must be 0..2")
+	}
+	if d.SkillLoadingMode != "auto" && d.SkillLoadingMode != "metadata_only" && d.SkillLoadingMode != "search" {
+		return fmt.Errorf("skill_loading_mode must be auto, metadata_only or search")
+	}
+	if d.OutputMode != "final_answer" && d.OutputMode != "full" {
+		return fmt.Errorf("output_mode must be final_answer or full")
+	}
 	if d.MaxIterations < 1 || d.MaxIterations > 50 {
 		return fmt.Errorf("max_iterations must be 1..50")
 	}
-	if d.MaxToolCalls < 1 || d.MaxToolCalls > 200 {
-		return fmt.Errorf("max_tool_calls must be 1..200")
+	if d.MaxToolCalls < 1 || d.MaxToolCalls > 100 {
+		return fmt.Errorf("max_tool_calls must be 1..100")
 	}
 	if d.MaxExecutionTimeMS < 1 || d.MaxExecutionTimeMS > 600000 {
 		return fmt.Errorf("max_execution_time_ms must be 1..600000")
+	}
+	if d.MaxParallelSubAgents < 1 || d.MaxParallelSubAgents > 64 {
+		return fmt.Errorf("max_parallel_sub_agents must be 1..64")
+	}
+	if d.MaxWorkflowCallDepth < 1 || d.MaxWorkflowCallDepth > 5 {
+		return fmt.Errorf("max_workflow_call_depth must be 1..5")
+	}
+	if d.KnowledgeTopK < 1 || d.KnowledgeTopK > 20 {
+		return fmt.Errorf("knowledge_top_k must be 1..20")
+	}
+	if d.KnowledgeMode != "keyword" && d.KnowledgeMode != "vector" && d.KnowledgeMode != "hybrid" {
+		return fmt.Errorf("knowledge_mode must be keyword, vector or hybrid")
+	}
+	if d.MaxToolTimeoutMS < 1 || d.MaxToolTimeoutMS > 600000 {
+		return fmt.Errorf("max_tool_timeout_ms must be 1..600000")
+	}
+	if d.MaxToolOutputBytes < 1024 || d.MaxToolOutputBytes > 2*1024*1024 {
+		return fmt.Errorf("max_tool_output_bytes must be 1024..2097152")
+	}
+	if d.MaxInputChars < 0 || d.MaxInputTokens < 0 || d.ContextWindowTokens < 0 || d.ReservedOutputTokens < 0 || d.ContextSafetyMarginTokens < 0 || d.MaxRuleTokens < 0 {
+		return fmt.Errorf("context limits must not be negative")
 	}
 	if d.WorkspaceEnabled && d.WorkspacePackID == nil {
 		return fmt.Errorf("workspace_pack_id is required when workspace is enabled")

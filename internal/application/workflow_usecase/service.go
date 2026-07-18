@@ -13,6 +13,7 @@ import (
 
 	memoryusecase "agentcanvas/internal/application/memory_usecase"
 	"agentcanvas/internal/domain/audit"
+	"agentcanvas/internal/domain/contextresource"
 	"agentcanvas/internal/domain/conversation"
 	"agentcanvas/internal/domain/flow"
 	"agentcanvas/internal/domain/memory"
@@ -69,10 +70,12 @@ type Service struct {
 	providers         providerdomain.Repository
 	conversations     conversation.Repository
 	messages          conversation.MessageRepository
+	compactions       conversation.CompactionRepository
 	retriever         retrieval.Retriever
 	llm               llm.ChatClient
 	embedder          llm.EmbeddingClient
 	archivalVecStore  vectorstore.Store
+	contextIndex      contextresource.Index
 	reflections       reflection.Advisor
 	secrets           *cryptoinfra.SecretBox
 	executor          *engine.Executor
@@ -156,6 +159,8 @@ func NewService(
 	llmClient llm.ChatClient,
 	embedder llm.EmbeddingClient,
 	archivalVecStore vectorstore.Store,
+	contextIndex contextresource.Index,
+	compactions conversation.CompactionRepository,
 	secrets *cryptoinfra.SecretBox,
 	reflectionAdvisor reflection.Advisor,
 	workspaceRepositories ...workspace.Repository,
@@ -198,10 +203,12 @@ func NewService(
 		providers:        providers,
 		conversations:    conversations,
 		messages:         messages,
+		compactions:      compactions,
 		retriever:        retriever,
 		llm:              llmClient,
 		embedder:         embedder,
 		archivalVecStore: archivalVecStore,
+		contextIndex:     contextIndex,
 		reflections:      reflectionAdvisor,
 		secrets:          secrets,
 	}
@@ -215,6 +222,7 @@ func NewService(
 		Providers:               s,
 		Messages:                s,
 		MessageHistory:          messages,
+		Compactions:             compactions,
 		Memories:                memories,
 		MemoryWriteLogs:         memoryLogs,
 		MemoryRetriever:         memoryRetriever,
@@ -237,6 +245,7 @@ func NewService(
 		Workspaces:              workspaceRepository,
 		Sandbox:                 sandbox.NewDockerRunner(),
 		ArchivalVecStore:        archivalVecStore,
+		ContextIndex:            contextIndex,
 	}
 	sharedAgentRuntime, err := runtimenode.NewSharedAgentRuntime(nodeDeps)
 	if err != nil {

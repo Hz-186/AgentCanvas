@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -1117,8 +1118,24 @@ func TestStopReasonConstants(t *testing.T) {
 		StopReasonToolNameNotFound: true,
 		StopReasonPlanCompleted:    true,
 		StopReasonReflectionFailed: true,
+		StopReasonContextOverflow:  true,
+		StopReasonClarification:    true,
 	}
-	if len(reasons) != 10 {
-		t.Fatalf("expected 10 stop reasons, got %d", len(reasons))
+	if len(reasons) != 12 {
+		t.Fatalf("expected 12 stop reasons, got %d", len(reasons))
+	}
+}
+
+func TestRunnerRejectsContextOverflowBeforeProviderCall(t *testing.T) {
+	client := &fakeToolClient{}
+	result, err := NewRunner(client).Run(context.Background(), RunRequest{
+		Provider: llm.ChatProviderConfig{ProviderType: "openai_compatible"}, Model: "gpt-4o", Task: strings.Repeat("hard constraint ", 200),
+		MaxIterations: 1, MaxToolCalls: 1, ContextWindowTokens: 64, ReservedOutputTokens: 8, ContextSafetyMarginTokens: 4,
+	})
+	if !errors.Is(err, ErrContextOverflow) || result == nil || result.StopReason != StopReasonContextOverflow {
+		t.Fatalf("expected context overflow, result=%+v err=%v", result, err)
+	}
+	if len(client.requests) != 0 {
+		t.Fatalf("provider received %d requests after overflow", len(client.requests))
 	}
 }

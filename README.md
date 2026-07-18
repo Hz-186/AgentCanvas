@@ -63,7 +63,7 @@ Agent 的执行能力不仅仅取决于模型本身，更取决于包裹在模�
 四层职责边界被严格划分，避免 token 消耗失控：
 - **Commands**：流程入口，控制 Agent 的执行生命周期（run → plan → execute → evaluate → reflect → resume），统一调度 ReAct / Plan-Execute、Supervisor 委派与持久化 Reflexion
 - **Skills**：领域能力封装，将可复用能力抽象为标准化模块，通过 `load_skill` / `skill_search` 工具按需加载
-- **Rules**：前馈约束，内置目录保留 L0-L4 分层，持久化 RuleSet 使用 `mandatory / optional` 强度分级与 DAG 依赖编译，确保硬约束不丢失、可选规则按预算成组加载
+- **Rules**：前馈约束，统一使用 `mandatory / optional` 强度、显式激活条件与 DAG 依赖编译，确保硬约束不丢失、可选规则按预算成组加载
 - **Hooks**：反馈兜底，`preToolUse` / `postToolUse` 双环拦截，覆盖危险命令物理阻断 + 敏感字段脱敏 + 输出压缩
 
 ---
@@ -129,6 +129,7 @@ Run 结束 ──→ Reflection Job ──→ Worker 轨迹分析 ─┘
 - **循环内反思**：Tool hard failure 后同步调用 LLM 返回严格 JSON，生成 root cause、corrective action、lesson 和 applicability；同一错误指纹去重，每个 Run 默认最多 2 次。
 - **Plan Revision**：反思可请求 `replan`，但已完成步骤由运行时快照保护，不会重复执行副作用。
 - **终局反思**：Run 完成后写入幂等异步 Job，由 Worker 分析完整轨迹；普通成功并不自动等于“重要经验”，只有外部 Eval、用户反馈或明确恢复证据通过质量门控后才持久化。
+- **可靠任务投递**：MySQL 保存 Job、租约与审计事实，Transactional Outbox 将任务投递到独立 NATS JetStream；消费者通过 ACK 心跳、fencing token、幂等 Evidence 和 DLQ 实现崩溃恢复。`reflection_queue.backend=mysql|nats` 支持灰度切换与快速回滚。
 - **经验演化**：相同内容哈希会合并证据；两次 helpful 可升级为 `validated`，两次 harmful 会降级为 `disputed`；只有 validated 的 global 经验允许跨 Workflow 回退。
 - **安全边界**：Tool Output 只作为不可信 evidence 放在 user payload，持久化经验以固定 advisory system 包装注入，不能覆盖系统规则、Safety Policy 或 Tool Policy。
 - **暂停恢复**：Reflection Policy、召回 ID 和当前 Plan 固化到 Checkpoint；Resume 不会重复召回或重复写终局 Job。
@@ -185,16 +186,11 @@ Agent 执行中
 
 ### Harness 双环控制：Rules + Hooks
 
-#### Rules 规则分级与版本化 RuleSet（前馈约束）
+#### Rules 二元强度与版本化 RuleSet（前馈约束）
 
-规则系统分为两个边界清晰的层次，避免租户规则伪装成平台永久约束：
+规则运行时只保留两个强度：`mandatory` 无条件静态注入且不可删减；`optional` 根据激活信号、优先级、token 成本和完整依赖闭包动态选择。平台 Mandatory 永远存在；没有激活版本化 RuleSet 时才使用内置 Optional 目录。
 
-| 层次 | 分级 | 运行时语义 |
-|------|------|------------|
-| 内置规则目录 | L0 Safety / L1 Core / L2 Scenario / L3 Tool / L4 Ephemeral | L0/L1 属于平台硬约束；L2-L4 根据场景信号与 token 预算动态加载，兼容旧 DSL |
-| 持久化 RuleSet | `mandatory` / `optional` | Mandatory 必须注入且参与发布前预算预检；Optional 按激活信号、分数和完整依赖闭包优化选择 |
-
-租户自定义规则不能声明永久 L0/L1。旧 `level` 字段仍可读取，但发布后的 Optional 规则统一使用相同基础分，不再借助 L2/L3/L4 人为抬高排名。每条规则可配置激活信号（`mode_any` / `tool_any` / `risk_any` / `tag_any` / `keywords_any` / `always` 等）、排除信号、优先级、安全标记、策略绑定和人工依赖。
+强度、激活和依赖是三个独立维度。每条 Optional 规则通过 `mode_any` / `tool_any` / `risk_any` / `tag_any` / `keywords_any` / `always` 等显式声明适用条件；空 Activation 只允许作为其他规则的依赖。工具阶段规则使用 `tag_all: ["tool_used"]`，不依赖隐式等级。旧 `level` 只在迁移 DTO 和 v1 快照解码器中读取，新写入必须使用 `strength`。
 
 ##### RuleSet 编译与发布
 
@@ -223,7 +219,7 @@ Queued ──→ Worker Compile ──→ 确定性 DAG 校验
 - **策略硬绑定**：`tool.dangerous_arguments.deny`、`tool.risk.require_approval`、`tool.host.allowlist`、`tool.execution_limits` 等绑定在编译期校验，运行时直接进入 Tool Hook Policy，不依赖 LLM 自觉遵守。
 - **不可变快照**：发布时固化拓扑序、传递依赖闭包、token cost、内容哈希和完整 `compiled_hash`；每个 Run / Checkpoint 固定 RuleSet ID、版本与哈希，恢复时继续使用同一快照并执行完整性校验。
 - **安全发布与回滚**：Mandatory token 加 safety margin 超过上下文预算时拒绝发布；新版本发布后旧版本进入 superseded，回滚会从历史快照重新校验并创建一个新的 Published 版本，不会原地篡改历史。
-- **兼容回退**：没有激活版本化 RuleSet 时，继续使用 `mcts_pruning:tiered_budgeted_scoring` 的 L0-L4 目录加载器，保证旧 Workflow 行为稳定。
+- **兼容迁移**：新快照使用 `schema_version: 2`；v1 快照先按原结构验证哈希，再转换为二元内存模型。旧 `context_policy_json.rules` 可通过 `backfill-rule-sets --dry-run` 检查并迁移到不可变 RuleSet。
 
 RuleSet 状态包括 `draft / queued / compiling / review_required / ready / published / superseded / failed`。编译队列、Review 堆积、Mandatory overflow、快照完整性和回滚次数可通过 `GET /api/v1/health/rule-system` 观察。
 
@@ -366,9 +362,13 @@ Available skills:
 
 ### 上下文压缩引擎
 
-为解决长对话的上下文窗口压力，实现了 **纯算法驱动的上下文压缩引擎**（`contextcompress/`，7 个核心文件），完全不依赖 LLM 调用。
+为解决长对话的上下文窗口压力，Agent Loop、RAG Chat 与通用 LLM Node 统一执行 Codex 公开配置契约兼容的预算守卫：`context_window_tokens`、`model_auto_compact_token_limit`、`model_auto_compact_token_limit_scope` 和 `compact_prompt`。默认在上下文窗口 80% 处触发一次零温模型压缩，固定系统前缀、mandatory/safety/policy-binding 规则、当前任务、计划、未完成工具交换和最近完整轮次不会由相关性决定是否保留。
+
+压缩模型失败、超时或返回空内容时，才使用 `contextcompress/` 的确定性抽取式引擎降级。压缩后仍超过“窗口 - 预留输出 - 安全余量”时显式返回 `context_overflow`，不会把超窗请求发送给 Provider。OpenAI-compatible 已知模型使用 `tiktoken-go`；未知模型使用保守 UTF-8 估算，并在 Context Trace 记录计数方法和 fallback 原因。
 
 #### 三步压缩管线
+
+以下管线是模型压缩不可用时的确定性 fallback：
 
 ```
 Compress(items)
@@ -460,6 +460,14 @@ CachedChatClient.StreamChat()
 - **ChatReranker**：利用 LLM 自身能力，序列化候选人（最多 20 个，每个 ≤800 字符）为 JSON，零温调用 LLM 按相关性排序
 - **BGEReranker**：调用标准 `/rerank` 端点（如 `bge-reranker-v2-m3`），30 秒超时，合并 `relevance_score` / `score` 字段到 `FinalScore`
 
+**统一查询理解与上下文资源召回**：
+
+- 查询先做 Unicode NFKC、空格/标点/大小写和受控拼写规范化，再锁定产品名、错误码、版本、时间、环境、ID、路径、URL 和引号内容等硬条件。
+- 指代不明确时返回 `clarification_required`；低召回或多意图时每次查询最多调用一次改写模型，所有变体必须通过硬条件校验。
+- 多查询结果使用 RRF 融合、资源 ID/内容哈希去重，再进入 reranker。
+- Reflection、长期 Memory、optional Rule、Skill、非核心 Tool 和旧 Conversation Message 均有语义召回；mandatory、安全关键、policy-binding 规则与检索/审批/恢复核心工具始终常驻。
+- `context_resource_index_outbox` 在资源写事务内登记索引版本，worker 使用 lease、`SKIP LOCKED`、指数退避和 DLQ；Milvus collection 按 provider/model/dimensions profile 隔离，索引故障不会扩大为业务写入故障。
+
 ---
 
 ### 记忆系统
@@ -511,6 +519,7 @@ cmd/                        API、Worker、Migration 三个入口
   api/main.go               ─ Gin HTTP Server (SSE 流式 + SPA 嵌入)
   worker/main.go            ─ 异步文档解析/索引、规则编译与 Reflection Worker
   backfill-rule-sets/main.go ─ 将旧 Profile 自定义规则回填为版本化 RuleSet
+  backfill-agents/main.go    ─ 将旧 Dialog 幂等迁移为独立 Agent + Release
   migrate/main.go           ─ 数据库迁移工具
 configs/                    运行配置 (YAML)
   config.yaml               ─ Docker 环境默认配置
@@ -524,6 +533,7 @@ deployments/                容器化部署
   docker-compose.dev.yml     ─ 开发环境编排
 internal/                   核心后端代码
   application/              应用用例层 (12 个包)
+	agent_usecase/           ─ 独立 Agent/Release/Conversation/Turn 与 Runtime 调度
     auth_usecase/            ─ 认证 (注册/登录/JWT/OAuth/API Token)
     chat_usecase/            ─ RAG Chat (流式SSE/上下文打包/提示词构建)
     dialog_usecase/          ─ Dialog 会话管理
@@ -541,6 +551,7 @@ internal/                   核心后端代码
     audit_usecase/           ─ 审计日志查询
   bootstrap/                 ─ 启动引导 (App 装配器)
   domain/                   领域层 (15 个包, DDD)
+	agent/                   ─ 独立 Agent、不可变 Release 与 Turn
     workflow/                ─ DSL/Workflow/FlowVersion/RuleSet/Run/Profile/Eval/Approval/Team
     knowledge/               ─ 知识库/文档/Chunk/Ingestion
     memory/                  ─ 记忆/Working Memory/Cache
@@ -592,7 +603,7 @@ internal/                   核心后端代码
     evalharness/             ─ 评估指标 (Coverage + Judge)
     sandbox/                 ─ Docker六重隔离代码沙箱
     contextcompress/         ─ 三重指纹压缩: SimHash+MinHash+Cosine/后缀数组LCS/LazyGreedy/CJK Shingle
-migrations/                 数据库迁移 SQL (30 组, .up.sql + .down.sql)
+migrations/                 数据库迁移 SQL (35 组, .up.sql + .down.sql)
 scripts/                    本地脚本 (dev/migrate/lint/build/verify)
 web/                        React + Vite 前端 (SPA, 内嵌 embed)
 skill/                      内置 Skill 预设 (explain-knowledge / record-knowledge)
@@ -643,7 +654,11 @@ skill/                      内置 Skill 预设 (explain-knowledge / record-know
 | `memory_extraction_jobs` | 记忆提取任务 |
 | `agent_reflections` | 持久化错误教训/重要策略及证据、状态、usefulness |
 | `agent_reflection_jobs` | 终局轨迹、Eval 与用户纠正的异步反思任务 |
+| `agent_reflection_job_outbox` | Reflection Job 到 NATS JetStream 的事务型投递记录 |
+| `agent_reflection_evidence` | 按 Job/Candidate 去重的反思证据来源 |
 | `agent_reflection_recall_logs` | 每次 Run 的召回排名、token、结果与 helpful/harmful 反馈 |
+| `context_resource_index_outbox` | Reflection/Memory/Rule/Skill/Tool/Message 到语义索引的事务 Outbox、lease、重试与 DLQ |
+| `conversation_compactions` | 手动/自动压缩范围、内容指纹、模型、压缩前后 token 与失败状态；原消息不删除 |
 | `tool_definitions` | 工具定义 |
 | `tool_invocations` | 工具调用记录 |
 | `tool_policies` | 工具策略（超时/截断/白名单/风险级别） |
@@ -675,6 +690,8 @@ make run              # 迁移 + 前端构建 + API 启动
 make build            # 生产构建（含迁移表完整性校验）
 make worker             # 启动异步 Worker（文档解析、RuleSet 编译、Reflexion）
 make backfill-rule-sets # 将旧 Profile 规则幂等迁移为版本化 RuleSet
+make backfill-agents    # 将旧 Dialog 幂等迁移为独立 Agent（可直接 go run ... --dry-run）
+make backfill-context-index # 按 content hash 增量登记统一语义索引 Outbox
 make migrate          # 运行数据库迁移
 make lint             # go vet + gofmt + typecheck + build dry-run
 make verify           # 迁移表完整性验证 + go vet + build check
@@ -725,13 +742,32 @@ GET    /api/v1/documents/:id/chunks                   文档切片
 GET    /api/v1/ingestion-jobs/:id                     解析任务状态
 ```
 
-### RAG Chat
+### Independent Agent Chat
+
+```text
+POST   /api/v1/agents                                      创建独立 Agent 草稿
+POST   /api/v1/agents/:id/validate                         校验完整能力配置
+POST   /api/v1/agents/:id/releases                         发布不可变 Release
+POST   /api/v1/agents/:id/conversations                    创建固定 Release 的会话
+POST   /api/v1/agents/:id/conversations/:conversation_id/turns  幂等启动 Agent Run (202)
+GET    /api/v1/agents/:id/conversations/:conversation_id/turns/latest  刷新后恢复最新 Turn
+GET    /api/v1/agent-turns/:id                             查询 Turn 状态
+GET    /api/v1/runs/:id/events/stream                      Last-Event-ID 可重连事件流
+POST   /api/v1/agents/:id/conversations/:conversation_id/fork   分支会话
+POST   /api/v1/agents/:id/conversations/:conversation_id/upgrade 使用当前 Release 创建升级分支
+```
+
+独立 Agent Chat 直接调用与 `agent_loop` 节点共用的 `AgentRuntime`，不会创建 `Begin → Agent → Output` 伪 Workflow。Release 固定 Tool/Tool Pack、Skill、Knowledge、MCP、Memory、Reflection、Rules 与委派白名单；`call_agent`、`run_subagent` 和 `call_workflow` 是三种不同工具。
+
+### Legacy RAG Chat（已弃用）
 
 ```text
 POST   /api/v1/dialogs                                创建 Dialog
 POST   /api/v1/dialogs/:dialog_id/rag/chat            RAG 问答
 POST   /api/v1/dialogs/:dialog_id/rag/chat/stream     RAG 流式问答 (SSE)
 ```
+
+旧接口返回 `Deprecation`/`Sunset` 响应头；生产前端已迁移到 `/app/agents`，`/app/dialogs` 只保留重定向。
 
 ### Workflow / Agent Flow / Eval / Team
 
@@ -763,7 +799,7 @@ GET    /api/v1/approval-requests                      审批请求
 POST   /api/v1/workflow-teams                         创建 Team
 ```
 
-规则系统健康指标：`GET /api/v1/health/rule-system`；Reflection 健康与进程/数据库指标：`GET /api/v1/health/reflection-system`。
+规则系统健康指标：`GET /api/v1/health/rule-system`；Reflection 健康与进程/数据库指标：`GET /api/v1/health/reflection-system`；统一语义索引、Outbox/DLQ、压缩和 overflow 指标：`GET /api/v1/health/context-system`。
 
 ### Memory / Tool / Skill / MCP
 
@@ -784,7 +820,20 @@ POST   /api/v1/mcp-servers/:id/refresh               刷新 MCP 工具缓存
 
 ## 向量检索配置
 
-知识库支持 `keyword` / `vector` / `hybrid` 三种检索模式。HNSW 索引参数：M=16、EFConstruction=200、Cos-sim 度量。启用向量检索前需配置 Provider 和 embedding model。修改 Embedding 配置后需重建索引。
+知识库支持 `keyword` / `vector` / `hybrid` 三种检索模式。HNSW 索引参数：M=16、EFConstruction=200、Cos-sim 度量。`context_index` 控制统一上下文索引及 worker；`embedding_provider_id: 0` 优先使用 Workflow 写入上下文或 Workflow Profile 的 Provider，无法解析时回落到 `llm_cache.embedding_provider_id`。索引会记录 provider/model/dimensions/profile hash，不会混用不兼容向量。
+
+上线前先执行只读扫描，再正式登记 Outbox：
+
+```bash
+go run ./cmd/backfill-context-index --dry-run
+go run ./cmd/backfill-context-index
+# 断点恢复示例
+go run ./cmd/backfill-context-index --resource-type conversation_message --after-id 100000
+# embedding 模型升级会创建隔离的新索引版本
+go run ./cmd/backfill-context-index --embedding-provider-id 2 --embedding-model text-embedding-3-large --embedding-dimensions 3072
+```
+
+推荐顺序：迁移 → dry-run → 正式回填 → shadow 评测 → 10%/50%/100% canary。通过 `context_index.enabled` / `worker_enabled` 可立即回滚到现有词法与运行时降级链路。
 
 ---
 

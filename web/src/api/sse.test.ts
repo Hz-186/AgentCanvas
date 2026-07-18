@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { SSEParser, streamPost } from './sse';
+import { SSEParser, streamGet, streamPost } from './sse';
 
 describe('SSEParser', () => {
   it('parses event and multiline data frames across chunks', () => {
@@ -15,6 +15,14 @@ describe('SSEParser', () => {
     const parser = new SSEParser();
 
     expect(parser.push('data: ready\n\n')).toEqual([{ event: 'message', data: 'ready' }]);
+  });
+
+  it('preserves the event id required for Last-Event-ID reconnects', () => {
+    const parser = new SSEParser();
+
+    expect(parser.push('id: 42\nevent: tool_finished\ndata: {"ok":true}\n\n')).toEqual([
+      { id: '42', event: 'tool_finished', data: '{"ok":true}' },
+    ]);
   });
 
   it('flushes a trailing event that has no terminating blank line', () => {
@@ -102,5 +110,29 @@ describe('streamPost', () => {
 
     // fetch 抛 AbortError 时不应作为业务错误上报
     expect(onError).not.toHaveBeenCalled();
+  });
+});
+
+describe('streamGet', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('uses GET and forwards Last-Event-ID when reconnecting', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(streamResponse([
+      new TextEncoder().encode('id: 43\nevent: done\ndata: {}\n\n'),
+    ]));
+
+    const messages: Array<{ id?: string; event: string; data: string }> = [];
+    await streamGet('/runs/9/events/stream', {
+      lastEventId: '42',
+      onMessage: (message) => messages.push(message),
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/v1/runs/9/events/stream', expect.objectContaining({
+      method: 'GET',
+      headers: expect.objectContaining({ 'Last-Event-ID': '42' }),
+    }));
+    expect(messages).toEqual([{ id: '43', event: 'done', data: '{}' }]);
   });
 });

@@ -22,6 +22,7 @@ type Config struct {
 	MinIO           MinIOConfig           `yaml:"minio"`
 	Elasticsearch   ElasticsearchConfig   `yaml:"elasticsearch"`
 	Milvus          MilvusConfig          `yaml:"milvus"`
+	ContextIndex    ContextIndexConfig    `yaml:"context_index"`
 	OCR             OCRConfig             `yaml:"ocr"`
 	Security        SecurityConfig        `yaml:"security"`
 	OAuth           OAuthConfig           `yaml:"oauth"`
@@ -144,6 +145,7 @@ type ElasticsearchConfig struct {
 	Password     string   `yaml:"password"`
 	ChunkIndex   string   `yaml:"chunk_index"`
 	MessageIndex string   `yaml:"message_index"`
+	ContextIndex string   `yaml:"context_index"`
 }
 
 type MilvusConfig struct {
@@ -156,6 +158,16 @@ type MilvusConfig struct {
 	EFConstruction int    `yaml:"ef_construction"`
 	EFSearch       int    `yaml:"ef_search"`
 	MetricType     string `yaml:"metric_type"`
+}
+
+type ContextIndexConfig struct {
+	Enabled             bool   `yaml:"enabled"`
+	WorkerEnabled       bool   `yaml:"worker_enabled"`
+	EmbeddingProviderID int64  `yaml:"embedding_provider_id"`
+	EmbeddingModel      string `yaml:"embedding_model"`
+	BatchSize           int    `yaml:"batch_size"`
+	PollMilliseconds    int    `yaml:"poll_milliseconds"`
+	LeaseSeconds        int    `yaml:"lease_seconds"`
 }
 
 type OCRConfig struct {
@@ -226,6 +238,9 @@ func (c *Config) setDefaults() {
 	}
 	if c.Elasticsearch.MessageIndex == "" {
 		c.Elasticsearch.MessageIndex = "agentcanvas_messages_v1"
+	}
+	if c.Elasticsearch.ContextIndex == "" {
+		c.Elasticsearch.ContextIndex = "agentcanvas_context_resources_v1"
 	}
 	if c.Queue.Backend == "" {
 		c.Queue.Backend = "mysql"
@@ -364,6 +379,15 @@ func (c *Config) setDefaults() {
 	if c.Milvus.MetricType == "" {
 		c.Milvus.MetricType = "COSINE"
 	}
+	if c.ContextIndex.BatchSize == 0 {
+		c.ContextIndex.BatchSize = 50
+	}
+	if c.ContextIndex.PollMilliseconds == 0 {
+		c.ContextIndex.PollMilliseconds = 1000
+	}
+	if c.ContextIndex.LeaseSeconds == 0 {
+		c.ContextIndex.LeaseSeconds = 60
+	}
 	if c.OCR.TimeoutSeconds == 0 {
 		c.OCR.TimeoutSeconds = 60
 	}
@@ -411,6 +435,15 @@ func (c *Config) Validate() error {
 	}
 	if c.Milvus.Enabled && c.Milvus.Address == "" {
 		return fmt.Errorf("milvus.address is required when milvus.enabled is true")
+	}
+	if c.ContextIndex.Enabled && !c.Milvus.Enabled {
+		return fmt.Errorf("milvus.enabled must be true when context_index.enabled is true")
+	}
+	if c.ContextIndex.WorkerEnabled && !c.ContextIndex.Enabled {
+		return fmt.Errorf("context_index.enabled must be true when its worker is enabled")
+	}
+	if c.ContextIndex.BatchSize <= 0 || c.ContextIndex.BatchSize > 500 || c.ContextIndex.PollMilliseconds <= 0 || c.ContextIndex.LeaseSeconds < 10 {
+		return fmt.Errorf("context_index worker settings are invalid")
 	}
 	if c.OCR.Enabled && c.OCR.Endpoint == "" {
 		return fmt.Errorf("ocr.endpoint is required when ocr.enabled is true")
