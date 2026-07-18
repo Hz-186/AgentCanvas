@@ -109,7 +109,7 @@ func runtimeRules(custom []Rule, includeFallback bool) []Rule {
 func ResolveDynamicWithRules(systemPrompt, task, mode, risk string, toolNames, tags []string, budget int, custom []Rule) ([]Rule, Trace) {
 	compiled, err := CompileRuntimeRuleSet(custom)
 	if err != nil {
-		return nil, Trace{TokenBudget: budget, OptionalBudget: budget, SelectionStrategy: "dag_compile_failed:" + err.Error()}
+		return nil, Trace{TokenBudget: budget, OptionalBudget: budget, SelectionStrategy: "rule_compile_failed:" + err.Error()}
 	}
 	return SelectOptionalRules(compiled, LoadContext{
 		Mode:         strings.TrimSpace(mode),
@@ -119,8 +119,7 @@ func ResolveDynamicWithRules(systemPrompt, task, mode, risk string, toolNames, t
 		Task:         strings.TrimSpace(task),
 		Conversation: strings.TrimSpace(systemPrompt),
 		TokenBudget:  budget,
-		ScoreCutoff:  110,
-	}, DefaultOptimizerExpansions)
+	})
 }
 
 func CompileRuntimeRuleSet(custom []Rule) (*CompiledRuleSet, error) {
@@ -135,7 +134,7 @@ func CompileActiveRuleSet(custom []Rule) (*CompiledRuleSet, error) {
 func ResolvePersistentWithRules(custom []Rule) ([]Rule, Trace) {
 	compiled, err := CompileRuleSet(runtimeRules(custom, false), CompileOptions{Version: "runtime-mandatory"})
 	if err != nil {
-		return nil, Trace{SelectionStrategy: "dag_compile_failed:" + err.Error()}
+		return nil, Trace{SelectionStrategy: "rule_compile_failed:" + err.Error()}
 	}
 	return SelectMandatoryRules(compiled)
 }

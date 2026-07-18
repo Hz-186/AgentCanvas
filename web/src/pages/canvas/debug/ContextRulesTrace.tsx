@@ -30,8 +30,7 @@ export function ContextRulesTrace({ trace }: { trace: unknown }) {
   const usedRules = number(ruleTrace.estimated_used);
   const mandatoryRules = number(ruleTrace.mandatory_tokens) || number(context.mandatory_tokens);
   const optionalRules = Math.max(0, usedRules - mandatoryRules);
-  const bundleMembers = record(ruleTrace.bundle_members);
-  const skipReasons = record(ruleTrace.skip_reasons);
+	const skipReasons = record(ruleTrace.skip_reasons);
   const providerPrompt = number(context.provider_prompt_tokens);
   const estimateError = number(context.token_estimation_error);
   const ruleSetVersion = typeof context.rule_set_version === 'string' ? context.rule_set_version : '';
@@ -65,10 +64,9 @@ export function ContextRulesTrace({ trace }: { trace: unknown }) {
           <div>{loaded.map((item) => <StatusBadge key={item} tone={item.startsWith('safety.') || item.startsWith('core.') ? 'warn' : 'info'}>{item}</StatusBadge>)}</div>
         </div>
       ) : null}
-      {Object.keys(bundleMembers).length > 0 || Object.keys(skipReasons).length > 0 ? (
-        <div className="context-rules-levels">
-          {Object.entries(bundleMembers).map(([root, members]) => <span key={root}>{root} <strong>{names(members).length} rules</strong></span>)}
-          {Object.entries(skipReasons).map(([rule, reason]) => <span key={`skip-${rule}`}>{rule} <strong>{String(reason)}</strong></span>)}
+		{Object.keys(skipReasons).length > 0 ? (
+		<div className="context-rules-levels">
+			{Object.entries(skipReasons).map(([rule, reason]) => <span key={`skip-${rule}`}>{rule} <strong>{String(reason)}</strong></span>)}
         </div>
       ) : null}
       {rounds.length > 0 ? (

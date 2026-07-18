@@ -1,13 +1,10 @@
 package rules
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"strings"
-
-	"agentcanvas/internal/observability"
 )
 
 type LegacyRuleLevel string
@@ -20,8 +17,7 @@ const (
 	LegacyLevelL4Ephemeral LegacyRuleLevel = "l4_ephemeral"
 )
 
-// LegacyRuleDTO is restricted to migration and historical snapshot decoding.
-// Field order intentionally matches the v1 Rule JSON hash representation.
+// LegacyRuleDTO is used only by graph-removal preflight and legacy policy migration.
 type LegacyRuleDTO struct {
 	ID              string            `json:"id"`
 	Name            string            `json:"name"`
@@ -103,8 +99,7 @@ func convertLegacyRule(item LegacyRuleDTO, referenced bool) (Rule, bool, error) 
 		ID: item.ID, Name: item.Name, Strength: strength, Content: item.Content,
 		Triggers: append([]string(nil), item.Triggers...), Activation: activation,
 		TokenBudget: item.TokenBudget, Priority: item.Priority, SafetyCritical: item.SafetyCritical,
-		ManualDependsOn: append([]string(nil), item.ManualDependsOn...), PolicyBinding: item.PolicyBinding,
-		Metadata: cloneStringMap(item.Metadata),
+		PolicyBinding: item.PolicyBinding, Metadata: cloneStringMap(item.Metadata),
 	}, true, nil
 }
 
@@ -121,26 +116,6 @@ func DecodeLegacyPolicyRules(raw json.RawMessage) ([]Rule, []string, error) {
 	return ConvertLegacyRules(policy.Rules)
 }
 
-type legacyCompiledRuleV1 struct {
-	Rule                  LegacyRuleDTO     `json:"rule"`
-	DependsOn             []string          `json:"depends_on,omitempty"`
-	DependencySources     map[string]string `json:"dependency_sources,omitempty"`
-	DependencyClosure     []string          `json:"dependency_closure,omitempty"`
-	DependencyClosureBits []uint64          `json:"dependency_closure_bits,omitempty"`
-	TokenCost             int               `json:"token_cost"`
-	TopologicalOrder      int               `json:"topological_order"`
-	ContentHash           string            `json:"content_hash"`
-}
-
-type legacyCompiledRuleSetV1 struct {
-	ID                    int64                  `json:"id,omitempty"`
-	Version               string                 `json:"version,omitempty"`
-	CompiledHash          string                 `json:"compiled_hash"`
-	TokenEstimatorVersion string                 `json:"token_estimator_version"`
-	MandatoryTokens       int                    `json:"mandatory_tokens"`
-	Rules                 []legacyCompiledRuleV1 `json:"rules"`
-}
-
 func DecodeCompiledRuleSet(data json.RawMessage) (*CompiledRuleSet, error) {
 	var probe struct {
 		SchemaVersion int `json:"schema_version"`
@@ -148,73 +123,23 @@ func DecodeCompiledRuleSet(data json.RawMessage) (*CompiledRuleSet, error) {
 	if err := json.Unmarshal(data, &probe); err != nil {
 		return nil, err
 	}
-	if probe.SchemaVersion > CurrentSnapshotSchemaVersion {
+	if probe.SchemaVersion != CurrentSnapshotSchemaVersion {
 		return nil, fmt.Errorf("unsupported compiled rule set schema version %d", probe.SchemaVersion)
 	}
-	if probe.SchemaVersion == CurrentSnapshotSchemaVersion {
-		var compiled CompiledRuleSet
-		if err := json.Unmarshal(data, &compiled); err != nil {
-			return nil, err
-		}
-		if err := VerifyCompiledHash(&compiled); err != nil {
-			return nil, err
-		}
-		compiled.Prepare()
-		return &compiled, nil
-	}
-	return decodeLegacyCompiledRuleSet(data)
-}
-
-func decodeLegacyCompiledRuleSet(data json.RawMessage) (*CompiledRuleSet, error) {
-	var legacy legacyCompiledRuleSetV1
-	if err := json.Unmarshal(data, &legacy); err != nil {
+	var compiled CompiledRuleSet
+	decoder := json.NewDecoder(strings.NewReader(string(data)))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&compiled); err != nil {
 		return nil, err
 	}
-	expected := strings.TrimSpace(legacy.CompiledHash)
-	if expected == "" {
-		return nil, fmt.Errorf("compiled rule set hash is empty")
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return nil, fmt.Errorf("compiled rule set contains trailing JSON content")
 	}
-	canonical := legacy
-	canonical.CompiledHash = ""
-	encoded, err := json.Marshal(&canonical)
-	if err != nil {
+	if err := VerifyCompiledHash(&compiled); err != nil {
 		return nil, err
-	}
-	sum := sha256.Sum256(encoded)
-	if hex.EncodeToString(sum[:]) != expected {
-		return nil, fmt.Errorf("compiled rule set hash mismatch")
-	}
-	referenced := make(map[string]bool)
-	for _, item := range legacy.Rules {
-		for _, dependency := range item.DependsOn {
-			referenced[dependency] = true
-		}
-	}
-	compiled := &CompiledRuleSet{
-		SchemaVersion: 1, ID: legacy.ID, Version: legacy.Version, CompiledHash: legacy.CompiledHash,
-		TokenEstimatorVersion: legacy.TokenEstimatorVersion, MandatoryTokens: legacy.MandatoryTokens,
-		Rules: make([]CompiledRule, 0, len(legacy.Rules)), legacyVerified: true,
-		legacyRaw: append(json.RawMessage(nil), data...),
-	}
-	for _, item := range legacy.Rules {
-		rule, keep, convertErr := convertLegacyRule(item.Rule, referenced[item.Rule.ID])
-		if convertErr != nil {
-			return nil, convertErr
-		}
-		if !keep {
-			continue
-		}
-		compiled.Rules = append(compiled.Rules, CompiledRule{
-			Rule: rule, DependsOn: append([]string(nil), item.DependsOn...),
-			DependencySources:     cloneStringMap(item.DependencySources),
-			DependencyClosure:     append([]string(nil), item.DependencyClosure...),
-			DependencyClosureBits: append([]uint64(nil), item.DependencyClosureBits...),
-			TokenCost:             item.TokenCost, TopologicalOrder: item.TopologicalOrder, ContentHash: item.ContentHash,
-		})
 	}
 	compiled.Prepare()
-	observability.RuleSystemMetrics.RecordLegacySnapshotLoad()
-	return compiled, nil
+	return &compiled, nil
 }
 
 func cloneStringMap(input map[string]string) map[string]string {

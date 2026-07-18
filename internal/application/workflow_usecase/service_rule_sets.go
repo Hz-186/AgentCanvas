@@ -8,10 +8,8 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
-	"strings"
 
 	"agentcanvas/internal/domain/workflow"
-	queueinfra "agentcanvas/internal/infrastructure/queue"
 	"agentcanvas/internal/observability"
 	agenterrors "agentcanvas/internal/pkg/errors"
 	runtimeagent "agentcanvas/internal/runtime/agent"
@@ -34,16 +32,6 @@ type PublishRuleSetRequest struct {
 	ExpectedRevision int64 `json:"expected_revision" binding:"required"`
 }
 
-type RuleEdgeDecisionRequest struct {
-	EdgeID   int64  `json:"edge_id" binding:"required"`
-	Decision string `json:"decision" binding:"required"`
-}
-
-type ReviewRuleSetRequest struct {
-	ExpectedRevision int64                     `json:"expected_revision" binding:"required"`
-	Decisions        []RuleEdgeDecisionRequest `json:"decisions" binding:"required"`
-}
-
 func (s *Service) CreateRuleSet(ctx context.Context, ownerID, workflowID int64, req CreateRuleSetRequest) (*workflow.RuleSet, error) {
 	if s.ruleSets == nil {
 		return nil, fmt.Errorf("%w: rule set repository is not configured", agenterrors.ErrInvalidInput)
@@ -57,7 +45,7 @@ func (s *Service) CreateRuleSet(ctx context.Context, ownerID, workflowID int64, 
 		if err != nil {
 			return nil, mapNotFound(err)
 		}
-		items, err = runtimeRulesFromRuleSet(source, false)
+		items, err = runtimeRulesFromRuleSet(source)
 		if err != nil {
 			return nil, err
 		}
@@ -65,21 +53,12 @@ func (s *Service) CreateRuleSet(ctx context.Context, ownerID, workflowID int64, 
 	if err := rules.ValidateCustomRules(items); err != nil {
 		return nil, fmt.Errorf("%w: custom rules are invalid: %v", agenterrors.ErrInvalidInput, err)
 	}
-	profile, err := s.GetWorkflowProfile(ctx, ownerID, workflowID)
+	item := &workflow.RuleSet{OwnerID: ownerID, WorkflowID: workflowID, TokenEstimatorVersion: rules.DefaultTokenEstimatorVersion}
+	nodes, err := draftRows(items)
 	if err != nil {
 		return nil, err
 	}
-	providerID, model := ruleCompilerSelection(profile)
-	item := &workflow.RuleSet{
-		OwnerID: ownerID, WorkflowID: workflowID,
-		CompilerProviderID: providerID, CompilerModel: model,
-		TokenEstimatorVersion: rules.DefaultTokenEstimatorVersion,
-	}
-	nodes, edges, err := draftRows(items)
-	if err != nil {
-		return nil, err
-	}
-	if err := s.ruleSets.CreateDraft(ctx, item, nodes, edges); err != nil {
+	if err := s.ruleSets.CreateDraft(ctx, item, nodes); err != nil {
 		return nil, err
 	}
 	return s.ruleSets.FindByID(ctx, ownerID, workflowID, item.ID)
@@ -184,17 +163,17 @@ func (s *Service) UpdateRuleSet(ctx context.Context, ownerID, workflowID, ruleSe
 	if err != nil {
 		return nil, err
 	}
-	nodes, edges, err := draftRows(req.Rules)
+	nodes, err := draftRows(req.Rules)
 	if err != nil {
 		return nil, err
 	}
-	if err := s.ruleSets.UpdateDraft(ctx, item, nodes, edges, req.ExpectedRevision); err != nil {
+	if err := s.ruleSets.UpdateDraft(ctx, item, nodes, req.ExpectedRevision); err != nil {
 		return nil, err
 	}
 	return s.ruleSets.FindByID(ctx, ownerID, workflowID, ruleSetID)
 }
 
-func (s *Service) PublishRuleSet(ctx context.Context, ownerID, workflowID, ruleSetID int64, idempotencyKey string, req PublishRuleSetRequest) (*workflow.RuleCompileJob, error) {
+func (s *Service) PublishRuleSet(ctx context.Context, ownerID, workflowID, ruleSetID, actorID int64, req PublishRuleSetRequest) (*workflow.RuleSet, error) {
 	if req.ExpectedRevision <= 0 {
 		return nil, fmt.Errorf("%w: expected_revision is required", agenterrors.ErrInvalidInput)
 	}
@@ -202,13 +181,16 @@ func (s *Service) PublishRuleSet(ctx context.Context, ownerID, workflowID, ruleS
 	if err != nil {
 		return nil, err
 	}
-	items, err := runtimeRulesFromRuleSet(item, false)
+	if item.Status == workflow.RuleSetStatusPublished && item.Revision == req.ExpectedRevision {
+		return item, nil
+	}
+	items, err := runtimeRulesFromRuleSet(item)
 	if err != nil {
 		return nil, err
 	}
 	compiled, err := rules.CompileRuleSet(items, rules.CompileOptions{RuleSetID: item.ID, Version: strconv.Itoa(item.VersionNo)})
 	if err != nil {
-		return nil, fmt.Errorf("%w: rule graph is invalid: %v", agenterrors.ErrInvalidInput, err)
+		return nil, fmt.Errorf("%w: rule set is invalid: %v", agenterrors.ErrInvalidInput, err)
 	}
 	profile, err := s.GetWorkflowProfile(ctx, ownerID, workflowID)
 	if err != nil {
@@ -217,54 +199,20 @@ func (s *Service) PublishRuleSet(ctx context.Context, ownerID, workflowID, ruleS
 	if err := preflightMandatoryRules(profile, compiled); err != nil {
 		return nil, err
 	}
-	item.SourceHash = sourceHash(items)
-	item.CompilerProviderID, item.CompilerModel = ruleCompilerSelection(profile)
-	idempotencyKey = strings.TrimSpace(idempotencyKey)
-	if len(idempotencyKey) > 128 {
-		return nil, fmt.Errorf("%w: Idempotency-Key exceeds 128 characters", agenterrors.ErrInvalidInput)
-	}
-	if idempotencyKey == "" {
-		idempotencyKey = fmt.Sprintf("rule-set:%d:%d:%s", item.ID, item.Revision, item.SourceHash)
-	}
-	job := &workflow.RuleCompileJob{
-		OwnerID: ownerID, WorkflowID: workflowID, RuleSetID: item.ID,
-		Revision: item.Revision, SourceHash: item.SourceHash,
-		IdempotencyKey:     idempotencyKey,
-		CompilerProviderID: item.CompilerProviderID, CompilerModel: item.CompilerModel,
-	}
-	if err := s.ruleSets.QueueCompilation(ctx, item, job, req.ExpectedRevision); err != nil {
-		return nil, err
-	}
-	if s.ruleCompileQueue != nil {
-		_ = s.ruleCompileQueue.Publish(ctx, queueinfra.Job{
-			ID: fmt.Sprintf("rule-compile-%d", job.ID), Type: workflow.RuleCompileJobType,
-			Payload: map[string]any{"compile_job_id": job.ID},
-		})
-	}
-	return job, nil
-}
-
-func (s *Service) GetRuleCompileJob(ctx context.Context, ownerID, workflowID, jobID int64) (*workflow.RuleCompileJob, error) {
-	if s.ruleSets == nil {
-		return nil, fmt.Errorf("%w: rule set repository is not configured", agenterrors.ErrInvalidInput)
-	}
-	item, err := s.ruleSets.FindCompileJob(ctx, ownerID, workflowID, jobID)
-	return item, mapNotFound(err)
-}
-
-func (s *Service) ReviewRuleSet(ctx context.Context, ownerID, workflowID, ruleSetID, actorID int64, req ReviewRuleSetRequest) (*workflow.RuleSet, error) {
-	decisions := make(map[int64]string, len(req.Decisions))
-	for _, decision := range req.Decisions {
-		if decision.EdgeID <= 0 || (decision.Decision != workflow.RuleEdgeDecisionAccepted && decision.Decision != workflow.RuleEdgeDecisionRejected) {
-			return nil, fmt.Errorf("%w: invalid dependency decision", agenterrors.ErrInvalidInput)
-		}
-		decisions[decision.EdgeID] = decision.Decision
-	}
-	item, err := s.ruleSets.UpdateEdgeDecisions(ctx, ownerID, workflowID, ruleSetID, req.ExpectedRevision, decisions)
+	snapshot, err := json.Marshal(compiled)
 	if err != nil {
 		return nil, err
 	}
-	return s.compileAndPublishRuleSet(ctx, item, actorID)
+	nodes, err := compiledRows(compiled)
+	if err != nil {
+		return nil, err
+	}
+	item.SourceHash = sourceHash(items)
+	if err := s.ruleSets.Publish(ctx, item, nodes, snapshot, compiled.CompiledHash, compiled.TokenEstimatorVersion, actorID, req.ExpectedRevision); err != nil {
+		return nil, err
+	}
+	observability.RuleSystemMetrics.RecordPublished()
+	return s.ruleSets.FindByID(ctx, ownerID, workflowID, ruleSetID)
 }
 
 func (s *Service) RollbackRuleSet(ctx context.Context, ownerID, workflowID, ruleSetID, actorID int64) (*workflow.RuleSet, error) {
@@ -282,15 +230,7 @@ func (s *Service) RollbackRuleSet(ctx context.Context, ownerID, workflowID, rule
 	if compiled.CompiledHash != target.CompiledHash {
 		return nil, fmt.Errorf("published rule snapshot hash mismatch")
 	}
-	if err := rules.VerifyCompiledHash(compiled); err != nil {
-		return nil, fmt.Errorf("published rule snapshot integrity check failed: %w", err)
-	}
-	compiled.Prepare()
 	items := rules.RulesFromCompiled(compiled)
-	for index := range items {
-		items[index].ManualDependsOn = nil
-	}
-	edges := acceptedDependencyEdges(target.Edges)
 	profile, err := s.GetWorkflowProfile(ctx, ownerID, workflowID)
 	if err != nil {
 		return nil, err
@@ -299,22 +239,20 @@ func (s *Service) RollbackRuleSet(ctx context.Context, ownerID, workflowID, rule
 		return nil, err
 	}
 	clone := &workflow.RuleSet{}
-	compiler := func(ruleSetID int64, versionNo int) ([]workflow.RuleNode, []workflow.RuleEdge, []byte, string, string, error) {
-		recompiled, compileErr := rules.CompileRuleSet(items, rules.CompileOptions{
-			RuleSetID: ruleSetID, Version: strconv.Itoa(versionNo), Edges: edges,
-		})
+	compiler := func(newRuleSetID int64, versionNo int) ([]workflow.RuleNode, []byte, string, string, error) {
+		recompiled, compileErr := rules.CompileRuleSet(items, rules.CompileOptions{RuleSetID: newRuleSetID, Version: strconv.Itoa(versionNo)})
 		if compileErr != nil {
-			return nil, nil, nil, "", "", compileErr
+			return nil, nil, "", "", compileErr
 		}
 		nodes, rowsErr := compiledRows(recompiled)
 		if rowsErr != nil {
-			return nil, nil, nil, "", "", rowsErr
+			return nil, nil, "", "", rowsErr
 		}
 		snapshot, marshalErr := json.Marshal(recompiled)
 		if marshalErr != nil {
-			return nil, nil, nil, "", "", marshalErr
+			return nil, nil, "", "", marshalErr
 		}
-		return nodes, cloneRuleEdges(target.Edges), snapshot, recompiled.CompiledHash, recompiled.TokenEstimatorVersion, nil
+		return nodes, snapshot, recompiled.CompiledHash, recompiled.TokenEstimatorVersion, nil
 	}
 	if err := s.ruleSets.RollbackPublished(ctx, target, clone, actorID, compiler); err != nil {
 		return nil, err
@@ -323,103 +261,45 @@ func (s *Service) RollbackRuleSet(ctx context.Context, ownerID, workflowID, rule
 	return s.ruleSets.FindByID(ctx, ownerID, workflowID, clone.ID)
 }
 
-func (s *Service) compileAndPublishRuleSet(ctx context.Context, item *workflow.RuleSet, actorID int64) (*workflow.RuleSet, error) {
-	items, err := runtimeRulesFromRuleSet(item, true)
-	if err != nil {
-		return nil, err
-	}
-	edges := acceptedDependencyEdges(item.Edges)
-	compiled, err := rules.CompileRuleSet(items, rules.CompileOptions{
-		RuleSetID: item.ID, Version: strconv.Itoa(item.VersionNo), Edges: edges,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("%w: reviewed rule graph is invalid: %v", agenterrors.ErrInvalidInput, err)
-	}
-	profile, err := s.GetWorkflowProfile(ctx, item.OwnerID, item.WorkflowID)
-	if err != nil {
-		return nil, err
-	}
-	if err := preflightMandatoryRules(profile, compiled); err != nil {
-		return nil, err
-	}
-	snapshot, err := json.Marshal(compiled)
-	if err != nil {
-		return nil, err
-	}
-	nodes, err := compiledRows(compiled)
-	if err != nil {
-		return nil, err
-	}
-	if err := s.ruleSets.PublishCompiled(ctx, item, nodes, item.Edges, snapshot, compiled.CompiledHash, compiled.TokenEstimatorVersion, actorID); err != nil {
-		return nil, err
-	}
-	observability.RuleSystemMetrics.RecordPublished()
-	return s.ruleSets.FindByID(ctx, item.OwnerID, item.WorkflowID, item.ID)
-}
-
-func ruleCompilerSelection(profile *workflow.Profile) (*int64, string) {
-	if profile == nil {
-		return nil, ""
-	}
-	providerID := profile.RuleCompilerProviderID
-	if providerID == nil {
-		providerID = profile.DefaultProviderID
-	}
-	model := strings.TrimSpace(profile.RuleCompilerModel)
-	if model == "" {
-		model = strings.TrimSpace(profile.DefaultModel)
-	}
-	return providerID, model
-}
-
-func draftRows(items []rules.Rule) ([]workflow.RuleNode, []workflow.RuleEdge, error) {
+func draftRows(items []rules.Rule) ([]workflow.RuleNode, error) {
 	nodes := make([]workflow.RuleNode, 0, len(items))
-	edges := make([]workflow.RuleEdge, 0)
 	for _, rule := range items {
 		activation, err := json.Marshal(rule.Activation)
 		if err != nil {
-			return nil, nil, err
+			return nil, err
+		}
+		triggers, err := json.Marshal(rule.Triggers)
+		if err != nil {
+			return nil, err
 		}
 		var binding json.RawMessage
 		if rule.PolicyBinding != nil {
 			binding, err = json.Marshal(rule.PolicyBinding)
 			if err != nil {
-				return nil, nil, err
+				return nil, err
 			}
 		}
 		nodes = append(nodes, workflow.RuleNode{
-			RuleID: rule.ID, Name: rule.Name, Content: rule.Content,
-			Strength: string(rule.Strength), ActivationJSON: activation,
+			RuleID: rule.ID, Name: rule.Name, Content: rule.Content, Strength: string(rule.Strength), ActivationJSON: activation, TriggersJSON: triggers,
 			Priority: rule.Priority, SafetyCritical: rule.SafetyCritical, PolicyBindingJSON: binding,
 		})
-		for _, dependency := range rule.ManualDependsOn {
-			edges = append(edges, workflow.RuleEdge{
-				RuleID: rule.ID, DependsOnRuleID: dependency,
-				Source: "manual", Decision: workflow.RuleEdgeDecisionAccepted,
-			})
-		}
 	}
-	return nodes, edges, nil
+	return nodes, nil
 }
 
-func runtimeRulesFromRuleSet(item *workflow.RuleSet, includeAcceptedLLM bool) ([]rules.Rule, error) {
-	dependencies := map[string][]string{}
-	for _, edge := range item.Edges {
-		if edge.Decision != workflow.RuleEdgeDecisionAccepted {
-			continue
-		}
-		if edge.Source == "llm" {
-			continue
-		}
-		dependencies[edge.RuleID] = append(dependencies[edge.RuleID], edge.DependsOnRuleID)
-	}
-	_ = includeAcceptedLLM // LLM edges are supplied separately so provenance remains llm_confirmed.
+func runtimeRulesFromRuleSet(item *workflow.RuleSet) ([]rules.Rule, error) {
 	items := make([]rules.Rule, 0, len(item.Nodes))
 	for _, node := range item.Nodes {
 		var activation rules.Activation
 		if len(node.ActivationJSON) > 0 {
 			if err := json.Unmarshal(node.ActivationJSON, &activation); err != nil {
 				return nil, fmt.Errorf("rule %s activation is invalid: %w", node.RuleID, err)
+			}
+		}
+		var triggers []string
+		if len(node.TriggersJSON) > 0 {
+			if err := json.Unmarshal(node.TriggersJSON, &triggers); err != nil {
+				return nil, fmt.Errorf("rule %s triggers are invalid: %w", node.RuleID, err)
 			}
 		}
 		var binding *rules.PolicyBinding
@@ -430,33 +310,21 @@ func runtimeRulesFromRuleSet(item *workflow.RuleSet, includeAcceptedLLM bool) ([
 			}
 		}
 		items = append(items, rules.Rule{
-			ID: node.RuleID, Name: node.Name, Content: node.Content,
-			Strength: rules.RuleStrength(node.Strength), Activation: activation,
-			Priority: node.Priority, SafetyCritical: node.SafetyCritical,
-			PolicyBinding: binding, ManualDependsOn: append([]string(nil), dependencies[node.RuleID]...),
+			ID: node.RuleID, Name: node.Name, Content: node.Content, Strength: rules.RuleStrength(node.Strength), Triggers: triggers, Activation: activation,
+			Priority: node.Priority, SafetyCritical: node.SafetyCritical, PolicyBinding: binding,
 		})
 	}
 	return items, nil
-}
-
-func acceptedDependencyEdges(items []workflow.RuleEdge) []rules.DependencyEdge {
-	out := make([]rules.DependencyEdge, 0, len(items))
-	for _, edge := range items {
-		if edge.Decision != workflow.RuleEdgeDecisionAccepted {
-			continue
-		}
-		out = append(out, rules.DependencyEdge{
-			RuleID: edge.RuleID, DependsOn: edge.DependsOnRuleID,
-			Source: edge.Source, Confidence: edge.Confidence, Reason: edge.Reason, Decision: edge.Decision,
-		})
-	}
-	return out
 }
 
 func compiledRows(compiled *rules.CompiledRuleSet) ([]workflow.RuleNode, error) {
 	nodes := make([]workflow.RuleNode, 0, len(compiled.Rules))
 	for _, item := range compiled.Rules {
 		activation, err := json.Marshal(item.Rule.Activation)
+		if err != nil {
+			return nil, err
+		}
+		triggers, err := json.Marshal(item.Rule.Triggers)
 		if err != nil {
 			return nil, err
 		}
@@ -468,11 +336,9 @@ func compiledRows(compiled *rules.CompiledRuleSet) ([]workflow.RuleNode, error) 
 			}
 		}
 		nodes = append(nodes, workflow.RuleNode{
-			RuleID: item.Rule.ID, Name: item.Rule.Name, Content: item.Rule.Content,
-			Strength: string(item.Rule.Strength), ActivationJSON: activation,
-			Priority: item.Rule.Priority, SafetyCritical: item.Rule.SafetyCritical,
-			PolicyBindingJSON: binding, TokenCost: item.TokenCost,
-			TopologicalOrder: item.TopologicalOrder, ContentHash: item.ContentHash,
+			RuleID: item.Rule.ID, Name: item.Rule.Name, Content: item.Rule.Content, Strength: string(item.Rule.Strength),
+			ActivationJSON: activation, TriggersJSON: triggers, Priority: item.Rule.Priority, SafetyCritical: item.Rule.SafetyCritical,
+			PolicyBindingJSON: binding, TokenCost: item.TokenCost, ContentHash: item.ContentHash,
 		})
 	}
 	return nodes, nil
@@ -508,14 +374,4 @@ func sourceHash(items []rules.Rule) string {
 	data, _ := json.Marshal(cloned)
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
-}
-
-func cloneRuleEdges(items []workflow.RuleEdge) []workflow.RuleEdge {
-	out := make([]workflow.RuleEdge, len(items))
-	for index, edge := range items {
-		edge.ID = 0
-		edge.RuleSetID = 0
-		out[index] = edge
-	}
-	return out
 }

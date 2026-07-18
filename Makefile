@@ -58,11 +58,19 @@ verify:
 	./scripts/verify.sh
 
 verify-tables:
-	@migrations/*.up.sql 2>/dev/null; \
-	declared=$$(grep -h 'CREATE TABLE IF NOT EXISTS ' migrations/*.up.sql 2>/dev/null | sed 's/CREATE TABLE IF NOT EXISTS //' | sed 's/ (.*//' | sort -u); \
+	@declared=$$(grep -h 'CREATE TABLE IF NOT EXISTS ' migrations/*.up.sql 2>/dev/null | sed 's/CREATE TABLE IF NOT EXISTS //' | sed 's/ (.*//' | sort -u); \
+	dropped=$$(grep -h 'DROP TABLE IF EXISTS ' migrations/*.up.sql 2>/dev/null | sed 's/DROP TABLE IF EXISTS //' | sed 's/;//' | sort -u); \
+	active_declared=""; \
+	for table in $$declared; do \
+		is_dropped=false; \
+		for dropped_table in $$dropped; do \
+			if [ "$$table" = "$$dropped_table" ]; then is_dropped=true; break; fi; \
+		done; \
+		if [ "$$is_dropped" = false ]; then active_declared="$$active_declared $$table"; fi; \
+	done; \
 	codetables=$$(grep -rh 'TableName()' internal/ | sed -n 's/.*return "\([^"]*\)".*/\1/p' | sort -u); \
 	unused=""; \
-	for table in $$declared; do \
+	for table in $$active_declared; do \
 		matched=false; \
 		for ct in $$codetables; do \
 			if [ "$$table" = "$$ct" ]; then \

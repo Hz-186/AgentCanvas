@@ -16,9 +16,7 @@ import (
 	ingestionusecase "agentcanvas/internal/application/ingestion_usecase"
 	memoryusecase "agentcanvas/internal/application/memory_usecase"
 	reflectionusecase "agentcanvas/internal/application/reflection_usecase"
-	rulecompileusecase "agentcanvas/internal/application/rule_compile_usecase"
 	"agentcanvas/internal/domain/resource"
-	"agentcanvas/internal/domain/workflow"
 	"agentcanvas/internal/infrastructure"
 	cacheinfra "agentcanvas/internal/infrastructure/cache"
 	chunkerinfra "agentcanvas/internal/infrastructure/chunker"
@@ -115,8 +113,6 @@ func main() {
 	workerID := fmt.Sprintf("%s-%d", hostname, os.Getpid())
 	dreamWorker := memoryusecase.NewDreamWorker(baseChatClient(), llm.NewOpenAICompatibleEmbeddingClient(), memoryRepo, memoryLogRepo, messageRepo, archivalVecStore, infraDeps.Redis, memoryusecase.NewDreamConfig(cfg.MemoryDream), workerID)
 	extractionCompatibility := memoryusecase.NewExtractionService(memoryRepo, mysqlinfra.NewExtractionJobRepository(db), mysqlinfra.NewMergeLogRepository(db))
-	ruleSetRepo := mysqlinfra.NewWorkflowRuleSetRepository(db)
-	ruleCompiler := rulecompileusecase.NewService(ruleSetRepo, providerRepo, secretBox, llm.NewOpenAICompatibleChatClient())
 	reflectionRepo := mysqlinfra.NewReflectionRepository(db)
 	reflectionJobRepo := mysqlinfra.NewReflectionJobRepository(db)
 	reflectionRecallRepo := mysqlinfra.NewReflectionRecallLogRepository(db)
@@ -165,7 +161,7 @@ func main() {
 		var processed bool
 		var err error
 		if jobQueue != nil {
-			processed, err = processNextJob(ctx, jobQueue, workerID, service, dreamWorker, ruleCompiler)
+			processed, err = processNextJob(ctx, jobQueue, workerID, service, dreamWorker)
 		} else {
 			processed, err = service.ProcessNext(ctx, workerID)
 		}
@@ -173,11 +169,6 @@ func main() {
 			appLogger.Error("process ingestion job failed", "error", err)
 		}
 		if processed {
-			continue
-		}
-		if compiled, compileErr := ruleCompiler.ProcessNext(ctx, workerID); compileErr != nil {
-			appLogger.Error("process rule compile job failed", "error", compileErr)
-		} else if compiled {
 			continue
 		}
 		if drained, drainErr := extractionCompatibility.ProcessNextDream(ctx, dreamWorker); drainErr != nil {
@@ -217,21 +208,13 @@ func baseChatClient() llm.ChatClient {
 	return llm.NewOpenAICompatibleChatClient()
 }
 
-func processNextJob(ctx context.Context, jobQueue queue.JobQueue, workerID string, ingestion *ingestionusecase.Service, dreamWorker *memoryusecase.DreamWorker, ruleCompiler *rulecompileusecase.Service) (bool, error) {
+func processNextJob(ctx context.Context, jobQueue queue.JobQueue, workerID string, ingestion *ingestionusecase.Service, dreamWorker *memoryusecase.DreamWorker) (bool, error) {
 	claimed, err := jobQueue.Claim(ctx, queue.ClaimOptions{WorkerID: workerID, Limit: 1})
 	if err != nil || len(claimed) == 0 {
 		return false, err
 	}
 	job := claimed[0]
 	switch job.Type {
-	case workflow.RuleCompileJobType:
-		jobID := payloadInt64(job.Payload, "compile_job_id")
-		compileErr := ruleCompiler.ProcessByID(ctx, jobID, workerID)
-		ackErr := jobQueue.Ack(ctx, job.ID)
-		if compileErr != nil {
-			return true, compileErr
-		}
-		return true, ackErr
 	case memoryusecase.DreamJobType:
 		payload := memoryusecase.DreamPayload{OwnerID: payloadInt64(job.Payload, "owner_id"), ConversationID: payloadInt64(job.Payload, "conversation_id")}
 		if err := dreamWorker.HandleDreamJob(ctx, payload); err != nil {

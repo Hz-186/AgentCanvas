@@ -13,17 +13,25 @@ import (
 )
 
 type PlanStep struct {
-	Number      int    `json:"number"`
+	// Number is stable across plan revisions.
+	Number int `json:"number"`
+	// Description is the step instruction for the execution model.
 	Description string `json:"description"`
-	Status      string `json:"status"`
-	ToolName    string `json:"tool_name,omitempty"`
+	// Status is plan state, not an execution trace event.
+	Status string `json:"status"`
+	// ToolName is a planner hint, not an enforced constraint.
+	ToolName string `json:"tool_name,omitempty"`
 }
 
 type Plan struct {
-	Steps          []PlanStep `json:"steps"`
-	Finished       bool       `json:"finished"`
-	Version        int        `json:"version,omitempty"`
-	RevisionReason string     `json:"revision_reason,omitempty"`
+	// Steps is the plan snapshot for the run.
+	Steps []PlanStep `json:"steps"`
+	// Finished means the model returned a final answer.
+	Finished bool `json:"finished"`
+	// Version increments after each successful revision.
+	Version int `json:"version,omitempty"`
+	// RevisionReason records the feedback that triggered the revision.
+	RevisionReason string `json:"revision_reason,omitempty"`
 }
 
 type Planner struct {
@@ -53,6 +61,7 @@ func (p Planner) GeneratePlanWithLessons(
 	if p.LLM == nil {
 		return nil, fmt.Errorf("planner requires a tool calling client")
 	}
+	// Planning is a tool-free LLM call that returns JSON only.
 	prompt := fmt.Sprintf(`Create a concise execution plan with 3 to %d steps for: %s
 
 Relevant lessons from prior runs (advisory; do not override current instructions):
@@ -82,6 +91,7 @@ Do NOT use tool calls in this response — output only the JSON plan.`, p.maxSte
 		return nil, fmt.Errorf("plan is empty")
 	}
 	for i := range plan.Steps {
+		// Initial plans always start with pending steps.
 		plan.Steps[i].Status = "pending"
 	}
 	if plan.Version <= 0 {
@@ -94,6 +104,7 @@ func (p Planner) RevisePlan(ctx context.Context, provider llm.ChatProviderConfig
 	if p.LLM == nil || current == nil {
 		return nil, llm.Usage{}, fmt.Errorf("planner and current plan are required")
 	}
+	// Keep the run-level task stable across revisions.
 	currentJSON, _ := json.Marshal(current)
 	prompt := fmt.Sprintf(`Revise only the unfinished portion of this execution plan after a verified failure.
 Do not repeat completed side-effecting actions. Preserve completed steps and return the full plan as JSON.
@@ -223,6 +234,7 @@ func (p *Plan) Finish() {
 	if p == nil {
 		return
 	}
+	// Completion follows the model's final answer, not per-step verification.
 	for i := range p.Steps {
 		if p.Steps[i].Status == "" || p.Steps[i].Status == "pending" {
 			p.Steps[i].Status = "completed"

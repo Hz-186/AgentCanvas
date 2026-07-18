@@ -781,8 +781,6 @@ export interface WorkflowProfile {
   reflection_policy_json?: unknown;
   context_policy_json?: unknown;
   active_rule_set_id?: number | null;
-  rule_compiler_provider_id?: number | null;
-  rule_compiler_model?: string;
   risk_level?: 'low' | 'medium' | 'high';
   mode?: 'react' | 'plan_execute';
   created_at: string;
@@ -866,21 +864,9 @@ export interface WorkflowRule {
   activation?: RuleActivation;
   priority?: number;
   safety_critical?: boolean;
-  manual_depends_on?: string[];
-  policy_binding?: RulePolicyBinding;
-  token_cost?: number;
-  topological_order?: number;
-  content_hash?: string;
-}
-
-export interface WorkflowRuleEdge {
-  id: number;
-  rule_id: string;
-  depends_on: string;
-  source: 'manual' | 'llm';
-  confidence: number;
-  reason?: string;
-  decision: 'pending' | 'accepted' | 'rejected';
+	policy_binding?: RulePolicyBinding;
+	token_cost?: number;
+	content_hash?: string;
 }
 
 export interface WorkflowRuleSet {
@@ -888,35 +874,15 @@ export interface WorkflowRuleSet {
   owner_id: number;
   workflow_id: number;
   version_no: number;
-  status: 'draft' | 'queued' | 'compiling' | 'review_required' | 'ready' | 'published' | 'superseded' | 'failed';
+	status: 'draft' | 'published' | 'superseded';
   revision: number;
   source_hash: string;
   compiled_hash: string;
-  compiler_provider_id?: number | null;
-  compiler_model?: string;
-  compiler_prompt_version?: string;
-  token_estimator_version?: string;
+	token_estimator_version?: string;
   rollback_of_rule_set_id?: number | null;
   published_by?: number | null;
   published_at?: string | null;
   rules?: WorkflowRule[];
-  edges?: WorkflowRuleEdge[];
-  compile_error?: string;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface RuleCompileJob {
-  id: number;
-  owner_id: number;
-  workflow_id: number;
-  rule_set_id: number;
-  revision: number;
-  status: 'queued' | 'compiling' | 'completed' | 'failed' | 'stale';
-  attempts: number;
-  prompt_tokens: number;
-  completion_tokens: number;
-  error_message?: string;
   created_at: string;
   updated_at: string;
 }
@@ -962,8 +928,6 @@ export type UpdateWorkflowProfileRequest = Partial<Pick<
   | 'memory_policy_json'
   | 'reflection_policy_json'
   | 'context_policy_json'
-  | 'rule_compiler_provider_id'
-  | 'rule_compiler_model'
   | 'risk_level'
   | 'mode'
 >>;

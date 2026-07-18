@@ -15,7 +15,6 @@ import (
 	"agentcanvas/internal/domain/reflection"
 	"agentcanvas/internal/domain/skill"
 	"agentcanvas/internal/domain/tool"
-	"agentcanvas/internal/domain/workflow"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -93,22 +92,6 @@ func (r *ContextResourceRepository) Backfill(ctx context.Context, resourceType s
 				return result, err
 			}
 			candidates = append(candidates, candidate{items[i].ID, items[i].OwnerID, workflowID, messageContextText(items[i])})
-		}
-	case contextresource.TypeOptionalRule:
-		type ruleCandidate struct {
-			workflow.RuleNode
-			OwnerID    int64
-			WorkflowID int64
-		}
-		var items []ruleCandidate
-		if err := r.db.WithContext(ctx).Table("workflow_rule_nodes AS n").Select("n.*, s.owner_id, s.workflow_id").
-			Joins("JOIN workflow_rule_sets s ON s.id = n.rule_set_id").
-			Where("n.id > ? AND s.status = ? AND n.strength = ? AND n.safety_critical = 0", afterID, workflow.RuleSetStatusPublished, "optional").
-			Where("n.policy_binding_json IS NULL OR JSON_LENGTH(n.policy_binding_json) = 0").Order("n.id ASC").Limit(limit).Scan(&items).Error; err != nil {
-			return result, err
-		}
-		for i := range items {
-			candidates = append(candidates, candidate{items[i].ID, items[i].OwnerID, items[i].WorkflowID, ruleContextText(items[i].RuleNode)})
 		}
 	default:
 		return result, fmt.Errorf("unsupported context resource type %q", resourceType)
@@ -316,15 +299,6 @@ func (r *ContextResourceRepository) LoadDocument(ctx context.Context, item conte
 			return nilOrLoadError(err)
 		}
 		return document(item, messageContextText(value), value.ConversationID, map[string]any{"role": value.Role, "created_at": value.CreatedAt.Unix()}), nil
-	case contextresource.TypeOptionalRule:
-		var value workflow.RuleNode
-		if err := r.db.WithContext(ctx).Table("workflow_rule_nodes AS n").Select("n.*").
-			Joins("JOIN workflow_rule_sets s ON s.id = n.rule_set_id").
-			Where("s.owner_id = ? AND s.workflow_id = ? AND s.status = ? AND n.id = ? AND n.strength = ? AND n.safety_critical = 0", item.OwnerID, item.WorkflowID, workflow.RuleSetStatusPublished, id, "optional").
-			First(&value).Error; err != nil {
-			return nilOrLoadError(err)
-		}
-		return document(item, ruleContextText(value), 0, map[string]any{"rule_id": value.RuleID, "priority": value.Priority}), nil
 	default:
 		return nil, fmt.Errorf("unsupported context resource type %q", item.ResourceType)
 	}
@@ -360,10 +334,6 @@ func toolContextText(item tool.Definition) string {
 
 func messageContextText(item conversation.Message) string {
 	return strings.Join([]string{item.Role, item.Content}, "\n")
-}
-
-func ruleContextText(item workflow.RuleNode) string {
-	return strings.Join([]string{item.Name, item.Content}, "\n")
 }
 
 var _ contextresource.Repository = (*ContextResourceRepository)(nil)

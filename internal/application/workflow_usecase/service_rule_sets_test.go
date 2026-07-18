@@ -47,11 +47,9 @@ func TestLoadActiveRuleSetRecomputesSnapshotHash(t *testing.T) {
 
 func TestRollbackRuleSetRecompilesSnapshotWithNewIdentity(t *testing.T) {
 	original, err := rules.CompileRuleSet([]rules.Rule{
-		{ID: "tenant.base", Content: "base", Strength: rules.RuleOptional},
+		{ID: "tenant.base", Content: "base", Strength: rules.RuleOptional, Activation: rules.Activation{Always: true}},
 		{ID: "tenant.report", Content: "report", Strength: rules.RuleOptional, Activation: rules.Activation{Always: true}},
-	}, rules.CompileOptions{RuleSetID: 12, Version: "4", Edges: []rules.DependencyEdge{{
-		RuleID: "tenant.report", DependsOn: "tenant.base", Source: "llm", Decision: "accepted",
-	}}})
+	}, rules.CompileOptions{RuleSetID: 12, Version: "4"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +61,6 @@ func TestRollbackRuleSetRecompilesSnapshotWithNewIdentity(t *testing.T) {
 		ID: 12, OwnerID: 1, WorkflowID: 20, VersionNo: 4, Revision: 1,
 		Status: workflow.RuleSetStatusSuperseded, SourceHash: "source",
 		CompiledHash: original.CompiledHash, CompiledSnapshotJSON: snapshot,
-		Edges: []workflow.RuleEdge{{RuleID: "tenant.report", DependsOnRuleID: "tenant.base", Source: "llm", Decision: workflow.RuleEdgeDecisionAccepted}},
 	}}
 	service := &Service{
 		workflows: &fakeAgentRepo{items: map[int64]*workflow.Workflow{20: {ID: 20, OwnerID: 1}}},
@@ -81,9 +78,8 @@ func TestRollbackRuleSetRecompilesSnapshotWithNewIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	llmRule, ok := recompiled.RuleByID("tenant.report")
-	if recompiled.ID != 99 || recompiled.Version != "5" || !ok || llmRule.DependencySources["tenant.base"] != "llm_confirmed" {
-		t.Fatalf("rollback snapshot identity/provenance was not rebuilt: %+v rule=%+v", recompiled, llmRule)
+	if recompiled.ID != 99 || recompiled.Version != "5" || recompiled.SchemaVersion != 3 {
+		t.Fatalf("rollback graph-free snapshot identity was not rebuilt: %+v", recompiled)
 	}
 	if err := rules.VerifyCompiledHash(recompiled); err != nil {
 		t.Fatalf("recompiled rollback hash must verify: %v", err)
@@ -107,13 +103,12 @@ func (r *rollbackRuleSetRepo) FindByID(_ context.Context, _, _, id int64) (*work
 		return &clone, nil
 	}
 	clone := *r.target
-	clone.Edges = append([]workflow.RuleEdge(nil), r.target.Edges...)
 	clone.CompiledSnapshotJSON = append(json.RawMessage(nil), r.target.CompiledSnapshotJSON...)
 	return &clone, nil
 }
 
 func (r *rollbackRuleSetRepo) RollbackPublished(_ context.Context, _ *workflow.RuleSet, clone *workflow.RuleSet, publishedBy int64, compile workflow.RuleSetRollbackCompiler) error {
-	nodes, edges, snapshot, hash, estimator, err := compile(99, 5)
+	nodes, snapshot, hash, estimator, err := compile(99, 5)
 	if err != nil {
 		return err
 	}
@@ -125,7 +120,6 @@ func (r *rollbackRuleSetRepo) RollbackPublished(_ context.Context, _ *workflow.R
 	nowClone.CompiledHash = hash
 	nowClone.TokenEstimatorVersion = estimator
 	nowClone.Nodes = nodes
-	nowClone.Edges = edges
 	nowClone.PublishedBy = &publishedBy
 	r.clone = &nowClone
 	*clone = nowClone

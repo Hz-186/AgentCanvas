@@ -81,7 +81,6 @@ type RunRequest struct {
 	CompiledRules                   *rules.CompiledRuleSet
 	CustomRules                     []rules.Rule
 	RuleTrace                       rules.Trace
-	RuleSemanticScores              map[string]float64
 	ContextBlocks                   []ContextBlock
 	ToolPolicy                      ToolPolicy
 	ToolHookChain                   hooks.ToolHookChain

@@ -298,25 +298,6 @@ func TestUpdateWorkflowProfileValidatesReflectionPolicy(t *testing.T) {
 	}
 }
 
-func TestUpdateWorkflowProfileStoresDedicatedCompilerSelection(t *testing.T) {
-	profiles := &fakeProfileRepo{items: map[int64]*workflow.Profile{
-		20: {ID: 1, OwnerID: 1, WorkflowID: 20, Role: "Agent", Goal: "Work", MaxIterations: 10, MaxExecutionTimeMS: 120000},
-	}}
-	service := &Service{
-		workflows: &fakeAgentRepo{items: map[int64]*workflow.Workflow{20: {ID: 20, OwnerID: 1, Name: "Workflow", Status: workflow.StatusActive}}},
-		profiles:  profiles,
-	}
-	providerID := int64(7)
-	model := "cheap-compiler"
-	updated, err := service.UpdateWorkflowProfile(context.Background(), 1, 20, UpdateWorkflowProfileRequest{RuleCompilerProviderID: &providerID, RuleCompilerModel: &model})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if updated.RuleCompilerProviderID == nil || *updated.RuleCompilerProviderID != providerID || updated.RuleCompilerModel != model {
-		t.Fatalf("unexpected compiler selection: %+v", updated)
-	}
-}
-
 func TestCreateEvalDatasetPersistsDataset(t *testing.T) {
 	evals := &fakeEvalRepo{}
 	service := &Service{
@@ -958,6 +939,20 @@ func TestResumeRunContinuesFromCheckpointAfterApproval(t *testing.T) {
 	}
 	if len(llmClient.requests) != 1 || !messagesContainToolResult(llmClient.requests[0].Messages, "call_1", "tool executed") {
 		t.Fatalf("expected LLM to receive resumed tool result, requests=%+v", llmClient.requests)
+	}
+}
+
+func TestResumeRunRejectsGraphSnapshotInvalidatedByMigration(t *testing.T) {
+	service := &Service{
+		runs: &fakeRunRepo{items: []*workflow.Run{{
+			ID: 901, OwnerID: 1, Status: workflow.RunStatusCancelled,
+			ErrorMessage: "rule_snapshot_obsolete: Rule Graph snapshots were removed by migration",
+		}}},
+		approvals: &fakeApprovalRepo{},
+	}
+	_, err := service.ResumeRun(context.Background(), 1, 901)
+	if err == nil || !strings.Contains(err.Error(), "rule_snapshot_obsolete") {
+		t.Fatalf("expected explicit obsolete snapshot error, got %v", err)
 	}
 }
 
