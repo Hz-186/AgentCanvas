@@ -21,6 +21,7 @@ import (
 
 var ErrNoToolCallingClient = errors.New("llm client does not support tool calling")
 var ErrMandatoryRuleBudgetExceeded = errors.New("mandatory rules exceed the configured input context budget")
+var ErrContextOverflow = errors.New("context exceeds the model input window")
 
 type StepEmitter func(ctx context.Context, step RunStep) error
 
@@ -95,7 +96,20 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 		})
 	}
 
+	compactedBlocks, compactionUsage, initialCompaction := r.compactInitialHistory(ctx, req, tools)
+	req.ContextBlocks = compactedBlocks
+	result.Usage = addUsage(result.Usage, compactionUsage)
 	baseMessages, contextTrace := ContextAssembler{}.Build(req)
+	counter := modelTokenCount(req, "token counter probe")
+	contextTrace.TokenCounterMethod = counter.Method
+	contextTrace.TokenCounterError = counter.Error
+	contextTrace.AutoCompactTokenLimit = autoCompactLimit(req)
+	contextTrace.AutoCompactLimitScope = autoCompactScope(req)
+	if initialCompaction != nil {
+		observability.ContextSystemMetrics.RecordCompaction(initialCompaction.Status)
+		contextTrace.Compactions = append(contextTrace.Compactions, *initialCompaction)
+		contextTrace.SavedTokens += initialCompaction.SavedTokens
+	}
 	contextTrace.RuleSetVersion = req.RuleSetVersion
 	contextTrace.RuleSetID = req.RuleSetID
 	contextTrace.CompiledHash = req.CompiledRuleHash
@@ -170,6 +184,15 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 			return result, nil
 		}
 		if len(req.ResumeMessages) == 0 {
+			compactedRuntime, compactUsage, runtimeCompaction := r.compactRuntimeTranscript(ctx, req, baseMessages, transcript, tools)
+			transcript = compactedRuntime
+			result.Usage = addUsage(result.Usage, compactUsage)
+			if runtimeCompaction != nil {
+				observability.ContextSystemMetrics.RecordCompaction(runtimeCompaction.Status)
+				contextTrace.Compactions = append(contextTrace.Compactions, *runtimeCompaction)
+				contextTrace.SavedTokens += runtimeCompaction.SavedTokens
+				contextTrace.Compressed = appendUniqueStrings(contextTrace.Compressed, []string{"runtime_model_compaction"})
+			}
 			compactedTranscript, savedTokens := compactTranscriptForBudget(transcript, transcriptBudget(RulePlanningState{
 				MaxInputTokens: req.MaxInputTokens,
 				ContextWindow:  req.ContextWindowTokens,
@@ -201,6 +224,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 				MaxRuleTokens:  req.MaxRuleTokens,
 				CustomRules:    req.CustomRules,
 				CompiledRules:  req.CompiledRules,
+				SemanticScores: req.RuleSemanticScores,
 			})
 			messages = assembleRoundMessages(baseMessages, ruleMessages(plan.Rules), transcript)
 			contextTrace.RuleTrace = mergeRuleTraces(req.RuleTrace, plan.Trace)
@@ -218,6 +242,18 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 			result.Context = contextTrace
 		}
 		result.Iterations = iteration + 1
+		estimatedPromptTokens := modelMessagesTokens(req, messages) + modelToolSchemaTokens(req, tools)
+		allowedPromptTokens := hardPromptTokenLimit(req)
+		if estimatedPromptTokens > allowedPromptTokens {
+			observability.ContextSystemMetrics.RecordContextOverflow()
+			contextTrace.EstimatedPromptTokens += estimatedPromptTokens
+			result.Context = contextTrace
+			result.StopReason = StopReasonContextOverflow
+			overflowErr := fmt.Errorf("%w: estimated_prompt_tokens=%d allowed_prompt_tokens=%d", ErrContextOverflow, estimatedPromptTokens, allowedPromptTokens)
+			step := r.appendStep(result, RunStep{Type: StepTypeError, Error: overflowErr.Error(), ProviderID: r.ProviderID, Model: r.ModelName})
+			_ = r.emit(ctx, step)
+			return finish(result, r.now()), overflowErr
+		}
 		llmStarted := r.now()
 		resp, err := r.LLM.ChatWithTools(ctx, req.Provider, llm.ToolChatRequest{
 			Model:       req.Model,
@@ -385,20 +421,7 @@ func compactTranscriptForBudget(messages []llm.ChatMessage, budget int) ([]llm.C
 	if budget <= 0 {
 		return nil, original
 	}
-	exchanges := make([]transcriptExchange, 0)
-	for index := 0; index < len(messages); {
-		if messages[index].Role != conversation.RoleAssistant || len(messages[index].ToolCalls) == 0 {
-			index++
-			continue
-		}
-		end := index + 1
-		for end < len(messages) && messages[end].Role == conversation.RoleTool {
-			end++
-		}
-		group := append([]llm.ChatMessage(nil), messages[index:end]...)
-		exchanges = append(exchanges, transcriptExchange{messages: group, tokens: estimateMessagesTokens(group)})
-		index = end
-	}
+	exchanges := splitTranscriptExchanges(messages)
 	kept := make([]transcriptExchange, 0, len(exchanges))
 	used := 0
 	for index := len(exchanges) - 1; index >= 0; index-- {

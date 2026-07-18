@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"agentcanvas/internal/domain/contextresource"
 	"agentcanvas/internal/domain/reflection"
 
 	"gorm.io/gorm"
@@ -27,12 +28,22 @@ func (r *ReflectionRepository) Create(ctx context.Context, item *reflection.Refl
 	if item.UpdatedAt.IsZero() {
 		item.UpdatedAt = now
 	}
-	return r.db.WithContext(ctx).Create(item).Error
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(item).Error; err != nil {
+			return err
+		}
+		return enqueueReflectionContext(ctx, tx, *item)
+	})
 }
 
 func (r *ReflectionRepository) Update(ctx context.Context, item *reflection.Reflection) error {
 	item.UpdatedAt = time.Now().UTC()
-	return r.db.WithContext(ctx).Save(item).Error
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Save(item).Error; err != nil {
+			return err
+		}
+		return enqueueReflectionContext(ctx, tx, *item)
+	})
 }
 
 func (r *ReflectionRepository) FindByID(ctx context.Context, ownerID, id int64) (*reflection.Reflection, error) {
@@ -150,16 +161,36 @@ func (r *ReflectionRepository) UpdateUsefulness(ctx context.Context, ownerID, id
 			status = reflection.StatusValidated
 		}
 		if status != item.Status {
-			return tx.Model(&reflection.Reflection{}).Where("owner_id = ? AND id = ?", ownerID, id).Update("status", status).Error
+			if err := tx.Model(&reflection.Reflection{}).Where("owner_id = ? AND id = ?", ownerID, id).Update("status", status).Error; err != nil {
+				return err
+			}
+			item.Status = status
 		}
-		return nil
+		return enqueueReflectionContext(ctx, tx, item)
 	})
 }
 
 func (r *ReflectionRepository) SetStatus(ctx context.Context, ownerID, id int64, status string) error {
-	return r.db.WithContext(ctx).Model(&reflection.Reflection{}).
-		Where("owner_id = ? AND id = ? AND deleted_at IS NULL", ownerID, id).
-		Updates(map[string]any{"status": status, "updated_at": time.Now().UTC()}).Error
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		result := tx.Model(&reflection.Reflection{}).Where("owner_id = ? AND id = ? AND deleted_at IS NULL", ownerID, id).
+			Updates(map[string]any{"status": status, "updated_at": time.Now().UTC()})
+		if result.Error != nil || result.RowsAffected == 0 {
+			return result.Error
+		}
+		var item reflection.Reflection
+		if err := tx.Where("owner_id = ? AND id = ?", ownerID, id).First(&item).Error; err != nil {
+			return err
+		}
+		return enqueueReflectionContext(ctx, tx, item)
+	})
+}
+
+func enqueueReflectionContext(ctx context.Context, tx *gorm.DB, item reflection.Reflection) error {
+	operation := contextresource.OperationUpsert
+	if item.DeletedAt != nil || (item.Status != reflection.StatusActive && item.Status != reflection.StatusValidated) {
+		operation = contextresource.OperationDelete
+	}
+	return enqueueContextResource(ctx, tx, item.OwnerID, item.WorkflowID, contextresource.TypeReflection, item.ID, operation, reflectionContextText(item))
 }
 
 type ReflectionJobRepository struct{ db *gorm.DB }
@@ -400,6 +431,9 @@ func (r *ReflectionJobRepository) CommitResult(ctx context.Context, jobID int64,
 			}
 			var stored reflection.Reflection
 			if err := tx.Where("owner_id = ? AND workflow_id = ? AND content_hash = ?", item.OwnerID, item.WorkflowID, item.ContentHash).First(&stored).Error; err != nil {
+				return err
+			}
+			if err := enqueueReflectionContext(ctx, tx, stored); err != nil {
 				return err
 			}
 			jobIDCopy := job.ID

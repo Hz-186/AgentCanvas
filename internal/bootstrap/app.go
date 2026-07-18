@@ -23,6 +23,7 @@ import (
 	toolusecase "agentcanvas/internal/application/tool_usecase"
 	agentusecase "agentcanvas/internal/application/workflow_usecase"
 	workspaceusecase "agentcanvas/internal/application/workspace_usecase"
+	"agentcanvas/internal/domain/contextresource"
 	"agentcanvas/internal/domain/resource"
 	"agentcanvas/internal/infrastructure"
 	cacheinfra "agentcanvas/internal/infrastructure/cache"
@@ -33,6 +34,7 @@ import (
 	mysqlinfra "agentcanvas/internal/infrastructure/mysql"
 	oauthinfra "agentcanvas/internal/infrastructure/oauth"
 	redisinfra "agentcanvas/internal/infrastructure/redis"
+	contextretrieval "agentcanvas/internal/infrastructure/retrieval"
 	esretrieval "agentcanvas/internal/infrastructure/retrieval/elasticsearch"
 	"agentcanvas/internal/infrastructure/vectorstore"
 	httpserver "agentcanvas/internal/interface/http"
@@ -119,6 +121,7 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 	workspaceRepo := mysqlinfra.NewWorkspaceRepository(db)
 	conversationRepo := mysqlinfra.NewConversationRepository(db)
 	messageRepo := mysqlinfra.NewMessageRepository(db)
+	compactionRepo := mysqlinfra.NewConversationCompactionRepository(db)
 	usageRepo := mysqlinfra.NewUsageRepository(db)
 	workflowRepo := cacheinfra.NewWorkflowRepository(mysqlinfra.NewWorkflowRepository(db), resourceInvalidator)
 	workflowProfileRepo := mysqlinfra.NewWorkflowProfileRepository(db)
@@ -184,6 +187,33 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 			},
 		)
 	}
+	var contextIndex contextresource.Index
+	if cfg.ContextIndex.Enabled && archivalVecStore != nil {
+		providerID := cfg.ContextIndex.EmbeddingProviderID
+		if providerID <= 0 {
+			providerID = cfg.LLMCache.EmbeddingProviderID
+		}
+		model := strings.TrimSpace(cfg.ContextIndex.EmbeddingModel)
+		if model == "" {
+			model = strings.TrimSpace(cfg.LLMCache.EmbeddingModel)
+		}
+		semanticIndex := contextretrieval.NewContextSemanticIndex(archivalVecStore, embeddingClient, providerRepo, secretBox, providerID, model, vectorstore.HNSWConfig{
+			M: cfg.Milvus.M, EFConstruction: cfg.Milvus.EFConstruction, EFSearch: cfg.Milvus.EFSearch, MetricType: cfg.Milvus.MetricType,
+		})
+		keywordIndex := esretrieval.NewContextKeywordIndex(esClient, cfg.Elasticsearch.ContextIndex)
+		ensureContext, cancelContext := context.WithTimeout(ctx, 10*time.Second)
+		if err := keywordIndex.EnsureIndex(ensureContext); err != nil {
+			log.Warn("ensure context keyword index failed; outbox worker will retry", "error", err)
+		}
+		cancelContext()
+		contextIndex = contextretrieval.ContextHybridIndex{Keyword: keywordIndex, Semantic: semanticIndex, RRFK: 60}
+		if cfg.ContextIndex.WorkerEnabled {
+			contextWorker := &contextresource.Worker{Repository: mysqlinfra.NewContextResourceRepository(db), Index: contextIndex,
+				WorkerID: fmt.Sprintf("context-api-%d", os.Getpid()), BatchSize: cfg.ContextIndex.BatchSize,
+				Lease: time.Duration(cfg.ContextIndex.LeaseSeconds) * time.Second, PollInterval: time.Duration(cfg.ContextIndex.PollMilliseconds) * time.Millisecond, Logger: log}
+			go contextWorker.Run(ctx)
+		}
+	}
 	if cfg.LLMCache.Enabled {
 		cacheTTL := time.Duration(cfg.LLMCache.TTLSeconds) * time.Second
 		l2Enabled := cfg.LLMCache.L2Enabled
@@ -233,7 +263,7 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 	reranker := llm.NewChatReranker(chatClient)
 	retrievalService := retrievalusecase.NewService(
 		knowledgeRepo, providerRepo, retrievalStore, embeddingClient, reranker, secretBox,
-	)
+	).WithQueryRewriter(retrievalusecase.ProviderQueryRewriter{Providers: providerRepo, Client: chatClient, Secrets: secretBox})
 	providerService := providerusecase.NewService(providerRepo, auditRepo, secretBox, llm.NewHTTPProviderTester())
 	auditService := auditusecase.NewService(auditRepo)
 	memoryService := memoryusecase.NewServiceWithCacheAndRetriever(memoryRepo, memoryCache, memoryRetrievalStore)
@@ -289,8 +319,14 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 		secretBox,
 	)
 	chatService.ConfigureDream(jobQueue, redisClient, dreamCfg)
+	chatService.ConfigureCompaction(compactionRepo)
 	reflectionService := reflectionusecase.Service{Reflections: reflectionRepo, Jobs: reflectionJobRepo, RecallLogs: reflectionRecallLogRepo, Events: reflectionEventSink,
 		DispatchEnabled: cfg.ReflectionQueue.Backend == "nats"}
+	if archivalVecStore != nil {
+		reflectionService.Index = contextretrieval.NewReflectionSemanticIndex(archivalVecStore, embeddingClient, providerRepo, secretBox, reflectionRepo, vectorstore.HNSWConfig{
+			M: cfg.Milvus.M, EFConstruction: cfg.Milvus.EFConstruction, EFSearch: cfg.Milvus.EFSearch, MetricType: cfg.Milvus.MetricType,
+		})
+	}
 	workflowService, err := agentusecase.NewService(
 		workflowRepo,
 		workflowProfileRepo,
@@ -321,6 +357,8 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 		chatClient,
 		embeddingClient,
 		archivalVecStore,
+		contextIndex,
+		compactionRepo,
 		secretBox,
 		reflectionService,
 		workspaceRepo,

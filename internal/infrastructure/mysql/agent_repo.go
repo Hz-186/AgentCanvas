@@ -270,6 +270,16 @@ func (r *AgentTurnRepository) FindByRunID(ctx context.Context, ownerID, runID in
 	return &item, nil
 }
 
+func (r *AgentTurnRepository) FindLatestByConversation(ctx context.Context, ownerID, agentID, conversationID int64) (*agentdomain.Turn, error) {
+	var item agentdomain.Turn
+	if err := r.db.WithContext(ctx).
+		Where("owner_id = ? AND agent_id = ? AND conversation_id = ?", ownerID, agentID, conversationID).
+		Order("id DESC").First(&item).Error; err != nil {
+		return nil, err
+	}
+	return &item, nil
+}
+
 func (r *AgentTurnRepository) Update(ctx context.Context, item *agentdomain.Turn) error {
 	item.UpdatedAt = time.Now().UTC()
 	query := r.db.WithContext(ctx).Model(&agentdomain.Turn{}).Where("id = ? AND owner_id = ?", item.ID, item.OwnerID)

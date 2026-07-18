@@ -1,6 +1,9 @@
 package rules
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
 
 func TestResolvePersistentWithRulesLoadsOnlyMandatoryRules(t *testing.T) {
 	loaded, trace := ResolvePersistentWithRules([]Rule{
@@ -67,6 +70,24 @@ func TestCompileOptionalRuleWithoutActivationMustBeDependency(t *testing.T) {
 	loaded, _ := SelectOptionalRules(compiled, LoadContext{TokenBudget: 1000}, DefaultOptimizerExpansions)
 	if !containsRule(loaded, "tenant.shared") || !containsRule(loaded, "tenant.root") {
 		t.Fatalf("dependency-only rule must load with its root: %+v", loaded)
+	}
+}
+
+func TestSemanticRecallActivatesOptionalRuleButMandatoryRemainsPersistent(t *testing.T) {
+	compiled, err := CompileActiveRuleSet([]Rule{
+		{ID: "security.mandatory", Content: "never expose secrets", Strength: RuleMandatory, SafetyCritical: true, PolicyBinding: &PolicyBinding{PolicyKey: PolicyDangerousArgumentsDeny, Params: json.RawMessage(`{}`)}},
+		{ID: "auth.optional", Content: "diagnose authentication failures", Strength: RuleOptional, Activation: Activation{KeywordsAny: []string{"unmatched-literal"}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mandatory, _ := SelectMandatoryRules(compiled)
+	if !containsRule(mandatory, "security.mandatory") {
+		t.Fatalf("mandatory rule was not persistent: %+v", mandatory)
+	}
+	selected, trace := SelectOptionalRules(compiled, LoadContext{Task: "AgentCanvas 401", TokenBudget: 1000, SemanticScores: map[string]float64{"auth.optional": .92}}, DefaultOptimizerExpansions)
+	if !containsRule(selected, "auth.optional") {
+		t.Fatalf("semantic optional rule was not selected: selected=%+v trace=%+v", selected, trace)
 	}
 }
 

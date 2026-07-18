@@ -51,6 +51,37 @@ nats:
   durable: agentcanvas-workers
   ack_wait_seconds: 60
 
+reflection_queue:
+  backend: mysql
+  stream: AGENTCANVAS_REFLECTION
+  subject: agentcanvas.reflection.jobs
+  dlq_stream: AGENTCANVAS_REFLECTION_DLQ
+  dlq_subject: agentcanvas.reflection.dlq
+  durable: reflection-workers
+  ack_wait_seconds: 120
+  heartbeat_seconds: 30
+  lease_seconds: 180
+  concurrency: 2
+  max_ack_pending: 2
+  outbox_batch_size: 100
+  outbox_poll_milliseconds: 500
+  stream_max_age_days: 30
+  stream_max_bytes: 1073741824
+  stream_replicas: 1
+
+agent_runtime:
+  worker_enabled: true
+  worker_concurrency: 2
+  lease_seconds: 30
+  workspace_enabled: false
+  workspace_allowed_roots: []
+  workspace_docker_image: agentcanvas/workspace:latest
+  self_improvement_enabled: true
+  memory_review_mode: suggest
+  review_worker_concurrency: 1
+  review_provider_id: 0
+  review_model: ""
+
 minio:
   endpoint: minio:9000
   access_key: minioadmin
@@ -64,6 +95,8 @@ elasticsearch:
   username: ""
   password: ""
   chunk_index: agentcanvas_chunks_v1
+  message_index: agentcanvas_messages_v1
+  context_index: agentcanvas_context_resources_v1
 
 milvus:
   enabled: true
@@ -75,6 +108,15 @@ milvus:
   ef_construction: 200
   ef_search: 64
   metric_type: COSINE
+
+context_index:
+  enabled: true
+  worker_enabled: true
+  embedding_provider_id: 0
+  embedding_model: ""
+  batch_size: 50
+  poll_milliseconds: 1000
+  lease_seconds: 60
 
 ocr:
   enabled: false

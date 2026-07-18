@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"agentcanvas/internal/domain/audit"
+	"agentcanvas/internal/domain/contextresource"
 	"agentcanvas/internal/domain/conversation"
 	"agentcanvas/internal/domain/memory"
 	"agentcanvas/internal/domain/reflection"
@@ -57,6 +58,7 @@ type Deps struct {
 	Providers               ProviderConfigLoader
 	Messages                MessageWriter
 	MessageHistory          MessageHistoryReader
+	Compactions             conversation.CompactionRepository
 	SessionSearch           conversation.MessageSearchIndex
 	Memories                memory.Repository
 	MemoryWriteLogs         memory.WriteLogRepository
@@ -81,6 +83,7 @@ type Deps struct {
 	Workspaces              workspace.Repository
 	Sandbox                 sandbox.Runner
 	ArchivalVecStore        vectorstore.Store
+	ContextIndex            contextresource.Index
 	Embedder                llm.EmbeddingClient
 	SharedAgentRuntime      *SharedAgentRuntime
 }
@@ -151,8 +154,10 @@ func buildAgentNode(deps Deps) AgentNode {
 		WorkspaceManager:  workspaceManager,
 		Sandbox:           deps.Sandbox,
 		MessageHistory:    deps.MessageHistory,
+		Compactions:       deps.Compactions,
 		SessionSearch:     deps.SessionSearch,
 		ArchivalVecStore:  deps.ArchivalVecStore,
+		ContextIndex:      deps.ContextIndex,
 		Embedder:          deps.Embedder,
 		WorkspaceRoot:     workspaceRoot,
 		OnExtractTrigger:  deps.MemoryExtractionTrigger,

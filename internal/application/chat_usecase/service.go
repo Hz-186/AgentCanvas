@@ -46,15 +46,22 @@ type Service struct {
 	dreamQueue    queueinfra.JobQueue
 	redisClient   *redis.Client
 	dreamCfg      memory_usecase.DreamConfig
+	compactions   conversation.CompactionRepository
 }
 
 type ChatRequest struct {
-	ProviderID     int64   `json:"provider_id" binding:"required"`
-	KBIDs          []int64 `json:"kb_ids" binding:"required"`
-	Question       string  `json:"question" binding:"required"`
-	ConversationID int64   `json:"conversation_id"`
-	Model          string  `json:"model"`
-	TopK           int     `json:"top_k"`
+	ProviderID                      int64   `json:"provider_id" binding:"required"`
+	KBIDs                           []int64 `json:"kb_ids" binding:"required"`
+	Question                        string  `json:"question" binding:"required"`
+	ConversationID                  int64   `json:"conversation_id"`
+	Model                           string  `json:"model"`
+	TopK                            int     `json:"top_k"`
+	ContextWindowTokens             int     `json:"context_window_tokens"`
+	ReservedOutputTokens            int     `json:"reserved_output_tokens"`
+	ContextSafetyMarginTokens       int     `json:"context_safety_margin_tokens"`
+	ModelAutoCompactTokenLimit      int     `json:"model_auto_compact_token_limit"`
+	ModelAutoCompactTokenLimitScope string  `json:"model_auto_compact_token_limit_scope"`
+	CompactPrompt                   string  `json:"compact_prompt"`
 }
 
 type ChatResponse struct {
@@ -64,6 +71,9 @@ type ChatResponse struct {
 	References         []conversation.MessageReference `json:"references"`
 	Usage              llm.Usage                       `json:"usage"`
 	RetrievalLatencyMS int                             `json:"retrieval_latency_ms"`
+	QueryPlan          *retrieval.QueryPlan            `json:"query_plan,omitempty"`
+	Clarification      *retrieval.Clarification        `json:"clarification,omitempty"`
+	Compaction         *conversation.Compaction        `json:"compaction,omitempty"`
 }
 
 type StreamEvent struct {
@@ -103,11 +113,20 @@ func (s *Service) ConfigureDream(queue queueinfra.JobQueue, redisClient *redis.C
 	s.dreamCfg = dreamCfg
 }
 
+func (s *Service) ConfigureCompaction(repo conversation.CompactionRepository) { s.compactions = repo }
+
 func (s *Service) Chat(ctx context.Context, ownerID, dialogID int64, req ChatRequest) (*ChatResponse, error) {
 	ctx = llm.WithOwnerID(ctx, ownerID)
 	prepared, err := s.prepare(ctx, ownerID, dialogID, req)
 	if err != nil {
 		return nil, err
+	}
+	if prepared.clarification != nil && prepared.clarification.Required {
+		assistantMessage, _, saveErr := s.saveAssistant(ctx, ownerID, prepared.conversation.ID, prepared.clarification.Question, nil, 0)
+		if saveErr != nil {
+			return nil, saveErr
+		}
+		return &ChatResponse{Conversation: prepared.conversation, UserMessage: prepared.userMessage, AssistantMessage: assistantMessage, QueryPlan: prepared.queryPlan, Clarification: prepared.clarification, RetrievalLatencyMS: prepared.retrievalLatencyMS}, nil
 	}
 	started := time.Now()
 	resp, err := s.llm.Chat(ctx, prepared.providerConfig, prepared.llmRequest)
@@ -120,14 +139,17 @@ func (s *Service) Chat(ctx context.Context, ownerID, dialogID int64, req ChatReq
 	if err != nil {
 		return nil, err
 	}
-	_ = s.writeUsage(ctx, ownerID, prepared.provider, prepared.model, resp.Usage, latencyMS, true, "")
+	totalUsage := chatAddUsage(prepared.compactionUsage, resp.Usage)
+	_ = s.writeUsage(ctx, ownerID, prepared.provider, prepared.model, totalUsage, latencyMS, true, "")
 	return &ChatResponse{
 		Conversation:       prepared.conversation,
 		UserMessage:        prepared.userMessage,
 		AssistantMessage:   assistantMessage,
 		References:         refs,
-		Usage:              resp.Usage,
+		Usage:              totalUsage,
 		RetrievalLatencyMS: prepared.retrievalLatencyMS,
+		QueryPlan:          prepared.queryPlan,
+		Compaction:         prepared.compaction,
 	}, nil
 }
 
@@ -142,6 +164,16 @@ func (s *Service) StreamChat(ctx context.Context, ownerID, dialogID int64, req C
 	}
 	if err := emit(StreamEvent{Type: "user_message", Data: prepared.userMessage}); err != nil {
 		return err
+	}
+	if prepared.clarification != nil && prepared.clarification.Required {
+		if err := emit(StreamEvent{Type: "clarification_required", Data: prepared.clarification}); err != nil {
+			return err
+		}
+		assistantMessage, _, saveErr := s.saveAssistant(ctx, ownerID, prepared.conversation.ID, prepared.clarification.Question, nil, 0)
+		if saveErr != nil {
+			return saveErr
+		}
+		return emit(StreamEvent{Type: "done", Data: ChatResponse{Conversation: prepared.conversation, UserMessage: prepared.userMessage, AssistantMessage: assistantMessage, QueryPlan: prepared.queryPlan, Clarification: prepared.clarification, RetrievalLatencyMS: prepared.retrievalLatencyMS}})
 	}
 	if err := emit(StreamEvent{Type: "retrieval", Data: map[string]any{"references": prepared.packed.References, "latency_ms": prepared.retrievalLatencyMS}}); err != nil {
 		return err
@@ -169,14 +201,17 @@ func (s *Service) StreamChat(ctx context.Context, ownerID, dialogID int64, req C
 	if err != nil {
 		return err
 	}
-	_ = s.writeUsage(ctx, ownerID, prepared.provider, prepared.model, usageData, latencyMS, true, "")
+	totalUsage := chatAddUsage(prepared.compactionUsage, usageData)
+	_ = s.writeUsage(ctx, ownerID, prepared.provider, prepared.model, totalUsage, latencyMS, true, "")
 	return emit(StreamEvent{Type: "done", Data: ChatResponse{
 		Conversation:       prepared.conversation,
 		UserMessage:        prepared.userMessage,
 		AssistantMessage:   assistantMessage,
 		References:         refs,
-		Usage:              usageData,
+		Usage:              totalUsage,
 		RetrievalLatencyMS: prepared.retrievalLatencyMS,
+		QueryPlan:          prepared.queryPlan,
+		Compaction:         prepared.compaction,
 	}})
 }
 
@@ -239,6 +274,10 @@ type preparedChat struct {
 	packed             PackedContext
 	llmRequest         llm.ChatRequest
 	retrievalLatencyMS int
+	queryPlan          *retrieval.QueryPlan
+	clarification      *retrieval.Clarification
+	compaction         *conversation.Compaction
+	compactionUsage    llm.Usage
 }
 
 func (s *Service) prepare(ctx context.Context, ownerID, dialogID int64, req ChatRequest) (*preparedChat, error) {
@@ -286,23 +325,38 @@ func (s *Service) prepare(ctx context.Context, ownerID, dialogID int64, req Chat
 		return nil, err
 	}
 	_ = s.conversations.UpdateLastMessageAt(ctx, ownerID, conv.ID)
+	history, err := s.messages.ListByConversation(ctx, ownerID, conv.ID)
+	if err != nil {
+		return nil, err
+	}
+	queryTurns := make([]retrieval.QueryTurn, 0, len(history))
+	for _, item := range history {
+		if item.ID == userMessage.ID || strings.TrimSpace(item.Content) == "" {
+			continue
+		}
+		queryTurns = append(queryTurns, retrieval.QueryTurn{Role: item.Role, Content: item.Content})
+	}
 
 	retrievalResp, err := s.retriever.Search(ctx, retrieval.RetrievalRequest{
-		OwnerID:         ownerID,
-		KBIDs:           req.KBIDs,
-		Query:           question,
-		TopK:            topK,
-		Mode:            retrievalMode,
-		EnableHighlight: true,
+		OwnerID:           ownerID,
+		KBIDs:             req.KBIDs,
+		Query:             question,
+		Conversation:      queryTurns,
+		RewriteProviderID: req.ProviderID,
+		RewriteModel:      model,
+		TopK:              topK,
+		Mode:              retrievalMode,
+		EnableHighlight:   true,
 	})
 	if err != nil {
 		return nil, err
 	}
 	packed := s.packer.Pack(ownerID, retrievalResp.Results)
 	prompt := s.prompts.Build(question, packed.Text)
-	history, err := s.messages.ListByConversation(ctx, ownerID, conv.ID)
-	if err != nil {
-		return nil, err
+	messages := buildChatMessages(prompt, history, question)
+	messages, compaction, compactionUsage, compactErr := s.autoCompactChatMessages(ctx, ownerID, conv.ID, req.ProviderID, model, providerConfig, req, history, messages)
+	if compactErr != nil {
+		return nil, compactErr
 	}
 	return &preparedChat{
 		provider:           provider,
@@ -312,9 +366,13 @@ func (s *Service) prepare(ctx context.Context, ownerID, dialogID int64, req Chat
 		userMessage:        userMessage,
 		packed:             packed,
 		retrievalLatencyMS: retrievalResp.LatencyMS,
+		queryPlan:          retrievalResp.QueryPlan,
+		clarification:      retrievalResp.Clarification,
+		compaction:         compaction,
+		compactionUsage:    compactionUsage,
 		llmRequest: llm.ChatRequest{
 			Model:    model,
-			Messages: buildChatMessages(prompt, history, question),
+			Messages: messages,
 		},
 	}, nil
 }

@@ -881,6 +881,11 @@ func (s *Service) GetTurn(ctx context.Context, ownerID, turnID int64) (*agentdom
 	return item, mapNotFound(err)
 }
 
+func (s *Service) GetLatestTurn(ctx context.Context, ownerID, agentID, conversationID int64) (*agentdomain.Turn, error) {
+	item, err := s.turns.FindLatestByConversation(ctx, ownerID, agentID, conversationID)
+	return item, mapNotFound(err)
+}
+
 func (s *Service) GetRun(ctx context.Context, ownerID, runID int64) (*workflow.Run, error) {
 	item, err := s.runs.FindByID(ctx, ownerID, runID)
 	return item, mapNotFound(err)

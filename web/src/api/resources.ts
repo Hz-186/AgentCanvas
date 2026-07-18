@@ -1,5 +1,5 @@
 import { api, request } from './client';
-import { streamPost, type SSEMessage } from './sse';
+import { streamGet, streamPost, type SSEMessage } from './sse';
 import type {
   AgentReflection,
   Workflow,
@@ -18,6 +18,7 @@ import type {
   ChatRequest,
   ChatResponse,
   Conversation,
+  ConversationCompaction,
   Dialog,
   EvalCase,
   EvalDataset,
@@ -34,6 +35,7 @@ import type {
   IngestionJob,
   KnowledgeBase,
   Message,
+  MessageSearchResult,
   MCPServer,
   MCPToolCache,
   ModelProvider,
@@ -64,7 +66,55 @@ import type {
   UploadDocumentResponse,
   ResourceSummaryKind,
   ResourceSummaryPage,
+  Agent,
+  AgentDefinition,
+  AgentRelease,
+  AgentTurn,
+  AgentTurnAccepted,
+  Workspace,
+  WorkspacePack,
+  ImprovementReview,
+  ChangeProposal,
 } from '../types/api';
+
+export const agentApi = {
+  list: () => api.get<Agent[]>('/agents'),
+  get: (id: number) => api.get<Agent>(`/agents/${id}`),
+  create: (body: { name: string; description?: string; avatar_url?: string; definition: AgentDefinition }) => api.post<Agent>('/agents', body),
+  update: (id: number, body: { name?: string; description?: string; avatar_url?: string; status?: Agent['status']; definition?: AgentDefinition }) => api.patch<Agent>(`/agents/${id}`, body),
+  remove: (id: number) => api.delete<{ success: boolean }>(`/agents/${id}`),
+  validate: (id: number) => api.post<{ valid: boolean; errors: string[]; warnings: string[]; checksum?: string }>(`/agents/${id}/validate`),
+  publish: (id: number) => api.post<AgentRelease>(`/agents/${id}/releases`),
+  listReleases: (id: number) => api.get<AgentRelease[]>(`/agents/${id}/releases`),
+  capabilities: (releaseId: number) => api.get<Record<string, unknown>>(`/agent-releases/${releaseId}/capabilities`),
+  createConversation: (id: number, title?: string) => api.post<Conversation>(`/agents/${id}/conversations`, { title }),
+  listConversations: (id: number) => api.get<Conversation[]>(`/agents/${id}/conversations`),
+  listMessages: (id: number, conversationId: number) => api.get<Message[]>(`/agents/${id}/conversations/${conversationId}/messages`),
+  removeConversation: (id: number, conversationId: number) => api.delete<{ success: boolean }>(`/agents/${id}/conversations/${conversationId}`),
+  forkConversation: (id: number, conversationId: number) => api.post<Conversation>(`/agents/${id}/conversations/${conversationId}/fork`),
+  upgradeConversation: (id: number, conversationId: number) => api.post<Conversation>(`/agents/${id}/conversations/${conversationId}/upgrade`),
+  startTurn: (id: number, conversationId: number, content: string, idempotencyKey: string) => api.post<AgentTurnAccepted>(`/agents/${id}/conversations/${conversationId}/turns`, { content }, { headers: { 'Idempotency-Key': idempotencyKey } }),
+  getTurn: (id: number) => api.get<AgentTurn>(`/agent-turns/${id}`),
+  getLatestTurn: (id: number, conversationId: number) => api.get<AgentTurn>(`/agents/${id}/conversations/${conversationId}/turns/latest`),
+  streamRunEvents: (runId: number, lastEventId: string | undefined, handlers: { onMessage: (msg: SSEMessage) => void; onError?: (err: Error) => void; signal?: AbortSignal }) =>
+    streamGet(`/runs/${runId}/events/stream`, { lastEventId, ...handlers }),
+  searchSessions: (id: number, query: string, limit = 10) => api.get<MessageSearchResult[]>(`/agents/${id}/session-search`, { q: query, limit }),
+  listImprovementReviews: (id: number) => api.get<ImprovementReview[]>(`/agents/${id}/improvement-reviews`),
+  listChangeProposals: (id: number, status?: ChangeProposal['status']) => api.get<ChangeProposal[]>(`/agents/${id}/change-proposals`, status ? { status } : undefined),
+  approveChangeProposal: (id: number, note?: string) => api.post<ChangeProposal>(`/agent-change-proposals/${id}/approve`, { note }),
+  rejectChangeProposal: (id: number, note?: string) => api.post<ChangeProposal>(`/agent-change-proposals/${id}/reject`, { note }),
+};
+
+export const workspaceApi = {
+  list: () => api.get<Workspace[]>('/workspaces'),
+  get: (id: number) => api.get<Workspace>(`/workspaces/${id}`),
+  create: (body: { name: string; root_path: string; default_branch?: string }) => api.post<Workspace>('/workspaces', body),
+  remove: (id: number) => api.delete<{ success: boolean }>(`/workspaces/${id}`),
+  listPacks: (workspaceId: number) => api.get<WorkspacePack[]>(`/workspaces/${workspaceId}/packs`),
+  getPack: (id: number) => api.get<WorkspacePack>(`/workspace-packs/${id}`),
+  createPack: (workspaceId: number, body: Omit<WorkspacePack, 'id' | 'owner_id' | 'workspace_id' | 'checksum' | 'status' | 'created_at' | 'updated_at'>) => api.post<WorkspacePack>(`/workspaces/${workspaceId}/packs`, body),
+  removePack: (id: number) => api.delete<{ success: boolean }>(`/workspace-packs/${id}`),
+};
 
 export const resourceSummaryApi = {
   list: (kind: ResourceSummaryKind, params?: { limit?: number; cursor?: string }) =>
@@ -245,6 +295,7 @@ export const conversationApi = {
   get: (dialogId: number, id: number) => api.get<Conversation>(`/dialogs/${dialogId}/conversations/${id}`),
   listMessages: (dialogId: number, id: number) => api.get<Message[]>(`/dialogs/${dialogId}/conversations/${id}/messages`),
   remove: (dialogId: number, id: number) => api.delete<{ success: boolean }>(`/dialogs/${dialogId}/conversations/${id}`),
+  compact: (id: number, body: { provider_id: number; model?: string; compact_prompt?: string }) => api.post<ConversationCompaction>(`/conversations/${id}/compact`, body),
 };
 
 export const settingsApi = {

@@ -47,7 +47,7 @@ function PublicOnly({ children }: { children: React.ReactNode }) {
 const nav = [
   { to: '/app/workflows', label: 'Workflows', icon: Bot },
   { to: '/app/knowledge', label: 'Knowledge', icon: Database },
-  { to: '/app/dialogs', label: 'RAG Dialogs', icon: MessageSquareText },
+  { to: '/app/agents', label: 'Agent Chat', icon: MessageSquareText },
   { to: '/app/memory', label: 'Memory', icon: Network },
   { to: '/app/tools', label: 'Tools', icon: Wrench },
   { to: '/app/skills', label: 'Skills', icon: LibraryBig },
@@ -213,9 +213,12 @@ function Boot() {
           <Route path="workflows/:id/canvas" element={<CanvasPage />} />
           <Route path="knowledge" element={<KnowledgePage />} />
           <Route path="knowledge/:id" element={<KnowledgePage />} />
-          <Route path="chat" element={<Navigate to="/app/dialogs" replace />} />
-          <Route path="chat/:conversationId" element={<Navigate to="/app/dialogs" replace />} />
-          <Route path="dialogs" element={<ChatPage />} />
+          <Route path="chat" element={<Navigate to="/app/agents" replace />} />
+          <Route path="chat/:conversationId" element={<Navigate to="/app/agents" replace />} />
+          <Route path="agents" element={<ChatPage />} />
+          <Route path="agents/:agentId/chat" element={<ChatPage />} />
+          <Route path="agents/:agentId/chat/:conversationId" element={<ChatPage />} />
+          <Route path="dialogs" element={<Navigate to="/app/agents" replace />} />
           <Route path="dialogs/:dialogId/chat" element={<ChatPage />} />
           <Route path="dialogs/:dialogId/chat/:conversationId" element={<ChatPage />} />
           <Route path="memory" element={<MemoryPage />} />

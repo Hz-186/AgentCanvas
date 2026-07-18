@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"agentcanvas/internal/domain/contextresource"
 	"agentcanvas/internal/domain/skill"
 
 	"gorm.io/gorm"
@@ -23,12 +24,22 @@ func (r *SkillRepository) Create(ctx context.Context, item *skill.Skill) error {
 	if item.UpdatedAt.IsZero() {
 		item.UpdatedAt = now
 	}
-	return r.db.WithContext(ctx).Create(item).Error
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(item).Error; err != nil {
+			return err
+		}
+		return enqueueContextResource(ctx, tx, item.OwnerID, 0, contextresource.TypeSkill, item.ID, contextresource.OperationUpsert, skillContextText(*item))
+	})
 }
 
 func (r *SkillRepository) Update(ctx context.Context, item *skill.Skill) error {
 	item.UpdatedAt = time.Now().UTC()
-	return r.db.WithContext(ctx).Save(item).Error
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Save(item).Error; err != nil {
+			return err
+		}
+		return enqueueContextResource(ctx, tx, item.OwnerID, 0, contextresource.TypeSkill, item.ID, contextresource.OperationUpsert, skillContextText(*item))
+	})
 }
 
 func (r *SkillRepository) FindByID(ctx context.Context, ownerID, id int64) (*skill.Skill, error) {
@@ -65,7 +76,12 @@ func (r *SkillRepository) ListByIDs(ctx context.Context, ownerID int64, ids []in
 
 func (r *SkillRepository) SoftDelete(ctx context.Context, ownerID, id int64) error {
 	now := time.Now().UTC()
-	return r.db.WithContext(ctx).Model(&skill.Skill{}).
-		Where("owner_id = ? AND id = ? AND deleted_at IS NULL", ownerID, id).
-		Updates(map[string]any{"deleted_at": now, "updated_at": now}).Error
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		result := tx.Model(&skill.Skill{}).Where("owner_id = ? AND id = ? AND deleted_at IS NULL", ownerID, id).
+			Updates(map[string]any{"deleted_at": now, "updated_at": now})
+		if result.Error != nil || result.RowsAffected == 0 {
+			return result.Error
+		}
+		return enqueueContextResource(ctx, tx, ownerID, 0, contextresource.TypeSkill, id, contextresource.OperationDelete, "")
+	})
 }

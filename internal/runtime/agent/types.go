@@ -23,6 +23,8 @@ const (
 	StopReasonToolNameNotFound = "tool_name_not_found"
 	StopReasonPlanCompleted    = "plan_completed"
 	StopReasonReflectionFailed = "reflection_failed"
+	StopReasonContextOverflow  = "context_overflow"
+	StopReasonClarification    = "clarification_required"
 )
 
 const (
@@ -39,51 +41,55 @@ const (
 )
 
 type RunRequest struct {
-	OwnerID                   int64
-	WorkflowID                int64
-	AgentID                   int64
-	AgentReleaseID            int64
-	RunID                     int64
-	NodeID                    string
-	CallDepth                 int
-	WorkflowCallChain         []int64
-	ConversationID            *int64
-	Provider                  llm.ChatProviderConfig
-	Model                     string
-	Mode                      string
-	Plan                      *Plan
-	SystemPrompt              string
-	Task                      string
-	ReflectionEnabled         bool
-	ReflectionPolicy          reflection.Policy
-	RecalledReflectionIDs     []int64
-	Temperature               *float64
-	MaxIterations             int
-	MaxToolCalls              int
-	MaxExecutionTimeMS        int
-	MaxParallelTools          int
-	MaxInputChars             int
-	MaxInputTokens            int
-	ContextWindowTokens       int
-	ReservedOutputTokens      int
-	ContextSafetyMarginTokens int
-	MaxRuleTokens             int
-	RuleTags                  []string
-	RuleRiskLevel             string
-	RuleSetVersion            string
-	RuleSetID                 int64
-	CompiledRuleHash          string
-	CompiledRules             *rules.CompiledRuleSet
-	CustomRules               []rules.Rule
-	RuleTrace                 rules.Trace
-	ContextBlocks             []ContextBlock
-	ToolPolicy                ToolPolicy
-	ToolHookChain             hooks.ToolHookChain
-	Tools                     []toolruntime.RuntimeTool
-	ResumeMessages            []llm.ChatMessage
-	ResumeIteration           int
-	ResumeToolCalls           int
-	ResumeApprovedToolCallIDs []string
+	OwnerID                         int64
+	WorkflowID                      int64
+	AgentID                         int64
+	AgentReleaseID                  int64
+	RunID                           int64
+	NodeID                          string
+	CallDepth                       int
+	WorkflowCallChain               []int64
+	ConversationID                  *int64
+	Provider                        llm.ChatProviderConfig
+	Model                           string
+	Mode                            string
+	Plan                            *Plan
+	SystemPrompt                    string
+	Task                            string
+	ReflectionEnabled               bool
+	ReflectionPolicy                reflection.Policy
+	RecalledReflectionIDs           []int64
+	Temperature                     *float64
+	MaxIterations                   int
+	MaxToolCalls                    int
+	MaxExecutionTimeMS              int
+	MaxParallelTools                int
+	MaxInputChars                   int
+	MaxInputTokens                  int
+	ContextWindowTokens             int
+	ReservedOutputTokens            int
+	ContextSafetyMarginTokens       int
+	ModelAutoCompactTokenLimit      int
+	ModelAutoCompactTokenLimitScope string
+	CompactPrompt                   string
+	MaxRuleTokens                   int
+	RuleTags                        []string
+	RuleRiskLevel                   string
+	RuleSetVersion                  string
+	RuleSetID                       int64
+	CompiledRuleHash                string
+	CompiledRules                   *rules.CompiledRuleSet
+	CustomRules                     []rules.Rule
+	RuleTrace                       rules.Trace
+	RuleSemanticScores              map[string]float64
+	ContextBlocks                   []ContextBlock
+	ToolPolicy                      ToolPolicy
+	ToolHookChain                   hooks.ToolHookChain
+	Tools                           []toolruntime.RuntimeTool
+	ResumeMessages                  []llm.ChatMessage
+	ResumeIteration                 int
+	ResumeToolCalls                 int
+	ResumeApprovedToolCallIDs       []string
 }
 
 type RunResult struct {
@@ -208,6 +214,24 @@ type ContextTrace struct {
 	EstimatedPromptTokens  int                 `json:"estimated_prompt_tokens,omitempty"`
 	ProviderPromptTokens   int                 `json:"provider_prompt_tokens,omitempty"`
 	TokenEstimationError   int                 `json:"token_estimation_error,omitempty"`
+	TokenCounterMethod     string              `json:"token_counter_method,omitempty"`
+	TokenCounterError      string              `json:"token_counter_error,omitempty"`
+	AutoCompactTokenLimit  int                 `json:"auto_compact_token_limit,omitempty"`
+	AutoCompactLimitScope  string              `json:"auto_compact_token_limit_scope,omitempty"`
+	Compactions            []CompactionTrace   `json:"compactions,omitempty"`
+}
+
+type CompactionTrace struct {
+	Trigger      string `json:"trigger"`
+	Scope        string `json:"scope"`
+	Status       string `json:"status"`
+	BeforeTokens int    `json:"before_tokens"`
+	AfterTokens  int    `json:"after_tokens"`
+	SavedTokens  int    `json:"saved_tokens"`
+	Threshold    int    `json:"threshold"`
+	ModelCalled  bool   `json:"model_called"`
+	Error        string `json:"error,omitempty"`
+	Summary      string `json:"-"`
 }
 
 type RuleRoundTrace struct {
