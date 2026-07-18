@@ -18,10 +18,6 @@ function formatTokens(value: number) {
   return new Intl.NumberFormat('en-US').format(value);
 }
 
-function levelLabel(level: string) {
-  return level.replace('l0_safety', 'L0 safety').replace('l1_core', 'L1 core').replace('l2_scenario', 'L2 scenario').replace('l3_tool', 'L3 tool').replace('l4_ephemeral', 'L4 ephemeral');
-}
-
 export function ContextRulesTrace({ trace }: { trace: unknown }) {
   const context = record(trace);
   const ruleTrace = record(context.rule_trace);
@@ -32,23 +28,35 @@ export function ContextRulesTrace({ trace }: { trace: unknown }) {
   const inputBudget = number(budget.input_budget_tokens) || number(context.max_input_tokens);
   const availableRules = number(budget.available_rule_tokens);
   const usedRules = number(ruleTrace.estimated_used);
-  const levelUsage = record(ruleTrace.level_usage);
+  const mandatoryRules = number(ruleTrace.mandatory_tokens) || number(context.mandatory_tokens);
+  const optionalRules = Math.max(0, usedRules - mandatoryRules);
+  const bundleMembers = record(ruleTrace.bundle_members);
+  const skipReasons = record(ruleTrace.skip_reasons);
   const providerPrompt = number(context.provider_prompt_tokens);
   const estimateError = number(context.token_estimation_error);
   const ruleSetVersion = typeof context.rule_set_version === 'string' ? context.rule_set_version : '';
+	const compactions = Array.isArray(context.compactions) ? context.compactions.map(record) : [];
+	const compactLimit = number(context.auto_compact_token_limit);
+	const counterMethod = typeof context.token_counter_method === 'string' ? context.token_counter_method : '';
+	const counterError = typeof context.token_counter_error === 'string' ? context.token_counter_error : '';
 
-  if (loaded.length === 0 && rounds.length === 0 && saved === 0) return null;
+  if (loaded.length === 0 && rounds.length === 0 && saved === 0 && compactions.length === 0) return null;
 
   return (
     <div className="context-rules-trace">
       <div className="context-rules-summary">
         <div><span>Input budget</span><strong>{formatTokens(inputBudget)} tok</strong></div>
         <div><span>Rules used</span><strong>{formatTokens(usedRules)} tok</strong></div>
+        <div><span>Mandatory</span><strong>{formatTokens(mandatoryRules)} tok</strong></div>
+        <div><span>Optional</span><strong>{formatTokens(optionalRules)} tok</strong></div>
         <div><span>Rules free</span><strong>{formatTokens(availableRules)} tok</strong></div>
         <div><span>Context saved</span><strong>{formatTokens(saved)} tok</strong></div>
         {providerPrompt > 0 ? <div><span>Provider prompt</span><strong>{formatTokens(providerPrompt)} tok</strong></div> : null}
         {providerPrompt > 0 ? <div><span>Estimate delta</span><strong>{estimateError > 0 ? '+' : ''}{formatTokens(estimateError)} tok</strong></div> : null}
+		{compactLimit > 0 ? <div><span>Auto compact</span><strong>{formatTokens(compactLimit)} tok</strong></div> : null}
       </div>
+	  {counterMethod ? <div className="context-rules-version"><span>Token counter</span><StatusBadge tone={counterError ? 'warn' : 'neutral'}>{counterMethod}</StatusBadge></div> : null}
+	  {counterError ? <p className="context-rules-warning">Tokenizer fallback: {counterError}</p> : null}
       {ruleSetVersion ? <div className="context-rules-version"><span>Rule set</span><StatusBadge tone="neutral">{ruleSetVersion}</StatusBadge></div> : null}
       {context.core_overflow === true ? <p className="context-rules-warning">Core rules exceeded the configured input budget. This run was rejected before model execution.</p> : null}
       {loaded.length > 0 ? (
@@ -57,9 +65,10 @@ export function ContextRulesTrace({ trace }: { trace: unknown }) {
           <div>{loaded.map((item) => <StatusBadge key={item} tone={item.startsWith('safety.') || item.startsWith('core.') ? 'warn' : 'info'}>{item}</StatusBadge>)}</div>
         </div>
       ) : null}
-      {Object.keys(levelUsage).length > 0 ? (
+      {Object.keys(bundleMembers).length > 0 || Object.keys(skipReasons).length > 0 ? (
         <div className="context-rules-levels">
-          {Object.entries(levelUsage).map(([level, tokens]) => <span key={level}>{levelLabel(level)} <strong>{formatTokens(number(tokens))}</strong></span>)}
+          {Object.entries(bundleMembers).map(([root, members]) => <span key={root}>{root} <strong>{names(members).length} rules</strong></span>)}
+          {Object.entries(skipReasons).map(([rule, reason]) => <span key={`skip-${rule}`}>{rule} <strong>{String(reason)}</strong></span>)}
         </div>
       ) : null}
       {rounds.length > 0 ? (
@@ -82,6 +91,15 @@ export function ContextRulesTrace({ trace }: { trace: unknown }) {
           })}
         </div>
       ) : null}
+	  {compactions.length > 0 ? (
+		<div className="context-rules-rounds">
+		  {compactions.map((item, index) => <article key={`compact-${index}`} className="context-rule-round">
+			<div className="context-rule-round-head"><strong>{String(item.trigger ?? 'auto')} compaction</strong><StatusBadge tone={item.status === 'completed' ? 'good' : item.status === 'fallback' ? 'warn' : 'bad'}>{String(item.status ?? 'unknown')}</StatusBadge></div>
+			<p><span>Tokens</span>{formatTokens(number(item.before_tokens))} → {formatTokens(number(item.after_tokens))} · saved {formatTokens(number(item.saved_tokens))}</p>
+			{item.error ? <p><span>Fallback reason</span>{String(item.error)}</p> : null}
+		  </article>)}
+		</div>
+	  ) : null}
     </div>
   );
 }

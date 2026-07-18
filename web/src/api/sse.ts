@@ -5,6 +5,7 @@ import { API_BASE } from './client';
 import { tokenStorage } from './token';
 
 export interface SSEMessage {
+  id?: string;
   event: string;
   data: string;
 }
@@ -13,6 +14,7 @@ export interface SSEMessage {
 export class SSEParser {
   private buffer = '';
   private eventName = 'message';
+  private eventId = '';
   private dataLines: string[] = [];
 
   // 输入一段文本，返回本次解析出的完整消息列表。
@@ -30,9 +32,10 @@ export class SSEParser {
       if (line === '') {
         // 空行：一个事件结束
         if (this.dataLines.length > 0) {
-          messages.push({ event: this.eventName, data: this.dataLines.join('\n') });
+          messages.push(this.message());
         }
         this.eventName = 'message';
+        this.eventId = '';
         this.dataLines = [];
         continue;
       }
@@ -49,10 +52,11 @@ export class SSEParser {
 
       if (field === 'event') {
         this.eventName = value;
+      } else if (field === 'id') {
+        this.eventId = value;
       } else if (field === 'data') {
         this.dataLines.push(value);
       }
-      // id / retry 字段当前不需要
     }
 
     return messages;
@@ -71,6 +75,8 @@ export class SSEParser {
       if (value.startsWith(' ')) value = value.slice(1);
       if (field === 'event') {
         this.eventName = value;
+      } else if (field === 'id') {
+        this.eventId = value;
       } else if (field === 'data') {
         this.dataLines.push(value);
       }
@@ -78,16 +84,30 @@ export class SSEParser {
 
     const messages: SSEMessage[] = [];
     if (this.dataLines.length > 0) {
-      messages.push({ event: this.eventName, data: this.dataLines.join('\n') });
+      messages.push(this.message());
     }
     this.eventName = 'message';
+    this.eventId = '';
     this.dataLines = [];
     return messages;
+  }
+
+  private message(): SSEMessage {
+    const message: SSEMessage = { event: this.eventName, data: this.dataLines.join('\n') };
+    if (this.eventId) message.id = this.eventId;
+    return message;
   }
 }
 
 export interface StreamOptions {
   body: unknown;
+  signal?: AbortSignal;
+  onMessage: (msg: SSEMessage) => void;
+  onError?: (err: Error) => void;
+}
+
+export interface StreamGetOptions {
+  lastEventId?: string;
   signal?: AbortSignal;
   onMessage: (msg: SSEMessage) => void;
   onError?: (err: Error) => void;
@@ -151,6 +171,43 @@ export async function streamPost(path: string, opts: StreamOptions): Promise<voi
     if ((err as Error).name !== 'AbortError') {
       opts.onError?.(err instanceof Error ? err : new Error(String(err)));
     }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+export async function streamGet(path: string, opts: StreamGetOptions): Promise<void> {
+  const headers: Record<string, string> = { Accept: 'text/event-stream' };
+  const token = tokenStorage.getAccess();
+  if (token) headers.Authorization = `Bearer ${token}`;
+  if (opts.lastEventId) headers['Last-Event-ID'] = opts.lastEventId;
+
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE}${path}`, { method: 'GET', headers, signal: opts.signal });
+  } catch (err) {
+    if ((err as Error).name !== 'AbortError') opts.onError?.(err instanceof Error ? err : new Error(String(err)));
+    return;
+  }
+  if (!res.ok || !res.body) {
+    opts.onError?.(new Error(`流式请求失败：HTTP ${res.status}`));
+    return;
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  const parser = new SSEParser();
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      for (const message of parser.push(decoder.decode(value, { stream: true }))) opts.onMessage(message);
+    }
+    const tail = decoder.decode();
+    if (tail) for (const message of parser.push(tail)) opts.onMessage(message);
+    for (const message of parser.flush()) opts.onMessage(message);
+  } catch (err) {
+    if ((err as Error).name !== 'AbortError') opts.onError?.(err instanceof Error ? err : new Error(String(err)));
   } finally {
     reader.releaseLock();
   }
