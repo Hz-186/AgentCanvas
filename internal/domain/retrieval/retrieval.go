@@ -36,16 +36,51 @@ type ChunkIndexDocument struct {
 }
 
 type RetrievalRequest struct {
-	OwnerID         int64
-	KBIDs           []int64
-	Query           string
-	TopK            int
-	CandidateK      int
-	Mode            Mode
-	QueryVector     []float32
-	HybridWeight    float64
-	Filters         map[string]any
-	EnableHighlight bool
+	OwnerID           int64
+	KBIDs             []int64
+	Query             string
+	Conversation      []QueryTurn
+	RewriteProviderID int64
+	RewriteModel      string
+	TopK              int
+	CandidateK        int
+	Mode              Mode
+	QueryVector       []float32
+	HybridWeight      float64
+	Filters           map[string]any
+	EnableHighlight   bool
+}
+
+type QueryTurn struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+type HardConstraint struct {
+	Kind  string `json:"kind"`
+	Value string `json:"value"`
+}
+
+type QueryPlan struct {
+	OriginalQuery         string           `json:"original_query"`
+	NormalizedQuery       string           `json:"normalized_query"`
+	ResolvedQuery         string           `json:"resolved_query,omitempty"`
+	PreciseQuery          string           `json:"precise_query"`
+	HardConstraints       []HardConstraint `json:"hard_constraints,omitempty"`
+	Paraphrases           []string         `json:"paraphrases,omitempty"`
+	SynonymQueries        []string         `json:"synonym_queries,omitempty"`
+	Subqueries            []string         `json:"subqueries,omitempty"`
+	UnresolvedReferences  []string         `json:"unresolved_references,omitempty"`
+	NeedsClarification    bool             `json:"needs_clarification"`
+	ClarificationQuestion string           `json:"clarification_question,omitempty"`
+	RewriteInvoked        bool             `json:"rewrite_invoked"`
+	Confidence            float64          `json:"confidence"`
+}
+
+type Clarification struct {
+	Required   bool     `json:"required"`
+	Question   string   `json:"question,omitempty"`
+	References []string `json:"unresolved_references,omitempty"`
 }
 
 type RetrievalResult struct {
@@ -64,10 +99,12 @@ type RetrievalResult struct {
 }
 
 type RetrievalResponse struct {
-	Results     []RetrievalResult      `json:"results"`
-	LatencyMS   int                    `json:"latency_ms"`
-	Diagnostics *RecallDiagnostics     `json:"diagnostics,omitempty"`
-	Trace       []RetrievalTraceRecord `json:"trace,omitempty"`
+	Results       []RetrievalResult      `json:"results"`
+	LatencyMS     int                    `json:"latency_ms"`
+	Diagnostics   *RecallDiagnostics     `json:"diagnostics,omitempty"`
+	Trace         []RetrievalTraceRecord `json:"trace,omitempty"`
+	QueryPlan     *QueryPlan             `json:"query_plan,omitempty"`
+	Clarification *Clarification         `json:"clarification,omitempty"`
 }
 
 type RecallDiagnostics struct {

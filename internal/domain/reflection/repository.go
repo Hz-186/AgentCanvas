@@ -108,14 +108,16 @@ type EventSink interface {
 }
 
 type RecallRequest struct {
-	OwnerID    int64
-	WorkflowID int64
-	AgentID    int64
-	RunID      int64
-	NodeID     string
-	Mode       string
-	Task       string
-	Policy     Policy
+	OwnerID             int64
+	WorkflowID          int64
+	AgentID             int64
+	RunID               int64
+	NodeID              string
+	Mode                string
+	Task                string
+	EmbeddingProviderID int64
+	EmbeddingModel      string
+	Policy              Policy
 }
 
 type RecalledLesson struct {
@@ -143,9 +145,11 @@ type Advisor interface {
 
 type SearchRequest struct {
 	CandidateQuery
-	Task            string
-	TaskFingerprint string
-	TopK            int
+	Task                string
+	TaskFingerprint     string
+	TopK                int
+	EmbeddingProviderID int64
+	EmbeddingModel      string
 }
 type SearchResult struct {
 	Reflection Reflection `json:"reflection"`

@@ -163,7 +163,8 @@ func (w Worker) analyze(ctx context.Context, job *reflection.Job) ([]reflection.
 		}
 		item := reflection.Reflection{OwnerID: job.OwnerID, WorkflowID: job.WorkflowID, AgentID: job.AgentID, NodeID: job.NodeID,
 			SourceRunID: job.RunID, Scope: scope, Kind: candidate.Kind, Mode: job.Mode, TriggerType: candidate.TriggerType,
-			TaskFingerprint: TaskFingerprint(job.Task), TaskSummary: compactText(job.Task, 1000), RootCauseCategory: candidate.RootCauseCategory,
+			EmbeddingProviderID: job.ProviderID,
+			TaskFingerprint:     TaskFingerprint(job.Task), TaskSummary: compactText(job.Task, 1000), RootCauseCategory: candidate.RootCauseCategory,
 			RootCause: candidate.RootCause, CorrectiveAction: candidate.CorrectiveAction, Lesson: candidate.Lesson,
 			Applicability: candidate.Applicability, EvidenceJSON: evidence, TagsJSON: tags, Importance: score.Importance(), Confidence: candidate.Confidence}
 		if item.Kind == reflection.KindErrorLesson || (item.Kind == reflection.KindImportantStrategy && item.Importance >= .80 && item.Confidence >= .80) {

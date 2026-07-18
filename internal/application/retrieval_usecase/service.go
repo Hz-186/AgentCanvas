@@ -3,6 +3,7 @@ package retrieval_usecase
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 
 	"agentcanvas/internal/domain/knowledge"
@@ -10,6 +11,7 @@ import (
 	"agentcanvas/internal/domain/retrieval"
 	cryptoinfra "agentcanvas/internal/infrastructure/crypto"
 	"agentcanvas/internal/infrastructure/llm"
+	"agentcanvas/internal/observability"
 
 	"gorm.io/gorm"
 )
@@ -26,13 +28,39 @@ type Service struct {
 	embedder  llm.EmbeddingClient
 	reranker  llm.Reranker
 	secrets   *cryptoinfra.SecretBox
+	rewriter  QueryRewriter
 }
 
 func NewService(kbs knowledge.KnowledgeBaseRepository, providers providerdomain.Repository, raw retrieval.Retriever, embedder llm.EmbeddingClient, reranker llm.Reranker, secrets *cryptoinfra.SecretBox) *Service {
 	return &Service{kbs: kbs, providers: providers, raw: raw, embedder: embedder, reranker: reranker, secrets: secrets}
 }
 
-func (s *Service) Search(ctx context.Context, req retrieval.RetrievalRequest) (*retrieval.RetrievalResponse, error) {
+func (s *Service) WithQueryRewriter(rewriter QueryRewriter) *Service {
+	s.rewriter = rewriter
+	return s
+}
+
+func (s *Service) PlanQuery(ctx context.Context, req retrieval.RetrievalRequest) (retrieval.QueryPlan, error) {
+	plan := BuildQueryPlan(req.Query, req.Conversation)
+	if plan.NeedsClarification && s.rewriter != nil && req.RewriteProviderID > 0 && !plan.RewriteInvoked {
+		rewritten, err := s.rewriter.Rewrite(ctx, QueryRewriteRequest{OwnerID: req.OwnerID, ProviderID: req.RewriteProviderID, Model: req.RewriteModel, Plan: plan, Conversation: req.Conversation, Reason: "ambiguous_reference"})
+		if err == nil {
+			applyRewrite(&plan, rewritten)
+		}
+	}
+	return plan, nil
+}
+
+func (s *Service) Search(ctx context.Context, req retrieval.RetrievalRequest) (response *retrieval.RetrievalResponse, err error) {
+	defer func() {
+		if response == nil {
+			return
+		}
+		lowRecall := response.Diagnostics != nil && response.Diagnostics.LowRecall
+		clarification := response.Clarification != nil && response.Clarification.Required
+		rewrite := response.QueryPlan != nil && response.QueryPlan.RewriteInvoked
+		observability.ContextSystemMetrics.RecordRetrieval(lowRecall, clarification, rewrite)
+	}()
 	if s.raw == nil {
 		return nil, fmt.Errorf("retriever is not configured")
 	}
@@ -45,8 +73,23 @@ func (s *Service) Search(ctx context.Context, req retrieval.RetrievalRequest) (*
 	if req.CandidateK <= 0 {
 		req.CandidateK = max(req.TopK*4, defaultCandidateK)
 	}
+	plan, _ := s.PlanQuery(ctx, req)
+	if plan.NeedsClarification {
+		return &retrieval.RetrievalResponse{
+			QueryPlan:     &plan,
+			Clarification: &retrieval.Clarification{Required: true, Question: plan.ClarificationQuestion, References: plan.UnresolvedReferences},
+			Trace:         []retrieval.RetrievalTraceRecord{{Stage: "query_clarification", Message: "ambiguous_reference"}},
+		}, nil
+	}
+	if strings.TrimSpace(plan.PreciseQuery) != "" {
+		req.Query = plan.PreciseQuery
+	}
 	if req.Mode == retrieval.ModeKeyword {
-		return s.searchWithDiagnostics(ctx, req, nil)
+		resp, err := s.searchWithDiagnostics(ctx, req, nil, &plan)
+		if resp != nil {
+			resp.QueryPlan = &plan
+		}
+		return resp, err
 	}
 	kb, err := s.primaryKnowledgeBase(ctx, req.OwnerID, req.KBIDs)
 	if err != nil {
@@ -68,10 +111,11 @@ func (s *Service) Search(ctx context.Context, req retrieval.RetrievalRequest) (*
 	if req.HybridWeight == 0 {
 		req.HybridWeight = defaultHybridWeight
 	}
-	resp, err := s.searchWithDiagnostics(ctx, req, nil)
+	resp, err := s.searchWithDiagnostics(ctx, req, nil, &plan)
 	if err != nil {
 		return nil, err
 	}
+	resp.QueryPlan = &plan
 	if kb.RerankEnabled {
 		if reranked, err := s.rerank(ctx, req.OwnerID, kb, req.Query, resp.Results); err == nil && len(reranked) > 0 {
 			resp.Results = reranked
@@ -87,7 +131,7 @@ func (s *Service) Search(ctx context.Context, req retrieval.RetrievalRequest) (*
 	return resp, nil
 }
 
-func (s *Service) searchWithDiagnostics(ctx context.Context, req retrieval.RetrievalRequest, trace []retrieval.RetrievalTraceRecord) (*retrieval.RetrievalResponse, error) {
+func (s *Service) searchWithDiagnostics(ctx context.Context, req retrieval.RetrievalRequest, trace []retrieval.RetrievalTraceRecord, plan *retrieval.QueryPlan) (*retrieval.RetrievalResponse, error) {
 	resp, err := s.raw.Search(ctx, req)
 	if err != nil {
 		if fallbackResp, fallbackErr := s.tryFallbackSearch(ctx, req, nil, trace, "initial_recall_error"); fallbackErr == nil && fallbackResp != nil {
@@ -116,7 +160,7 @@ func (s *Service) searchWithDiagnostics(ctx context.Context, req retrieval.Retri
 		resp.Trace = append(resp.Trace, retrieval.RetrievalTraceRecord{Stage: "low_recall_expand", Mode: req.Mode, Message: "no_better_results", Metadata: map[string]any{"reason": diagnostics.Reason}})
 	}
 	if diagnostics.LowRecall {
-		if rewriteResp, rewriteErr := s.rewriteSearch(ctx, req, resp); rewriteErr == nil && isBetterRecall(resp, rewriteResp) {
+		if rewriteResp, rewriteErr := s.rewriteSearch(ctx, req, resp, plan); rewriteErr == nil && isBetterRecall(resp, rewriteResp) {
 			return rewriteResp, nil
 		}
 		if fallbackResp, fallbackErr := s.tryFallbackSearch(ctx, req, diagnostics, resp.Trace, "low_recall"); fallbackErr == nil && isBetterRecall(resp, fallbackResp) {
@@ -127,28 +171,110 @@ func (s *Service) searchWithDiagnostics(ctx context.Context, req retrieval.Retri
 	return resp, nil
 }
 
-func (s *Service) rewriteSearch(ctx context.Context, req retrieval.RetrievalRequest, current *retrieval.RetrievalResponse) (*retrieval.RetrievalResponse, error) {
+func (s *Service) rewriteSearch(ctx context.Context, req retrieval.RetrievalRequest, current *retrieval.RetrievalResponse, plan *retrieval.QueryPlan) (*retrieval.RetrievalResponse, error) {
 	if current == nil || current.Diagnostics == nil || !current.Diagnostics.LowRecall {
 		return nil, nil
 	}
-	variants := rewriteQueryVariants(req.Query)
+	if plan == nil {
+		fallback := BuildQueryPlan(req.Query, req.Conversation)
+		plan = &fallback
+	}
+	if s.rewriter != nil && req.RewriteProviderID > 0 && !plan.RewriteInvoked {
+		if rewritten, err := s.rewriter.Rewrite(ctx, QueryRewriteRequest{OwnerID: req.OwnerID, ProviderID: req.RewriteProviderID, Model: req.RewriteModel, Plan: *plan, Conversation: req.Conversation, Reason: current.Diagnostics.Reason}); err == nil {
+			applyRewrite(plan, rewritten)
+		}
+	}
+	variants := appendUnique(rewriteQueryVariants(req.Query), sortedPlanQueries(*plan)...)
+	variants = limitStrings(variants, 10)
+	responses := [][]retrieval.RetrievalResult{append([]retrieval.RetrievalResult(nil), current.Results...)}
 	for _, variant := range variants {
+		if strings.EqualFold(strings.TrimSpace(variant), strings.TrimSpace(req.Query)) {
+			continue
+		}
 		rewriteReq := req
 		rewriteReq.Query = variant
+		if rewriteReq.Mode != retrieval.ModeKeyword {
+			rewriteReq.QueryVector = nil
+			kb, err := s.primaryKnowledgeBase(ctx, rewriteReq.OwnerID, rewriteReq.KBIDs)
+			if err != nil {
+				continue
+			}
+			vector, err := s.embedQuery(ctx, rewriteReq.OwnerID, kb, variant, rewriteReq.Mode)
+			if err != nil {
+				continue
+			}
+			rewriteReq.QueryVector = vector
+		}
 		rewriteResp, err := s.raw.Search(ctx, rewriteReq)
 		if err != nil || rewriteResp == nil {
 			continue
 		}
-		rewriteDiagnostics := analyzeRecall(rewriteReq, rewriteResp.Results)
-		rewriteResp.Results = truncateResults(rewriteResp.Results, req.TopK)
-		rewriteResp.Diagnostics = rewriteDiagnostics
-		rewriteResp.Trace = append(current.Trace, retrieval.RetrievalTraceRecord{Stage: "query_rewrite", Mode: req.Mode, Message: "low_recall_rewrite", Metadata: map[string]any{"from_query": req.Query, "to_query": variant, "result_count": len(rewriteResp.Results)}})
-		if isBetterRecall(current, rewriteResp) {
-			return rewriteResp, nil
+		responses = append(responses, rewriteResp.Results)
+		current.Trace = append(current.Trace, retrieval.RetrievalTraceRecord{Stage: "query_rewrite", Mode: req.Mode, Message: "low_recall_rewrite", Metadata: map[string]any{"from_query": req.Query, "to_query": variant, "result_count": len(rewriteResp.Results)}})
+	}
+	if len(responses) <= 1 {
+		current.Trace = append(current.Trace, retrieval.RetrievalTraceRecord{Stage: "query_rewrite", Mode: req.Mode, Message: "no_effective_rewrite", Metadata: map[string]any{"variant_count": len(variants)}})
+		return nil, nil
+	}
+	fused := reciprocalRankFusion(responses, 60, req.TopK)
+	return &retrieval.RetrievalResponse{
+		Results:     fused,
+		Diagnostics: analyzeRecall(req, fused),
+		Trace:       append(current.Trace, retrieval.RetrievalTraceRecord{Stage: "rrf_fusion", Mode: req.Mode, Message: "multi_query_fused", Metadata: map[string]any{"query_count": len(responses), "result_count": len(fused), "rrf_k": 60}}),
+		QueryPlan:   plan,
+	}, nil
+}
+
+func reciprocalRankFusion(groups [][]retrieval.RetrievalResult, rrfK, topK int) []retrieval.RetrievalResult {
+	if rrfK <= 0 {
+		rrfK = 60
+	}
+	type fusedItem struct {
+		result retrieval.RetrievalResult
+		score  float64
+	}
+	merged := make(map[string]fusedItem)
+	for _, group := range groups {
+		seen := map[string]bool{}
+		for rank, item := range group {
+			key := retrievalResultKey(item)
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			current := merged[key]
+			if current.result.ChunkID == 0 && current.result.DocumentID == 0 && current.result.Content == "" {
+				current.result = item
+			}
+			current.score += 1 / float64(rrfK+rank+1)
+			merged[key] = current
 		}
 	}
-	current.Trace = append(current.Trace, retrieval.RetrievalTraceRecord{Stage: "query_rewrite", Mode: req.Mode, Message: "no_effective_rewrite", Metadata: map[string]any{"variant_count": len(variants)}})
-	return nil, nil
+	items := make([]fusedItem, 0, len(merged))
+	for _, item := range merged {
+		item.result.FinalScore = item.score
+		item.result.Score = item.score
+		items = append(items, item)
+	}
+	sort.SliceStable(items, func(i, j int) bool { return items[i].score > items[j].score })
+	if topK > 0 && len(items) > topK {
+		items = items[:topK]
+	}
+	results := make([]retrieval.RetrievalResult, 0, len(items))
+	for _, item := range items {
+		results = append(results, item.result)
+	}
+	return results
+}
+
+func retrievalResultKey(item retrieval.RetrievalResult) string {
+	if item.ChunkID > 0 {
+		return fmt.Sprintf("chunk:%d", item.ChunkID)
+	}
+	if item.DocumentID > 0 {
+		return fmt.Sprintf("document:%d:page:%v", item.DocumentID, item.PageNo)
+	}
+	return "content:" + strings.TrimSpace(item.Content)
 }
 
 func (s *Service) tryFallbackSearch(ctx context.Context, req retrieval.RetrievalRequest, diagnostics *retrieval.RecallDiagnostics, trace []retrieval.RetrievalTraceRecord, reason string) (*retrieval.RetrievalResponse, error) {

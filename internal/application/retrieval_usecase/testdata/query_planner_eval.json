@@ -1,0 +1,28 @@
+[
+  {
+    "query": "升级以后 AgentCanvas 一直报 401，怎么回事？",
+    "must_preserve": ["AgentCanvas", "401", "升级"],
+    "clarification_required": false,
+    "minimum_subqueries": 0
+  },
+  {
+    "query": "AgentCanvas v2.1 返回 ERR_AUTH_401，原因和解决方案是什么？",
+    "must_preserve": ["AgentCanvas", "v2.1", "ERR_AUTH_401"],
+    "clarification_required": false,
+    "minimum_subqueries": 3
+  },
+  {
+    "query": "它还是不行",
+    "turns": [{"role": "user", "content": "AgentCanvas 登录服务返回 401"}],
+    "must_preserve": ["AgentCanvas"],
+    "clarification_required": false,
+    "minimum_subqueries": 0
+  },
+  {
+    "query": "它还是不行",
+    "turns": [{"role": "user", "content": "AgentCanvas 和 Redis 都连接失败"}],
+    "must_preserve": [],
+    "clarification_required": true,
+    "minimum_subqueries": 0
+  }
+]
