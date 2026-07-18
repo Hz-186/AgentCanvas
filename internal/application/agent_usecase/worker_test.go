@@ -36,6 +36,7 @@ type workerTurnRepo struct {
 	expired  []agent.Turn
 	requeued []int64
 	paused   []int64
+	latest   *agent.Turn
 }
 
 func (*workerTurnRepo) Create(context.Context, *agent.Turn) error { return nil }
@@ -50,6 +51,12 @@ func (*workerTurnRepo) FindByID(context.Context, int64, int64) (*agent.Turn, err
 }
 func (*workerTurnRepo) FindByRunID(context.Context, int64, int64) (*agent.Turn, error) {
 	return nil, agent.ErrNoTurnAvailable
+}
+func (r *workerTurnRepo) FindLatestByConversation(context.Context, int64, int64, int64) (*agent.Turn, error) {
+	if r.latest == nil {
+		return nil, agent.ErrNoTurnAvailable
+	}
+	return r.latest, nil
 }
 func (*workerTurnRepo) FindByIdempotencyKey(context.Context, int64, int64, string) (*agent.Turn, error) {
 	return nil, agent.ErrNoTurnAvailable
@@ -107,5 +114,18 @@ func TestRecoverExpiredRequeuesOnlyBeforeToolSideEffects(t *testing.T) {
 	}
 	if len(turns.paused) != 1 || turns.paused[0] != 2 {
 		t.Fatalf("unexpected paused turns: %v", turns.paused)
+	}
+}
+
+func TestGetLatestTurnRestoresConversationExecutionState(t *testing.T) {
+	expected := &agent.Turn{ID: 7, OwnerID: 2, AgentID: 3, ConversationID: 4, Status: agent.TurnStatusWaitingHuman}
+	service := &Service{turns: &workerTurnRepo{latest: expected}}
+
+	actual, err := service.GetLatestTurn(context.Background(), 2, 3, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if actual.ID != expected.ID || actual.Status != agent.TurnStatusWaitingHuman {
+		t.Fatalf("unexpected latest turn: %+v", actual)
 	}
 }

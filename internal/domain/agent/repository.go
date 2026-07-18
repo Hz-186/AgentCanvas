@@ -33,6 +33,7 @@ type TurnRepository interface {
 	FindByID(ctx context.Context, ownerID, id int64) (*Turn, error)
 	FindByIdempotencyKey(ctx context.Context, ownerID, conversationID int64, key string) (*Turn, error)
 	FindByRunID(ctx context.Context, ownerID, runID int64) (*Turn, error)
+	FindLatestByConversation(ctx context.Context, ownerID, agentID, conversationID int64) (*Turn, error)
 	Update(ctx context.Context, item *Turn) error
 	ListQueued(ctx context.Context, limit int) ([]Turn, error)
 	ClaimNext(ctx context.Context, workerID, leaseToken string, leaseUntil time.Time) (*Turn, error)

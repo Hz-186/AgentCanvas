@@ -271,6 +271,19 @@ func (h *AgentHandler) GetTurn(c *gin.Context) {
 	response.OK(c, item)
 }
 
+func (h *AgentHandler) GetLatestTurn(c *gin.Context) {
+	ownerID, agentID, conversationID, ok := agentConversationIDs(c)
+	if !ok {
+		return
+	}
+	item, err := h.service.GetLatestTurn(c.Request.Context(), ownerID, agentID, conversationID)
+	if err != nil {
+		writeAppError(c, err)
+		return
+	}
+	response.OK(c, item)
+}
+
 func (h *AgentHandler) SearchSessions(c *gin.Context) {
 	ownerID, agentID, ok := ownerAndID(c, "id")
 	if !ok {
