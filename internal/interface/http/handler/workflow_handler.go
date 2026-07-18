@@ -30,9 +30,7 @@ type workflowRuleSetHTTPService interface {
 	CreateRuleSet(ctx context.Context, ownerID, workflowID int64, req agentusecase.CreateRuleSetRequest) (*workflow.RuleSet, error)
 	GetRuleSet(ctx context.Context, ownerID, workflowID, ruleSetID int64) (*workflow.RuleSet, error)
 	UpdateRuleSet(ctx context.Context, ownerID, workflowID, ruleSetID int64, req agentusecase.UpdateRuleSetRequest) (*workflow.RuleSet, error)
-	PublishRuleSet(ctx context.Context, ownerID, workflowID, ruleSetID int64, idempotencyKey string, req agentusecase.PublishRuleSetRequest) (*workflow.RuleCompileJob, error)
-	GetRuleCompileJob(ctx context.Context, ownerID, workflowID, jobID int64) (*workflow.RuleCompileJob, error)
-	ReviewRuleSet(ctx context.Context, ownerID, workflowID, ruleSetID, actorID int64, req agentusecase.ReviewRuleSetRequest) (*workflow.RuleSet, error)
+	PublishRuleSet(ctx context.Context, ownerID, workflowID, ruleSetID, actorID int64, req agentusecase.PublishRuleSetRequest) (*workflow.RuleSet, error)
 	RollbackRuleSet(ctx context.Context, ownerID, workflowID, ruleSetID, actorID int64) (*workflow.RuleSet, error)
 }
 
@@ -234,48 +232,7 @@ func (h *WorkflowHandler) PublishRuleSet(c *gin.Context) {
 		writeAppError(c, err)
 		return
 	}
-	job, err := h.ruleSets.PublishRuleSet(c.Request.Context(), ownerID, workflowID, ruleSetID, c.GetHeader("Idempotency-Key"), req)
-	if err != nil {
-		writeAppError(c, err)
-		return
-	}
-	c.JSON(http.StatusAccepted, response.Body{Code: 0, Message: http.StatusText(http.StatusAccepted), Data: job})
-}
-
-func (h *WorkflowHandler) GetRuleCompileJob(c *gin.Context) {
-	ownerID, workflowID, ok := h.ownerAndWorkflowID(c)
-	if !ok {
-		return
-	}
-	jobID, err := parseInt64Param(c, "job_id")
-	if err != nil {
-		writeAppError(c, agenterrors.ErrInvalidInput)
-		return
-	}
-	job, err := h.ruleSets.GetRuleCompileJob(c.Request.Context(), ownerID, workflowID, jobID)
-	if err != nil {
-		writeAppError(c, err)
-		return
-	}
-	response.OK(c, job)
-}
-
-func (h *WorkflowHandler) ReviewRuleSet(c *gin.Context) {
-	ownerID, workflowID, ok := h.ownerAndWorkflowID(c)
-	if !ok {
-		return
-	}
-	ruleSetID, err := parseInt64Param(c, "rule_set_id")
-	if err != nil {
-		writeAppError(c, agenterrors.ErrInvalidInput)
-		return
-	}
-	var req agentusecase.ReviewRuleSetRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		writeAppError(c, err)
-		return
-	}
-	item, err := h.ruleSets.ReviewRuleSet(c.Request.Context(), ownerID, workflowID, ruleSetID, ownerID, req)
+	item, err := h.ruleSets.PublishRuleSet(c.Request.Context(), ownerID, workflowID, ruleSetID, ownerID, req)
 	if err != nil {
 		writeAppError(c, err)
 		return

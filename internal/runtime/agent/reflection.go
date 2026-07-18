@@ -14,6 +14,7 @@ import (
 
 func (r *Runner) maybeReflect(ctx context.Context, req RunRequest, result *RunResult, recent []RunStep) *llm.ChatMessage {
 	policy := req.ReflectionPolicy.Normalize()
+	// Replanning requires an enabled active hard-failure reflection policy.
 	if !policy.Active() || policy.RuntimeMode != reflection.RuntimeActive || !policy.InlineOnHardFailure || len(result.Reflection.Inline) >= policy.MaxInlinePerRun {
 		return nil
 	}
@@ -66,6 +67,7 @@ func (r *Runner) maybeReflect(ctx context.Context, req RunRequest, result *RunRe
 		OutputJSON: outputJSON, ProviderID: r.ProviderID, Model: r.ModelName, TokenCount: resp.Usage.TotalTokens})
 	_ = r.emit(ctx, step)
 	feedback := fixedReflectionFeedback(generated)
+	// Revise only a valid existing plan when reflection requests it.
 	if generated.Action == "replan" && result.Plan != nil {
 		planner := Planner{LLM: r.LLM, ProviderID: r.ProviderID, ModelName: r.ModelName}
 		revised, usage, reviseErr := planner.RevisePlan(ctx, req.Provider, req.Model, req.Task, result.Plan, feedback, req.Temperature)

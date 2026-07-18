@@ -13,6 +13,7 @@ import (
 
 func main() {
 	dryRun := flag.Bool("dry-run", false, "validate and report legacy rules without writing changes")
+	removeGraph := flag.Bool("remove-graph", false, "validate and rewrite RuleSets and Agent releases without Rule Graph fields")
 	flag.Parse()
 	configPath := os.Getenv("AGENTCANVAS_CONFIG_PATH")
 	if configPath == "" {
@@ -31,8 +32,9 @@ func main() {
 	}
 	service := rule_backfill_usecase.NewService(db)
 	service.SetDryRun(*dryRun)
+	service.SetRemoveGraph(*removeGraph)
 	result, err := service.Run(context.Background())
-	log.Printf("legacy rule backfill finished: dry_run=%t scanned=%d converted=%d ignored=%d would_import=%d imported=%d skipped=%d failed=%d", *dryRun, result.Scanned, result.Converted, result.Ignored, result.WouldImport, result.Imported, result.Skipped, result.Failed)
+	log.Printf("rule backfill finished: dry_run=%t remove_graph=%t scanned=%d converted=%d ignored=%d would_import=%d imported=%d recompiled=%d agents_migrated=%d skipped=%d failed=%d", *dryRun, *removeGraph, result.Scanned, result.Converted, result.Ignored, result.WouldImport, result.Imported, result.Recompiled, result.AgentsMigrated, result.Skipped, result.Failed)
 	if err != nil {
 		log.Fatalf("legacy rule backfill completed with errors: %v", err)
 	}

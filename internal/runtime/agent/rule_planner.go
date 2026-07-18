@@ -3,10 +3,9 @@ package agent
 import (
 	"encoding/json"
 	"strings"
-	"time"
 
 	"agentcanvas/internal/infrastructure/llm"
-	"agentcanvas/internal/observability"
+	"agentcanvas/internal/pkg/tokencounter"
 	"agentcanvas/internal/runtime/harness/rules"
 )
 
@@ -31,9 +30,10 @@ type RulePlanningState struct {
 	ReservedOutput int
 	SafetyMargin   int
 	MaxRuleTokens  int
+	ProviderType   string
+	Model          string
 	CustomRules    []rules.Rule
 	CompiledRules  *rules.CompiledRuleSet
-	SemanticScores map[string]float64
 }
 
 type RulePlan struct {
@@ -54,7 +54,6 @@ type RuleBudget struct {
 }
 
 func (RulePlanner) Plan(state RulePlanningState) RulePlan {
-	started := time.Now()
 	budget := calculateRuleBudget(state)
 	tags := append([]string(nil), state.Tags...)
 	if len(state.UsedToolNames) > 0 {
@@ -66,8 +65,8 @@ func (RulePlanner) Plan(state RulePlanningState) RulePlan {
 		selected, trace = rules.SelectOptionalRules(state.CompiledRules, rules.LoadContext{
 			Mode: state.Mode, RiskLevel: state.RiskLevel, ToolNames: state.UsedToolNames,
 			Tags: tags, Task: state.Task, Conversation: state.SystemPrompt,
-			TokenBudget: budget.AvailableRuleTokens, ScoreCutoff: 110, SemanticScores: state.SemanticScores,
-		}, rules.DefaultOptimizerExpansions)
+			TokenBudget: budget.AvailableRuleTokens, RuleTokenCosts: modelRuleTokenCosts(state),
+		})
 	} else {
 		selected, trace = rules.ResolveDynamicWithRules(
 			state.SystemPrompt,
@@ -80,14 +79,21 @@ func (RulePlanner) Plan(state RulePlanningState) RulePlan {
 			state.CustomRules,
 		)
 	}
-	closureRejected := 0
-	for _, reason := range trace.SkipReasons {
-		if reason == rules.ReasonTokenBudgetExceeded {
-			closureRejected++
+	return RulePlan{Rules: selected, Trace: trace, Budget: budget}
+}
+
+func modelRuleTokenCosts(state RulePlanningState) map[string]int {
+	if state.CompiledRules == nil {
+		return nil
+	}
+	costs := make(map[string]int, len(state.CompiledRules.Rules))
+	for _, item := range state.CompiledRules.Rules {
+		result := tokencounter.Count(state.ProviderType, state.Model, item.Rule.Content)
+		if result.Tokens > 0 {
+			costs[item.Rule.ID] = result.Tokens
 		}
 	}
-	observability.RuleSystemMetrics.RecordPlanner(time.Since(started), trace.OptimizerLimited, closureRejected)
-	return RulePlan{Rules: selected, Trace: trace, Budget: budget}
+	return costs
 }
 
 func calculateRuleBudget(state RulePlanningState) RuleBudget {

@@ -86,7 +86,6 @@ type Service struct {
 	runCancels        *runCancelRegistry
 	dreamQueue        queueinfra.JobQueue
 	ruleSets          workflow.RuleSetRepository
-	ruleCompileQueue  queueinfra.JobQueue
 	redisClient       *redis.Client
 	dreamCfg          memoryusecase.DreamConfig
 }
@@ -298,9 +297,8 @@ func (s *Service) ConfigureDream(queue queueinfra.JobQueue, redisClient *redis.C
 	s.dreamCfg = dreamCfg
 }
 
-func (s *Service) ConfigureRuleSets(repository workflow.RuleSetRepository, jobQueue queueinfra.JobQueue) {
+func (s *Service) ConfigureRuleSets(repository workflow.RuleSetRepository) {
 	s.ruleSets = repository
-	s.ruleCompileQueue = jobQueue
 }
 
 func (s *Service) publishDream(ctx context.Context, ownerID, conversationID int64) {
@@ -368,8 +366,6 @@ type UpdateWorkflowProfileRequest struct {
 	MemoryPolicyJSON            *json.RawMessage `json:"memory_policy_json"`
 	ReflectionPolicyJSON        *json.RawMessage `json:"reflection_policy_json"`
 	ContextPolicyJSON           *json.RawMessage `json:"context_policy_json"`
-	RuleCompilerProviderID      *int64           `json:"rule_compiler_provider_id"`
-	RuleCompilerModel           *string          `json:"rule_compiler_model"`
 	RiskLevel                   *string          `json:"risk_level"`
 	Mode                        *string          `json:"mode"`
 }
@@ -632,16 +628,6 @@ func (s *Service) UpdateWorkflowProfile(ctx context.Context, ownerID, workflowID
 			return nil, fmt.Errorf("%w: legacy context_policy_json.rules cannot be updated after a versioned rule set is active", workflow.ErrRuleSetConflict)
 		}
 		profile.ContextPolicyJSON = contextPolicy
-	}
-	if req.RuleCompilerProviderID != nil {
-		if *req.RuleCompilerProviderID > 0 {
-			profile.RuleCompilerProviderID = req.RuleCompilerProviderID
-		} else {
-			profile.RuleCompilerProviderID = nil
-		}
-	}
-	if req.RuleCompilerModel != nil {
-		profile.RuleCompilerModel = strings.TrimSpace(*req.RuleCompilerModel)
 	}
 	if req.RiskLevel != nil {
 		risk := strings.TrimSpace(*req.RiskLevel)

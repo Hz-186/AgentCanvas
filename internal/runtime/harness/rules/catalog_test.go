@@ -1,93 +1,27 @@
 package rules
 
-import (
-	"encoding/json"
-	"testing"
-)
+import "testing"
 
-func TestResolvePersistentWithRulesLoadsOnlyMandatoryRules(t *testing.T) {
-	loaded, trace := ResolvePersistentWithRules([]Rule{
-		{ID: "tenant.required", Content: "required", Strength: RuleMandatory},
-		{ID: "tenant.optional", Content: "optional", Strength: RuleOptional, Activation: Activation{Always: true}},
-	})
-	if len(loaded) != 3 {
-		t.Fatalf("expected two platform and one tenant mandatory rule, got %+v trace=%+v", loaded, trace)
-	}
-	for _, rule := range loaded {
-		if rule.Strength != RuleMandatory {
-			t.Fatalf("persistent rule must be mandatory: %+v", rule)
-		}
-	}
-}
-
-func TestDefaultToolRuleActivatesOnlyAfterToolUse(t *testing.T) {
+func TestFallbackToolRulesLoadOnlyAfterToolUse(t *testing.T) {
 	compiled, err := CompileRuntimeRuleSet(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	before, _ := SelectOptionalRules(compiled, LoadContext{
-		RiskLevel: "high", ToolNames: []string{"bash"}, TokenBudget: 1000,
-	}, DefaultOptimizerExpansions)
-	if containsRule(before, "tool.high_risk.approval") {
-		t.Fatalf("tool rule must not load before actual tool use: %+v", before)
-	}
-	after, _ := SelectOptionalRules(compiled, LoadContext{
-		RiskLevel: "high", ToolNames: []string{"bash"}, Tags: []string{"tool_used"}, TokenBudget: 1000,
-	}, DefaultOptimizerExpansions)
-	if !containsRule(after, "tool.high_risk.approval") {
-		t.Fatalf("tool rule must load after actual tool use: %+v", after)
+	before, _ := SelectOptionalRules(compiled, LoadContext{Mode: "plan_execute", TokenBudget: 1000})
+	after, _ := SelectOptionalRules(compiled, LoadContext{Mode: "plan_execute", Tags: []string{"tool_used"}, ToolNames: []string{"bash"}, TokenBudget: 1000})
+	if containsRule(before, "tool.plan_execute.checkpoints") || !containsRule(after, "tool.plan_execute.checkpoints") {
+		t.Fatalf("tool rule activation mismatch: before=%+v after=%+v", before, after)
 	}
 }
 
 func TestActiveRuleSetReplacesFallbackOptionalRules(t *testing.T) {
-	compiled, err := CompileActiveRuleSet([]Rule{{
-		ID: "tenant.active", Content: "active", Strength: RuleOptional, Activation: Activation{Always: true},
-	}})
+	compiled, err := CompileActiveRuleSet([]Rule{{ID: "tenant.auth", Content: "handle auth", Strength: RuleOptional, Activation: Activation{KeywordsAny: []string{"401"}}}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	loaded, _ := SelectOptionalRules(compiled, LoadContext{
-		Tags: []string{"rag"}, TokenBudget: 1000,
-	}, DefaultOptimizerExpansions)
-	if !containsRule(loaded, "tenant.active") || containsRule(loaded, "scenario.rag.citations") {
+	loaded, _ := SelectOptionalRules(compiled, LoadContext{Task: "AgentCanvas 401", TokenBudget: 1000})
+	if !containsRule(loaded, "tenant.auth") || containsRule(loaded, "scenario.code.change_verification") {
 		t.Fatalf("active RuleSet must replace fallback optional rules: %+v", loaded)
-	}
-}
-
-func TestCompileOptionalRuleWithoutActivationMustBeDependency(t *testing.T) {
-	if _, err := CompileRuleSet([]Rule{{
-		ID: "tenant.dead", Content: "dead", Strength: RuleOptional,
-	}}, CompileOptions{}); err == nil {
-		t.Fatal("expected standalone optional rule without activation to fail")
-	}
-	compiled, err := CompileRuleSet([]Rule{
-		{ID: "tenant.shared", Content: "shared", Strength: RuleOptional},
-		{ID: "tenant.root", Content: "root", Strength: RuleOptional, Activation: Activation{Always: true}, ManualDependsOn: []string{"tenant.shared"}},
-	}, CompileOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	loaded, _ := SelectOptionalRules(compiled, LoadContext{TokenBudget: 1000}, DefaultOptimizerExpansions)
-	if !containsRule(loaded, "tenant.shared") || !containsRule(loaded, "tenant.root") {
-		t.Fatalf("dependency-only rule must load with its root: %+v", loaded)
-	}
-}
-
-func TestSemanticRecallActivatesOptionalRuleButMandatoryRemainsPersistent(t *testing.T) {
-	compiled, err := CompileActiveRuleSet([]Rule{
-		{ID: "security.mandatory", Content: "never expose secrets", Strength: RuleMandatory, SafetyCritical: true, PolicyBinding: &PolicyBinding{PolicyKey: PolicyDangerousArgumentsDeny, Params: json.RawMessage(`{}`)}},
-		{ID: "auth.optional", Content: "diagnose authentication failures", Strength: RuleOptional, Activation: Activation{KeywordsAny: []string{"unmatched-literal"}}},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	mandatory, _ := SelectMandatoryRules(compiled)
-	if !containsRule(mandatory, "security.mandatory") {
-		t.Fatalf("mandatory rule was not persistent: %+v", mandatory)
-	}
-	selected, trace := SelectOptionalRules(compiled, LoadContext{Task: "AgentCanvas 401", TokenBudget: 1000, SemanticScores: map[string]float64{"auth.optional": .92}}, DefaultOptimizerExpansions)
-	if !containsRule(selected, "auth.optional") {
-		t.Fatalf("semantic optional rule was not selected: selected=%+v trace=%+v", selected, trace)
 	}
 }
 

@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"agentcanvas/internal/infrastructure/llm"
+	"agentcanvas/internal/pkg/tokencounter"
 	"agentcanvas/internal/runtime/harness/rules"
 )
 
@@ -64,6 +66,24 @@ func TestContextAssemblerDoesNotSilentlyTruncateCoreRules(t *testing.T) {
 		if strings.Contains(message.Content, "core core") {
 			t.Fatalf("core rule must not be silently truncated or included: %+v", messages)
 		}
+	}
+}
+
+func TestContextAssemblerAccumulatesMandatoryRulesWithModelTokenizer(t *testing.T) {
+	first := "Never disclose credentials or private keys."
+	second := "Require explicit approval before destructive operations."
+	_, trace := ContextAssembler{MaxInputTokens: 1000}.Build(RunRequest{
+		Provider: llm.ChatProviderConfig{ProviderType: "openai"},
+		Model:    "gpt-4",
+		Task:     "answer",
+		ContextBlocks: []ContextBlock{
+			{Name: "rules_mandatory:safety", Role: "system", Content: first, Pinned: true},
+			{Name: "rules_mandatory:approval", Role: "system", Content: second, Pinned: true},
+		},
+	})
+	expected := tokencounter.Count("openai", "gpt-4", first).Tokens + tokencounter.Count("openai", "gpt-4", second).Tokens
+	if trace.MandatoryTokens != expected || trace.TokenAudit.RulesMandatory != expected {
+		t.Fatalf("mandatory token accounting must use model tokenizer: expected=%d trace=%+v", expected, trace)
 	}
 }
 
@@ -200,6 +220,8 @@ func TestContextAssemblerBuildsTokenAuditByCategory(t *testing.T) {
 func TestContextAssemblerDropsReflectionBeforeMandatoryRules(t *testing.T) {
 	_, trace := ContextAssembler{}.Build(RunRequest{
 		Task:           "task",
+		Provider:       llm.ChatProviderConfig{ProviderType: "openai"},
+		Model:          "gpt-4",
 		MaxInputTokens: 12,
 		ContextBlocks: []ContextBlock{
 			{Name: "reflection_memory", Role: "system", Content: strings.Repeat("lesson ", 30)},
@@ -240,10 +262,10 @@ func TestContextAssemblerCarriesRuleTrace(t *testing.T) {
 		Task: "answer the task",
 		RuleTrace: rules.Trace{
 			Loaded:            []string{"core.task.completion"},
-			SelectionStrategy: "dag_branch_and_bound:v1",
+			SelectionStrategy: "deterministic_activation_budget:v1",
 		},
 	})
-	if trace.RuleTrace.SelectionStrategy != "dag_branch_and_bound:v1" || len(trace.RuleTrace.Loaded) != 1 {
+	if trace.RuleTrace.SelectionStrategy != "deterministic_activation_budget:v1" || len(trace.RuleTrace.Loaded) != 1 {
 		t.Fatalf("expected rule trace to be preserved, got %+v", trace.RuleTrace)
 	}
 }

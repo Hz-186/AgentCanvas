@@ -3,13 +3,11 @@ package workflow
 import (
 	"context"
 	"errors"
-	"time"
 )
 
 var (
 	ErrRuleSetConflict  = errors.New("rule set revision conflict")
 	ErrRuleSetImmutable = errors.New("published rule set is immutable")
-	ErrRuleCompileStale = errors.New("rule compile job is stale")
 )
 
 type Repository interface {
@@ -27,22 +25,15 @@ type ProfileRepository interface {
 }
 
 type RuleSetRepository interface {
-	CreateDraft(ctx context.Context, item *RuleSet, nodes []RuleNode, edges []RuleEdge) error
+	CreateDraft(ctx context.Context, item *RuleSet, nodes []RuleNode) error
 	ListByWorkflow(ctx context.Context, ownerID, workflowID int64) ([]RuleSet, error)
 	FindByID(ctx context.Context, ownerID, workflowID, id int64) (*RuleSet, error)
-	UpdateDraft(ctx context.Context, item *RuleSet, nodes []RuleNode, edges []RuleEdge, expectedRevision int64) error
-	QueueCompilation(ctx context.Context, item *RuleSet, job *RuleCompileJob, expectedRevision int64) error
-	FindCompileJob(ctx context.Context, ownerID, workflowID, id int64) (*RuleCompileJob, error)
-	ClaimCompileJob(ctx context.Context, jobID int64, workerID string) (*RuleCompileJob, error)
-	ClaimNextCompileJob(ctx context.Context, workerID string) (*RuleCompileJob, error)
-	CompleteCompilation(ctx context.Context, job *RuleCompileJob, nodes []RuleNode, suggestions []RuleEdge, compiledSnapshot []byte, compiledHash, tokenEstimator, nextStatus string) error
-	FailCompilation(ctx context.Context, job *RuleCompileJob, cause error, retryAt *time.Time) error
-	UpdateEdgeDecisions(ctx context.Context, ownerID, workflowID, ruleSetID, expectedRevision int64, decisions map[int64]string) (*RuleSet, error)
-	PublishCompiled(ctx context.Context, item *RuleSet, nodes []RuleNode, edges []RuleEdge, compiledSnapshot []byte, compiledHash, tokenEstimator string, publishedBy int64) error
+	UpdateDraft(ctx context.Context, item *RuleSet, nodes []RuleNode, expectedRevision int64) error
+	Publish(ctx context.Context, item *RuleSet, nodes []RuleNode, compiledSnapshot []byte, compiledHash, tokenEstimator string, publishedBy, expectedRevision int64) error
 	RollbackPublished(ctx context.Context, target *RuleSet, clone *RuleSet, publishedBy int64, compile RuleSetRollbackCompiler) error
 }
 
-type RuleSetRollbackCompiler func(ruleSetID int64, versionNo int) (nodes []RuleNode, edges []RuleEdge, snapshot []byte, compiledHash, tokenEstimator string, err error)
+type RuleSetRollbackCompiler func(ruleSetID int64, versionNo int) (nodes []RuleNode, snapshot []byte, compiledHash, tokenEstimator string, err error)
 
 type WorkflowVersionRepository interface {
 	Create(ctx context.Context, item *WorkflowVersion) error

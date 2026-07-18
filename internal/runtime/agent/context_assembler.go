@@ -111,6 +111,11 @@ func (a ContextAssembler) Build(req RunRequest) ([]llm.ChatMessage, ContextTrace
 		}
 		originalChars := len(content)
 		originalTokens := estimateContextTokens(content)
+		if isMandatoryRuleBlock(name) {
+			if counted := modelTokenCount(req, content).Tokens; counted > 0 {
+				originalTokens = counted
+			}
+		}
 		blockTrace := ContextBlockTrace{
 			Name:          name,
 			Role:          block.Role,
@@ -171,6 +176,9 @@ func (a ContextAssembler) Build(req RunRequest) ([]llm.ChatMessage, ContextTrace
 		}
 		blockTrace.IncludedChars = len(content)
 		blockTrace.EstimatedTokens = estimateContextTokens(content)
+		if isMandatoryRuleBlock(name) {
+			blockTrace.EstimatedTokens = originalTokens
+		}
 		messages = append(messages, llm.ChatMessage{Role: block.Role, Content: content})
 		used += len(content)
 		usedTokens += blockTrace.EstimatedTokens

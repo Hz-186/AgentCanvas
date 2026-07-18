@@ -12,7 +12,6 @@ import (
 const (
 	TypeReflection          = "reflection"
 	TypeLongTermMemory      = "long_term_memory"
-	TypeOptionalRule        = "optional_rule"
 	TypeSkill               = "skill"
 	TypeTool                = "tool"
 	TypeConversationMessage = "conversation_message"
@@ -29,7 +28,6 @@ const (
 var AllResourceTypes = []string{
 	TypeReflection,
 	TypeLongTermMemory,
-	TypeOptionalRule,
 	TypeSkill,
 	TypeTool,
 	TypeConversationMessage,

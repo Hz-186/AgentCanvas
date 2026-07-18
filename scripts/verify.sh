@@ -8,12 +8,23 @@ check_migration_tables() {
     echo "==> Checking migration tables against code references..."
 
     declared_tables=$(grep -h 'CREATE TABLE IF NOT EXISTS ' migrations/*.up.sql 2>/dev/null | sed 's/CREATE TABLE IF NOT EXISTS //' | sed 's/ (.*//' | sort -u)
+    dropped_tables=$(grep -h 'DROP TABLE IF EXISTS ' migrations/*.up.sql 2>/dev/null | sed 's/DROP TABLE IF EXISTS //' | sed 's/;//' | sort -u)
 
     code_tables=$(grep -rh 'TableName()' internal/ | sed -n 's/.*return "\([^"]*\)".*/\1/p' | sort -u)
 
     unused=()
 
     for table in $declared_tables; do
+        is_dropped=false
+        for dropped_table in $dropped_tables; do
+            if [ "$table" = "$dropped_table" ]; then
+                is_dropped=true
+                break
+            fi
+        done
+        if [ "$is_dropped" = true ]; then
+            continue
+        fi
         matched=false
         for code_table in $code_tables; do
             if [ "$table" = "$code_table" ]; then

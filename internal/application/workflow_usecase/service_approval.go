@@ -45,6 +45,9 @@ func (s *Service) ResumeRun(ctx context.Context, ownerID, runID int64) (*workflo
 	if err != nil {
 		return nil, err
 	}
+	if strings.Contains(item.ErrorMessage, "rule_snapshot_obsolete") {
+		return nil, fmt.Errorf("%w: rule_snapshot_obsolete", agenterrors.ErrInvalidInput)
+	}
 	if item.Status != workflow.RunStatusWaitingHuman && item.Status != workflow.RunStatusPaused {
 		return nil, fmt.Errorf("%w: run is not waiting for resume", agenterrors.ErrInvalidInput)
 	}

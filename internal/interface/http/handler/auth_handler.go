@@ -201,7 +201,7 @@ func writeAppError(c *gin.Context, err error) {
 		response.Error(c, http.StatusNotFound, agenterrors.CodeNotFound, err.Error())
 	case errors.Is(err, agenterrors.ErrConflict):
 		response.Error(c, http.StatusConflict, agenterrors.CodeBadRequest, err.Error())
-	case errors.Is(err, workflow.ErrRuleSetConflict), errors.Is(err, workflow.ErrRuleSetImmutable), errors.Is(err, workflow.ErrRuleCompileStale):
+	case errors.Is(err, workflow.ErrRuleSetConflict), errors.Is(err, workflow.ErrRuleSetImmutable):
 		response.Error(c, http.StatusConflict, agenterrors.CodeBadRequest, err.Error())
 	default:
 		response.Error(c, http.StatusInternalServerError, agenterrors.CodeInternal, err.Error())

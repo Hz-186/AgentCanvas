@@ -367,7 +367,7 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 		return nil, fmt.Errorf("init workflow service: %w", err)
 	}
 	workflowService.ConfigureDream(jobQueue, redisClient, dreamCfg)
-	workflowService.ConfigureRuleSets(workflowRuleSetRepo, jobQueue)
+	workflowService.ConfigureRuleSets(workflowRuleSetRepo)
 	independentAgentService := independentagentusecase.NewService(agentRepo, agentTurnRepo, conversationRepo, messageRepo,
 		runRepo, runEventRepo, runStepRepo, approvalRepo, workflowService, workflowService.AgentRuntime(), workspaceRepo)
 	toolCallingClient, ok := chatClient.(llm.ToolCallingClient)

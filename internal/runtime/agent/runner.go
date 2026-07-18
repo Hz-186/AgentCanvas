@@ -120,6 +120,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 	messages := baseMessages
 	transcript := make([]llm.ChatMessage, 0, req.MaxIterations*2)
 	previousRuleIDs := make([]string, 0)
+	// Plans guide the model through context; they do not drive a step scheduler.
 	if req.Plan != nil && len(req.Plan.Steps) > 0 {
 		plan := clonePlan(req.Plan)
 		result.Plan = &plan
@@ -173,6 +174,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 			}
 		}
 	}
+	// One run contains multiple LLM/tool iterations.
 	for iteration := startIteration; iteration < req.MaxIterations; iteration++ {
 		if err := ctx.Err(); err != nil {
 			result = finishWithContext(result, err, r.now())
@@ -222,9 +224,10 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 				ReservedOutput: req.ReservedOutputTokens,
 				SafetyMargin:   req.ContextSafetyMarginTokens,
 				MaxRuleTokens:  req.MaxRuleTokens,
+				ProviderType:   req.Provider.ProviderType,
+				Model:          req.Model,
 				CustomRules:    req.CustomRules,
 				CompiledRules:  req.CompiledRules,
-				SemanticScores: req.RuleSemanticScores,
 			})
 			messages = assembleRoundMessages(baseMessages, ruleMessages(plan.Rules), transcript)
 			contextTrace.RuleTrace = mergeRuleTraces(req.RuleTrace, plan.Trace)
@@ -301,6 +304,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 		})
 		_ = r.emit(ctx, step)
 		if len(assistant.ToolCalls) == 0 {
+			// A final model response completes the plan without per-step verification.
 			result.FinalAnswer = assistant.Content
 			result.StopReason = StopReasonFinalAnswer
 			if result.Plan != nil {
@@ -659,6 +663,7 @@ func (r *Runner) executeToolBatch(
 func checkpointFromMessages(req RunRequest, messages []llm.ChatMessage, contextTrace ContextTrace, toolNames []string, pending *llm.ToolCall, stopReason string, iteration int, toolCalls int, plan *Plan) *Checkpoint {
 	var checkpointPlan *Plan
 	if plan != nil {
+		// Snapshot the plan to preserve resume semantics.
 		cloned := clonePlan(plan)
 		checkpointPlan = &cloned
 	}

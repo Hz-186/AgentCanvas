@@ -17,30 +17,16 @@ const (
 	PolicyExecutionLimits        = "tool.execution_limits"
 
 	DefaultTokenEstimatorVersion = "conservative-rune-v1"
-	DefaultOptimizerExpansions   = 4096
-	compiledOptionalBaseScore    = 300.0
-	CurrentSnapshotSchemaVersion = 2
+	CurrentSnapshotSchemaVersion = 3
 	maxRuleCount                 = 50
-	maxRuleEdges                 = 200
-	maxRuleDepth                 = 16
 	maxRuleContentBytes          = 16 * 1024
 )
 
 var ruleIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,127}$`)
 
-type DependencyEdge struct {
-	RuleID     string  `json:"rule_id"`
-	DependsOn  string  `json:"depends_on"`
-	Source     string  `json:"source,omitempty"`
-	Confidence float64 `json:"confidence,omitempty"`
-	Reason     string  `json:"reason,omitempty"`
-	Decision   string  `json:"decision,omitempty"`
-}
-
 type CompileOptions struct {
 	RuleSetID             int64
 	Version               string
-	Edges                 []DependencyEdge
 	TokenEstimatorVersion string
 }
 
@@ -51,14 +37,9 @@ type BoundPolicyBinding struct {
 }
 
 type CompiledRule struct {
-	Rule                  Rule              `json:"rule"`
-	DependsOn             []string          `json:"depends_on,omitempty"`
-	DependencySources     map[string]string `json:"dependency_sources,omitempty"`
-	DependencyClosure     []string          `json:"dependency_closure,omitempty"`
-	DependencyClosureBits []uint64          `json:"dependency_closure_bits,omitempty"`
-	TokenCost             int               `json:"token_cost"`
-	TopologicalOrder      int               `json:"topological_order"`
-	ContentHash           string            `json:"content_hash"`
+	Rule        Rule   `json:"rule"`
+	TokenCost   int    `json:"token_cost"`
+	ContentHash string `json:"content_hash"`
 }
 
 type CompiledRuleSet struct {
@@ -70,17 +51,7 @@ type CompiledRuleSet struct {
 	MandatoryTokens       int            `json:"mandatory_tokens"`
 	Rules                 []CompiledRule `json:"rules"`
 
-	byID           map[string]int
-	legacyVerified bool
-	legacyRaw      json.RawMessage
-}
-
-func (c CompiledRuleSet) MarshalJSON() ([]byte, error) {
-	if c.SchemaVersion < CurrentSnapshotSchemaVersion && len(c.legacyRaw) > 0 {
-		return append([]byte(nil), c.legacyRaw...), nil
-	}
-	type compiledRuleSetAlias CompiledRuleSet
-	return json.Marshal(compiledRuleSetAlias(c))
+	byID map[string]int
 }
 
 func (c *CompiledRuleSet) Prepare() {
@@ -130,9 +101,7 @@ func RulesFromCompiled(c *CompiledRuleSet) []Rule {
 	}
 	items := make([]Rule, 0, len(c.Rules))
 	for _, compiled := range c.Rules {
-		rule := compiled.Rule
-		rule.ManualDependsOn = append([]string(nil), compiled.DependsOn...)
-		items = append(items, rule)
+		items = append(items, compiled.Rule)
 	}
 	return items
 }
@@ -158,10 +127,13 @@ func CompileRuleSet(items []Rule, opts CompileOptions) (*CompiledRuleSet, error)
 	if opts.TokenEstimatorVersion == "" {
 		opts.TokenEstimatorVersion = DefaultTokenEstimatorVersion
 	}
-
-	normalized := make([]Rule, len(items))
-	byID := make(map[string]int, len(items))
-	for index, input := range items {
+	compiled := &CompiledRuleSet{
+		SchemaVersion: CurrentSnapshotSchemaVersion, ID: opts.RuleSetID,
+		Version: strings.TrimSpace(opts.Version), TokenEstimatorVersion: opts.TokenEstimatorVersion,
+		Rules: make([]CompiledRule, 0, len(items)),
+	}
+	seen := make(map[string]bool, len(items))
+	for _, input := range items {
 		rule := input
 		rule.ID = strings.TrimSpace(rule.ID)
 		rule.Name = strings.TrimSpace(rule.Name)
@@ -175,168 +147,26 @@ func CompileRuleSet(items []Rule, opts CompileOptions) (*CompiledRuleSet, error)
 		if len(rule.Content) > maxRuleContentBytes {
 			return nil, fmt.Errorf("custom rule %q content exceeds %d bytes", rule.ID, maxRuleContentBytes)
 		}
-		if _, exists := byID[rule.ID]; exists {
+		if seen[rule.ID] {
 			return nil, fmt.Errorf("duplicate custom rule id %q", rule.ID)
 		}
+		seen[rule.ID] = true
 		if rule.Strength != RuleMandatory && rule.Strength != RuleOptional {
 			return nil, fmt.Errorf("custom rule %q requires strength mandatory or optional", rule.ID)
 		}
+		if rule.Strength == RuleOptional && len(rule.Triggers) == 0 && !hasPositiveActivation(rule.Activation) {
+			return nil, fmt.Errorf("optional rule %q requires a positive activation or legacy trigger", rule.ID)
+		}
 		if err := validatePolicyBinding(rule); err != nil {
 			return nil, err
-		}
-		rule.ManualDependsOn = stableUnique(rule.ManualDependsOn)
-		byID[rule.ID] = index
-		normalized[index] = rule
-	}
-
-	edges := make([]DependencyEdge, 0, len(opts.Edges)+len(items))
-	for _, rule := range normalized {
-		for _, dependency := range rule.ManualDependsOn {
-			edges = append(edges, DependencyEdge{RuleID: rule.ID, DependsOn: dependency, Source: "manual", Decision: "accepted"})
-		}
-	}
-	for _, edge := range opts.Edges {
-		if edge.Decision == "" || edge.Decision == "accepted" {
-			edges = append(edges, edge)
-		}
-	}
-	if len(edges) > maxRuleEdges {
-		return nil, fmt.Errorf("rule dependencies exceed %d edges", maxRuleEdges)
-	}
-
-	dependencies := make(map[string][]string, len(items))
-	dependencySources := make(map[string]map[string]string, len(items))
-	adjacency := make(map[string][]string, len(items))
-	indegree := make(map[string]int, len(items))
-	for _, rule := range normalized {
-		indegree[rule.ID] = 0
-	}
-	seenEdges := map[string]bool{}
-	for _, edge := range edges {
-		ruleID := strings.TrimSpace(edge.RuleID)
-		dependencyID := strings.TrimSpace(edge.DependsOn)
-		ruleIndex, ruleExists := byID[ruleID]
-		dependencyIndex, dependencyExists := byID[dependencyID]
-		if !ruleExists || !dependencyExists {
-			return nil, fmt.Errorf("rule dependency %q -> %q references an unknown rule", ruleID, dependencyID)
-		}
-		if ruleID == dependencyID {
-			return nil, fmt.Errorf("rule %q cannot depend on itself", ruleID)
-		}
-		key := ruleID + "\x00" + dependencyID
-		if seenEdges[key] {
-			if normalizeDependencySource(edge.Source) == "manual" {
-				dependencySources[ruleID][dependencyID] = "manual"
-			}
-			continue
-		}
-		seenEdges[key] = true
-		if normalized[ruleIndex].Strength == RuleMandatory && normalized[dependencyIndex].Strength == RuleOptional {
-			return nil, fmt.Errorf("mandatory rule %q cannot depend on optional rule %q", ruleID, dependencyID)
-		}
-		dependencies[ruleID] = append(dependencies[ruleID], dependencyID)
-		if dependencySources[ruleID] == nil {
-			dependencySources[ruleID] = map[string]string{}
-		}
-		dependencySources[ruleID][dependencyID] = normalizeDependencySource(edge.Source)
-		adjacency[dependencyID] = append(adjacency[dependencyID], ruleID)
-		indegree[ruleID]++
-	}
-	for id := range dependencies {
-		sort.Strings(dependencies[id])
-	}
-	for id := range adjacency {
-		sort.Strings(adjacency[id])
-	}
-	for _, rule := range normalized {
-		if rule.Strength == RuleOptional && !hasPositiveActivation(rule.Activation) && len(adjacency[rule.ID]) == 0 {
-			return nil, fmt.Errorf("optional rule %q requires activation or must be referenced as a dependency", rule.ID)
-		}
-	}
-
-	topologicalIDs := make([]string, 0, len(items))
-	ready := make([]string, 0, len(items))
-	for id, degree := range indegree {
-		if degree == 0 {
-			ready = append(ready, id)
-		}
-	}
-	sortReadyRules(ready, normalized, byID)
-	depth := make(map[string]int, len(items))
-	for len(ready) > 0 {
-		id := ready[0]
-		ready = ready[1:]
-		topologicalIDs = append(topologicalIDs, id)
-		for _, next := range adjacency[id] {
-			if depth[next] < depth[id]+1 {
-				depth[next] = depth[id] + 1
-			}
-			if depth[next] > maxRuleDepth {
-				return nil, fmt.Errorf("rule dependency depth exceeds %d at %q", maxRuleDepth, next)
-			}
-			indegree[next]--
-			if indegree[next] == 0 {
-				ready = append(ready, next)
-				sortReadyRules(ready, normalized, byID)
-			}
-		}
-	}
-	if len(topologicalIDs) != len(items) {
-		return nil, fmt.Errorf("rule dependency graph contains a cycle")
-	}
-
-	closures := make(map[string][]string, len(items))
-	topologicalIndex := make(map[string]int, len(topologicalIDs))
-	for index, id := range topologicalIDs {
-		topologicalIndex[id] = index
-	}
-	compiled := &CompiledRuleSet{
-		SchemaVersion:         CurrentSnapshotSchemaVersion,
-		ID:                    opts.RuleSetID,
-		Version:               strings.TrimSpace(opts.Version),
-		TokenEstimatorVersion: opts.TokenEstimatorVersion,
-		Rules:                 make([]CompiledRule, 0, len(items)),
-	}
-	for order, id := range topologicalIDs {
-		rule := normalized[byID[id]]
-		closureSet := map[string]bool{}
-		for _, dependencyID := range dependencies[id] {
-			closureSet[dependencyID] = true
-			for _, transitiveID := range closures[dependencyID] {
-				closureSet[transitiveID] = true
-			}
-		}
-		closure := make([]string, 0, len(closureSet))
-		for _, topoID := range topologicalIDs[:order] {
-			if closureSet[topoID] {
-				closure = append(closure, topoID)
-			}
-		}
-		closures[id] = closure
-		closureBits := make([]uint64, (len(topologicalIDs)+63)/64)
-		for _, dependencyID := range closure {
-			dependencyIndex := topologicalIndex[dependencyID]
-			closureBits[dependencyIndex/64] |= uint64(1) << uint(dependencyIndex%64)
-		}
-		directSources := make(map[string]string, len(dependencies[id]))
-		for _, dependencyID := range dependencies[id] {
-			directSources[dependencyID] = dependencySources[id][dependencyID]
 		}
 		cost := conservativeRuleCost(rule)
 		if rule.Strength == RuleMandatory {
 			compiled.MandatoryTokens += cost
 		}
-		compiled.Rules = append(compiled.Rules, CompiledRule{
-			Rule:                  rule,
-			DependsOn:             append([]string(nil), dependencies[id]...),
-			DependencySources:     directSources,
-			DependencyClosure:     closure,
-			DependencyClosureBits: closureBits,
-			TokenCost:             cost,
-			TopologicalOrder:      order,
-			ContentHash:           hashText(rule.Content),
-		})
+		compiled.Rules = append(compiled.Rules, CompiledRule{Rule: rule, TokenCost: cost, ContentHash: hashText(rule.Content)})
 	}
+	sort.SliceStable(compiled.Rules, func(i, j int) bool { return compiled.Rules[i].Rule.ID < compiled.Rules[j].Rule.ID })
 	if err := RefreshCompiledHash(compiled); err != nil {
 		return nil, err
 	}
@@ -344,14 +174,12 @@ func CompileRuleSet(items []Rule, opts CompileOptions) (*CompiledRuleSet, error)
 	return compiled, nil
 }
 
-// RefreshCompiledHash must be called after changing snapshot identity fields.
 func RefreshCompiledHash(compiled *CompiledRuleSet) error {
 	if compiled == nil {
 		return fmt.Errorf("compiled rule set is nil")
 	}
 	canonical := *compiled
 	canonical.CompiledHash = ""
-	canonical.legacyRaw = nil
 	data, err := json.Marshal(&canonical)
 	if err != nil {
 		return fmt.Errorf("marshal compiled rule set: %w", err)
@@ -361,36 +189,12 @@ func RefreshCompiledHash(compiled *CompiledRuleSet) error {
 	return nil
 }
 
-func sortReadyRules(ready []string, rules []Rule, byID map[string]int) {
-	sort.SliceStable(ready, func(i, j int) bool {
-		left := rules[byID[ready[i]]]
-		right := rules[byID[ready[j]]]
-		if left.Priority != right.Priority {
-			return left.Priority > right.Priority
-		}
-		return left.ID < right.ID
-	})
-}
-
-func normalizeDependencySource(source string) string {
-	if strings.EqualFold(strings.TrimSpace(source), "manual") {
-		return "manual"
-	}
-	return "llm_confirmed"
-}
-
-// VerifyCompiledHash recomputes the canonical snapshot hash instead of trusting
-// the hash embedded in a persisted snapshot. This detects content tampering even
-// when the database hash column and the embedded hash were changed together.
 func VerifyCompiledHash(compiled *CompiledRuleSet) error {
 	if compiled == nil {
 		return fmt.Errorf("compiled rule set is nil")
 	}
-	if compiled.SchemaVersion < CurrentSnapshotSchemaVersion {
-		if compiled.legacyVerified {
-			return nil
-		}
-		return fmt.Errorf("legacy compiled rule set was not decoded by the compatibility codec")
+	if compiled.SchemaVersion != CurrentSnapshotSchemaVersion {
+		return fmt.Errorf("unsupported compiled rule set schema version %d", compiled.SchemaVersion)
 	}
 	expected := strings.TrimSpace(compiled.CompiledHash)
 	if expected == "" {
@@ -400,8 +204,7 @@ func VerifyCompiledHash(compiled *CompiledRuleSet) error {
 	if err := RefreshCompiledHash(&canonical); err != nil {
 		return fmt.Errorf("compute compiled rule set hash for verification: %w", err)
 	}
-	actual := canonical.CompiledHash
-	if actual != expected {
+	if canonical.CompiledHash != expected {
 		return fmt.Errorf("compiled rule set hash mismatch")
 	}
 	return nil
@@ -519,15 +322,8 @@ func stableUnique(values []string) []string {
 	return out
 }
 
-type optionalCandidate struct {
-	root       string
-	score      float64
-	members    []string
-	memberCost int
-}
-
 func SelectMandatoryRules(compiled *CompiledRuleSet) ([]Rule, Trace) {
-	trace := Trace{SelectionStrategy: "mandatory_static:v2"}
+	trace := Trace{SelectionStrategy: "mandatory_static:v3"}
 	if compiled == nil {
 		return nil, trace
 	}
@@ -547,8 +343,8 @@ func SelectMandatoryRules(compiled *CompiledRuleSet) ([]Rule, Trace) {
 	return loaded, trace
 }
 
-func SelectOptionalRules(compiled *CompiledRuleSet, ctx LoadContext, maxExpansions int) ([]Rule, Trace) {
-	trace := Trace{TokenBudget: ctx.TokenBudget, OptionalBudget: ctx.TokenBudget, SelectionStrategy: "dag_branch_and_bound:v1"}
+func SelectOptionalRules(compiled *CompiledRuleSet, ctx LoadContext) ([]Rule, Trace) {
+	trace := Trace{TokenBudget: ctx.TokenBudget, OptionalBudget: ctx.TokenBudget, SelectionStrategy: "deterministic_activation_budget:v1"}
 	if compiled == nil {
 		return nil, trace
 	}
@@ -556,164 +352,54 @@ func SelectOptionalRules(compiled *CompiledRuleSet, ctx LoadContext, maxExpansio
 	trace.RuleSetID = compiled.ID
 	trace.RuleSetVersion = compiled.Version
 	trace.CompiledHash = compiled.CompiledHash
-	trace.BundleMembers = map[string][]string{}
-	trace.BundleCosts = map[string]int{}
-	trace.BundleMarginalCosts = map[string]int{}
-	trace.DependencyLoadedBy = map[string][]string{}
-	trace.SharedDependencies = map[string][]string{}
-	if maxExpansions <= 0 {
-		maxExpansions = DefaultOptimizerExpansions
+	type candidate struct {
+		item CompiledRule
+		cost int
 	}
-
-	candidates := make([]optionalCandidate, 0, len(compiled.Rules))
+	candidates := make([]candidate, 0, len(compiled.Rules))
 	for _, item := range compiled.Rules {
-		rule := item.Rule
-		if rule.Strength != RuleOptional {
+		if item.Rule.Strength != RuleOptional {
 			continue
 		}
-		decision, matched, reason := evaluateRule(rule, ctx)
+		decision, matched, reason := evaluateRule(item.Rule, ctx)
 		if !matched {
-			trace.skip(rule.ID, reason)
-			trace.noteReasons(rule.ID, decision.reasons)
-			trace.noteSkippedSignals(rule.ID, decision.signals)
+			trace.skip(item.Rule.ID, reason)
+			trace.noteReasons(item.Rule.ID, decision.reasons)
+			trace.noteSkippedSignals(item.Rule.ID, decision.signals)
 			continue
 		}
-		if ctx.ScoreCutoff > 0 && decision.score < ctx.ScoreCutoff {
-			trace.skip(rule.ID, ReasonBelowScoreThreshold)
-			continue
+		cost := item.TokenCost
+		if actual := ctx.RuleTokenCosts[item.Rule.ID]; actual > 0 {
+			cost = actual
 		}
 		trace.CandidateCount++
-		trace.noteScore(rule.ID, decision.score)
-		trace.noteReasons(rule.ID, decision.reasons)
-		trace.noteSignals(rule.ID, decision.signals)
-		members := make([]string, 0, len(item.DependencyClosure)+1)
-		members = append(members, item.DependencyClosure...)
-		members = append(members, rule.ID)
-		cost := 0
-		optionalMembers := members[:0]
-		for _, memberID := range members {
-			member, ok := compiled.RuleByID(memberID)
-			if !ok || member.Rule.Strength == RuleMandatory {
-				continue
-			}
-			optionalMembers = append(optionalMembers, memberID)
-			cost += member.TokenCost
-		}
-		members = append([]string(nil), optionalMembers...)
-		trace.BundleMembers[rule.ID] = append([]string(nil), members...)
-		trace.BundleCosts[rule.ID] = cost
-		trace.CandidateRoots = append(trace.CandidateRoots, rule.ID)
-		candidates = append(candidates, optionalCandidate{root: rule.ID, score: decision.score, members: members, memberCost: cost})
+		trace.noteScore(item.Rule.ID, decision.score)
+		trace.noteReasons(item.Rule.ID, decision.reasons)
+		trace.noteSignals(item.Rule.ID, decision.signals)
+		candidates = append(candidates, candidate{item: item, cost: cost})
 	}
 	trace.ConsideredCount = len(candidates)
 	sort.SliceStable(candidates, func(i, j int) bool {
-		if candidates[i].score == candidates[j].score {
-			return candidates[i].root < candidates[j].root
+		left, right := candidates[i], candidates[j]
+		if left.item.Rule.Priority != right.item.Rule.Priority {
+			return left.item.Rule.Priority > right.item.Rule.Priority
 		}
-		return candidates[i].score > candidates[j].score
+		if left.cost != right.cost {
+			return left.cost < right.cost
+		}
+		return left.item.Rule.ID < right.item.Rule.ID
 	})
-
-	remainingScore := make([]float64, len(candidates)+1)
-	for index := len(candidates) - 1; index >= 0; index-- {
-		remainingScore[index] = remainingScore[index+1] + candidates[index].score
-	}
-	bestScore := -1.0
-	bestCost := 0
-	bestRoots := map[string]bool{}
-	bestMembers := map[string]bool{}
-	expansions := 0
-	limited := false
-	var search func(int, float64, int, map[string]bool, map[string]bool)
-	search = func(index int, score float64, cost int, roots, members map[string]bool) {
-		if expansions >= maxExpansions {
-			limited = true
-			return
-		}
-		expansions++
-		if score+remainingScore[index] < bestScore {
-			return
-		}
-		if index == len(candidates) {
-			if score > bestScore || (score == bestScore && cost < bestCost) {
-				bestScore = score
-				bestCost = cost
-				bestRoots = cloneBoolMap(roots)
-				bestMembers = cloneBoolMap(members)
-			}
-			return
-		}
-		candidate := candidates[index]
-		incremental := 0
-		included := make([]string, 0, len(candidate.members))
-		for _, memberID := range candidate.members {
-			if members[memberID] {
-				continue
-			}
-			member, _ := compiled.RuleByID(memberID)
-			incremental += member.TokenCost
-			included = append(included, memberID)
-		}
-		if ctx.TokenBudget > 0 && cost+incremental <= ctx.TokenBudget {
-			for _, memberID := range included {
-				members[memberID] = true
-			}
-			roots[candidate.root] = true
-			search(index+1, score+candidate.score, cost+incremental, roots, members)
-			delete(roots, candidate.root)
-			for _, memberID := range included {
-				delete(members, memberID)
-			}
-		}
-		search(index+1, score, cost, roots, members)
-	}
-	search(0, 0, 0, map[string]bool{}, map[string]bool{})
-	trace.OptimizerNodes = expansions
-	trace.OptimizerLimited = limited
-
-	loaded := make([]Rule, 0, len(bestMembers))
-	for _, item := range compiled.Rules {
-		if !bestMembers[item.Rule.ID] {
-			continue
-		}
-		loaded = append(loaded, item.Rule)
-		trace.unskip(item.Rule.ID)
-		trace.Loaded = append(trace.Loaded, item.Rule.ID)
-	}
-	trace.EstimatedUsed = bestCost
-	marginalMembers := map[string]bool{}
+	loaded := make([]Rule, 0, len(candidates))
+	used := 0
 	for _, candidate := range candidates {
-		if !bestRoots[candidate.root] {
-			if !bestMembers[candidate.root] {
-				trace.skip(candidate.root, ReasonTokenBudgetExceeded)
-			}
+		if ctx.TokenBudget <= 0 || used+candidate.cost > ctx.TokenBudget {
+			trace.skip(candidate.item.Rule.ID, ReasonTokenBudgetExceeded)
 			continue
 		}
-		marginalCost := 0
-		for _, memberID := range candidate.members {
-			if !marginalMembers[memberID] {
-				member, _ := compiled.RuleByID(memberID)
-				marginalCost += member.TokenCost
-				marginalMembers[memberID] = true
-			}
-			if memberID == candidate.root {
-				continue
-			}
-			trace.DependencyLoadedBy[memberID] = stableUnique(append(trace.DependencyLoadedBy[memberID], candidate.root))
-		}
-		trace.BundleMarginalCosts[candidate.root] = marginalCost
+		loaded = append(loaded, candidate.item.Rule)
+		trace.Loaded = append(trace.Loaded, candidate.item.Rule.ID)
+		used += candidate.cost
 	}
-	for dependencyID, roots := range trace.DependencyLoadedBy {
-		if len(roots) > 1 {
-			trace.SharedDependencies[dependencyID] = append([]string(nil), roots...)
-		}
-	}
+	trace.EstimatedUsed = used
 	return loaded, trace
-}
-
-func cloneBoolMap(input map[string]bool) map[string]bool {
-	output := make(map[string]bool, len(input))
-	for key, value := range input {
-		output[key] = value
-	}
-	return output
 }

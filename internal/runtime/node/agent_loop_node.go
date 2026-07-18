@@ -464,6 +464,7 @@ func (n AgentLoopNode) Resume(ctx context.Context, rc *engine.RunContext, input 
 	return n.AgentNode.runAgent(ctx, rc, input, cfg, n.Type(), !cfg.DisableProfileDefaults, &opts)
 }
 
+// runAgent prepares and executes a single Agent run.
 func (n AgentNode) runAgent(
 	ctx context.Context,
 	rc *engine.RunContext,
@@ -476,6 +477,7 @@ func (n AgentNode) runAgent(
 	if n.LLM == nil || n.Providers == nil {
 		return nil, fmt.Errorf("%s dependencies are not configured", nodeType)
 	}
+	// Apply workflow profile defaults before resolving the provider.
 	if useProfileDefaults {
 		var err error
 		cfg, err = n.applyProfileDefaults(ctx, rc, cfg)
@@ -492,6 +494,7 @@ func (n AgentNode) runAgent(
 	if err := validateAgentRuntimeConfig(cfg, nodeType, true); err != nil {
 		return nil, err
 	}
+	// Planning and execution share this resolved provider configuration.
 	loaded, err := n.Providers.LoadChatProviderConfig(ctx, rc.OwnerID, cfg.ProviderID, cfg.Model)
 	if err != nil {
 		return nil, err
@@ -535,6 +538,7 @@ func (n AgentNode) runAgent(
 	if err != nil {
 		return nil, err
 	}
+	// Task is the run-level objective, not an individual plan step.
 	task := resolveAgentTask(cfg.TaskTemplate, rc, input)
 	if task == "" {
 		return nil, fmt.Errorf("%w: %s task is required", agenterrors.ErrInvalidInput, nodeType)
@@ -564,6 +568,7 @@ func (n AgentNode) runAgent(
 	}
 	systemPrompt := cfg.SystemPrompt
 	mode := agentMode(cfg.Mode)
+	// Conversation blocks provide context; they do not track plan progress.
 	conversationBlocks := buildConversationContext(ctx, n, rc, recallTask, cfg.MaxInputChars, cfg.RetrievalPolicy)
 	tools = n.semanticShortlistTools(ctx, semanticProvider, recallTask, tools)
 	skillBlocks := n.buildSkillContextBlocks(ctx, rc.OwnerID, cfg, semanticProvider, recallTask)
@@ -605,6 +610,7 @@ func (n AgentNode) runAgent(
 	}
 	contextBlocks = n.injectWorkingMemory(ctx, rc, contextBlocks)
 	var plan *runtimeagent.Plan
+	// Generate an initial plan only for a new plan-and-execute run.
 	if resume == nil && mode == "plan_execute" && task != "" {
 		planner := runtimeagent.Planner{
 			LLM:        n.LLM,
@@ -654,18 +660,19 @@ func (n AgentNode) runAgent(
 		},
 	}
 	runRequest := runtimeagent.RunRequest{
-		OwnerID:                         rc.OwnerID,
-		WorkflowID:                      rc.WorkflowID,
-		AgentID:                         rc.AgentID,
-		AgentReleaseID:                  rc.AgentReleaseID,
-		RunID:                           rc.RunID,
-		NodeID:                          rc.CurrentNodeID,
-		CallDepth:                       rc.CallDepth,
-		WorkflowCallChain:               append([]int64(nil), rc.WorkflowCallChain...),
-		ConversationID:                  rc.ConversationID,
-		Provider:                        loaded.Config,
-		Model:                           loaded.Model,
-		Mode:                            mode,
+		OwnerID:           rc.OwnerID,
+		WorkflowID:        rc.WorkflowID,
+		AgentID:           rc.AgentID,
+		AgentReleaseID:    rc.AgentReleaseID,
+		RunID:             rc.RunID,
+		NodeID:            rc.CurrentNodeID,
+		CallDepth:         rc.CallDepth,
+		WorkflowCallChain: append([]int64(nil), rc.WorkflowCallChain...),
+		ConversationID:    rc.ConversationID,
+		Provider:          loaded.Config,
+		Model:             loaded.Model,
+		Mode:              mode,
+		// Runner records the plan and injects it into execution context.
 		Plan:                            plan,
 		SystemPrompt:                    systemPrompt,
 		Task:                            task,
@@ -694,7 +701,6 @@ func (n AgentNode) runAgent(
 		CompiledRules:                   cfg.CompiledRules,
 		CustomRules:                     append([]rules.Rule(nil), cfg.CustomRules...),
 		RuleTrace:                       ruleTrace,
-		RuleSemanticScores:              n.semanticRuleScores(ctx, semanticProvider, recallTask, cfg.CustomRules),
 		ContextBlocks:                   contextBlocks,
 		ToolPolicy: runtimeagent.ToolPolicy{
 			RequireApprovalForRisk: cfg.RequireApprovalForRisk,
@@ -707,6 +713,7 @@ func (n AgentNode) runAgent(
 		Tools: tools,
 	}
 	if resume != nil && resume.Checkpoint != nil {
+		// Restore the checkpoint snapshot instead of generating a new plan.
 		if mismatch := checkpointHashMismatch(resume.Checkpoint, tools, runRequest.ToolPolicy); mismatch != "" {
 			return pausedForCheckpointMismatch(resume.Checkpoint, mismatch), nil
 		}
@@ -752,7 +759,6 @@ func (n AgentNode) runAgent(
 				CompiledRules:                   cfg.CompiledRules,
 				CustomRules:                     append([]rules.Rule(nil), cfg.CustomRules...),
 				RuleTrace:                       ruleTrace,
-				RuleSemanticScores:              n.semanticRuleScores(ctx, semanticProvider, recallTask, cfg.CustomRules),
 				ContextBlocks:                   contextBlocks,
 				ToolPolicy:                      runRequest.ToolPolicy,
 				Tools:                           tools,
@@ -1760,17 +1766,6 @@ func cosineSimilarity(a, b []float32) float64 {
 	return dot / (math.Sqrt(left) * math.Sqrt(right))
 }
 
-func (n AgentNode) semanticRuleScores(ctx context.Context, provider *LoadedProvider, task string, items []rules.Rule) map[string]float64 {
-	candidates := make([]semanticCandidate, 0, len(items))
-	for index, item := range items {
-		if item.Strength == rules.RuleMandatory || item.SafetyCritical || item.PolicyBinding != nil || strings.TrimSpace(item.Content) == "" {
-			continue
-		}
-		candidates = append(candidates, semanticCandidate{Index: index, ID: item.ID, Text: item.Name + "\n" + item.Content})
-	}
-	return n.semanticCandidateScores(ctx, provider, task, candidates)
-}
-
 func (n AgentNode) semanticShortlistTools(ctx context.Context, provider *LoadedProvider, task string, tools []toolruntime.RuntimeTool) []toolruntime.RuntimeTool {
 	const maxSemanticTools = 20
 	if len(tools) <= maxSemanticTools {
@@ -1924,6 +1919,7 @@ func cachedMCPToolDefs(ctx context.Context, repo tool.MCPRepository, ownerID, se
 }
 
 func resolveAgentTask(template string, rc *engine.RunContext, input engine.NodeInput) string {
+	// Resolve the run-level task; plan steps are injected separately.
 	task := strings.TrimSpace(engine.ResolveTemplate(template, rc))
 	if task != "" {
 		return task

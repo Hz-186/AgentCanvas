@@ -17,22 +17,20 @@ const (
 	ReasonLegacyTriggerMiss   = "legacy_trigger_not_matched"
 	ReasonSignalsNotMatched   = "activation_not_matched"
 	ReasonTokenBudgetExceeded = "token_budget_exceeded"
-	ReasonBelowScoreThreshold = "below_score_threshold"
 )
 
 type Rule struct {
-	ID              string            `json:"id"`
-	Name            string            `json:"name"`
-	Strength        RuleStrength      `json:"strength"`
-	Content         string            `json:"content"`
-	Triggers        []string          `json:"triggers,omitempty"`
-	Activation      Activation        `json:"activation,omitempty"`
-	TokenBudget     int               `json:"token_budget,omitempty"`
-	Priority        int               `json:"priority,omitempty"`
-	SafetyCritical  bool              `json:"safety_critical,omitempty"`
-	ManualDependsOn []string          `json:"manual_depends_on,omitempty"`
-	PolicyBinding   *PolicyBinding    `json:"policy_binding,omitempty"`
-	Metadata        map[string]string `json:"metadata,omitempty"`
+	ID             string            `json:"id"`
+	Name           string            `json:"name"`
+	Strength       RuleStrength      `json:"strength"`
+	Content        string            `json:"content"`
+	Triggers       []string          `json:"triggers,omitempty"`
+	Activation     Activation        `json:"activation,omitempty"`
+	TokenBudget    int               `json:"token_budget,omitempty"`
+	Priority       int               `json:"priority,omitempty"`
+	SafetyCritical bool              `json:"safety_critical,omitempty"`
+	PolicyBinding  *PolicyBinding    `json:"policy_binding,omitempty"`
+	Metadata       map[string]string `json:"metadata,omitempty"`
 }
 
 func (r *Rule) UnmarshalJSON(data []byte) error {
@@ -42,6 +40,9 @@ func (r *Rule) UnmarshalJSON(data []byte) error {
 	}
 	if _, legacy := fields["level"]; legacy {
 		return fmt.Errorf("rule level is no longer supported; use strength")
+	}
+	if _, graph := fields["manual_depends_on"]; graph {
+		return fmt.Errorf("rule manual_depends_on is no longer supported")
 	}
 	type ruleAlias Rule
 	var decoded ruleAlias
@@ -81,37 +82,28 @@ type LoadContext struct {
 	Task           string
 	Conversation   string
 	TokenBudget    int
-	ScoreCutoff    float64
-	SemanticScores map[string]float64
+	RuleTokenCosts map[string]int
 }
 
 type Trace struct {
-	Loaded              []string            `json:"loaded,omitempty"`
-	Skipped             []string            `json:"skipped,omitempty"`
-	SkipReasons         map[string]string   `json:"skip_reasons,omitempty"`
-	EstimatedUsed       int                 `json:"estimated_used,omitempty"`
-	TokenBudget         int                 `json:"token_budget,omitempty"`
-	CandidateCount      int                 `json:"candidate_count,omitempty"`
-	ConsideredCount     int                 `json:"considered_count,omitempty"`
-	SelectionStrategy   string              `json:"selection_strategy,omitempty"`
-	SavedTokens         int                 `json:"saved_tokens,omitempty"`
-	RuleScores          map[string]float64  `json:"rule_scores,omitempty"`
-	RuleReasons         map[string][]string `json:"rule_reasons,omitempty"`
-	MatchedSignals      map[string][]string `json:"matched_signals,omitempty"`
-	SkippedSignals      map[string][]string `json:"skipped_signals,omitempty"`
-	MandatoryTokens     int                 `json:"mandatory_tokens,omitempty"`
-	OptionalBudget      int                 `json:"optional_budget,omitempty"`
-	DependencyLoadedBy  map[string][]string `json:"dependency_loaded_by,omitempty"`
-	CandidateRoots      []string            `json:"candidate_roots,omitempty"`
-	BundleMembers       map[string][]string `json:"bundle_members,omitempty"`
-	BundleCosts         map[string]int      `json:"bundle_costs,omitempty"`
-	BundleMarginalCosts map[string]int      `json:"bundle_marginal_costs,omitempty"`
-	SharedDependencies  map[string][]string `json:"shared_dependencies,omitempty"`
-	OptimizerNodes      int                 `json:"optimizer_nodes,omitempty"`
-	OptimizerLimited    bool                `json:"optimizer_limited,omitempty"`
-	RuleSetID           int64               `json:"rule_set_id,omitempty"`
-	RuleSetVersion      string              `json:"rule_set_version,omitempty"`
-	CompiledHash        string              `json:"compiled_hash,omitempty"`
+	Loaded            []string            `json:"loaded,omitempty"`
+	Skipped           []string            `json:"skipped,omitempty"`
+	SkipReasons       map[string]string   `json:"skip_reasons,omitempty"`
+	EstimatedUsed     int                 `json:"estimated_used,omitempty"`
+	TokenBudget       int                 `json:"token_budget,omitempty"`
+	CandidateCount    int                 `json:"candidate_count,omitempty"`
+	ConsideredCount   int                 `json:"considered_count,omitempty"`
+	SelectionStrategy string              `json:"selection_strategy,omitempty"`
+	SavedTokens       int                 `json:"saved_tokens,omitempty"`
+	RuleScores        map[string]float64  `json:"rule_scores,omitempty"`
+	RuleReasons       map[string][]string `json:"rule_reasons,omitempty"`
+	MatchedSignals    map[string][]string `json:"matched_signals,omitempty"`
+	SkippedSignals    map[string][]string `json:"skipped_signals,omitempty"`
+	MandatoryTokens   int                 `json:"mandatory_tokens,omitempty"`
+	OptionalBudget    int                 `json:"optional_budget,omitempty"`
+	RuleSetID         int64               `json:"rule_set_id,omitempty"`
+	RuleSetVersion    string              `json:"rule_set_version,omitempty"`
+	CompiledHash      string              `json:"compiled_hash,omitempty"`
 }
 
 type PolicyBinding struct {
@@ -152,7 +144,7 @@ func isMandatory(rule Rule) bool { return rule.Strength == RuleMandatory }
 func evaluateRule(rule Rule, ctx LoadContext) (ruleDecision, bool, string) {
 	decision := ruleDecision{rule: rule, cost: ruleCost(rule)}
 	if isMandatory(rule) {
-		decision.score = compiledOptionalBaseScore + float64(rule.Priority)
+		decision.score = float64(rule.Priority)
 		decision.reasons = append(decision.reasons, "mandatory")
 		decision.signals = append(decision.signals, "mandatory")
 		return decision, true, ""
@@ -162,13 +154,7 @@ func evaluateRule(rule Rule, ctx LoadContext) (ruleDecision, bool, string) {
 		return decision, false, ReasonLegacyTriggerMiss
 	}
 	matched, score, reasons, signals := scoreActivation(rule, ctx)
-	if semantic := ctx.SemanticScores[rule.ID]; semantic >= .30 {
-		matched = true
-		score += semantic * 20
-		reasons = append(reasons, "semantic_recall")
-		signals = append(signals, "semantic")
-	}
-	decision.score = compiledOptionalBaseScore + score + float64(rule.Priority)
+	decision.score = score + float64(rule.Priority)
 	decision.reasons = append(decision.reasons, reasons...)
 	decision.signals = append(decision.signals, signals...)
 	if !matched {

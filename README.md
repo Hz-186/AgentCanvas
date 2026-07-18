@@ -63,7 +63,7 @@ Agent 的执行能力不仅仅取决于模型本身，更取决于包裹在模�
 四层职责边界被严格划分，避免 token 消耗失控：
 - **Commands**：流程入口，控制 Agent 的执行生命周期（run → plan → execute → evaluate → reflect → resume），统一调度 ReAct / Plan-Execute、Supervisor 委派与持久化 Reflexion
 - **Skills**：领域能力封装，将可复用能力抽象为标准化模块，通过 `load_skill` / `skill_search` 工具按需加载
-- **Rules**：前馈约束，统一使用 `mandatory / optional` 强度、显式激活条件与 DAG 依赖编译，确保硬约束不丢失、可选规则按预算成组加载
+- **Rules**：前馈约束，统一使用 `mandatory / optional` 强度和显式激活条件；Mandatory 始终注入，Optional 按优先级与 token 预算确定性加载
 - **Hooks**：反馈兜底，`preToolUse` / `postToolUse` 双环拦截，覆盖危险命令物理阻断 + 敏感字段脱敏 + 输出压缩
 
 ---
@@ -188,40 +188,35 @@ Agent 执行中
 
 #### Rules 二元强度与版本化 RuleSet（前馈约束）
 
-规则运行时只保留两个强度：`mandatory` 无条件静态注入且不可删减；`optional` 根据激活信号、优先级、token 成本和完整依赖闭包动态选择。平台 Mandatory 永远存在；没有激活版本化 RuleSet 时才使用内置 Optional 目录。
+规则运行时只保留两个强度：`mandatory` 无条件静态注入且不可删减；`optional` 根据显式激活信号、优先级和模型实际 token 成本确定性选择。平台 Mandatory 永远存在；没有激活版本化 RuleSet 时才使用内置 Optional 目录。
 
-强度、激活和依赖是三个独立维度。每条 Optional 规则通过 `mode_any` / `tool_any` / `risk_any` / `tag_any` / `keywords_any` / `always` 等显式声明适用条件；空 Activation 只允许作为其他规则的依赖。工具阶段规则使用 `tag_all: ["tool_used"]`，不依赖隐式等级。旧 `level` 只在迁移 DTO 和 v1 快照解码器中读取，新写入必须使用 `strength`。
+每条 Optional 规则必须通过 `mode_any` / `tool_any` / `risk_any` / `tag_any` / `keywords_any` / `always` 等显式声明适用条件，空 Activation 会在保存或迁移预检时被拒绝。工具阶段规则使用 `tag_all: ["tool_used"]`，不依赖隐式等级。旧 `level` 只在迁移 DTO 中读取，新写入必须使用 `strength`。
 
 ##### RuleSet 编译与发布
 
 ```text
 Draft(revision N)
-   │ Publish + expected_revision + Idempotency-Key
+   │ Publish + expected_revision
    ▼
-Queued ──→ Worker Compile ──→ 确定性 DAG 校验
-                                  │
-                    ┌─────────────┴─────────────┐
-                    │ 无新增依赖建议             │ 有 LLM 依赖建议
-                    ▼                           ▼
-              Ready → Published          Review Required
-                    │                           │ 人工 Accept / Reject
-                    │                           └──→ 重新编译 → Published
-                    ▼
+同步校验并生成 graph-free v3 快照
+   │
+   ▼
+Published
+   │
       Profile.active_rule_set_id
-                    │
-                    ▼
+   │
+   ▼
       Run 固定 ID + Version + Compiled Hash
 ```
 
-- **确定性编译器**：限制最多 50 条规则、200 条依赖边和 16 层深度；拒绝重复 ID、未知依赖、自依赖、环，以及 Mandatory → Optional 的非法依赖。
-- **LLM 只提建议**：编译模型只能通过严格的 `submit_rule_graph` Tool Call 建议语义前置依赖，不能修改规则内容、强度或安全属性；建议边记录 confidence / reason，并必须由人类接受或拒绝。
-- **依赖闭包优化**：Mandatory 规则始终注入；Optional 候选先匹配信号，再把根规则与全部 Optional 前置依赖组成 bundle，通过 `dag_branch_and_bound:v1` 在 token 预算内按边际成本选择，避免加载“缺少前置条件”的孤立规则，并复用共享依赖成本。
+- **确定性编译器**：限制最多 50 条规则，拒绝重复 ID、空内容、无正向 Activation 的 Optional Rule 和非法 Policy Binding。
+- **线性预算选择**：Mandatory 始终注入；Optional 先执行硬排除与显式激活，再按 `priority DESC / token cost ASC / rule ID ASC` 加载，策略标识为 `deterministic_activation_budget:v1`。
 - **策略硬绑定**：`tool.dangerous_arguments.deny`、`tool.risk.require_approval`、`tool.host.allowlist`、`tool.execution_limits` 等绑定在编译期校验，运行时直接进入 Tool Hook Policy，不依赖 LLM 自觉遵守。
-- **不可变快照**：发布时固化拓扑序、传递依赖闭包、token cost、内容哈希和完整 `compiled_hash`；每个 Run / Checkpoint 固定 RuleSet ID、版本与哈希，恢复时继续使用同一快照并执行完整性校验。
+- **不可变快照**：发布时固化规则、token cost、内容哈希和完整 `compiled_hash`；每个 Run / Checkpoint 固定 RuleSet ID、版本与哈希并执行完整性校验。
 - **安全发布与回滚**：Mandatory token 加 safety margin 超过上下文预算时拒绝发布；新版本发布后旧版本进入 superseded，回滚会从历史快照重新校验并创建一个新的 Published 版本，不会原地篡改历史。
-- **兼容迁移**：新快照使用 `schema_version: 2`；v1 快照先按原结构验证哈希，再转换为二元内存模型。旧 `context_policy_json.rules` 可通过 `backfill-rule-sets --dry-run` 检查并迁移到不可变 RuleSet。
+- **硬切迁移**：新快照使用 `schema_version: 3`，旧图快照不再恢复。维护窗口内先备份数据库并运行 `go run ./cmd/backfill-rule-sets --remove-graph --dry-run`；预检通过后执行 `make migrate`，再运行 `go run ./cmd/backfill-rule-sets --remove-graph` 生成 v3 快照并迁移 Agent Release。预检失败时必须先人工补充 Activation 或删除对应规则。
 
-RuleSet 状态包括 `draft / queued / compiling / review_required / ready / published / superseded / failed`。编译队列、Review 堆积、Mandatory overflow、快照完整性和回滚次数可通过 `GET /api/v1/health/rule-system` 观察。
+RuleSet 状态只有 `draft / published / superseded`。Mandatory overflow、快照完整性、发布和回滚次数可通过 `GET /api/v1/health/rule-system` 观察。
 
 #### Hooks 拦截链（反馈兜底）
 
@@ -465,7 +460,7 @@ CachedChatClient.StreamChat()
 - 查询先做 Unicode NFKC、空格/标点/大小写和受控拼写规范化，再锁定产品名、错误码、版本、时间、环境、ID、路径、URL 和引号内容等硬条件。
 - 指代不明确时返回 `clarification_required`；低召回或多意图时每次查询最多调用一次改写模型，所有变体必须通过硬条件校验。
 - 多查询结果使用 RRF 融合、资源 ID/内容哈希去重，再进入 reranker。
-- Reflection、长期 Memory、optional Rule、Skill、非核心 Tool 和旧 Conversation Message 均有语义召回；mandatory、安全关键、policy-binding 规则与检索/审批/恢复核心工具始终常驻。
+- Reflection、长期 Memory、Skill、非核心 Tool 和旧 Conversation Message 均有语义召回；Rules 只使用确定性的显式 Activation，mandatory、安全关键、policy-binding 规则始终常驻。
 - `context_resource_index_outbox` 在资源写事务内登记索引版本，worker 使用 lease、`SKIP LOCKED`、指数退避和 DLQ；Milvus collection 按 provider/model/dimensions profile 隔离，索引故障不会扩大为业务写入故障。
 
 ---
@@ -517,7 +512,7 @@ Docker 容器六重隔离（`sandbox.go`）：
 ```text
 cmd/                        API、Worker、Migration 三个入口
   api/main.go               ─ Gin HTTP Server (SSE 流式 + SPA 嵌入)
-  worker/main.go            ─ 异步文档解析/索引、规则编译与 Reflection Worker
+  worker/main.go            ─ 异步文档解析/索引与 Reflection Worker
   backfill-rule-sets/main.go ─ 将旧 Profile 自定义规则回填为版本化 RuleSet
   backfill-agents/main.go    ─ 将旧 Dialog 幂等迁移为独立 Agent + Release
   migrate/main.go           ─ 数据库迁移工具
@@ -597,7 +592,7 @@ internal/                   核心后端代码
   runtime/                  Agent 运行时引擎
     agent/                   ─ Runner/Planner/Reflexion/Supervisor/Judge/Resumer/ContextAssembler
     engine/                  ─ DAG 执行器/VariableResolver
-    harness/                 ─ Harness框架: Rules (内置分层 + RuleSet DAG 编译/优化) + Hooks (preToolUse/postToolUse责任链)
+    harness/                 ─ Harness框架: Rules (内置分层 + 确定性预算选择) + Hooks (preToolUse/postToolUse责任链)
     node/                    ─ 23 种节点实现
     toolruntime/             ─ 工具运行时 (7种Tool + ToolRegistry + Skill集成)
     evalharness/             ─ 评估指标 (Coverage + Judge)
@@ -640,8 +635,6 @@ skill/                      内置 Skill 预设 (explain-knowledge / record-know
 | `workflow_profiles` | Profile 配置（Mode/Tool Packs/MCP/Memory/Reflection/RuleSet/Context/Output Schema/Risk Level） |
 | `workflow_rule_sets` | 版本化 RuleSet、发布状态、编译快照与回滚来源 |
 | `workflow_rule_nodes` | RuleSet 中的规则、强度、激活条件、策略绑定与编译元数据 |
-| `workflow_rule_edges` | 规则依赖 DAG、来源、置信度及人工 Review 决策 |
-| `workflow_rule_compile_jobs` | RuleSet 异步编译任务、幂等键、重试与模型用量 |
 | `workflow_eval_datasets` | 评估数据集 |
 | `workflow_eval_cases` | 评估用例 |
 | `workflow_eval_runs` | 评估运行记录 |
@@ -688,7 +681,7 @@ open http://localhost:8080
 make dev              # 启动完整本地开发链路
 make run              # 迁移 + 前端构建 + API 启动
 make build            # 生产构建（含迁移表完整性校验）
-make worker             # 启动异步 Worker（文档解析、RuleSet 编译、Reflexion）
+make worker             # 启动异步 Worker（文档解析、上下文索引、Reflexion）
 make backfill-rule-sets # 将旧 Profile 规则幂等迁移为版本化 RuleSet
 make backfill-agents    # 将旧 Dialog 幂等迁移为独立 Agent（可直接 go run ... --dry-run）
 make backfill-context-index # 按 content hash 增量登记统一语义索引 Outbox
@@ -778,10 +771,8 @@ GET    /api/v1/workflows/:id/rule-sets                RuleSet 版本列表
 POST   /api/v1/workflows/:id/rule-sets                创建或克隆 Draft
 GET    /api/v1/workflows/:id/rule-sets/:rule_set_id   RuleSet 详情
 PATCH  /api/v1/workflows/:id/rule-sets/:rule_set_id   按 expected_revision 更新 Draft
-POST   /api/v1/workflows/:id/rule-sets/:rule_set_id/publish 异步编译并发布
-POST   /api/v1/workflows/:id/rule-sets/:rule_set_id/review  审核 LLM 依赖建议
+POST   /api/v1/workflows/:id/rule-sets/:rule_set_id/publish 同步校验并发布
 POST   /api/v1/workflows/:id/rule-sets/:rule_set_id/rollback 从历史快照创建回滚版本
-GET    /api/v1/workflows/:id/rule-compile-jobs/:job_id 编译任务状态
 POST   /api/v1/workflows/:id/flow-versions            创建 Flow Version
 POST   /api/v1/flow-versions/:id/publish              发布
 POST   /api/v1/flow-versions/:id/validate             校验
