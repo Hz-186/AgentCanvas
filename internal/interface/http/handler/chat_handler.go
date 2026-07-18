@@ -122,6 +122,30 @@ func (h *ChatHandler) DeleteConversation(c *gin.Context) {
 	response.OK(c, gin.H{"success": true})
 }
 
+func (h *ChatHandler) CompactConversation(c *gin.Context) {
+	ownerID, ok := currentUserID(c)
+	if !ok {
+		response.Error(c, http.StatusUnauthorized, agenterrors.CodeUnauthorized, agenterrors.ErrUnauthorized.Error())
+		return
+	}
+	id, err := parseInt64Param(c, "id")
+	if err != nil || id <= 0 {
+		writeAppError(c, agenterrors.ErrInvalidInput)
+		return
+	}
+	var req chatusecase.CompactConversationRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		writeAppError(c, err)
+		return
+	}
+	item, err := h.service.CompactConversation(c.Request.Context(), ownerID, id, req)
+	if err != nil {
+		writeAppError(c, err)
+		return
+	}
+	response.OK(c, item)
+}
+
 func (h *ChatHandler) ownerAndDialog(c *gin.Context) (int64, int64, bool) {
 	ownerID, ok := currentUserID(c)
 	if !ok {

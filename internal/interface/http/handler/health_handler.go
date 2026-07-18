@@ -227,3 +227,48 @@ func (h *HealthHandler) ReflectionSystem(c *gin.Context) {
 	}
 	response.OK(c, gin.H{"component": "reflection_system", "database": metrics, "process": process, "alerts": alerts})
 }
+
+func (h *HealthHandler) ContextSystem(c *gin.Context) {
+	type databaseMetrics struct {
+		PendingOutbox        int64 `json:"pending_outbox"`
+		ProcessingOutbox     int64 `json:"processing_outbox"`
+		DeadLetterOutbox     int64 `json:"dead_letter_outbox"`
+		RetryAttempts        int64 `json:"retry_attempts"`
+		OldestPendingSeconds int64 `json:"oldest_pending_seconds"`
+		StaleLeases          int64 `json:"stale_leases"`
+		Compactions          int64 `json:"compactions"`
+		FallbackCompactions  int64 `json:"fallback_compactions"`
+		FailedCompactions    int64 `json:"failed_compactions"`
+	}
+	var metrics databaseMetrics
+	outboxQuery := `SELECT
+		COALESCE(SUM(status = 'pending'), 0) AS pending_outbox,
+		COALESCE(SUM(status = 'processing'), 0) AS processing_outbox,
+		COALESCE(SUM(status = 'dead_letter'), 0) AS dead_letter_outbox,
+		COALESCE(SUM(attempt_count), 0) AS retry_attempts,
+		COALESCE(TIMESTAMPDIFF(SECOND, MIN(CASE WHEN status = 'pending' THEN created_at END), UTC_TIMESTAMP()), 0) AS oldest_pending_seconds,
+		COALESCE(SUM(status = 'processing' AND lease_expires_at < UTC_TIMESTAMP()), 0) AS stale_leases
+		FROM context_resource_index_outbox`
+	if err := h.db.WithContext(c.Request.Context()).Raw(outboxQuery).Scan(&metrics).Error; err != nil {
+		response.Error(c, http.StatusServiceUnavailable, errors.CodeDependencyUnavailable, err.Error())
+		return
+	}
+	compactionQuery := `SELECT
+		COUNT(*) AS compactions,
+		COALESCE(SUM(status = 'fallback'), 0) AS fallback_compactions,
+		COALESCE(SUM(status = 'failed'), 0) AS failed_compactions
+		FROM conversation_compactions`
+	if err := h.db.WithContext(c.Request.Context()).Raw(compactionQuery).Scan(&metrics).Error; err != nil {
+		response.Error(c, http.StatusServiceUnavailable, errors.CodeDependencyUnavailable, err.Error())
+		return
+	}
+	process := observability.ContextSystemMetrics.Snapshot()
+	alerts := gin.H{
+		"outbox_backlog":   metrics.PendingOutbox >= 100,
+		"outbox_stalled":   metrics.OldestPendingSeconds >= 300,
+		"stale_leases":     metrics.StaleLeases > 0,
+		"dead_letter":      metrics.DeadLetterOutbox > 0,
+		"context_overflow": process.ContextOverflow > 0,
+	}
+	response.OK(c, gin.H{"component": "context_system", "database": metrics, "process": process, "alerts": alerts})
+}

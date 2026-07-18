@@ -74,14 +74,15 @@ type Activation struct {
 }
 
 type LoadContext struct {
-	Mode         string
-	ToolNames    []string
-	RiskLevel    string
-	Tags         []string
-	Task         string
-	Conversation string
-	TokenBudget  int
-	ScoreCutoff  float64
+	Mode           string
+	ToolNames      []string
+	RiskLevel      string
+	Tags           []string
+	Task           string
+	Conversation   string
+	TokenBudget    int
+	ScoreCutoff    float64
+	SemanticScores map[string]float64
 }
 
 type Trace struct {
@@ -161,6 +162,12 @@ func evaluateRule(rule Rule, ctx LoadContext) (ruleDecision, bool, string) {
 		return decision, false, ReasonLegacyTriggerMiss
 	}
 	matched, score, reasons, signals := scoreActivation(rule, ctx)
+	if semantic := ctx.SemanticScores[rule.ID]; semantic >= .30 {
+		matched = true
+		score += semantic * 20
+		reasons = append(reasons, "semantic_recall")
+		signals = append(signals, "semantic")
+	}
 	decision.score = compiledOptionalBaseScore + score + float64(rule.Priority)
 	decision.reasons = append(decision.reasons, reasons...)
 	decision.signals = append(decision.signals, signals...)

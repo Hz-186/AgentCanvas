@@ -33,6 +33,7 @@ type RulePlanningState struct {
 	MaxRuleTokens  int
 	CustomRules    []rules.Rule
 	CompiledRules  *rules.CompiledRuleSet
+	SemanticScores map[string]float64
 }
 
 type RulePlan struct {
@@ -65,7 +66,7 @@ func (RulePlanner) Plan(state RulePlanningState) RulePlan {
 		selected, trace = rules.SelectOptionalRules(state.CompiledRules, rules.LoadContext{
 			Mode: state.Mode, RiskLevel: state.RiskLevel, ToolNames: state.UsedToolNames,
 			Tags: tags, Task: state.Task, Conversation: state.SystemPrompt,
-			TokenBudget: budget.AvailableRuleTokens, ScoreCutoff: 110,
+			TokenBudget: budget.AvailableRuleTokens, ScoreCutoff: 110, SemanticScores: state.SemanticScores,
 		}, rules.DefaultOptimizerExpansions)
 	} else {
 		selected, trace = rules.ResolveDynamicWithRules(

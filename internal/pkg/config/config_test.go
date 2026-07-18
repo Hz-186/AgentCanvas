@@ -28,6 +28,9 @@ func TestQueueConfigDefaults(t *testing.T) {
 	if cfg.Milvus.Collection == "" || cfg.Milvus.M == 0 || cfg.Milvus.MetricType != "COSINE" {
 		t.Fatalf("unexpected milvus defaults: %+v", cfg.Milvus)
 	}
+	if cfg.ContextIndex.BatchSize != 50 || cfg.ContextIndex.PollMilliseconds != 1000 || cfg.ContextIndex.LeaseSeconds != 60 {
+		t.Fatalf("unexpected context index defaults: %+v", cfg.ContextIndex)
+	}
 	if cfg.OCR.TimeoutSeconds != 60 {
 		t.Fatalf("unexpected OCR defaults: %+v", cfg.OCR)
 	}

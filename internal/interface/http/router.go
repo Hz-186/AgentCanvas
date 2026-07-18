@@ -56,6 +56,7 @@ func NewRouter(deps RouterDeps) *gin.Engine {
 		v1.GET("/health/es", deps.HealthHandler.Elasticsearch)
 		v1.GET("/health/rule-system", deps.HealthHandler.RuleSystem)
 		v1.GET("/health/reflection-system", deps.HealthHandler.ReflectionSystem)
+		v1.GET("/health/context-system", deps.HealthHandler.ContextSystem)
 
 		authGroup := v1.Group("/auth")
 		{
@@ -84,6 +85,7 @@ func NewRouter(deps RouterDeps) *gin.Engine {
 			protected.GET("/agents/:id/conversations", deps.AgentHandler.ListConversations)
 			protected.GET("/agents/:id/conversations/:conversation_id/messages", deps.AgentHandler.ListMessages)
 			protected.POST("/agents/:id/conversations/:conversation_id/turns", deps.AgentHandler.StartTurn)
+			protected.GET("/agents/:id/conversations/:conversation_id/turns/latest", deps.AgentHandler.GetLatestTurn)
 			protected.POST("/agents/:id/conversations/:conversation_id/fork", deps.AgentHandler.ForkConversation)
 			protected.POST("/agents/:id/conversations/:conversation_id/upgrade", deps.AgentHandler.UpgradeConversation)
 			protected.DELETE("/agents/:id/conversations/:conversation_id", deps.AgentHandler.DeleteConversation)
@@ -144,9 +146,11 @@ func NewRouter(deps RouterDeps) *gin.Engine {
 			registerCRUD(protected, "/dialogs", ":dialog_id", deprecatedHandler(deps.DialogHandler.Create), deprecatedHandler(deps.DialogHandler.List), deprecatedHandler(deps.DialogHandler.Get), deprecatedHandler(deps.DialogHandler.Update), deprecatedHandler(deps.DialogHandler.Delete))
 			protected.POST("/dialogs/:dialog_id/rag/chat", deprecatedHandler(deps.ChatHandler.Chat))
 			protected.POST("/dialogs/:dialog_id/rag/chat/stream", deprecatedHandler(deps.ChatHandler.StreamChat))
+			protected.POST("/conversations/:id/compact", deps.ChatHandler.CompactConversation)
 			protected.GET("/dialogs/:dialog_id/conversations", deprecatedHandler(deps.ChatHandler.ListConversations))
 			protected.GET("/dialogs/:dialog_id/conversations/:id", deprecatedHandler(deps.ChatHandler.GetConversation))
 			protected.GET("/dialogs/:dialog_id/conversations/:id/messages", deprecatedHandler(deps.ChatHandler.ListMessages))
+			protected.POST("/dialogs/:dialog_id/conversations/:id/compact", deprecatedHandler(deps.ChatHandler.CompactConversation))
 			protected.DELETE("/dialogs/:dialog_id/conversations/:id", deprecatedHandler(deps.ChatHandler.DeleteConversation))
 
 			registerCRUD(protected, "/workflows", ":id", deps.WorkflowHandler.Create, deps.WorkflowHandler.List, deps.WorkflowHandler.Get, deps.WorkflowHandler.Update, deps.WorkflowHandler.Delete)
