@@ -111,8 +111,9 @@ func main() {
 
 	hostname, _ := os.Hostname()
 	workerID := fmt.Sprintf("%s-%d", hostname, os.Getpid())
-	dreamWorker := memoryusecase.NewDreamWorker(baseChatClient(), llm.NewOpenAICompatibleEmbeddingClient(), memoryRepo, memoryLogRepo, messageRepo, archivalVecStore, infraDeps.Redis, memoryusecase.NewDreamConfig(cfg.MemoryDream), workerID)
-	extractionCompatibility := memoryusecase.NewExtractionService(memoryRepo, mysqlinfra.NewExtractionJobRepository(db), mysqlinfra.NewMergeLogRepository(db))
+	extractionJobRepo := mysqlinfra.NewExtractionJobRepository(db)
+	dreamWorker := memoryusecase.NewDreamWorker(baseChatClient(), llm.NewOpenAICompatibleEmbeddingClient(), memoryRepo, memoryLogRepo, messageRepo, archivalVecStore, infraDeps.Redis, memoryusecase.NewDreamConfig(cfg.MemoryDream), workerID, extractionJobRepo)
+	extractionCompatibility := memoryusecase.NewExtractionService(memoryRepo, extractionJobRepo, mysqlinfra.NewMergeLogRepository(db), messageRepo)
 	reflectionRepo := mysqlinfra.NewReflectionRepository(db)
 	reflectionJobRepo := mysqlinfra.NewReflectionJobRepository(db)
 	reflectionRecallRepo := mysqlinfra.NewReflectionRecallLogRepository(db)
@@ -216,7 +217,7 @@ func processNextJob(ctx context.Context, jobQueue queue.JobQueue, workerID strin
 	job := claimed[0]
 	switch job.Type {
 	case memoryusecase.DreamJobType:
-		payload := memoryusecase.DreamPayload{OwnerID: payloadInt64(job.Payload, "owner_id"), ConversationID: payloadInt64(job.Payload, "conversation_id")}
+		payload := memoryusecase.DreamPayload{JobID: payloadInt64(job.Payload, "job_id"), OwnerID: payloadInt64(job.Payload, "owner_id"), ConversationID: payloadInt64(job.Payload, "conversation_id")}
 		if err := dreamWorker.HandleDreamJob(ctx, payload); err != nil {
 			_ = jobQueue.Nack(ctx, job.ID, time.Now().Add(time.Minute))
 			return true, err

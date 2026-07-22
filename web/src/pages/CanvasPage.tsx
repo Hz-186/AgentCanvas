@@ -1463,7 +1463,7 @@ export function CanvasPage() {
               <Field label="默认 Agent Mode">
                 <Select value={profile.mode ?? 'react'} onChange={(event) => setProfile({ ...profile, mode: event.target.value as WorkflowProfile['mode'] })}>
                   <option value="react">ReAct</option>
-                  <option value="plan_execute">Plan &amp; Execute</option>
+                  <option value="plan_execute">Plan Guided</option>
                 </Select>
               </Field>
               <Field label="默认风险等级">

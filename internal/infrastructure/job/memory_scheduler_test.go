@@ -18,6 +18,9 @@ func (r *fakeSchedulerMemoryRepo) Update(ctx context.Context, item *memory.Memor
 func (r *fakeSchedulerMemoryRepo) FindByID(ctx context.Context, ownerID, id int64) (*memory.Memory, error) {
 	return nil, nil
 }
+func (r *fakeSchedulerMemoryRepo) FindByIDs(context.Context, int64, []int64) ([]memory.Memory, error) {
+	return nil, nil
+}
 func (r *fakeSchedulerMemoryRepo) List(ctx context.Context, ownerID int64, memoryTypes []string, conversationID *int64, limit, offset int) ([]memory.Memory, error) {
 	return nil, nil
 }

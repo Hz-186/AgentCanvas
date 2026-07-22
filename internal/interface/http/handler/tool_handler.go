@@ -531,7 +531,7 @@ func normalizeMCPServerRequest(item *tool.MCPServer) error {
 	item.Name = strings.TrimSpace(item.Name)
 	item.Transport = strings.TrimSpace(item.Transport)
 	if item.Transport == "" {
-		item.Transport = tool.MCPTransportSSE
+		item.Transport = tool.MCPTransportStreamableHTTP
 	}
 	item.EndpointURL = strings.TrimSpace(item.EndpointURL)
 	item.Command = strings.TrimSpace(item.Command)
@@ -539,7 +539,7 @@ func normalizeMCPServerRequest(item *tool.MCPServer) error {
 		return agenterrors.ErrInvalidInput
 	}
 	switch item.Transport {
-	case tool.MCPTransportSSE:
+	case tool.MCPTransportStreamableHTTP:
 		if item.EndpointURL == "" {
 			return agenterrors.ErrInvalidInput
 		}

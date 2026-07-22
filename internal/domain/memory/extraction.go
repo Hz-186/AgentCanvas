@@ -19,11 +19,20 @@ type ExtractionJob struct {
 	ID               int64           `json:"id" gorm:"primaryKey;column:id"`
 	OwnerID          int64           `json:"owner_id" gorm:"column:owner_id"`
 	ConversationID   int64           `json:"conversation_id" gorm:"column:conversation_id"`
+	IdempotencyKey   string          `json:"idempotency_key" gorm:"column:idempotency_key"`
+	TriggerReason    string          `json:"trigger_reason" gorm:"column:trigger_reason"`
 	SourceMessageIDs json.RawMessage `json:"source_message_ids" gorm:"column:source_message_ids"`
+	ThroughMessageID int64           `json:"through_message_id" gorm:"column:through_message_id"`
 	Status           string          `json:"status" gorm:"column:status;default:pending"`
+	DueAt            *time.Time      `json:"due_at" gorm:"column:due_at"`
+	AttemptCount     int             `json:"attempt_count" gorm:"column:attempt_count"`
+	LockedBy         string          `json:"locked_by" gorm:"column:locked_by"`
+	LockedAt         *time.Time      `json:"locked_at" gorm:"column:locked_at"`
+	LeaseExpiresAt   *time.Time      `json:"lease_expires_at" gorm:"column:lease_expires_at"`
 	ResultJSON       json.RawMessage `json:"result_json" gorm:"column:result_json"`
 	ErrorMessage     string          `json:"error_message" gorm:"column:error_message"`
 	CreatedAt        time.Time       `json:"created_at" gorm:"column:created_at"`
+	UpdatedAt        time.Time       `json:"updated_at" gorm:"column:updated_at"`
 	CompletedAt      *time.Time      `json:"completed_at" gorm:"column:completed_at"`
 }
 
@@ -59,6 +68,7 @@ type ExtractionJobRepository interface {
 	Create(ctx context.Context, job *ExtractionJob) error
 	Update(ctx context.Context, job *ExtractionJob) error
 	FindByID(ctx context.Context, ownerID, id int64) (*ExtractionJob, error)
+	FindByIdempotencyKey(ctx context.Context, ownerID int64, key string) (*ExtractionJob, error)
 	ListByStatus(ctx context.Context, ownerID int64, status string, limit int) ([]ExtractionJob, error)
 	ListPending(ctx context.Context, limit int) ([]ExtractionJob, error)
 }

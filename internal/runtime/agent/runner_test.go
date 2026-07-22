@@ -202,6 +202,9 @@ func TestRunnerResumeDoesNotDuplicateRecallOrPlanTraceSteps(t *testing.T) {
 	if result.Plan == nil || len(result.Reflection.RecalledIDs) != 1 {
 		t.Fatalf("resume still needs the checkpoint state in its result: %+v", result)
 	}
+	if len(result.Context.RuleRounds) == 0 {
+		t.Fatalf("resume must re-run per-round rule planning and compaction: %+v", result.Context)
+	}
 }
 
 func TestRunnerRevisesOnlyUnfinishedPlanAfterReflection(t *testing.T) {
@@ -492,7 +495,7 @@ func TestRunnerApprovalResumeRechecksDenyPolicy(t *testing.T) {
 	}
 }
 
-func TestRunnerCreatesCheckpointWhenContextIsCanceled(t *testing.T) {
+func TestRunnerDoesNotCreateCheckpointWhenContextIsCanceled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	runner := NewRunner(&fakeToolClient{})
@@ -509,17 +512,41 @@ func TestRunnerCreatesCheckpointWhenContextIsCanceled(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.StopReason != StopReasonCancelled || result.Checkpoint == nil {
-		t.Fatalf("expected canceled result with checkpoint, got %+v", result)
+	if result.StopReason != StopReasonCancelled || result.Checkpoint != nil {
+		t.Fatalf("cancelled runs must be terminal without a checkpoint, got %+v", result)
 	}
-	if len(result.Checkpoint.Messages) == 0 || result.Checkpoint.PendingToolCall != nil {
-		t.Fatalf("unexpected checkpoint: %+v", result.Checkpoint)
+}
+
+func TestRunnerCreatesV2CheckpointWhenPaused(t *testing.T) {
+	ctx, cancel := context.WithCancelCause(context.Background())
+	cancel(ErrRunPaused)
+	result, err := NewRunner(&fakeToolClient{}).Run(ctx, RunRequest{
+		OwnerID: 1, WorkflowID: 2, RunID: 3, NodeID: "agent_loop",
+		Model: "test-model", Task: "pause me", MaxIterations: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if result.Checkpoint.Metadata["node_id"] != "agent_loop" {
-		t.Fatalf("checkpoint metadata missing node_id: %+v", result.Checkpoint.Metadata)
+	if result.StopReason != StopReasonPaused || result.Checkpoint == nil || result.Checkpoint.SnapshotVersion != 2 {
+		t.Fatalf("expected resumable V2 pause checkpoint, got %+v", result)
 	}
-	if result.Checkpoint.Metadata["iteration"] != 0 || result.Checkpoint.Metadata["tool_calls"] != 0 {
-		t.Fatalf("checkpoint should preserve counters, got %+v", result.Checkpoint.Metadata)
+	if len(result.Checkpoint.BaseMessages) == 0 || len(result.Checkpoint.Steps) != len(result.Steps) {
+		t.Fatalf("pause checkpoint is incomplete: %+v", result.Checkpoint)
+	}
+}
+
+func TestRunnerRejectsDuplicateToolNamesBeforeLLMCall(t *testing.T) {
+	client := &fakeToolClient{}
+	_, err := NewRunner(client).Run(context.Background(), RunRequest{
+		Model: "test-model", Task: "test", Tools: []toolruntime.RuntimeTool{
+			&fakeRuntimeTool{name: "duplicate"}, &fakeRuntimeTool{name: " duplicate "},
+		},
+	})
+	if !errors.Is(err, ErrDuplicateToolName) {
+		t.Fatalf("expected duplicate tool error, got %v", err)
+	}
+	if len(client.requests) != 0 {
+		t.Fatalf("LLM must not be called when tools collide: %+v", client.requests)
 	}
 }
 
@@ -1005,7 +1032,7 @@ func TestContextAssemblerProducesContextTrace(t *testing.T) {
 	}
 }
 
-func TestRunnerRecordsPlanAndMarksPlanCompleted(t *testing.T) {
+func TestRunnerRecordsPlanAndEndsItUnverified(t *testing.T) {
 	client := &fakeToolClient{responses: []llm.ToolChatResponse{
 		{Message: llm.ChatMessage{Role: conversation.RoleAssistant, Content: "planned answer"}},
 	}}
@@ -1025,11 +1052,11 @@ func TestRunnerRecordsPlanAndMarksPlanCompleted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.StopReason != StopReasonPlanCompleted || result.Plan == nil || !result.Plan.Finished {
-		t.Fatalf("expected completed plan result, got %+v", result)
+	if result.StopReason != StopReasonFinalAnswer || result.Plan == nil || result.Plan.Finished || result.Plan.ExecutionState != "ended_unverified" {
+		t.Fatalf("expected unverified guided plan result, got %+v", result)
 	}
-	if result.Plan.Steps[0].Status != "completed" || result.Plan.Steps[1].Status != "completed" {
-		t.Fatalf("expected plan steps completed, got %+v", result.Plan.Steps)
+	if result.Plan.Steps[0].Status != "pending" || result.Plan.Steps[1].Status != "pending" {
+		t.Fatalf("unverified plan steps must remain pending, got %+v", result.Plan.Steps)
 	}
 	if len(result.Steps) == 0 || result.Steps[0].Type != StepTypePlan {
 		t.Fatalf("expected first step to be plan, got %+v", result.Steps)

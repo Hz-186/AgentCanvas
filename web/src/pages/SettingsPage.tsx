@@ -215,7 +215,7 @@ function ManagementPage({ view }: { view: ManagementView }) {
   const [selectedPackId, setSelectedPackId] = useState(0);
   const [packToolId, setPackToolId] = useState(0);
   const [mcpName, setMcpName] = useState('');
-  const [mcpTransport, setMcpTransport] = useState<'sse' | 'stdio'>('sse');
+  const [mcpTransport, setMcpTransport] = useState<'streamable_http' | 'stdio'>('streamable_http');
   const [mcpEndpoint, setMcpEndpoint] = useState('');
   const [mcpCommand, setMcpCommand] = useState('');
   const [mcpArgs, setMcpArgs] = useState('');
@@ -656,7 +656,7 @@ function ManagementPage({ view }: { view: ManagementView }) {
       const created = await settingsApi.tools.createMCPServer({
         name: mcpName,
         transport: mcpTransport,
-        endpoint_url: mcpTransport === 'sse' ? mcpEndpoint : undefined,
+        endpoint_url: mcpTransport === 'streamable_http' ? mcpEndpoint : undefined,
         command: mcpTransport === 'stdio' ? mcpCommand : undefined,
         args_json: mcpTransport === 'stdio' ? mcpArgs.split(/\s+/).map((item) => item.trim()).filter(Boolean) : [],
         env_json: {},
@@ -910,7 +910,7 @@ function ManagementPage({ view }: { view: ManagementView }) {
                       <h3 className="truncate">{server.name}</h3>
                       <StatusBadge tone={server.last_error ? 'bad' : server.discovered_at ? 'good' : 'neutral'}>{server.last_error ? '错误' : server.discovered_at ? '已发现' : '未刷新'}</StatusBadge>
                     </div>
-                    <p className="muted truncate">{server.transport === 'sse' ? server.endpoint_url : server.command}</p>
+                    <p className="muted truncate">{server.transport === 'streamable_http' ? server.endpoint_url : server.command}</p>
                     <p className="muted">发现时间 {formatDate(server.discovered_at)}</p>
                     {server.last_error ? <p className="error-text clamp-2">{server.last_error}</p> : null}
                     <div className="row-wrap">
@@ -1186,12 +1186,12 @@ function ManagementPage({ view }: { view: ManagementView }) {
         <form id="create-mcp-form" className="form-stack" onSubmit={(event) => void createMcpServer(event)}>
           <Field label="名称"><TextInput value={mcpName} onChange={(event) => setMcpName(event.target.value)} required /></Field>
           <Field label="Transport">
-            <Select value={mcpTransport} onChange={(event) => setMcpTransport(event.target.value as 'sse' | 'stdio')}>
-              <option value="sse">SSE</option>
+            <Select value={mcpTransport} onChange={(event) => setMcpTransport(event.target.value as 'streamable_http' | 'stdio')}>
+              <option value="streamable_http">Streamable HTTP</option>
               <option value="stdio">stdio</option>
             </Select>
           </Field>
-          {mcpTransport === 'sse' ? (
+          {mcpTransport === 'streamable_http' ? (
             <Field label="Endpoint URL"><TextInput value={mcpEndpoint} onChange={(event) => setMcpEndpoint(event.target.value)} placeholder="http://localhost:3333" required /></Field>
           ) : (
             <>

@@ -22,6 +22,8 @@ import (
 var ErrNoToolCallingClient = errors.New("llm client does not support tool calling")
 var ErrMandatoryRuleBudgetExceeded = errors.New("mandatory rules exceed the configured input context budget")
 var ErrContextOverflow = errors.New("context exceeds the model input window")
+var ErrDuplicateToolName = errors.New("duplicate tool name")
+var ErrRunPaused = errors.New("run paused")
 
 type StepEmitter func(ctx context.Context, step RunStep) error
 
@@ -49,7 +51,13 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 		return nil, fmt.Errorf("agent task is required")
 	}
 	started := r.now()
-	result := &RunResult{StartedAt: started, Reflection: ReflectionTrace{RecalledIDs: append([]int64(nil), req.RecalledReflectionIDs...)}}
+	result := &RunResult{
+		StartedAt: started,
+		Steps:     append([]RunStep(nil), req.ResumeSteps...),
+		Reflection: ReflectionTrace{
+			RecalledIDs: append([]int64(nil), req.RecalledReflectionIDs...),
+		},
+	}
 	if req.MaxIterations <= 0 {
 		req.MaxIterations = 8
 	}
@@ -83,6 +91,9 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 		if name == "" {
 			continue
 		}
+		if _, exists := toolByName[name]; exists {
+			return nil, fmt.Errorf("%w: %s", ErrDuplicateToolName, name)
+		}
 		toolByName[name] = item
 		toolNames = append(toolNames, name)
 		tools = append(tools, llm.ToolDefinition{
@@ -115,7 +126,8 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 	contextTrace.CompiledHash = req.CompiledRuleHash
 	if contextTrace.CoreOverflow {
 		observability.RuleSystemMetrics.RecordMandatoryOverflow()
-		return nil, fmt.Errorf("%w: rule_set_id=%d version=%s mandatory_tokens=%d budget_tokens=%d deficit_tokens=%d", ErrMandatoryRuleBudgetExceeded, req.RuleSetID, req.RuleSetVersion, contextTrace.MandatoryTokens, contextTrace.MandatoryBudgetTokens, contextTrace.MandatoryDeficitTokens)
+		return nil, fmt.Errorf("%w: rule_set_id=%d version=%s mandatory_tokens=%d budget_tokens=%d deficit_tokens=%d",
+			ErrMandatoryRuleBudgetExceeded, req.RuleSetID, req.RuleSetVersion, contextTrace.MandatoryTokens, contextTrace.MandatoryBudgetTokens, contextTrace.MandatoryDeficitTokens)
 	}
 	messages := baseMessages
 	transcript := make([]llm.ChatMessage, 0, req.MaxIterations*2)
@@ -123,6 +135,9 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 	// Plans guide the model through context; they do not drive a step scheduler.
 	if req.Plan != nil && len(req.Plan.Steps) > 0 {
 		plan := clonePlan(req.Plan)
+		if plan.ExecutionState == "" {
+			plan.ExecutionState = "active"
+		}
 		result.Plan = &plan
 		if len(req.ResumeMessages) == 0 {
 			planJSON, _ := json.Marshal(plan)
@@ -141,13 +156,26 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 	result.Context = contextTrace
 	if len(req.ResumeMessages) == 0 && len(req.RecalledReflectionIDs) > 0 {
 		recalledJSON, _ := json.Marshal(req.RecalledReflectionIDs)
-		step := r.appendStep(result, RunStep{Type: StepTypeReflectionRecall, Content: fmt.Sprintf("Recalled %d prior reflection(s).", len(req.RecalledReflectionIDs)), OutputJSON: recalledJSON, ProviderID: r.ProviderID, Model: r.ModelName})
+		step := r.appendStep(result, RunStep{
+			Type: StepTypeReflectionRecall,
+			Content: fmt.Sprintf("Recalled %d prior reflection(s).",
+				len(req.RecalledReflectionIDs)),
+			OutputJSON: recalledJSON,
+			ProviderID: r.ProviderID,
+			Model:      r.ModelName,
+		})
 		_ = r.emit(ctx, step)
 	}
 	startIteration := 0
 	startToolCalls := 0
 	if len(req.ResumeMessages) > 0 {
-		messages = req.ResumeMessages
+		if len(req.ResumeBaseMessages) > 0 {
+			baseMessages = append([]llm.ChatMessage(nil), req.ResumeBaseMessages...)
+		} else {
+			baseMessages = append([]llm.ChatMessage(nil), req.ResumeMessages...)
+		}
+		transcript = append([]llm.ChatMessage(nil), req.ResumeTranscript...)
+		messages = assembleRoundMessages(baseMessages, nil, transcript)
 		startIteration = req.ResumeIteration
 		startToolCalls = req.ResumeToolCalls
 		result.Iterations = startIteration
@@ -161,15 +189,21 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 		}
 		unresolved := findUnresolvedToolCalls(messages, toolByName)
 		if len(unresolved) > 0 {
+			messageCountBeforeTools := len(messages)
 			stepStart := len(result.Steps)
 			stop, updatedMessages := r.executeToolBatch(ctx, req, result, messages, unresolved, toolByName, toolHooks, contextTrace, toolNames, req.ResumeApprovedToolCallIDs)
 			messages = updatedMessages
+			if len(updatedMessages) > messageCountBeforeTools {
+				transcript = append(transcript, updatedMessages[messageCountBeforeTools:]...)
+			}
 			if !stop {
 				if feedback := r.maybeReflect(ctx, req, result, result.Steps[stepStart:]); feedback != nil {
 					messages = append(messages, *feedback)
+					transcript = append(transcript, *feedback)
 				}
 			}
 			if stop {
+				hydrateCheckpoint(result.Checkpoint, baseMessages, transcript, result.Steps, messages)
 				return finish(result, r.now()), nil
 			}
 		}
@@ -178,14 +212,16 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 	for iteration := startIteration; iteration < req.MaxIterations; iteration++ {
 		if err := ctx.Err(); err != nil {
 			result = finishWithContext(result, err, r.now())
-			if errors.Is(err, context.Canceled) {
+			if errors.Is(context.Cause(ctx), ErrRunPaused) {
+				result.StopReason = StopReasonPaused
 				result.Checkpoint = checkpointFromMessages(
 					req, messages, contextTrace, toolNames, nil,
 					result.StopReason, result.Iterations, result.ToolCalls, result.Plan)
+				hydrateCheckpoint(result.Checkpoint, baseMessages, transcript, result.Steps, messages)
 			}
 			return result, nil
 		}
-		if len(req.ResumeMessages) == 0 {
+		{
 			compactedRuntime, compactUsage, runtimeCompaction := r.compactRuntimeTranscript(ctx, req, baseMessages, transcript, tools)
 			transcript = compactedRuntime
 			result.Usage = addUsage(result.Usage, compactUsage)
@@ -269,14 +305,24 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 		if err != nil {
 			if errors.Is(err, context.Canceled) {
 				result = finishWithContext(result, err, r.now())
-				result.Checkpoint = checkpointFromMessages(
-					req, messages, contextTrace, toolNames, nil,
-					result.StopReason, result.Iterations, result.ToolCalls, result.Plan,
-				)
+				if errors.Is(context.Cause(ctx), ErrRunPaused) {
+					result.StopReason = StopReasonPaused
+					result.Checkpoint = checkpointFromMessages(
+						req, messages, contextTrace, toolNames, nil,
+						result.StopReason, result.Iterations, result.ToolCalls, result.Plan,
+					)
+					hydrateCheckpoint(result.Checkpoint, baseMessages, transcript, result.Steps, messages)
+				}
 				return result, nil
 			}
 			result.StopReason = StopReasonLLMError
-			step := r.appendStep(result, RunStep{Type: StepTypeError, Error: err.Error(), LatencyMS: latencyMS, ProviderID: r.ProviderID, Model: r.ModelName})
+			step := r.appendStep(result, RunStep{
+				Type:       StepTypeError,
+				Error:      err.Error(),
+				LatencyMS:  latencyMS,
+				ProviderID: r.ProviderID,
+				Model:      r.ModelName,
+			})
 			_ = r.emit(ctx, step)
 			return finish(result, r.now()), err
 		}
@@ -304,12 +350,11 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 		})
 		_ = r.emit(ctx, step)
 		if len(assistant.ToolCalls) == 0 {
-			// A final model response completes the plan without per-step verification.
+			// A final model response ends a guided plan without claiming verification.
 			result.FinalAnswer = assistant.Content
 			result.StopReason = StopReasonFinalAnswer
 			if result.Plan != nil {
-				result.Plan.Finish()
-				result.StopReason = StopReasonPlanCompleted
+				result.Plan.EndUnverified()
 			}
 			finalStep := r.appendStep(result,
 				RunStep{
@@ -328,21 +373,18 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 		stepStart := len(result.Steps)
 		stop, updatedMessages := r.executeToolBatch(ctx, req, result, messages, assistant.ToolCalls, toolByName, toolHooks, contextTrace, toolNames, nil)
 		messages = updatedMessages
-		if len(req.ResumeMessages) == 0 {
-			transcript = append(transcript, assistant)
-			if len(updatedMessages) > messageCountBeforeTools {
-				transcript = append(transcript, updatedMessages[messageCountBeforeTools:]...)
-			}
+		transcript = append(transcript, assistant)
+		if len(updatedMessages) > messageCountBeforeTools {
+			transcript = append(transcript, updatedMessages[messageCountBeforeTools:]...)
 		}
 		if !stop {
 			if feedback := r.maybeReflect(ctx, req, result, result.Steps[stepStart:]); feedback != nil {
 				messages = append(messages, *feedback)
-				if len(req.ResumeMessages) == 0 {
-					transcript = append(transcript, *feedback)
-				}
+				transcript = append(transcript, *feedback)
 			}
 		}
 		if stop {
+			hydrateCheckpoint(result.Checkpoint, baseMessages, transcript, result.Steps, messages)
 			return finish(result, r.now()), nil
 		}
 	}
@@ -553,23 +595,51 @@ func (r *Runner) executeToolBatch(
 		if result.ToolCalls+len(prepared) >= req.MaxToolCalls {
 			result.StopReason = StopReasonMaxToolCalls
 			result.FinalAnswer = "Agent stopped because max_tool_calls was exceeded."
-			step := r.appendStep(result, RunStep{Type: StepTypeFinalAnswer, Role: conversation.RoleAssistant, Content: result.FinalAnswer, ProviderID: r.ProviderID, Model: r.ModelName})
+			step := r.appendStep(result, RunStep{
+				Type:       StepTypeFinalAnswer,
+				Role:       conversation.RoleAssistant,
+				Content:    result.FinalAnswer,
+				ProviderID: r.ProviderID,
+				Model:      r.ModelName,
+			})
 			_ = r.emit(ctx, step)
 			return true, messages
 		}
-		toolStep := r.appendStep(result, RunStep{Type: StepTypeToolCall, ToolCallID: call.ID, ToolName: call.Name, ArgumentsJSON: call.Arguments, ProviderID: r.ProviderID, Model: r.ModelName})
+		toolStep := r.appendStep(result, RunStep{
+			Type:          StepTypeToolCall,
+			ToolCallID:    call.ID,
+			ToolName:      call.Name,
+			ArgumentsJSON: call.Arguments,
+			ProviderID:    r.ProviderID,
+			Model:         r.ModelName,
+		})
 		_ = r.emit(ctx, toolStep)
 		toolImpl, ok := toolByName[call.Name]
 		if !ok {
 			result.StopReason = StopReasonToolNameNotFound
 			errMessage := fmt.Sprintf("tool %s is not available", call.Name)
 			messages = append(messages, toolMessage(call.ID, errMessage))
-			step := r.appendStep(result, RunStep{Type: StepTypeToolResult, ToolCallID: call.ID, ToolName: call.Name, Content: errMessage, IsError: true, ProviderID: r.ProviderID, Model: r.ModelName})
+			step := r.appendStep(result, RunStep{
+				Type:       StepTypeToolResult,
+				ToolCallID: call.ID,
+				ToolName:   call.Name,
+				Content:    errMessage,
+				IsError:    true,
+				ProviderID: r.ProviderID,
+				Model:      r.ModelName,
+			})
 			_ = r.emit(ctx, step)
 			continue
 		}
 		metadata := toolruntime.MetadataOf(toolImpl)
-		pre := toolHooks.BeforeToolUse(ctx, hooks.PreToolUseRequest{ToolCallID: call.ID, ToolName: call.Name, Arguments: call.Arguments, Metadata: metadata, Policy: req.ToolPolicy})
+		// whether first time or second time
+		pre := toolHooks.BeforeToolUse(ctx, hooks.PreToolUseRequest{
+			ToolCallID: call.ID,
+			ToolName:   call.Name,
+			Arguments:  call.Arguments,
+			Metadata:   metadata,
+			Policy:     req.ToolPolicy,
+		})
 		result.HookTrace = appendHookTrace(result.HookTrace, call.Name, pre.Traces)
 		if pre.Approval != nil && !slices.Contains(approvedToolCallIDs, call.ID) {
 			for i := range prepared {
@@ -577,22 +647,51 @@ func (r *Runner) executeToolBatch(
 					prepared[i].execCancel()
 				}
 			}
-			approval := &Approval{ToolCallID: pre.Approval.ToolCallID, ToolName: pre.Approval.ToolName, RiskLevel: pre.Approval.RiskLevel, Reason: pre.Approval.Reason, Metadata: pre.Approval.Metadata}
+			approval := &Approval{
+				ToolCallID: pre.Approval.ToolCallID,
+				ToolName:   pre.Approval.ToolName,
+				RiskLevel:  pre.Approval.RiskLevel,
+				Reason:     pre.Approval.Reason,
+				Metadata:   pre.Approval.Metadata,
+			}
 			result.StopReason = StopReasonWaitingHuman
 			result.FinalAnswer = "Agent is waiting for human approval before executing tool " + call.Name + "."
 			result.Approval = approval
 			pending := call
-			result.Checkpoint = checkpointFromMessages(req, messages, contextTrace, toolNames, &pending, StopReasonWaitingHuman, result.Iterations, result.ToolCalls, result.Plan)
+			result.Checkpoint = checkpointFromMessages(req, messages, contextTrace,
+				toolNames, &pending, StopReasonWaitingHuman, result.Iterations, result.ToolCalls, result.Plan)
 			result.Checkpoint.Metadata["approved_tool_call_ids"] = append([]string(nil), approvedToolCallIDs...)
-			approvalStep := r.appendStep(result, RunStep{Type: StepTypeApproval, ToolCallID: call.ID, ToolName: call.Name, Content: approval.Reason, ProviderID: r.ProviderID, Model: r.ModelName})
+			approvalStep := r.appendStep(result, RunStep{
+				Type:       StepTypeApproval,
+				ToolCallID: call.ID,
+				ToolName:   call.Name,
+				Content:    approval.Reason,
+				ProviderID: r.ProviderID,
+				Model:      r.ModelName,
+			})
 			_ = r.emit(ctx, approvalStep)
-			finalStep := r.appendStep(result, RunStep{Type: StepTypeFinalAnswer, Role: conversation.RoleAssistant, Content: result.FinalAnswer, ProviderID: r.ProviderID, Model: r.ModelName})
+			finalStep := r.appendStep(result, RunStep{
+				Type:       StepTypeFinalAnswer,
+				Role:       conversation.RoleAssistant,
+				Content:    result.FinalAnswer,
+				ProviderID: r.ProviderID,
+				Model:      r.ModelName,
+			})
 			_ = r.emit(ctx, finalStep)
 			return true, messages
 		}
 		if pre.Denied != nil {
 			messages = append(messages, toolMessage(call.ID, pre.Denied.Error()))
-			step := r.appendStep(result, RunStep{Type: StepTypeToolResult, ToolCallID: call.ID, ToolName: call.Name, Content: pre.Denied.Error(), IsError: true, Error: pre.Denied.Error(), ProviderID: r.ProviderID, Model: r.ModelName})
+			step := r.appendStep(result, RunStep{
+				Type:       StepTypeToolResult,
+				ToolCallID: call.ID,
+				ToolName:   call.Name,
+				Content:    pre.Denied.Error(),
+				IsError:    true,
+				Error:      pre.Denied.Error(),
+				ProviderID: r.ProviderID,
+				Model:      r.ModelName,
+			})
 			_ = r.emit(ctx, step)
 			continue
 		}
@@ -600,7 +699,13 @@ func (r *Runner) executeToolBatch(
 		if execCtx == nil {
 			execCtx = ctx
 		}
-		prepared = append(prepared, preparedToolCall{call: call, tool: toolImpl, metadata: metadata, execCtx: execCtx, execCancel: pre.Cancel})
+		prepared = append(prepared, preparedToolCall{
+			call:       call,
+			tool:       toolImpl,
+			metadata:   metadata,
+			execCtx:    execCtx,
+			execCancel: pre.Cancel,
+		})
 	}
 
 	allDelegation := len(prepared) > 1
@@ -609,7 +714,17 @@ func (r *Runner) executeToolBatch(
 	}
 	execute := func(item *preparedToolCall) {
 		started := r.now()
-		item.result, item.err = item.tool.Execute(item.execCtx, toolruntime.ToolRunContext{OwnerID: req.OwnerID, WorkflowID: req.WorkflowID, AgentID: req.AgentID, AgentReleaseID: req.AgentReleaseID, RunID: req.RunID, NodeID: req.NodeID, CallDepth: req.CallDepth, WorkflowCallChain: append([]int64(nil), req.WorkflowCallChain...), ConversationID: req.ConversationID}, item.call.Arguments)
+		item.result, item.err = item.tool.Execute(item.execCtx, toolruntime.ToolRunContext{
+			OwnerID:           req.OwnerID,
+			WorkflowID:        req.WorkflowID,
+			AgentID:           req.AgentID,
+			AgentReleaseID:    req.AgentReleaseID,
+			RunID:             req.RunID,
+			NodeID:            req.NodeID,
+			CallDepth:         req.CallDepth,
+			WorkflowCallChain: append([]int64(nil), req.WorkflowCallChain...),
+			ConversationID:    req.ConversationID,
+		}, item.call.Arguments)
 		if item.execCancel != nil {
 			item.execCancel()
 		}
@@ -648,10 +763,27 @@ func (r *Runner) executeToolBatch(
 	for i := range prepared {
 		item := &prepared[i]
 		content := toolResultContent(item.result, item.err)
-		post := toolHooks.AfterToolUse(ctx, hooks.PostToolUseRequest{ToolName: item.call.Name, Content: content, OutputJSON: item.result.ContentJSON, Metadata: item.metadata, Policy: req.ToolPolicy})
+		post := toolHooks.AfterToolUse(ctx, hooks.PostToolUseRequest{
+			ToolName:   item.call.Name,
+			Content:    content,
+			OutputJSON: item.result.ContentJSON,
+			Metadata:   item.metadata,
+			Policy:     req.ToolPolicy,
+		})
 		result.HookTrace = appendHookTrace(result.HookTrace, item.call.Name, post.Traces)
 		messages = append(messages, toolMessage(item.call.ID, post.Content))
-		step := r.appendStep(result, RunStep{Type: StepTypeToolResult, ToolCallID: item.call.ID, ToolName: item.call.Name, Content: post.Content, OutputJSON: post.OutputJSON, Compressed: post.Compressed, IsError: item.result.IsError, LatencyMS: item.latencyMS, ProviderID: r.ProviderID, Model: r.ModelName})
+		step := r.appendStep(result, RunStep{
+			Type:       StepTypeToolResult,
+			ToolCallID: item.call.ID,
+			ToolName:   item.call.Name,
+			Content:    post.Content,
+			OutputJSON: post.OutputJSON,
+			Compressed: post.Compressed,
+			IsError:    item.result.IsError,
+			LatencyMS:  item.latencyMS,
+			ProviderID: r.ProviderID,
+			Model:      r.ModelName,
+		})
 		if item.err != nil {
 			step.Error = item.err.Error()
 		}
@@ -660,7 +792,17 @@ func (r *Runner) executeToolBatch(
 	return false, messages
 }
 
-func checkpointFromMessages(req RunRequest, messages []llm.ChatMessage, contextTrace ContextTrace, toolNames []string, pending *llm.ToolCall, stopReason string, iteration int, toolCalls int, plan *Plan) *Checkpoint {
+func checkpointFromMessages(
+	req RunRequest,
+	messages []llm.ChatMessage,
+	contextTrace ContextTrace,
+	toolNames []string,
+	pending *llm.ToolCall,
+	stopReason string,
+	iteration int,
+	toolCalls int,
+	plan *Plan,
+) *Checkpoint {
 	var checkpointPlan *Plan
 	if plan != nil {
 		// Snapshot the plan to preserve resume semantics.
@@ -668,6 +810,7 @@ func checkpointFromMessages(req RunRequest, messages []llm.ChatMessage, contextT
 		checkpointPlan = &cloned
 	}
 	return &Checkpoint{
+		SnapshotVersion:       2,
 		Messages:              append([]llm.ChatMessage(nil), messages...),
 		MessagesSummary:       summarizeMessages(messages),
 		PendingToolCall:       pending,
@@ -696,6 +839,18 @@ func checkpointFromMessages(req RunRequest, messages []llm.ChatMessage, contextT
 		CompiledRules:  req.CompiledRules,
 		CustomRules:    append([]rules.Rule(nil), req.CustomRules...),
 	}
+}
+
+func hydrateCheckpoint(checkpoint *Checkpoint, baseMessages, transcript []llm.ChatMessage, steps []RunStep, messages []llm.ChatMessage) {
+	if checkpoint == nil {
+		return
+	}
+	checkpoint.SnapshotVersion = 2
+	checkpoint.BaseMessages = append([]llm.ChatMessage(nil), baseMessages...)
+	checkpoint.Transcript = append([]llm.ChatMessage(nil), transcript...)
+	checkpoint.Steps = append([]RunStep(nil), steps...)
+	checkpoint.Messages = append([]llm.ChatMessage(nil), messages...)
+	checkpoint.MessagesSummary = summarizeMessages(messages)
 }
 
 func toolMessage(toolCallID, content string) llm.ChatMessage {
@@ -830,7 +985,13 @@ func appendHookTrace(existing []HookTrace, toolName string, traces []hooks.Trace
 		if trace.Hook == "" && trace.Decision == "" {
 			continue
 		}
-		existing = append(existing, HookTrace{Hook: trace.Hook, Action: trace.Stage + ":" + trace.Decision, Reason: trace.Reason, ToolName: toolName, Metadata: map[string]any{"compressed": trace.Compressed}})
+		existing = append(existing, HookTrace{
+			Hook:     trace.Hook,
+			Action:   trace.Stage + ":" + trace.Decision,
+			Reason:   trace.Reason,
+			ToolName: toolName,
+			Metadata: map[string]any{"compressed": trace.Compressed},
+		})
 	}
 	return existing
 }

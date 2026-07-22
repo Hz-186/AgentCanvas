@@ -3,6 +3,8 @@ package workflow_usecase
 import (
 	"context"
 	"sync"
+
+	runtimeagent "agentcanvas/internal/runtime/agent"
 )
 
 type runCancelRegistry struct {
@@ -18,7 +20,7 @@ const (
 )
 
 type runCancelEntry struct {
-	cancel context.CancelFunc
+	cancel context.CancelCauseFunc
 	reason runCancelReason
 }
 
@@ -26,7 +28,7 @@ func newRunCancelRegistry() *runCancelRegistry {
 	return &runCancelRegistry{cancels: make(map[int64]runCancelEntry)}
 }
 
-func (r *runCancelRegistry) Register(runID int64, cancel context.CancelFunc) {
+func (r *runCancelRegistry) Register(runID int64, cancel context.CancelCauseFunc) {
 	if r == nil || runID <= 0 || cancel == nil {
 		return
 	}
@@ -74,7 +76,11 @@ func (r *runCancelRegistry) cancelWithReason(runID int64, reason runCancelReason
 	}
 	r.mu.Unlock()
 	if ok && entry.cancel != nil {
-		entry.cancel()
+		cause := context.Canceled
+		if reason == runCancelReasonPause {
+			cause = runtimeagent.ErrRunPaused
+		}
+		entry.cancel(cause)
 	}
 	return ok
 }

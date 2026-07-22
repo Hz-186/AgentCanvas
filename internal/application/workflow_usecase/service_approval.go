@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -151,25 +152,36 @@ func (s *Service) persistRunCheckpointArtifacts(
 	}
 	if checkpoint != nil {
 		messagesJSON, _ := json.Marshal(checkpoint.Messages)
-		stepsJSON, _ := json.Marshal(output["steps"])
+		steps := checkpoint.Steps
+		if len(steps) == 0 {
+			stepsJSONFallback, _ := json.Marshal(output["steps"])
+			_ = json.Unmarshal(stepsJSONFallback, &steps)
+		}
+		stepsJSON, _ := json.Marshal(steps)
 		pendingJSON, _ := json.Marshal(checkpoint.PendingToolCall)
+		runtimeCheckpointJSON, err := json.Marshal(checkpoint)
+		if err != nil {
+			return fmt.Errorf("marshal runtime checkpoint: %w", err)
+		}
 		contextJSON, _ := json.Marshal(checkpointContextEnvelope{
 			Context:  checkpoint.Context,
 			Metadata: checkpoint.Metadata,
 		})
 		item := &workflow.WorkflowCheckpoint{
-			OwnerID:             run.OwnerID,
-			WorkflowID:          run.WorkflowID,
-			RunID:               run.ID,
-			NodeID:              checkpointNodeID(checkpoint),
-			Status:              checkpointStatus,
-			MessagesJSON:        messagesJSON,
-			MessagesSummary:     checkpoint.MessagesSummary,
-			StepsJSON:           stepsJSON,
-			PendingToolCallJSON: pendingJSON,
-			ContextJSON:         contextJSON,
-			ToolRegistryHash:    checkpointToolRegistryHash(checkpoint),
-			ToolPolicyHash:      checkpointToolPolicyHash(checkpoint),
+			OwnerID:               run.OwnerID,
+			WorkflowID:            run.WorkflowID,
+			RunID:                 run.ID,
+			NodeID:                checkpointNodeID(checkpoint),
+			Status:                checkpointStatus,
+			SnapshotVersion:       checkpoint.SnapshotVersion,
+			RuntimeCheckpointJSON: runtimeCheckpointJSON,
+			MessagesJSON:          messagesJSON,
+			MessagesSummary:       checkpoint.MessagesSummary,
+			StepsJSON:             stepsJSON,
+			PendingToolCallJSON:   pendingJSON,
+			ContextJSON:           contextJSON,
+			ToolRegistryHash:      checkpointToolRegistryHash(checkpoint),
+			ToolPolicyHash:        checkpointToolPolicyHash(checkpoint),
 		}
 		if item.NodeID == "" {
 			item.NodeID = "agent"
@@ -194,7 +206,9 @@ func checkpointToolRegistryHash(checkpoint *runtimeagent.Checkpoint) string {
 		return ""
 	}
 	if len(checkpoint.ToolNames) > 0 {
-		return stableJSONHash(checkpoint.ToolNames)
+		names := append([]string(nil), checkpoint.ToolNames...)
+		slices.Sort(names)
+		return stableJSONHash(names)
 	}
 	if checkpoint.Metadata != nil {
 		if hash, _ := checkpoint.Metadata["tool_registry_hash"].(string); hash != "" {
@@ -305,10 +319,10 @@ func (s *Service) resumeRunFromCheckpoint(ctx context.Context, run *workflow.Run
 			runID:   run.ID,
 		}}
 	started := time.Now().UTC()
-	execCtx, cancel := context.WithCancel(ctx)
+	execCtx, cancel := context.WithCancelCause(ctx)
 	s.runCancels.Register(run.ID, cancel)
 	defer func() {
-		cancel()
+		cancel(nil)
 		s.runCancels.Unregister(run.ID)
 	}()
 	output, execErr := node.Resume(
@@ -318,6 +332,7 @@ func (s *Service) resumeRunFromCheckpoint(ctx context.Context, run *workflow.Run
 			Approved:      decision != nil && decision.Status == workflow.ApprovalStatusApproved,
 			RejectionNote: approvalDecisionNote(decision),
 		})
+	cancelReason := s.runCancels.Reason(run.ID)
 	finished := time.Now().UTC()
 	run.FinishedAt = &finished
 	run.LatencyMS += int(finished.Sub(started).Milliseconds())
@@ -327,7 +342,10 @@ func (s *Service) resumeRunFromCheckpoint(ctx context.Context, run *workflow.Run
 		rc.ExecutedNodes[nodeSpec.ID] = true
 		rc.NodeLatencies[nodeSpec.ID] = int(finished.Sub(started).Milliseconds())
 	}
-	if errors.Is(execErr, context.Canceled) || execCtx.Err() == context.Canceled {
+	if cancelReason == runCancelReasonPause {
+		run.Status = workflow.RunStatusPaused
+		run.ErrorMessage = "paused by user request"
+	} else if errors.Is(execErr, context.Canceled) || execCtx.Err() == context.Canceled {
 		run.Status = workflow.RunStatusCancelled
 		run.ErrorMessage = context.Canceled.Error()
 	} else if execErr != nil {
@@ -359,10 +377,18 @@ func (s *Service) resumeRunFromCheckpoint(ctx context.Context, run *workflow.Run
 
 func (s *Service) resumeAgentLoopNode() runtimenode.AgentLoopNode {
 	workspaceRoot, _ := os.Getwd()
-	return runtimenode.AgentLoopNode{AgentNode: runtimenode.AgentNode{LLM: s.llm.(llm.ToolCallingClient), Providers: s, Tools: s.toolRegistry, ToolPacks: s.toolPacks, Skills: s.skills, Audits: s.audits, MCPServers: s.mcpServers, Retriever: s.retriever, MemoryRetriever: s.memoryRetriever, Memories: s.memories, MemoryLogs: s.memoryLogs, WorkingMemory: s.workingMemory, OnExtractTrigger: s.triggerMemoryExtraction, WorkflowCaller: s, InlineAgentCaller: s, Profiles: s, RuleSets: s, Reflections: s.reflections, MessageHistory: s.messages, Compactions: s.compactions, ArchivalVecStore: s.archivalVecStore, ContextIndex: s.contextIndex, Embedder: s.embedder, WorkspaceRoot: workspaceRoot}}
+	return runtimenode.AgentLoopNode{AgentNode: runtimenode.AgentNode{LLM: s.llm.(llm.ToolCallingClient), Providers: s, Tools: s.toolRegistry, ToolPacks: s.toolPacks, Skills: s.skills, Audits: s.audits, MCPServers: s.mcpServers, Retriever: s.retriever, MemoryReader: s.memoryReader, MemoryRetriever: s.memoryRetriever, Memories: s.memories, MemoryLogs: s.memoryLogs, WorkingMemory: s.workingMemory, OnExtractTrigger: s.triggerMemoryExtraction, WorkflowCaller: s, InlineAgentCaller: s, Profiles: s, RuleSets: s, Reflections: s.reflections, MessageHistory: s.messages, Compactions: s.compactions, ArchivalVecStore: s.archivalVecStore, ContextIndex: s.contextIndex, Embedder: s.embedder, WorkspaceRoot: workspaceRoot}}
 }
 
 func decodeRuntimeCheckpoint(stored *workflow.WorkflowCheckpoint, decision *workflow.ApprovalRequest) (*runtimeagent.Checkpoint, error) {
+	if stored != nil && len(stored.RuntimeCheckpointJSON) > 0 && string(stored.RuntimeCheckpointJSON) != "null" {
+		checkpoint, err := runtimeagent.CheckpointFromJSON(stored.RuntimeCheckpointJSON)
+		if err != nil {
+			return nil, fmt.Errorf("%w: invalid runtime checkpoint", agenterrors.ErrInvalidInput)
+		}
+		decorateDecodedCheckpoint(checkpoint, stored, decision, false)
+		return checkpoint, nil
+	}
 	var messages []llm.ChatMessage
 	if err := json.Unmarshal(stored.MessagesJSON, &messages); err != nil {
 		return nil, fmt.Errorf("%w: invalid checkpoint messages", agenterrors.ErrInvalidInput)
@@ -380,14 +406,25 @@ func decodeRuntimeCheckpoint(stored *workflow.WorkflowCheckpoint, decision *work
 	if len(stored.ContextJSON) > 0 {
 		contextTrace, metadata = decodeCheckpointContext(stored.ContextJSON)
 	}
-	metadata["node_id"] = stored.NodeID
-	metadata["approval_status"] = approvalDecisionStatus(decision)
-	metadata["approval_note"] = approvalDecisionNote(decision)
-	metadata["checkpoint_id"] = stored.ID
-	metadata["checkpoint_state"] = stored.Status
-	metadata["tool_registry_hash"] = stored.ToolRegistryHash
-	metadata["tool_policy_hash"] = stored.ToolPolicyHash
-	return &runtimeagent.Checkpoint{Messages: messages, MessagesSummary: stored.MessagesSummary, PendingToolCall: pending, Context: contextTrace, Metadata: metadata}, nil
+	checkpoint := &runtimeagent.Checkpoint{SnapshotVersion: 1, Messages: messages, MessagesSummary: stored.MessagesSummary, PendingToolCall: pending, Context: contextTrace, Metadata: metadata}
+	decorateDecodedCheckpoint(checkpoint, stored, decision, true)
+	return checkpoint, nil
+}
+
+func decorateDecodedCheckpoint(checkpoint *runtimeagent.Checkpoint, stored *workflow.WorkflowCheckpoint, decision *workflow.ApprovalRequest, legacy bool) {
+	if checkpoint.Metadata == nil {
+		checkpoint.Metadata = map[string]any{}
+	}
+	checkpoint.Metadata["node_id"] = stored.NodeID
+	checkpoint.Metadata["approval_status"] = approvalDecisionStatus(decision)
+	checkpoint.Metadata["approval_note"] = approvalDecisionNote(decision)
+	checkpoint.Metadata["checkpoint_id"] = stored.ID
+	checkpoint.Metadata["checkpoint_state"] = stored.Status
+	checkpoint.Metadata["tool_registry_hash"] = stored.ToolRegistryHash
+	checkpoint.Metadata["tool_policy_hash"] = stored.ToolPolicyHash
+	if legacy {
+		checkpoint.Metadata["legacy_degraded"] = true
+	}
 }
 
 type checkpointContextEnvelope struct {

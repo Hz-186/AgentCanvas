@@ -2,6 +2,7 @@ package redis
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -141,5 +142,29 @@ func TestWorkingMemoryRepo_DifferentConversations(t *testing.T) {
 	}
 	if got2.RoundNumber != 5 {
 		t.Fatalf("unexpected round for conv 2: %d", got2.RoundNumber)
+	}
+}
+
+func TestWorkingMemoryRepo_UpdateSerializesConcurrentRounds(t *testing.T) {
+	repo, _, cleanup := newTestWMRepo(t)
+	defer cleanup()
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := repo.Update(context.Background(), 100, 1, func(wm *memory.WorkingMemory) error {
+				wm.RoundNumber++
+				return nil
+			})
+			if err != nil {
+				t.Errorf("Update() error = %v", err)
+			}
+		}()
+	}
+	wg.Wait()
+	got, err := repo.Get(context.Background(), 100, 1)
+	if err != nil || got == nil || got.RoundNumber != 20 {
+		t.Fatalf("concurrent updates lost rounds: got=%+v err=%v", got, err)
 	}
 }

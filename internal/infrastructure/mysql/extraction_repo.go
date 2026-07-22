@@ -7,6 +7,7 @@ import (
 	"agentcanvas/internal/domain/memory"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type ExtractionJobRepository struct{ db *gorm.DB }
@@ -24,13 +25,25 @@ func (r *ExtractionJobRepository) Create(ctx context.Context, job *memory.Extrac
 
 func (r *ExtractionJobRepository) Update(ctx context.Context, job *memory.ExtractionJob) error {
 	now := time.Now().UTC()
-	job.CompletedAt = &now
+	job.UpdatedAt = now
+	if job.Status == string(memory.ExtractionCompleted) || job.Status == string(memory.ExtractionFailed) || job.Status == "superseded" {
+		job.CompletedAt = &now
+	}
 	return r.db.WithContext(ctx).Save(job).Error
 }
 
 func (r *ExtractionJobRepository) FindByID(ctx context.Context, ownerID, id int64) (*memory.ExtractionJob, error) {
 	var job memory.ExtractionJob
 	err := r.db.WithContext(ctx).Where("owner_id = ? AND id = ?", ownerID, id).First(&job).Error
+	if err != nil {
+		return nil, err
+	}
+	return &job, nil
+}
+
+func (r *ExtractionJobRepository) FindByIdempotencyKey(ctx context.Context, ownerID int64, key string) (*memory.ExtractionJob, error) {
+	var job memory.ExtractionJob
+	err := r.db.WithContext(ctx).Where("owner_id = ? AND idempotency_key = ?", ownerID, key).First(&job).Error
 	if err != nil {
 		return nil, err
 	}
@@ -53,8 +66,9 @@ func (r *ExtractionJobRepository) ListPending(ctx context.Context, limit int) ([
 	}
 	var jobs []memory.ExtractionJob
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		staleBefore := time.Now().UTC().Add(-10 * time.Minute)
-		if err := tx.Where("status = ? OR (status = ? AND created_at < ?)", memory.ExtractionPending, memory.ExtractionRunning, staleBefore).
+		now := time.Now().UTC()
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE", Options: "SKIP LOCKED"}).
+			Where("((status IN ?) AND (due_at IS NULL OR due_at <= ?)) OR (status = ? AND lease_expires_at < ?)", []string{string(memory.ExtractionPending), "analyzed"}, now, memory.ExtractionRunning, now).
 			Order("id ASC").Limit(limit).Find(&jobs).Error; err != nil {
 			return err
 		}
@@ -65,10 +79,13 @@ func (r *ExtractionJobRepository) ListPending(ctx context.Context, limit int) ([
 		for i := range jobs {
 			ids = append(ids, jobs[i].ID)
 			jobs[i].Status = string(memory.ExtractionRunning)
+			jobs[i].AttemptCount++
+			lease := now.Add(2 * time.Minute)
+			jobs[i].LeaseExpiresAt = &lease
 		}
 		return tx.Model(&memory.ExtractionJob{}).
 			Where("id IN ?", ids).
-			Update("status", string(memory.ExtractionRunning)).Error
+			Updates(map[string]any{"status": string(memory.ExtractionRunning), "attempt_count": gorm.Expr("attempt_count + 1"), "lease_expires_at": now.Add(2 * time.Minute)}).Error
 	})
 	return jobs, err
 }

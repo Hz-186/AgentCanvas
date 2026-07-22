@@ -17,6 +17,9 @@ func TestQueueConfigDefaults(t *testing.T) {
 	if cfg.MemoryDream.TriggerEveryNTurns != 5 || cfg.MemoryDream.IdleTimeoutSeconds != 180 {
 		t.Fatalf("unexpected memory dream defaults: %+v", cfg.MemoryDream)
 	}
+	if cfg.WorkingMemory.TTLSeconds != 86400 || cfg.WorkingMemory.LockTTLMS != 5000 || cfg.WorkingMemory.LockWaitMS != 500 {
+		t.Fatalf("unexpected working memory defaults: %+v", cfg.WorkingMemory)
+	}
 	if cfg.NATS.URL == "" || cfg.NATS.Stream == "" || cfg.NATS.Subject == "" || cfg.NATS.Durable == "" || cfg.NATS.AckWaitSeconds == 0 {
 		t.Fatalf("unexpected nats defaults: %+v", cfg.NATS)
 	}

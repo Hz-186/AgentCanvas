@@ -32,9 +32,30 @@ func (f *fakeDreamMessages) ListActiveByConversation(context.Context, int64, int
 	return append([]conversation.Message(nil), f.items...), nil
 }
 
+func (f *fakeDreamMessages) ListActiveThrough(_ context.Context, _, _, throughMessageID int64) ([]conversation.Message, error) {
+	items := make([]conversation.Message, 0, len(f.items))
+	for _, item := range f.items {
+		if item.ID <= throughMessageID {
+			items = append(items, item)
+		}
+	}
+	return items, nil
+}
+
 func (f *fakeDreamMessages) ArchiveConversationMessages(context.Context, int64, int64, time.Time) (int64, error) {
 	f.archivedCall++
 	return int64(len(f.items)), nil
+}
+
+func (f *fakeDreamMessages) ArchiveConversationMessagesThrough(_ context.Context, _, _, throughMessageID int64, _ time.Time) (int64, error) {
+	f.archivedCall++
+	var count int64
+	for _, item := range f.items {
+		if item.ID <= throughMessageID {
+			count++
+		}
+	}
+	return count, nil
 }
 
 type fakeDreamMemoryRepo struct{ items map[int64]*memory.Memory }
@@ -44,6 +65,14 @@ func (f *fakeDreamMemoryRepo) Create(_ context.Context, item *memory.Memory) err
 		f.items = map[int64]*memory.Memory{}
 	}
 	if item.ID == 0 {
+		if item.SourceKey != nil {
+			for _, existing := range f.items {
+				if existing.SourceKey != nil && *existing.SourceKey == *item.SourceKey {
+					item.ID = existing.ID
+					return nil
+				}
+			}
+		}
 		item.ID = int64(len(f.items) + 1)
 	}
 	clone := *item
@@ -58,6 +87,15 @@ func (f *fakeDreamMemoryRepo) Update(_ context.Context, item *memory.Memory) err
 func (f *fakeDreamMemoryRepo) FindByID(_ context.Context, ownerID, id int64) (*memory.Memory, error) {
 	clone := *f.items[id]
 	return &clone, nil
+}
+func (f *fakeDreamMemoryRepo) FindByIDs(ctx context.Context, ownerID int64, ids []int64) ([]memory.Memory, error) {
+	items := make([]memory.Memory, 0, len(ids))
+	for _, id := range ids {
+		if item, ok := f.items[id]; ok && item.OwnerID == ownerID {
+			items = append(items, *item)
+		}
+	}
+	return items, nil
 }
 func (f *fakeDreamMemoryRepo) List(context.Context, int64, []string, *int64, int, int) ([]memory.Memory, error) {
 	return nil, nil
@@ -107,5 +145,25 @@ func TestDreamWorkerHandlesConversationAndArchivesMessages(t *testing.T) {
 	}
 	if len(repo.items) < 3 {
 		t.Fatalf("expected core and archival memories to be stored, got %+v", repo.items)
+	}
+}
+
+func TestDreamWorkerJobRetryIsIdempotent(t *testing.T) {
+	repo := &fakeDreamMemoryRepo{items: map[int64]*memory.Memory{}}
+	messages := &fakeDreamMessages{items: []conversation.Message{{ID: 1, OwnerID: 1, ConversationID: 10, Role: conversation.RoleUser, Content: "remember this"}}}
+	jobs := &fakeExtractionRepo{jobs: map[int64]*memory.ExtractionJob{7: {
+		ID: 7, OwnerID: 1, ConversationID: 10, ThroughMessageID: 1, Status: string(memory.ExtractionPending),
+	}}}
+	worker := NewDreamWorker(fakeDreamChatClient{content: `{"core_updates":[{"memory_type":"profile_memory","content":"fact","action":"create"}],"archival_inserts":[{"content":"episode"}]}`}, nil, repo, nil, messages, nil, nil, DreamConfig{Enabled: true, Model: "dream-model"}, "worker", jobs)
+	payload := DreamPayload{JobID: 7, OwnerID: 1, ConversationID: 10}
+	if err := worker.HandleDreamJob(context.Background(), payload); err != nil {
+		t.Fatal(err)
+	}
+	count := len(repo.items)
+	if err := worker.HandleDreamJob(context.Background(), payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(repo.items) != count || messages.archivedCall != 1 || jobs.jobs[7].Status != string(memory.ExtractionCompleted) {
+		t.Fatalf("dream retry duplicated effects: memories=%d archived=%d job=%+v", len(repo.items), messages.archivedCall, jobs.jobs[7])
 	}
 }

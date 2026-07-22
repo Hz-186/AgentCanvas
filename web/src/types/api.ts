@@ -197,7 +197,7 @@ export interface MCPServer {
   id: number;
   owner_id: number;
   name: string;
-  transport: 'sse' | 'stdio';
+  transport: 'streamable_http' | 'stdio';
   endpoint_url: string;
   command: string;
   args_json?: string[] | unknown;

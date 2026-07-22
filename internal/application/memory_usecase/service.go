@@ -113,6 +113,49 @@ func (s *Service) Get(ctx context.Context, ownerID, id int64) (*memory.Memory, e
 	return item, nil
 }
 
+func (s *Service) GetMany(ctx context.Context, ownerID int64, ids []int64) ([]memory.Memory, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	byID := make(map[int64]memory.Memory, len(ids))
+	misses := make([]int64, 0, len(ids))
+	seenMiss := map[int64]bool{}
+	for _, id := range ids {
+		if id <= 0 {
+			continue
+		}
+		if s.cache != nil {
+			if items, hit, err := s.cache.Get(ctx, ownerID, fmt.Sprintf("id:%d", id)); err == nil && hit && len(items) > 0 {
+				byID[id] = items[0]
+				continue
+			}
+		}
+		if !seenMiss[id] {
+			seenMiss[id] = true
+			misses = append(misses, id)
+		}
+	}
+	if len(misses) > 0 {
+		items, err := s.memories.FindByIDs(ctx, ownerID, misses)
+		if err != nil {
+			return nil, err
+		}
+		for _, item := range items {
+			byID[item.ID] = item
+			if s.cache != nil {
+				_ = s.cache.Set(ctx, ownerID, fmt.Sprintf("id:%d", item.ID), []memory.Memory{item}, 5*time.Minute)
+			}
+		}
+	}
+	ordered := make([]memory.Memory, 0, len(ids))
+	for _, id := range ids {
+		if item, ok := byID[id]; ok {
+			ordered = append(ordered, item)
+		}
+	}
+	return ordered, nil
+}
+
 func (s *Service) Update(ctx context.Context, ownerID, id int64, req UpdateMemoryRequest) (*memory.Memory, error) {
 	item, err := s.memories.FindByID(ctx, ownerID, id)
 	if err != nil {

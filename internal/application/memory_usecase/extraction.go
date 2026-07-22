@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"agentcanvas/internal/domain/memory"
 )
@@ -13,14 +14,62 @@ type ExtractionService struct {
 	memories    memory.Repository
 	extractions memory.ExtractionJobRepository
 	merges      memory.MergeLogRepository
+	messages    DreamMessageRepository
 }
 
-func NewExtractionService(memories memory.Repository, extractions memory.ExtractionJobRepository, merges memory.MergeLogRepository) *ExtractionService {
-	return &ExtractionService{
+func NewExtractionService(memories memory.Repository, extractions memory.ExtractionJobRepository, merges memory.MergeLogRepository, messageRepositories ...DreamMessageRepository) *ExtractionService {
+	service := &ExtractionService{
 		memories:    memories,
 		extractions: extractions,
 		merges:      merges,
 	}
+	if len(messageRepositories) > 0 {
+		service.messages = messageRepositories[0]
+	}
+	return service
+}
+
+func (s *ExtractionService) ScheduleDream(ctx context.Context, ownerID, conversationID int64, roundNumber int, cfg DreamConfig) (*memory.ExtractionJob, error) {
+	if s == nil || s.extractions == nil || s.messages == nil || ownerID <= 0 || conversationID <= 0 {
+		return nil, nil
+	}
+	messages, err := s.messages.ListActiveByConversation(ctx, ownerID, conversationID)
+	if err != nil || len(messages) == 0 {
+		return nil, err
+	}
+	through := messages[len(messages)-1].ID
+	ids := make([]int64, 0, len(messages))
+	for _, item := range messages {
+		ids = append(ids, item.ID)
+	}
+	idsJSON, _ := json.Marshal(ids)
+	now := time.Now().UTC()
+	due := now.Add(cfg.IdleTimeout)
+	reason := "idle"
+	if cfg.TriggerEveryNTurns > 0 && roundNumber > 0 && roundNumber%cfg.TriggerEveryNTurns == 0 {
+		due = now
+		reason = "turns"
+	}
+	key := fmt.Sprintf("dream:%d:%d:%d", ownerID, conversationID, through)
+	if existing, findErr := s.extractions.FindByIdempotencyKey(ctx, ownerID, key); findErr == nil {
+		if existing.DueAt == nil || due.Before(*existing.DueAt) {
+			existing.DueAt = &due
+			existing.TriggerReason = reason
+			if err := s.extractions.Update(ctx, existing); err != nil {
+				return nil, err
+			}
+		}
+		return existing, nil
+	}
+	job := &memory.ExtractionJob{OwnerID: ownerID, ConversationID: conversationID, IdempotencyKey: key, TriggerReason: reason,
+		SourceMessageIDs: idsJSON, ThroughMessageID: through, Status: string(memory.ExtractionPending), DueAt: &due}
+	if err := s.extractions.Create(ctx, job); err != nil {
+		if existing, findErr := s.extractions.FindByIdempotencyKey(ctx, ownerID, key); findErr == nil {
+			return existing, nil
+		}
+		return nil, err
+	}
+	return job, nil
 }
 
 func (s *ExtractionService) StartExtraction(ctx context.Context, ownerID, conversationID int64, messageIDs []int64) (int64, error) {
@@ -52,11 +101,22 @@ func (s *ExtractionService) ProcessNextDream(ctx context.Context, dream *DreamWo
 		return false, err
 	}
 	job := jobs[0]
-	if err := dream.HandleDreamJob(ctx, DreamPayload{OwnerID: job.OwnerID, ConversationID: job.ConversationID}); err != nil {
-		_ = s.FailExtraction(ctx, job.ID, job.OwnerID, err.Error())
+	if err := dream.HandleDreamJob(ctx, DreamPayload{JobID: job.ID, OwnerID: job.OwnerID, ConversationID: job.ConversationID}); err != nil {
+		job.ErrorMessage = err.Error()
+		job.LeaseExpiresAt = nil
+		if job.AttemptCount >= 5 {
+			job.Status = string(memory.ExtractionFailed)
+		} else if len(job.ResultJSON) > 0 {
+			job.Status = "analyzed"
+		} else {
+			job.Status = string(memory.ExtractionPending)
+			retryAt := time.Now().UTC().Add(time.Duration(job.AttemptCount) * time.Minute)
+			job.DueAt = &retryAt
+		}
+		_ = s.extractions.Update(ctx, &job)
 		return true, err
 	}
-	return true, s.CompleteExtraction(ctx, job.ID, job.OwnerID, nil)
+	return true, nil
 }
 
 func (s *ExtractionService) findOpenJob(ctx context.Context, ownerID, conversationID int64) (int64, bool) {

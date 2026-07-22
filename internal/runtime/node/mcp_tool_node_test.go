@@ -43,7 +43,7 @@ func TestMCPToolNodeRejectsDisabledServer(t *testing.T) {
 		ID:        10,
 		OwnerID:   1,
 		Name:      "disabled",
-		Transport: tool.MCPTransportSSE,
+		Transport: tool.MCPTransportStreamableHTTP,
 		Status:    tool.MCPStatusDisabled,
 	}}}
 	if _, err := node.Run(context.Background(), &engine.RunContext{OwnerID: 1}, nil, json.RawMessage(`{"server_id":10,"tool_name":"echo"}`)); err == nil {
@@ -137,8 +137,8 @@ func TestAgentLoopNodePlanExecuteReturnsPlanTrace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if output["stop_reason"] != "plan_completed" {
-		t.Fatalf("expected plan_completed, got %+v", output)
+	if output["stop_reason"] != "final_answer" {
+		t.Fatalf("expected final_answer, got %+v", output)
 	}
 	if output["plan"] == nil {
 		t.Fatalf("expected plan in output: %+v", output)
@@ -154,8 +154,10 @@ func TestAgentLoopNodeRepairsStructuredOutputWithReflection(t *testing.T) {
 		{Message: llm.ChatMessage{Role: "assistant", Content: "not json"}},
 		{Message: llm.ChatMessage{Role: "assistant", Content: `{"answer":"fixed"}`}},
 	}}
-	node := AgentLoopNode{AgentNode: AgentNode{LLM: client, Providers: fakeProviderLoader{}}}
-	output, err := node.Run(context.Background(), &engine.RunContext{OwnerID: 1, WorkflowID: 2, RunID: 3, CurrentNodeID: "agent"}, engine.NodeInput{"query": "hello"}, json.RawMessage(`{
+	working := &fakeWMRepo{}
+	conversationID := int64(9)
+	node := AgentLoopNode{AgentNode: AgentNode{LLM: client, Providers: fakeProviderLoader{}, WorkingMemory: working}}
+	output, err := node.Run(context.Background(), &engine.RunContext{OwnerID: 1, WorkflowID: 2, RunID: 3, ConversationID: &conversationID, CurrentNodeID: "agent"}, engine.NodeInput{"query": "hello"}, json.RawMessage(`{
 		"provider_id":1,
 		"model":"test-model",
 		"task_template":"{{sys.query}}",
@@ -169,6 +171,10 @@ func TestAgentLoopNodeRepairsStructuredOutputWithReflection(t *testing.T) {
 	}
 	if output["final_answer"] != `{"answer":"fixed"}` {
 		t.Fatalf("expected repaired final answer, got %+v", output)
+	}
+	wm, _ := working.Get(context.Background(), 1, conversationID)
+	if wm == nil || wm.ContextSummary != `{"answer":"fixed"}` || wm.RoundNumber != 1 {
+		t.Fatalf("working memory must use repaired final answer: %+v", wm)
 	}
 	structured, ok := output["structured_output"].(map[string]any)
 	if !ok || structured["answer"] != "fixed" {

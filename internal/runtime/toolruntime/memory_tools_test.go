@@ -77,6 +77,15 @@ func (r *fakeMemoryRepo) FindByID(ctx context.Context, ownerID, id int64) (*memo
 	clone := *item
 	return &clone, nil
 }
+func (r *fakeMemoryRepo) FindByIDs(ctx context.Context, ownerID int64, ids []int64) ([]memory.Memory, error) {
+	items := make([]memory.Memory, 0, len(ids))
+	for _, id := range ids {
+		if item, err := r.FindByID(ctx, ownerID, id); err == nil {
+			items = append(items, *item)
+		}
+	}
+	return items, nil
+}
 
 func (r *fakeMemoryRepo) List(ctx context.Context, ownerID int64, memoryTypes []string, conversationID *int64, limit, offset int) ([]memory.Memory, error) {
 	items := make([]memory.Memory, 0, len(r.items))

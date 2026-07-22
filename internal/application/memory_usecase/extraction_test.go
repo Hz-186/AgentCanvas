@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
+	"agentcanvas/internal/domain/conversation"
 	"agentcanvas/internal/domain/memory"
 )
 
@@ -45,6 +47,16 @@ func (r *fakeExtractionRepo) FindByID(ctx context.Context, ownerID, id int64) (*
 	}
 	clone := *job
 	return &clone, nil
+}
+
+func (r *fakeExtractionRepo) FindByIdempotencyKey(ctx context.Context, ownerID int64, key string) (*memory.ExtractionJob, error) {
+	for _, job := range r.jobs {
+		if job.OwnerID == ownerID && job.IdempotencyKey == key {
+			clone := *job
+			return &clone, nil
+		}
+	}
+	return nil, errNotFound
 }
 
 func (r *fakeExtractionRepo) ListByStatus(ctx context.Context, ownerID int64, status string, limit int) ([]memory.ExtractionJob, error) {
@@ -143,6 +155,21 @@ func TestExtractionService_StartExtraction(t *testing.T) {
 	}
 	if extRepo.created[0].ConversationID != 1 {
 		t.Fatalf("unexpected conversation: %d", extRepo.created[0].ConversationID)
+	}
+}
+
+func TestExtractionServiceScheduleDreamUsesTurnAndIdleConfig(t *testing.T) {
+	extractions := &fakeExtractionRepo{}
+	messages := &fakeDreamMessages{items: []conversation.Message{{ID: 10, OwnerID: 1, ConversationID: 2, Content: "hello"}}}
+	service := NewExtractionService(&fakeMemRepo{}, extractions, &fakeMergeRepo{}, messages)
+	cfg := DreamConfig{Enabled: true, TriggerEveryNTurns: 5, IdleTimeout: 3 * time.Minute}
+	idleJob, err := service.ScheduleDream(context.Background(), 1, 2, 4, cfg)
+	if err != nil || idleJob == nil || idleJob.TriggerReason != "idle" || idleJob.DueAt == nil || !idleJob.DueAt.After(time.Now().UTC()) {
+		t.Fatalf("unexpected idle job: job=%+v err=%v", idleJob, err)
+	}
+	turnJob, err := service.ScheduleDream(context.Background(), 1, 2, 5, cfg)
+	if err != nil || turnJob.ID != idleJob.ID || turnJob.TriggerReason != "turns" || turnJob.DueAt.After(time.Now().UTC().Add(time.Second)) {
+		t.Fatalf("turn trigger did not advance durable job: job=%+v err=%v", turnJob, err)
 	}
 }
 

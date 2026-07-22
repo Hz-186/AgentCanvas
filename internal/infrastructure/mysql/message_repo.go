@@ -59,6 +59,14 @@ func (r *MessageRepository) ListActiveByConversation(ctx context.Context, ownerI
 	return messages, err
 }
 
+func (r *MessageRepository) ListActiveThrough(ctx context.Context, ownerID, conversationID, throughMessageID int64) ([]conversation.Message, error) {
+	var messages []conversation.Message
+	err := r.db.WithContext(ctx).
+		Where("owner_id = ? AND conversation_id = ? AND archived_at IS NULL AND id <= ?", ownerID, conversationID, throughMessageID).
+		Order("id ASC").Find(&messages).Error
+	return messages, err
+}
+
 func (r *MessageRepository) ListByRun(ctx context.Context, ownerID, runID int64) ([]conversation.Message, error) {
 	var messages []conversation.Message
 	err := r.db.WithContext(ctx).
@@ -69,16 +77,20 @@ func (r *MessageRepository) ListByRun(ctx context.Context, ownerID, runID int64)
 }
 
 func (r *MessageRepository) ArchiveConversationMessages(ctx context.Context, ownerID, conversationID int64, archivedAt time.Time) (int64, error) {
+	return r.ArchiveConversationMessagesThrough(ctx, ownerID, conversationID, 1<<62, archivedAt)
+}
+
+func (r *MessageRepository) ArchiveConversationMessagesThrough(ctx context.Context, ownerID, conversationID, throughMessageID int64, archivedAt time.Time) (int64, error) {
 	if archivedAt.IsZero() {
 		archivedAt = time.Now().UTC()
 	}
 	var affected int64
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var messages []conversation.Message
-		if err := tx.Where("owner_id = ? AND conversation_id = ? AND archived_at IS NULL", ownerID, conversationID).Find(&messages).Error; err != nil {
+		if err := tx.Where("owner_id = ? AND conversation_id = ? AND archived_at IS NULL AND id <= ?", ownerID, conversationID, throughMessageID).Find(&messages).Error; err != nil {
 			return err
 		}
-		result := tx.Model(&conversation.Message{}).Where("owner_id = ? AND conversation_id = ? AND archived_at IS NULL", ownerID, conversationID).
+		result := tx.Model(&conversation.Message{}).Where("owner_id = ? AND conversation_id = ? AND archived_at IS NULL AND id <= ?", ownerID, conversationID, throughMessageID).
 			Updates(map[string]any{"archived_at": archivedAt})
 		if result.Error != nil {
 			return result.Error

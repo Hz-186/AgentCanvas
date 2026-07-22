@@ -26,12 +26,14 @@ type PlanStep struct {
 type Plan struct {
 	// Steps is the plan snapshot for the run.
 	Steps []PlanStep `json:"steps"`
-	// Finished means the model returned a final answer.
+	// Finished is reserved for verified step completion; guided plans end unverified.
 	Finished bool `json:"finished"`
 	// Version increments after each successful revision.
 	Version int `json:"version,omitempty"`
 	// RevisionReason records the feedback that triggered the revision.
 	RevisionReason string `json:"revision_reason,omitempty"`
+	// ExecutionState distinguishes a guided plan ending from verified completion.
+	ExecutionState string `json:"execution_state,omitempty"`
 }
 
 type Planner struct {
@@ -97,6 +99,7 @@ Do NOT use tool calls in this response — output only the JSON plan.`, p.maxSte
 	if plan.Version <= 0 {
 		plan.Version = 1
 	}
+	plan.ExecutionState = "active"
 	return &plan, nil
 }
 
@@ -132,6 +135,7 @@ Return only {"steps":[{"number":1,"description":"...","status":"completed|pendin
 	}
 	revised.Version = current.Version + 1
 	revised.RevisionReason = feedback
+	revised.ExecutionState = "active"
 	return &revised, resp.Usage, nil
 }
 
@@ -241,6 +245,14 @@ func (p *Plan) Finish() {
 		}
 	}
 	p.Finished = true
+}
+
+func (p *Plan) EndUnverified() {
+	if p == nil {
+		return
+	}
+	p.ExecutionState = "ended_unverified"
+	p.Finished = false
 }
 
 func (p *Planner) appendStep(result *RunResult, step RunStep) RunStep {

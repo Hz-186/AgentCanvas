@@ -58,6 +58,10 @@ func (r *SharedAgentRuntime) ConfigureSessionSearch(index conversation.MessageSe
 	r.node.SessionSearch = index
 }
 
+func (r *SharedAgentRuntime) ConfigureMemoryReader(reader MemoryBatchReader) {
+	r.node.MemoryReader = reader
+}
+
 func NewSharedAgentRuntime(deps Deps) (*SharedAgentRuntime, error) {
 	if deps.ToolCalling == nil {
 		return nil, fmt.Errorf("tool calling client is required")

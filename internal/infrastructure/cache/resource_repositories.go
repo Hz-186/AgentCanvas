@@ -2,6 +2,8 @@ package cache
 
 import (
 	"context"
+	"fmt"
+	"time"
 
 	"agentcanvas/internal/domain/dialog"
 	"agentcanvas/internal/domain/knowledge"
@@ -197,6 +199,38 @@ func (r *MemoryRepository) Create(ctx context.Context, item *memory.Memory) erro
 	}
 	r.changed(ctx, item.OwnerID)
 	return nil
+}
+func (r *MemoryRepository) FindByIDs(ctx context.Context, ownerID int64, ids []int64) ([]memory.Memory, error) {
+	byID := make(map[int64]memory.Memory, len(ids))
+	misses := make([]int64, 0, len(ids))
+	for _, id := range ids {
+		if r.memoryCache != nil {
+			if items, hit, err := r.memoryCache.Get(ctx, ownerID, fmt.Sprintf("id:%d", id)); err == nil && hit && len(items) > 0 {
+				byID[id] = items[0]
+				continue
+			}
+		}
+		misses = append(misses, id)
+	}
+	if len(misses) > 0 {
+		items, err := r.Repository.FindByIDs(ctx, ownerID, misses)
+		if err != nil {
+			return nil, err
+		}
+		for _, item := range items {
+			byID[item.ID] = item
+			if r.memoryCache != nil {
+				_ = r.memoryCache.Set(ctx, ownerID, fmt.Sprintf("id:%d", item.ID), []memory.Memory{item}, 5*time.Minute)
+			}
+		}
+	}
+	ordered := make([]memory.Memory, 0, len(ids))
+	for _, id := range ids {
+		if item, ok := byID[id]; ok {
+			ordered = append(ordered, item)
+		}
+	}
+	return ordered, nil
 }
 func (r *MemoryRepository) Update(ctx context.Context, item *memory.Memory) error {
 	if err := r.Repository.Update(ctx, item); err != nil {

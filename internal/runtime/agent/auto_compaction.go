@@ -69,7 +69,14 @@ func (r *Runner) compactInitialHistory(ctx context.Context, req RunRequest, tool
 		payload = append(payload, llm.ChatMessage{Role: blocks[index].Role, Content: blocks[index].Content})
 	}
 	summary, usage, err := r.summarizeContext(ctx, req, payload)
-	trace := &CompactionTrace{Trigger: "auto", Scope: scope, Status: "completed", BeforeTokens: measured, Threshold: limit, ModelCalled: true}
+	trace := &CompactionTrace{
+		Trigger:      "auto",
+		Scope:        scope,
+		Status:       "completed",
+		BeforeTokens: measured,
+		Threshold:    limit,
+		ModelCalled:  true,
+	}
 	if err != nil || strings.TrimSpace(summary) == "" {
 		trace.Status = "fallback"
 		if err != nil {

@@ -44,6 +44,15 @@ func (r *runtimeRepoFake) FindByID(_ context.Context, ownerID, id int64) (*Memor
 	item := *r.items[id]
 	return &item, nil
 }
+func (r *runtimeRepoFake) FindByIDs(ctx context.Context, ownerID int64, ids []int64) ([]Memory, error) {
+	items := make([]Memory, 0, len(ids))
+	for _, id := range ids {
+		if item, err := r.FindByID(ctx, ownerID, id); err == nil {
+			items = append(items, *item)
+		}
+	}
+	return items, nil
+}
 func (r *runtimeRepoFake) List(context.Context, int64, []string, *int64, int, int) ([]Memory, error) {
 	return nil, nil
 }

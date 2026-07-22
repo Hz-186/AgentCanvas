@@ -19,6 +19,9 @@ type ResumeRequest struct {
 
 func BuildResumeRequest(req ResumeRequest) (*RunRequest, error) {
 	messages := req.Checkpoint.Messages
+	baseMessages := append([]llm.ChatMessage(nil), req.Checkpoint.BaseMessages...)
+	transcript := append([]llm.ChatMessage(nil), req.Checkpoint.Transcript...)
+	resumeSteps := append([]RunStep(nil), req.Checkpoint.Steps...)
 	iteration := 0
 	toolCalls := 0
 	approvedToolCallIDs := metadataStringSlice(req.Checkpoint.Metadata["approved_tool_call_ids"])
@@ -45,8 +48,16 @@ func BuildResumeRequest(req ResumeRequest) (*RunRequest, error) {
 			ToolCallID: req.Checkpoint.PendingToolCall.ID,
 			Content:    rejectionContent,
 		})
+		if req.Checkpoint.SnapshotVersion >= 2 {
+			transcript = append(transcript, messages[len(messages)-1])
+		}
 		pending := req.Checkpoint.PendingToolCall
 		_ = pending
+	}
+	if len(baseMessages) == 0 {
+		// Legacy checkpoints only stored the already assembled message list.
+		baseMessages = append([]llm.ChatMessage(nil), messages...)
+		transcript = nil
 	}
 	contextBlocks := req.ContextBlocks
 	if len(contextBlocks) == 0 {
@@ -111,6 +122,9 @@ func BuildResumeRequest(req ResumeRequest) (*RunRequest, error) {
 		ToolHookChain:                   req.ToolHookChain,
 		Tools:                           req.Tools,
 		ResumeMessages:                  messages,
+		ResumeBaseMessages:              baseMessages,
+		ResumeTranscript:                transcript,
+		ResumeSteps:                     resumeSteps,
 		ResumeIteration:                 iteration,
 		ResumeToolCalls:                 toolCalls,
 		ResumeApprovedToolCallIDs:       approvedToolCallIDs,

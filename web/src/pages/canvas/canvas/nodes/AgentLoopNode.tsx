@@ -6,7 +6,7 @@ import { NodeWrapper } from './NodeWrapper';
 
 const modeLabels: Record<string, string> = {
   react: 'ReAct',
-  plan_execute: 'Plan & Execute',
+  plan_execute: 'Plan Guided',
 };
 
 export function AgentLoopNode({ data, selected }: NodeProps<CanvasNode>) {

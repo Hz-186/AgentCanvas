@@ -7,15 +7,15 @@ import (
 )
 
 type WorkingMemory struct {
-	OwnerID        int64              `json:"owner_id"`
-	ConversationID int64              `json:"conversation_id"`
-	ActiveTask     *WorkingTask       `json:"active_task,omitempty"`
-	RecentFacts    []WorkingFact      `json:"recent_facts,omitempty"`
-	AttentionFocus string             `json:"attention_focus,omitempty"`
-	ContextSummary string             `json:"context_summary,omitempty"`
+	OwnerID        int64               `json:"owner_id"`
+	ConversationID int64               `json:"conversation_id"`
+	ActiveTask     *WorkingTask        `json:"active_task,omitempty"`
+	RecentFacts    []WorkingFact       `json:"recent_facts,omitempty"`
+	AttentionFocus string              `json:"attention_focus,omitempty"`
+	ContextSummary string              `json:"context_summary,omitempty"`
 	EntityMap      map[string]WMEntity `json:"entity_map,omitempty"`
-	RoundNumber    int                `json:"round_number"`
-	LastUpdated    time.Time          `json:"last_updated"`
+	RoundNumber    int                 `json:"round_number"`
+	LastUpdated    time.Time           `json:"last_updated"`
 }
 
 type WorkingTask struct {
@@ -90,6 +90,7 @@ func (wm *WorkingMemory) IsEmpty() bool {
 type WorkingMemoryRepository interface {
 	Get(ctx context.Context, ownerID, conversationID int64) (*WorkingMemory, error)
 	Save(ctx context.Context, wm *WorkingMemory) error
+	Update(ctx context.Context, ownerID, conversationID int64, mutate func(*WorkingMemory) error) (*WorkingMemory, error)
 	Delete(ctx context.Context, ownerID, conversationID int64) error
 }
 
@@ -97,6 +98,6 @@ type WorkingMemoryEvent struct {
 	StepType      string          `json:"step_type"`
 	Content       string          `json:"content,omitempty"`
 	ToolName      string          `json:"tool_name,omitempty"`
-	ArgumentsJSON json.RawMessage  `json:"arguments_json,omitempty"`
-	OutputJSON    json.RawMessage  `json:"output_json,omitempty"`
+	ArgumentsJSON json.RawMessage `json:"arguments_json,omitempty"`
+	OutputJSON    json.RawMessage `json:"output_json,omitempty"`
 }

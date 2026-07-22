@@ -341,7 +341,7 @@ export const settingsApi = {
     removePackItem: (packId: number, toolId: number) =>
       request<{ success: boolean }>(`/tool-packs/${packId}/items`, { method: 'DELETE', body: { tool_id: toolId } }),
     listMCPServers: () => api.get<MCPServer[]>('/mcp-servers'),
-    createMCPServer: (body: { name: string; transport: 'sse' | 'stdio'; endpoint_url?: string; command?: string; args_json?: string[]; env_json?: Record<string, string> }) =>
+    createMCPServer: (body: { name: string; transport: 'streamable_http' | 'stdio'; endpoint_url?: string; command?: string; args_json?: string[]; env_json?: Record<string, string> }) =>
       api.post<MCPServer>('/mcp-servers', body),
     updateMCPServer: (id: number, body: Partial<MCPServer>) => api.patch<MCPServer>(`/mcp-servers/${id}`, body),
     removeMCPServer: (id: number) => api.delete<{ success: boolean }>(`/mcp-servers/${id}`),

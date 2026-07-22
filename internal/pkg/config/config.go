@@ -16,6 +16,7 @@ type Config struct {
 	LLMCache        LLMCacheConfig        `yaml:"llm_cache"`
 	ResourceCache   ResourceCacheConfig   `yaml:"resource_cache"`
 	MemoryDream     MemoryDreamConfig     `yaml:"memory_dream"`
+	WorkingMemory   WorkingMemoryConfig   `yaml:"working_memory"`
 	NATS            NATSConfig            `yaml:"nats"`
 	ReflectionQueue ReflectionQueueConfig `yaml:"reflection_queue"`
 	AgentRuntime    AgentRuntimeConfig    `yaml:"agent_runtime"`
@@ -96,6 +97,12 @@ type MemoryDreamConfig struct {
 	EmbeddingBaseURL      string `yaml:"embedding_base_url"`
 	EmbeddingAPIKey       string `yaml:"embedding_api_key"`
 	EmbeddingModel        string `yaml:"embedding_model"`
+}
+
+type WorkingMemoryConfig struct {
+	TTLSeconds int `yaml:"ttl_seconds"`
+	LockTTLMS  int `yaml:"lock_ttl_ms"`
+	LockWaitMS int `yaml:"lock_wait_ms"`
 }
 
 type NATSConfig struct {
@@ -279,6 +286,15 @@ func (c *Config) setDefaults() {
 	}
 	if c.MemoryDream.IdleTimeoutSeconds == 0 {
 		c.MemoryDream.IdleTimeoutSeconds = 180
+	}
+	if c.WorkingMemory.TTLSeconds == 0 {
+		c.WorkingMemory.TTLSeconds = 86400
+	}
+	if c.WorkingMemory.LockTTLMS == 0 {
+		c.WorkingMemory.LockTTLMS = 5000
+	}
+	if c.WorkingMemory.LockWaitMS == 0 {
+		c.WorkingMemory.LockWaitMS = 500
 	}
 	if c.NATS.URL == "" {
 		c.NATS.URL = "nats://localhost:4222"

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	goredis "github.com/redis/go-redis/v9"
@@ -78,6 +79,8 @@ type RedisStreamQueue struct {
 	Group    string
 	Consumer string
 	Block    time.Duration
+	mu       sync.Mutex
+	inflight map[string]Job
 }
 
 func NewRedisStreamQueue(client *goredis.Client, stream, group, consumer string) *RedisStreamQueue {
@@ -94,7 +97,7 @@ func NewRedisStreamQueueWithClient(client RedisStreamClient, stream, group, cons
 	if consumer == "" {
 		consumer = "worker"
 	}
-	return &RedisStreamQueue{Client: client, Stream: stream, Group: group, Consumer: consumer, Block: time.Second}
+	return &RedisStreamQueue{Client: client, Stream: stream, Group: group, Consumer: consumer, Block: time.Second, inflight: map[string]Job{}}
 }
 
 func (q *RedisStreamQueue) Publish(ctx context.Context, job Job) error {
@@ -132,6 +135,9 @@ func (q *RedisStreamQueue) Claim(ctx context.Context, opts ClaimOptions) ([]Job,
 			return nil, err
 		}
 		jobs = append(jobs, job)
+		q.mu.Lock()
+		q.inflight[job.ID] = job
+		q.mu.Unlock()
 	}
 	return jobs, nil
 }
@@ -141,6 +147,9 @@ func (q *RedisStreamQueue) Ack(ctx context.Context, jobID string) error {
 		return err
 	}
 	_, err := q.Client.Ack(ctx, q.Stream, q.Group, jobID)
+	q.mu.Lock()
+	delete(q.inflight, jobID)
+	q.mu.Unlock()
 	return err
 }
 
@@ -148,11 +157,19 @@ func (q *RedisStreamQueue) Nack(ctx context.Context, jobID string, retryAt time.
 	if err := q.ensure(ctx); err != nil {
 		return err
 	}
+	q.mu.Lock()
+	job, ok := q.inflight[jobID]
+	delete(q.inflight, jobID)
+	q.mu.Unlock()
 	_, err := q.Client.Ack(ctx, q.Stream, q.Group, jobID)
 	if err != nil {
 		return err
 	}
-	return q.Publish(ctx, Job{ID: jobID, Type: "retry", AvailableAt: retryAt, Payload: map[string]any{"retry_of": jobID}})
+	if !ok {
+		return q.Publish(ctx, Job{ID: jobID, Type: "retry", AvailableAt: retryAt, Payload: map[string]any{"retry_of": jobID}})
+	}
+	job.AvailableAt = retryAt
+	return q.Publish(ctx, job)
 }
 
 func (q *RedisStreamQueue) ensure(ctx context.Context) error {

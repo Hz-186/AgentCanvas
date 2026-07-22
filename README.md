@@ -61,7 +61,7 @@ Agent 的执行能力不仅仅取决于模型本身，更取决于包裹在模�
 ```
 
 四层职责边界被严格划分，避免 token 消耗失控：
-- **Commands**：流程入口，控制 Agent 的执行生命周期（run → plan → execute → evaluate → reflect → resume），统一调度 ReAct / Plan-Execute、Supervisor 委派与持久化 Reflexion
+- **Commands**：流程入口，控制 Agent 的执行生命周期（run → plan → execute → evaluate → reflect → resume），统一调度 ReAct / Plan Guided、Supervisor 委派与持久化 Reflexion
 - **Skills**：领域能力封装，将可复用能力抽象为标准化模块，通过 `load_skill` / `skill_search` 工具按需加载
 - **Rules**：前馈约束，统一使用 `mandatory / optional` 强度和显式激活条件；Mandatory 始终注入，Optional 按优先级与 token 预算确定性加载
 - **Hooks**：反馈兜底，`preToolUse` / `postToolUse` 双环拦截，覆盖危险命令物理阻断 + 敏感字段脱敏 + 输出压缩
@@ -88,11 +88,11 @@ Agent Loop 的主执行模式为 `react` / `plan_execute`，默认 `react`。旧
                                                     └─ 注入 Tool Result → Next Iteration
 ```
 
-**关键参数**：默认 `MaxIterations=8`，`MaxToolCalls=16`。单次 LLM 调用可返回多个 tool_call，每个 tool 串行执行。
+**关键参数**：默认 `MaxIterations=8`，`MaxToolCalls=16`。单次 LLM 调用可返回多个 tool_call；普通工具串行执行，只有整批均为纯委派工具时才按 `MaxParallelTools` 受限并发。
 
 **主要停止原因**：`FinalAnswer` / `PlanCompleted` / `MaxIterations` / `MaxToolCalls` / `Timeout` / `Cancelled` / `Paused` / `WaitingHuman` / `LLMError` / `ToolNameNotFound` / `ReflectionFailed`
 
-#### 2. Plan-Execute 模式
+#### 2. Plan Guided 模式（兼容配置值 `plan_execute`）
 
 先规划后执行，分两阶段运行：
 
@@ -100,15 +100,15 @@ Agent Loop 的主执行模式为 `react` / `plan_execute`，默认 `react`。旧
 - `Planner.GeneratePlan()` 向 LLM 请求生成 3-8 步的 JSON 执行计划
 - 返回 `{steps: [{number, description, tool_name}], ...}`，所有步骤初始为 `pending`
 
-**阶段二 —— 执行计划**：
+**阶段二 —— 计划引导执行**：
 - `Plan.PlanContext()` 将计划作为 `pinned: true` 的系统提示注入上下文
-- 当 LLM 返回无 tool_call 的 final answer 时，`Plan.Finish()` 标记所有步骤完成并停止
+- 当 LLM 返回无 tool_call 的 final answer 时，运行以 `final_answer` 停止，并将计划标记为 `ended_unverified`；未被运行时验证的步骤继续保持 `pending`
 
 当工具硬失败触发结构化反思且返回 `action=replan` 时，Planner 会调用 `RevisePlan()` 只重写未完成部分。已完成步骤由运行时强制保留，模型不能把已执行的副作用步骤改回 `pending` 或静默删除。
 
 #### 3. Persistent Reflexion（持久化反思）
 
-Reflexion 是独立于事实记忆/用户偏好的经验域，默认以被动 `active` 策略同时接入 ReAct 与 Plan-Execute：
+Reflexion 是独立于事实记忆/用户偏好的经验域，默认以被动 `active` 策略同时接入 ReAct 与 Plan Guided：
 
 ```text
 Episodic Reflection Memory

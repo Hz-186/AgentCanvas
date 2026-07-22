@@ -5,7 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -36,14 +39,61 @@ func TestMCPStdioClientDiscoversAndCallsTool(t *testing.T) {
 	if output["content"] != "hello" {
 		t.Fatalf("unexpected output: %+v", output)
 	}
+	second, err := client.CallTool(ctx, "echo", json.RawMessage(`{"text":"again"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var secondOutput map[string]any
+	_ = json.Unmarshal(second.ContentJSON, &secondOutput)
+	if output["pid"] != secondOutput["pid"] {
+		t.Fatalf("stdio calls did not reuse one MCP session: first=%v second=%v", output["pid"], secondOutput["pid"])
+	}
 }
 
-func TestMCPToolRuntimeMetadataIncludesSSEHost(t *testing.T) {
+func TestMCPToolRuntimeMetadataIncludesHTTPHost(t *testing.T) {
 	client := NewMCPClient("remote", "https://mcp.example.com/sse")
 	tool := NewMCPToolRuntime(MCPToolDef{Name: "search"}, client)
 	metadata := MetadataOf(tool)
 	if len(metadata.AllowedHosts) != 1 || metadata.AllowedHosts[0] != "mcp.example.com" {
 		t.Fatalf("expected SSE host in metadata, got %+v", metadata)
+	}
+}
+
+func TestMCPStreamableHTTPInitializesListsAndCalls(t *testing.T) {
+	initialized := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request mcpJSONRPCRequest
+		_ = json.NewDecoder(r.Body).Decode(&request)
+		switch request.Method {
+		case "initialize":
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("MCP-Session-Id", "session-1")
+			_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": request.ID, "result": map[string]any{"protocolVersion": mcpProtocolVersion, "capabilities": map[string]any{"tools": map[string]any{}}, "serverInfo": map[string]any{"name": "test", "version": "1"}}})
+		case "notifications/initialized":
+			initialized = true
+			w.WriteHeader(http.StatusAccepted)
+		case "tools/list":
+			if !initialized || r.Header.Get("MCP-Session-Id") != "session-1" || r.Header.Get("MCP-Protocol-Version") != mcpProtocolVersion {
+				t.Errorf("missing negotiated MCP headers: %+v", r.Header)
+			}
+			w.Header().Set("Content-Type", "text/event-stream")
+			fmt.Fprintf(w, "data: {\"jsonrpc\":\"2.0\",\"id\":%d,\"result\":{\"tools\":[{\"name\":\"echo\",\"inputSchema\":{\"type\":\"object\"}}]}}\n\n", request.ID)
+		case "tools/call":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": request.ID, "result": map[string]any{"content": "ok"}})
+		default:
+			http.Error(w, "unexpected method", http.StatusBadRequest)
+		}
+	}))
+	defer server.Close()
+	client := NewMCPClient("remote", server.URL)
+	tools, err := client.Discover(context.Background())
+	if err != nil || len(tools) != 1 || string(tools[0].Parameters) != `{"type":"object"}` {
+		t.Fatalf("unexpected discovery: tools=%+v err=%v", tools, err)
+	}
+	result, err := client.CallTool(context.Background(), "echo", json.RawMessage(`{}`))
+	if err != nil || !strings.Contains(string(result.ContentJSON), "ok") {
+		t.Fatalf("unexpected call result: result=%+v err=%v", result, err)
 	}
 }
 
@@ -92,7 +142,7 @@ func TestMCPStdioHelperProcess(t *testing.T) {
 				} `json:"arguments"`
 			}
 			_ = json.Unmarshal(req.Params, &params)
-			writeMCPHelperResponse(req.ID, map[string]any{"content": params.Arguments.Text})
+			writeMCPHelperResponse(req.ID, map[string]any{"content": params.Arguments.Text, "pid": os.Getpid()})
 		default:
 			writeMCPHelperError(req.ID, -32601, "method not found")
 		}

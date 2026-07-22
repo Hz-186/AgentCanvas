@@ -7,7 +7,7 @@ import (
 
 func TestRunCancelRegistryCancelsRegisteredRun(t *testing.T) {
 	registry := newRunCancelRegistry()
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancelCause(context.Background())
 
 	registry.Register(10, cancel)
 	if !registry.Cancel(10) {
@@ -24,7 +24,7 @@ func TestRunCancelRegistryCancelsRegisteredRun(t *testing.T) {
 
 func TestRunCancelRegistryRecordsPauseReason(t *testing.T) {
 	registry := newRunCancelRegistry()
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancelCause(context.Background())
 
 	registry.Register(10, cancel)
 	if !registry.Pause(10) {

@@ -42,6 +42,25 @@ func (r *fakeWMRepo) Save(ctx context.Context, wm *memory.WorkingMemory) error {
 	return nil
 }
 
+func (r *fakeWMRepo) Update(ctx context.Context, ownerID, conversationID int64, mutate func(*memory.WorkingMemory) error) (*memory.WorkingMemory, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.data == nil {
+		r.data = map[int64]*memory.WorkingMemory{}
+	}
+	wm := r.data[conversationID]
+	if wm == nil {
+		wm = &memory.WorkingMemory{OwnerID: ownerID, ConversationID: conversationID}
+	}
+	clone := *wm
+	if err := mutate(&clone); err != nil {
+		return nil, err
+	}
+	r.data[conversationID] = &clone
+	result := clone
+	return &result, nil
+}
+
 func (r *fakeWMRepo) Delete(ctx context.Context, ownerID, conversationID int64) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -163,7 +182,7 @@ func TestUpdateWorkingMemory_NilResult(t *testing.T) {
 	}
 }
 
-func TestUpdateWorkingMemory_ErrorStopReason(t *testing.T) {
+func TestUpdateWorkingMemory_NonFinalStopDoesNotWrite(t *testing.T) {
 	repo := &fakeWMRepo{}
 	n := AgentNode{WorkingMemory: repo}
 	rc := &engine.RunContext{OwnerID: 100, ConversationID: convIDPtr(1)}
@@ -172,8 +191,8 @@ func TestUpdateWorkingMemory_ErrorStopReason(t *testing.T) {
 		StopReason: runtimeagent.StopReasonMaxIterations,
 	})
 	wm, _ := repo.Get(context.Background(), 100, 1)
-	if wm.ContextSummary != "Agent stopped: max_iterations_exceeded" {
-		t.Fatalf("unexpected error summary: %s", wm.ContextSummary)
+	if wm != nil {
+		t.Fatalf("non-final state must not update working memory: %+v", wm)
 	}
 }
 

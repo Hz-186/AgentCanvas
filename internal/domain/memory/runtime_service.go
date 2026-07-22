@@ -47,6 +47,7 @@ type WriteRequest struct {
 	Importance     float64
 	Reason         string
 	Source         string
+	SourceKey      *string
 }
 
 type WriteResult struct {
@@ -120,6 +121,7 @@ func (s RuntimeService) Write(ctx context.Context, req WriteRequest) (WriteResul
 		item.Importance = 1
 	}
 	item.Source = strings.TrimSpace(req.Source)
+	item.SourceKey = req.SourceKey
 	if item.Source == "" {
 		item.Source = "agent_tool"
 	}

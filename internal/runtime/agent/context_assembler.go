@@ -334,14 +334,6 @@ func dedupeRetrievalBlocks(blocks []ContextBlock) ([]ContextBlock, []ContextBloc
 	return result, trace
 }
 
-func firstContextLine(content string, maxChars int) string {
-	content = strings.Join(strings.Fields(content), " ")
-	if len(content) <= maxChars {
-		return content
-	}
-	return content[:maxChars] + "..."
-}
-
 func (a *TokenAudit) add(name string, tokens int) {
 	if tokens <= 0 {
 		return

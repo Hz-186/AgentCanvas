@@ -86,6 +86,9 @@ type RunRequest struct {
 	ToolHookChain                   hooks.ToolHookChain
 	Tools                           []toolruntime.RuntimeTool
 	ResumeMessages                  []llm.ChatMessage
+	ResumeBaseMessages              []llm.ChatMessage
+	ResumeTranscript                []llm.ChatMessage
+	ResumeSteps                     []RunStep
 	ResumeIteration                 int
 	ResumeToolCalls                 int
 	ResumeApprovedToolCallIDs       []string
@@ -162,6 +165,10 @@ type Approval struct {
 }
 
 type Checkpoint struct {
+	SnapshotVersion       int                    `json:"snapshot_version,omitempty"`
+	BaseMessages          []llm.ChatMessage      `json:"base_messages,omitempty"`
+	Transcript            []llm.ChatMessage      `json:"transcript,omitempty"`
+	Steps                 []RunStep              `json:"steps,omitempty"`
 	Messages              []llm.ChatMessage      `json:"messages"`
 	MessagesSummary       string                 `json:"messages_summary"`
 	PendingToolCall       *llm.ToolCall          `json:"pending_tool_call,omitempty"`

@@ -142,7 +142,11 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 	memoryWriteLogRepo := mysqlinfra.NewMemoryWriteLogRepository(db)
 	extractionJobRepo := mysqlinfra.NewExtractionJobRepository(db)
 	mergeLogRepo := mysqlinfra.NewMergeLogRepository(db)
-	workingMemoryRepo := redisinfra.NewWorkingMemoryRepository(redisClient)
+	workingMemoryRepo := redisinfra.NewWorkingMemoryRepository(redisClient, redisinfra.WorkingMemoryOptions{
+		TTL:      time.Duration(cfg.WorkingMemory.TTLSeconds) * time.Second,
+		LockTTL:  time.Duration(cfg.WorkingMemory.LockTTLMS) * time.Millisecond,
+		LockWait: time.Duration(cfg.WorkingMemory.LockWaitMS) * time.Millisecond,
+	})
 	toolDefinitionRepo := cacheinfra.NewToolDefinitionRepository(mysqlinfra.NewToolDefinitionRepository(db), resourceInvalidator)
 	toolInvocationRepo := mysqlinfra.NewToolInvocationRepository(db)
 	toolPolicyRepo := mysqlinfra.NewToolPolicyRepository(db)
@@ -367,6 +371,7 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 		return nil, fmt.Errorf("init workflow service: %w", err)
 	}
 	workflowService.ConfigureDream(jobQueue, redisClient, dreamCfg)
+	workflowService.ConfigureMemoryReader(memoryService)
 	workflowService.ConfigureRuleSets(workflowRuleSetRepo)
 	independentAgentService := independentagentusecase.NewService(agentRepo, agentTurnRepo, conversationRepo, messageRepo,
 		runRepo, runEventRepo, runStepRepo, approvalRepo, workflowService, workflowService.AgentRuntime(), workspaceRepo)

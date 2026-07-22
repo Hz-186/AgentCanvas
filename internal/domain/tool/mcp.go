@@ -10,8 +10,8 @@ import (
 )
 
 const (
-	MCPTransportSSE   = "sse"
-	MCPTransportStdio = "stdio"
+	MCPTransportStreamableHTTP = "streamable_http"
+	MCPTransportStdio          = "stdio"
 )
 
 const (
@@ -24,7 +24,7 @@ type MCPServer struct {
 	OwnerID      int64           `json:"owner_id" gorm:"column:owner_id"`
 	Name         string          `json:"name" gorm:"column:name"`
 	Transport    string          `json:"transport" gorm:"column:transport"`
-	EndpointURL  string          `json:"endpoint_url" gorm:"column:endpoint_url"` // like "https://mcp.example.com/sse"
+	EndpointURL  string          `json:"endpoint_url" gorm:"column:endpoint_url"` // standard MCP endpoint, e.g. https://mcp.example.com/mcp
 	Command      string          `json:"command" gorm:"column:command"`           // "npx"
 	ArgsJSON     json.RawMessage `json:"args_json" gorm:"column:args_json"`
 	EnvJSON      json.RawMessage `json:"env_json" gorm:"column:env_json"` // supplyment / API key

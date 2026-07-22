@@ -6,6 +6,7 @@ type Repository interface {
 	Create(ctx context.Context, item *Memory) error
 	Update(ctx context.Context, item *Memory) error
 	FindByID(ctx context.Context, ownerID, id int64) (*Memory, error)
+	FindByIDs(ctx context.Context, ownerID int64, ids []int64) ([]Memory, error)
 	List(ctx context.Context, ownerID int64, memoryTypes []string, conversationID *int64, limit, offset int) ([]Memory, error)
 	ListForRead(ctx context.Context, ownerID int64, memoryTypes []string, conversationID *int64, limit int) ([]Memory, error)
 	ListByLevel(ctx context.Context, ownerID int64, level string, memoryTypes []string, limit int) ([]Memory, error)

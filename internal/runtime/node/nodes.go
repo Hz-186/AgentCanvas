@@ -61,10 +61,11 @@ type Deps struct {
 	Compactions             conversation.CompactionRepository
 	SessionSearch           conversation.MessageSearchIndex
 	Memories                memory.Repository
+	MemoryReader            MemoryBatchReader
 	MemoryWriteLogs         memory.WriteLogRepository
 	MemoryRetriever         memory.SemanticRetriever
 	WorkingMemory           memory.WorkingMemoryRepository
-	MemoryExtractionTrigger func(ctx context.Context, ownerID int64, conversationID int64)
+	MemoryExtractionTrigger func(ctx context.Context, ownerID int64, conversationID int64, roundNumber int)
 	Tools                   tool.DefinitionRepository
 	ToolPacks               tool.PackRepository
 	Skills                  skill.Repository
@@ -142,6 +143,7 @@ func buildAgentNode(deps Deps) AgentNode {
 		Retriever:         deps.Retriever,
 		MemoryRetriever:   deps.MemoryRetriever,
 		Memories:          deps.Memories,
+		MemoryReader:      deps.MemoryReader,
 		MemoryLogs:        deps.MemoryWriteLogs,
 		WorkingMemory:     deps.WorkingMemory,
 		WorkflowCaller:    deps.WorkflowCaller,

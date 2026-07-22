@@ -25,7 +25,7 @@ interface AgentLoopFormProps {
 
 const modeOptions: Array<{ value: AgentMode; label: string; summary: string }> = [
   { value: 'react', label: 'ReAct', summary: '边思考边行动，按需调用工具、知识库和子 Agent' },
-  { value: 'plan_execute', label: 'Plan & Execute', summary: '先生成任务计划，再按步骤执行并根据结果调整' },
+  { value: 'plan_execute', label: 'Plan Guided', summary: '先生成计划并作为上下文引导；步骤状态不代表运行时已逐项验证' },
 ];
 
 function moduleTone(enabled: boolean) {
@@ -322,7 +322,7 @@ export function AgentLoopForm({ config, providers, tools, skills, knowledgeBases
             <option value="off">Off · 完全关闭</option>
           </Select>
         </Field>
-        <p className="muted">Active 会把历史教训注入 ReAct 与 Plan &amp; Execute；Shadow 只记录反思，适合灰度验证。</p>
+        <p className="muted">Active 会把历史教训注入 ReAct 与 Plan Guided；Shadow 只记录反思，适合灰度验证。</p>
         <Field label="Reflection Policy JSON">
           <TextArea value={prettyJson(reflectionPolicy)} onChange={(event) => updateJSON('reflection_policy_json', event.target.value)} />
         </Field>

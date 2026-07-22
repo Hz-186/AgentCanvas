@@ -39,6 +39,7 @@ type Memory struct {
 	AccessCount        int             `json:"access_count" gorm:"column:access_count;default:0"`
 	ConsolidationCount int             `json:"consolidation_count" gorm:"column:consolidation_count;default:0"`
 	Source             string          `json:"source" gorm:"column:source"`
+	SourceKey          *string         `json:"source_key,omitempty" gorm:"column:source_key"`
 	MetadataJSON       json.RawMessage `json:"metadata_json" gorm:"column:metadata_json"`
 	Embedding          []byte          `json:"-" gorm:"column:embedding"`
 	LastUsedAt         *time.Time      `json:"last_used_at" gorm:"column:last_used_at"`

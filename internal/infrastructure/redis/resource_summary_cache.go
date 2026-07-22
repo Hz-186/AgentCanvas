@@ -89,6 +89,23 @@ func (c *ResourceSummaryCache) load(ctx context.Context, key string, ownerID int
 	c.flights[key] = flight
 	c.mu.Unlock()
 
+	// A caller can observe a miss just before the previous leader stores and
+	// removes its flight. Recheck after becoming leader to close that window.
+	cacheCtx, cancel := context.WithTimeout(ctx, 30*time.Millisecond)
+	if data, cacheErr := c.client.Get(cacheCtx, key).Bytes(); cacheErr == nil {
+		var envelope resourceCacheEnvelope
+		if json.Unmarshal(data, &envelope) == nil && envelope.Schema == 1 && envelope.OwnerID == ownerID && envelope.Kind == kind {
+			cancel()
+			flight.page = envelope.Page
+			c.mu.Lock()
+			delete(c.flights, key)
+			close(flight.done)
+			c.mu.Unlock()
+			return envelope.Page, nil
+		}
+	}
+	cancel()
+
 	page, err := c.next.List(ctx, ownerID, kind, options)
 	if err == nil {
 		c.store(key, ownerID, kind, page)

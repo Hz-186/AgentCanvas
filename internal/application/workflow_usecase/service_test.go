@@ -830,6 +830,11 @@ func TestPersistPausedArtifactsPreservesCheckpointHashesFromMetadata(t *testing.
 	service := &Service{approvals: approvals}
 	output := engine.NodeOutput{
 		"checkpoint": &runtimeagent.Checkpoint{
+			SnapshotVersion: 2,
+			BaseMessages:    []llm.ChatMessage{{Role: conversation.RoleSystem, Content: "system"}},
+			Transcript:      []llm.ChatMessage{{Role: conversation.RoleUser, Content: "task"}},
+			Steps:           []runtimeagent.RunStep{{Index: 1, Type: runtimeagent.StepTypePlan}},
+			Plan:            &runtimeagent.Plan{Version: 3, ExecutionState: "active", Steps: []runtimeagent.PlanStep{{Number: 1, Description: "continue", Status: "pending"}}},
 			MessagesSummary: "paused",
 			Metadata: map[string]any{
 				"node_id":            "agent",
@@ -847,6 +852,10 @@ func TestPersistPausedArtifactsPreservesCheckpointHashesFromMetadata(t *testing.
 	}
 	if approvals.checkpoints[0].ToolRegistryHash != "stored-registry" || approvals.checkpoints[0].ToolPolicyHash != "stored-policy" {
 		t.Fatalf("expected stored hashes to be preserved, got %+v", approvals.checkpoints[0])
+	}
+	decoded, err := decodeRuntimeCheckpoint(approvals.checkpoints[0], nil)
+	if err != nil || decoded.SnapshotVersion != 2 || len(decoded.BaseMessages) != 1 || len(decoded.Transcript) != 1 || len(decoded.Steps) != 1 || decoded.Plan == nil || decoded.Plan.Version != 3 {
+		t.Fatalf("V2 checkpoint did not round-trip: checkpoint=%+v err=%v", decoded, err)
 	}
 }
 

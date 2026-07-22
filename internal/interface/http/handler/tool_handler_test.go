@@ -8,7 +8,7 @@ import (
 )
 
 func TestNormalizeMCPServerRequestSSE(t *testing.T) {
-	item := &tool.MCPServer{Name: " Local MCP ", Transport: tool.MCPTransportSSE, EndpointURL: " http://localhost:3333 "}
+	item := &tool.MCPServer{Name: " Local MCP ", Transport: tool.MCPTransportStreamableHTTP, EndpointURL: " http://localhost:3333 "}
 	if err := normalizeMCPServerRequest(item); err != nil {
 		t.Fatal(err)
 	}
@@ -28,7 +28,7 @@ func TestNormalizeMCPServerRequestStdio(t *testing.T) {
 }
 
 func TestNormalizeMCPServerRequestRejectsMissingEndpoint(t *testing.T) {
-	item := &tool.MCPServer{Name: "Bad", Transport: tool.MCPTransportSSE}
+	item := &tool.MCPServer{Name: "Bad", Transport: tool.MCPTransportStreamableHTTP}
 	if err := normalizeMCPServerRequest(item); err == nil {
 		t.Fatal("expected missing endpoint error")
 	}

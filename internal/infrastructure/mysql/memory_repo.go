@@ -9,6 +9,7 @@ import (
 	"agentcanvas/internal/domain/memory"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type MemoryRepository struct{ db *gorm.DB }
@@ -27,8 +28,20 @@ func (r *MemoryRepository) Create(ctx context.Context, item *memory.Memory) erro
 		item.UpdatedAt = now
 	}
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Create(item).Error; err != nil {
+		var create *gorm.DB
+		if item.SourceKey != nil {
+			create = tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "owner_id"}, {Name: "source_key"}}, DoNothing: true}).Create(item)
+		} else {
+			create = tx.Create(item)
+		}
+		if err := create.Error; err != nil {
 			return err
+		}
+		if create.RowsAffected == 0 && item.SourceKey != nil {
+			if err := tx.Where("owner_id = ? AND source_key = ?", item.OwnerID, *item.SourceKey).First(item).Error; err != nil {
+				return err
+			}
+			return nil
 		}
 		return enqueueContextResource(ctx, tx, item.OwnerID, 0, contextresource.TypeLongTermMemory, item.ID, contextresource.OperationUpsert, memoryContextText(*item))
 	})
@@ -54,6 +67,15 @@ func (r *MemoryRepository) FindByID(ctx context.Context, ownerID, id int64) (*me
 		return nil, err
 	}
 	return &item, nil
+}
+
+func (r *MemoryRepository) FindByIDs(ctx context.Context, ownerID int64, ids []int64) ([]memory.Memory, error) {
+	items := make([]memory.Memory, 0, len(ids))
+	if len(ids) == 0 {
+		return items, nil
+	}
+	err := r.db.WithContext(ctx).Where("owner_id = ? AND id IN ? AND deleted_at IS NULL", ownerID, ids).Find(&items).Error
+	return items, err
 }
 
 func (r *MemoryRepository) List(ctx context.Context, ownerID int64, memoryTypes []string, conversationID *int64, limit, offset int) ([]memory.Memory, error) {

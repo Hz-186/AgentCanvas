@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 	"time"
@@ -28,6 +29,7 @@ import (
 	"agentcanvas/internal/infrastructure/llm"
 	queueinfra "agentcanvas/internal/infrastructure/queue"
 	"agentcanvas/internal/infrastructure/vectorstore"
+	"agentcanvas/internal/observability"
 	runtimeagent "agentcanvas/internal/runtime/agent"
 	"agentcanvas/internal/runtime/engine"
 	"agentcanvas/internal/runtime/evalharness"
@@ -58,6 +60,7 @@ type Service struct {
 	memories          memory.Repository
 	memoryLogs        memory.WriteLogRepository
 	memoryRetriever   memory.SemanticRetriever
+	memoryReader      runtimenode.MemoryBatchReader
 	workingMemory     memory.WorkingMemoryRepository
 	extractions       *memoryusecase.ExtractionService
 	tools             tool.DefinitionRepository
@@ -212,7 +215,8 @@ func NewService(
 		secrets:          secrets,
 	}
 	if extractionJobs != nil && mergeLogs != nil {
-		s.extractions = memoryusecase.NewExtractionService(memories, extractionJobs, mergeLogs)
+		dreamMessages, _ := messages.(memoryusecase.DreamMessageRepository)
+		s.extractions = memoryusecase.NewExtractionService(memories, extractionJobs, mergeLogs, dreamMessages)
 	}
 	nodeDeps := runtimenode.Deps{
 		Retriever:               retriever,
@@ -276,6 +280,13 @@ func (s *Service) ConfigureSessionSearch(index conversation.MessageSearchIndex) 
 	}
 }
 
+func (s *Service) ConfigureMemoryReader(reader runtimenode.MemoryBatchReader) {
+	s.memoryReader = reader
+	if runtime, ok := s.agentRuntime.(*runtimenode.SharedAgentRuntime); ok {
+		runtime.ConfigureMemoryReader(reader)
+	}
+}
+
 func (s *Service) ConfigureIndependentRunResumer(resumer workflow.IndependentRunResumer) {
 	s.agentRunResumer = resumer
 }
@@ -284,11 +295,11 @@ func (s *Service) ConfigureIndependentRunCanceller(canceller workflow.Independen
 	s.agentRunCanceller = canceller
 }
 
-func (s *Service) triggerMemoryExtraction(ctx context.Context, ownerID int64, conversationID int64) {
+func (s *Service) triggerMemoryExtraction(ctx context.Context, ownerID int64, conversationID int64, roundNumber int) {
 	if ownerID <= 0 || conversationID <= 0 {
 		return
 	}
-	s.publishDream(ctx, ownerID, conversationID)
+	s.publishDream(ctx, ownerID, conversationID, roundNumber)
 }
 
 func (s *Service) ConfigureDream(queue queueinfra.JobQueue, redisClient *redis.Client, dreamCfg memoryusecase.DreamConfig) {
@@ -301,18 +312,25 @@ func (s *Service) ConfigureRuleSets(repository workflow.RuleSetRepository) {
 	s.ruleSets = repository
 }
 
-func (s *Service) publishDream(ctx context.Context, ownerID, conversationID int64) {
-	if s.dreamQueue == nil || !s.dreamCfg.Enabled || ownerID <= 0 || conversationID <= 0 {
+func (s *Service) publishDream(ctx context.Context, ownerID, conversationID int64, roundNumber int) {
+	if !s.dreamCfg.Enabled || s.extractions == nil || ownerID <= 0 || conversationID <= 0 {
 		return
 	}
-	if s.redisClient != nil {
-		key := fmt.Sprintf("dream:pending:%d", conversationID)
-		locked, err := s.redisClient.SetNX(ctx, key, 1, time.Minute).Result()
-		if err != nil || !locked {
-			return
+	job, err := s.extractions.ScheduleDream(ctx, ownerID, conversationID, roundNumber, s.dreamCfg)
+	if err != nil {
+		slog.ErrorContext(ctx, "schedule dream job failed", "owner_id", ownerID, "conversation_id", conversationID, "round_number", roundNumber, "error", err)
+		observability.MemoryRuntimeMetrics.RecordDreamFailure()
+		return
+	}
+	if job == nil {
+		return
+	}
+	observability.MemoryRuntimeMetrics.RecordDreamScheduled()
+	if s.dreamQueue != nil && job.DueAt != nil && !job.DueAt.After(time.Now().UTC()) {
+		if err := s.dreamQueue.Publish(ctx, queueinfra.Job{ID: fmt.Sprintf("dream-job-%d", job.ID), Type: memoryusecase.DreamJobType, Payload: map[string]any{"job_id": job.ID, "owner_id": ownerID, "conversation_id": conversationID}}); err != nil {
+			slog.WarnContext(ctx, "publish dream wakeup failed; durable polling will retry", "job_id", job.ID, "error", err)
 		}
 	}
-	_ = s.dreamQueue.Publish(ctx, queueinfra.Job{ID: fmt.Sprintf("dream-%d-%d-%d", ownerID, conversationID, time.Now().UnixNano()), Type: memoryusecase.DreamJobType, Payload: map[string]any{"owner_id": ownerID, "conversation_id": conversationID}})
 }
 
 type runOptions struct {
@@ -883,18 +901,21 @@ func (s *Service) CallInlineAgent(ctx context.Context, req toolruntime.InlineAge
 	if err := s.runs.Create(ctx, run); err != nil {
 		return nil, err
 	}
-	execCtx, cancel := context.WithCancel(ctx)
+	execCtx, cancel := context.WithCancelCause(ctx)
 	s.runCancels.Register(run.ID, cancel)
-	defer func() { cancel(); s.runCancels.Unregister(run.ID) }()
+	defer func() { cancel(nil); s.runCancels.Unregister(run.ID) }()
 	rc := &engine.RunContext{OwnerID: req.OwnerID, WorkflowID: req.CallerWorkflowID, FlowVersionID: parent.FlowVersionID, AgentID: req.CallerAgentID, AgentReleaseID: ruleSetIDValue(parent.AgentReleaseID), RuleSetID: ruleSetIDValue(parent.RuleSetID), RuleSetVersion: parent.RuleSetVersion, CompiledRuleHash: parent.CompiledRuleHash, CompiledRules: pinnedRules, RunID: run.ID, ParentRunID: &req.ParentRunID, CallDepth: req.CallDepth + 1, WorkflowCallChain: callChain, ConversationID: req.ConversationID, AgentSteps: s, Input: input, Events: &eventEmitter{repo: s.events, ownerID: req.OwnerID, runID: run.ID}}
 	output, execErr := s.executor.Execute(execCtx, rc, dsl)
+	cancelReason := s.runCancels.Reason(run.ID)
 	finished := time.Now().UTC()
 	run.FinishedAt = &finished
 	run.LatencyMS = int(finished.Sub(run.StartedAt).Milliseconds())
 	if output != nil {
 		run.OutputJSON, _ = json.Marshal(output)
 	}
-	if errors.Is(execErr, context.Canceled) || execCtx.Err() == context.Canceled {
+	if cancelReason == runCancelReasonPause {
+		run.Status, run.ErrorMessage = workflow.RunStatusPaused, "paused by user request"
+	} else if errors.Is(execErr, context.Canceled) || execCtx.Err() == context.Canceled {
 		run.Status, run.ErrorMessage = workflow.RunStatusCancelled, context.Canceled.Error()
 	} else if execErr != nil {
 		run.Status, run.ErrorMessage = workflow.RunStatusFailed, execErr.Error()
@@ -1286,13 +1307,13 @@ func (s *Service) run(
 	if err := s.runs.Create(ctx, run); err != nil {
 		return nil, nil, err
 	}
-	execCtx, cancel := context.WithCancel(ctx)
+	execCtx, cancel := context.WithCancelCause(ctx)
 	if s.runCancels == nil {
 		s.runCancels = newRunCancelRegistry()
 	}
 	s.runCancels.Register(run.ID, cancel)
 	defer func() {
-		cancel()
+		cancel(nil)
 		s.runCancels.Unregister(run.ID)
 	}()
 	rc := &engine.RunContext{
@@ -2601,6 +2622,8 @@ func runStatusFromOutput(output engine.NodeOutput) string {
 	switch stopReason {
 	case "waiting_human":
 		return workflow.RunStatusWaitingHuman
+	case "paused":
+		return workflow.RunStatusPaused
 	case "timeout":
 		return workflow.RunStatusTimeout
 	default:

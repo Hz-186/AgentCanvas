@@ -10,19 +10,21 @@ import (
 	"agentcanvas/internal/domain/conversation"
 	"agentcanvas/internal/domain/memory"
 	"agentcanvas/internal/infrastructure/llm"
-	memoryretrieval "agentcanvas/internal/infrastructure/retrieval"
 	"agentcanvas/internal/infrastructure/vectorstore"
 	"github.com/redis/go-redis/v9"
 )
 
 type DreamPayload struct {
+	JobID          int64 `json:"job_id"`
 	OwnerID        int64 `json:"owner_id"`
 	ConversationID int64 `json:"conversation_id"`
 }
 
 type DreamMessageRepository interface {
 	ListActiveByConversation(ctx context.Context, ownerID, conversationID int64) ([]conversation.Message, error)
+	ListActiveThrough(ctx context.Context, ownerID, conversationID, throughMessageID int64) ([]conversation.Message, error)
 	ArchiveConversationMessages(ctx context.Context, ownerID, conversationID int64, archivedAt time.Time) (int64, error)
+	ArchiveConversationMessagesThrough(ctx context.Context, ownerID, conversationID, throughMessageID int64, archivedAt time.Time) (int64, error)
 }
 
 type DreamWorker struct {
@@ -35,6 +37,7 @@ type DreamWorker struct {
 	redis      *redis.Client
 	dreamCfg   DreamConfig
 	workerID   string
+	jobs       memory.ExtractionJobRepository
 }
 
 type dreamLLMResult struct {
@@ -50,15 +53,31 @@ type dreamLLMResult struct {
 	} `json:"archival_inserts"`
 }
 
-func NewDreamWorker(chatClient llm.ChatClient, embedder llm.EmbeddingClient, memories memory.Repository, memoryLogs memory.WriteLogRepository, messages DreamMessageRepository, vecStore vectorstore.Store, redisClient *redis.Client, dreamCfg DreamConfig, workerID string) *DreamWorker {
-	return &DreamWorker{chatClient: chatClient, embedder: embedder, memories: memories, memoryLogs: memoryLogs, messages: messages, vecStore: vecStore, redis: redisClient, dreamCfg: dreamCfg, workerID: workerID}
+func NewDreamWorker(chatClient llm.ChatClient, embedder llm.EmbeddingClient, memories memory.Repository, memoryLogs memory.WriteLogRepository, messages DreamMessageRepository, vecStore vectorstore.Store, redisClient *redis.Client, dreamCfg DreamConfig, workerID string, jobRepositories ...memory.ExtractionJobRepository) *DreamWorker {
+	worker := &DreamWorker{chatClient: chatClient, embedder: embedder, memories: memories, memoryLogs: memoryLogs, messages: messages, vecStore: vecStore, redis: redisClient, dreamCfg: dreamCfg, workerID: workerID}
+	if len(jobRepositories) > 0 {
+		worker.jobs = jobRepositories[0]
+	}
+	return worker
 }
 
 func (w *DreamWorker) HandleDreamJob(ctx context.Context, payload DreamPayload) error {
 	if !w.dreamCfg.Enabled || payload.OwnerID <= 0 || payload.ConversationID <= 0 {
 		return nil
 	}
-	unlock, err := w.acquireLock(ctx, payload.ConversationID)
+	var job *memory.ExtractionJob
+	var err error
+	if payload.JobID > 0 && w.jobs != nil {
+		job, err = w.jobs.FindByID(ctx, payload.OwnerID, payload.JobID)
+		if err != nil {
+			return err
+		}
+		if job.Status == string(memory.ExtractionCompleted) || job.Status == "superseded" {
+			return nil
+		}
+		payload.ConversationID = job.ConversationID
+	}
+	unlock, err := w.acquireLock(ctx, payload.OwnerID, payload.ConversationID)
 	if err != nil || unlock == nil {
 		return err
 	}
@@ -66,7 +85,22 @@ func (w *DreamWorker) HandleDreamJob(ctx context.Context, payload DreamPayload) 
 	if w.messages == nil || w.memories == nil || w.chatClient == nil {
 		return nil
 	}
-	messages, err := w.messages.ListActiveByConversation(ctx, payload.OwnerID, payload.ConversationID)
+	var messages []conversation.Message
+	if job != nil && job.ThroughMessageID > 0 {
+		if job.TriggerReason == "idle" {
+			active, activeErr := w.messages.ListActiveByConversation(ctx, payload.OwnerID, payload.ConversationID)
+			if activeErr != nil {
+				return activeErr
+			}
+			if len(active) > 0 && active[len(active)-1].ID > job.ThroughMessageID {
+				job.Status = "superseded"
+				return w.jobs.Update(ctx, job)
+			}
+		}
+		messages, err = w.messages.ListActiveThrough(ctx, payload.OwnerID, payload.ConversationID, job.ThroughMessageID)
+	} else {
+		messages, err = w.messages.ListActiveByConversation(ctx, payload.OwnerID, payload.ConversationID)
+	}
 	if err != nil || len(messages) == 0 {
 		return err
 	}
@@ -74,25 +108,58 @@ func (w *DreamWorker) HandleDreamJob(ctx context.Context, payload DreamPayload) 
 	if err != nil {
 		return err
 	}
-	analysis, err := w.analyze(ctx, payload, messages, coreItems)
+	var analysis dreamLLMResult
+	if job != nil && len(job.ResultJSON) > 0 && string(job.ResultJSON) != "null" {
+		if err := json.Unmarshal(job.ResultJSON, &analysis); err != nil {
+			return err
+		}
+	} else {
+		analyzed, analyzeErr := w.analyze(ctx, payload, messages, coreItems)
+		if analyzeErr != nil {
+			return analyzeErr
+		}
+		analysis = *analyzed
+		if job != nil {
+			job.ResultJSON, _ = json.Marshal(analysis)
+			job.Status = "analyzed"
+			job.LeaseExpiresAt = nil
+			if err := w.jobs.Update(ctx, job); err != nil {
+				return err
+			}
+		}
+	}
+	jobID := int64(0)
+	if job != nil {
+		jobID = job.ID
+	}
+	if err := w.applyCoreUpdates(ctx, payload, &analysis, jobID); err != nil {
+		return err
+	}
+	if err := w.applyArchivalUpdates(ctx, payload, &analysis, jobID); err != nil {
+		return err
+	}
+	if job != nil && job.ThroughMessageID > 0 {
+		_, err = w.messages.ArchiveConversationMessagesThrough(ctx, payload.OwnerID, payload.ConversationID, job.ThroughMessageID, time.Now().UTC())
+	} else {
+		_, err = w.messages.ArchiveConversationMessages(ctx, payload.OwnerID, payload.ConversationID, time.Now().UTC())
+	}
 	if err != nil {
 		return err
 	}
-	if err := w.applyCoreUpdates(ctx, payload, analysis); err != nil {
-		return err
+	if job != nil {
+		job.Status = string(memory.ExtractionCompleted)
+		job.ErrorMessage = ""
+		job.LeaseExpiresAt = nil
+		return w.jobs.Update(ctx, job)
 	}
-	if err := w.applyArchivalUpdates(ctx, payload, analysis); err != nil {
-		return err
-	}
-	_, err = w.messages.ArchiveConversationMessages(ctx, payload.OwnerID, payload.ConversationID, time.Now().UTC())
-	return err
+	return nil
 }
 
-func (w *DreamWorker) acquireLock(ctx context.Context, conversationID int64) (func(), error) {
+func (w *DreamWorker) acquireLock(ctx context.Context, ownerID, conversationID int64) (func(), error) {
 	if w.redis == nil {
 		return func() {}, nil
 	}
-	lockKey := fmt.Sprintf("dream:lock:%d", conversationID)
+	lockKey := fmt.Sprintf("dream:lock:%d:%d", ownerID, conversationID)
 	locked, err := w.redis.SetNX(ctx, lockKey, w.workerID, 120*time.Second).Result()
 	if err != nil || !locked {
 		return nil, err
@@ -113,11 +180,11 @@ func (w *DreamWorker) analyze(ctx context.Context, payload DreamPayload, message
 	return &parsed, nil
 }
 
-func (w *DreamWorker) applyCoreUpdates(ctx context.Context, payload DreamPayload, analysis *dreamLLMResult) error {
+func (w *DreamWorker) applyCoreUpdates(ctx context.Context, payload DreamPayload, analysis *dreamLLMResult, jobID int64) error {
 	if analysis == nil {
 		return nil
 	}
-	for _, item := range analysis.CoreUpdates {
+	for index, item := range analysis.CoreUpdates {
 		memoryType := strings.TrimSpace(item.MemoryType)
 		content := strings.TrimSpace(item.Content)
 		action := strings.TrimSpace(item.Action)
@@ -147,7 +214,12 @@ func (w *DreamWorker) applyCoreUpdates(ctx context.Context, payload DreamPayload
 			if memoryType == "" || content == "" {
 				continue
 			}
-			if err := w.memories.Create(ctx, &memory.Memory{OwnerID: payload.OwnerID, ConversationID: &payload.ConversationID, MemoryType: memoryType, MemoryLevel: memory.LevelLongTerm, Title: strings.TrimSpace(item.Title), Content: content, Importance: 0.9, Source: "dream_worker"}); err != nil {
+			var sourceKey *string
+			if jobID > 0 {
+				value := fmt.Sprintf("dream:%d:core:%d", jobID, index)
+				sourceKey = &value
+			}
+			if err := w.memories.Create(ctx, &memory.Memory{OwnerID: payload.OwnerID, ConversationID: &payload.ConversationID, MemoryType: memoryType, MemoryLevel: memory.LevelLongTerm, Title: strings.TrimSpace(item.Title), Content: content, Importance: 0.9, Source: "dream_worker", SourceKey: sourceKey}); err != nil {
 				return err
 			}
 		}
@@ -155,22 +227,25 @@ func (w *DreamWorker) applyCoreUpdates(ctx context.Context, payload DreamPayload
 	return nil
 }
 
-func (w *DreamWorker) applyArchivalUpdates(ctx context.Context, payload DreamPayload, analysis *dreamLLMResult) error {
+func (w *DreamWorker) applyArchivalUpdates(ctx context.Context, payload DreamPayload, analysis *dreamLLMResult, jobID int64) error {
 	if analysis == nil {
 		return nil
 	}
-	for _, item := range analysis.ArchivalInserts {
+	for index, item := range analysis.ArchivalInserts {
 		content := strings.TrimSpace(item.Content)
 		if content == "" {
 			continue
 		}
-		var archival memory.ArchivalIndex
-		if w.vecStore != nil && w.embedder != nil && strings.TrimSpace(w.dreamCfg.EmbeddingModel) != "" {
-			archival = memoryretrieval.ArchivalMemoryIndex{Store: w.vecStore, Embedder: w.embedder, Provider: w.dreamCfg.EmbeddingProvider, Model: w.dreamCfg.EmbeddingModel}
+		var sourceKey *string
+		if jobID > 0 {
+			value := fmt.Sprintf("dream:%d:archival:%d", jobID, index)
+			sourceKey = &value
 		}
-		_, err := (memory.RuntimeService{Memories: w.memories, Logs: w.memoryLogs, Archival: archival}).Write(ctx, memory.WriteRequest{
+		// MySQL memory writes enqueue the existing context-index outbox; Dream does
+		// not perform a second, non-transactional vector write here.
+		_, err := (memory.RuntimeService{Memories: w.memories, Logs: w.memoryLogs}).Write(ctx, memory.WriteRequest{
 			OwnerID: payload.OwnerID, ConversationID: &payload.ConversationID, MemoryType: memory.TypeArchival,
-			Content: content, Importance: 0.8, Source: "dream_worker", Reason: "dream archival consolidation",
+			Content: content, Importance: 0.8, Source: "dream_worker", SourceKey: sourceKey, Reason: "dream archival consolidation",
 		})
 		if err != nil {
 			return err

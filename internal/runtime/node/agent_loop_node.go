@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"math"
 	"sort"
 	"strconv"
@@ -46,6 +47,7 @@ type AgentNode struct {
 	Audits            audit.Repository
 	MCPServers        tool.MCPRepository
 	Retriever         retrieval.Retriever
+	MemoryReader      MemoryBatchReader
 	MemoryRetriever   memory.SemanticRetriever
 	Memories          memory.Repository
 	MemoryLogs        memory.WriteLogRepository
@@ -67,7 +69,11 @@ type AgentNode struct {
 	Embedder          llm.EmbeddingClient
 	WorkspaceRoot     string
 
-	OnExtractTrigger func(ctx context.Context, ownerID int64, conversationID int64)
+	OnExtractTrigger func(ctx context.Context, ownerID int64, conversationID int64, roundNumber int)
+}
+
+type MemoryBatchReader interface {
+	GetMany(ctx context.Context, ownerID int64, ids []int64) ([]memory.Memory, error)
 }
 
 type AgentLoopNode struct {
@@ -777,8 +783,6 @@ func (n AgentNode) runAgent(
 	if result != nil && (result.StopReason == runtimeagent.StopReasonWaitingHuman || result.StopReason == runtimeagent.StopReasonPaused) {
 		keepWorkspace = true
 	}
-	n.updateWorkingMemory(ctx, rc, result)
-	n.checkExtractionTrigger(ctx, rc, result)
 	if result != nil {
 		eventType := runtimeevent.AgentFinished
 		if err != nil {
@@ -853,6 +857,9 @@ func (n AgentNode) runAgent(
 			return nil, fmt.Errorf("%w: agent_loop final_answer does not match output_schema_json: %v", agenterrors.ErrInvalidInput, schemaErr)
 		}
 		output["structured_output"] = parsed
+	}
+	if roundNumber := n.updateWorkingMemory(ctx, rc, result); roundNumber > 0 {
+		n.checkExtractionTrigger(ctx, rc, result, roundNumber)
 	}
 	if result.Plan != nil {
 		output["plan"] = result.Plan
@@ -1827,9 +1834,19 @@ func (n AgentNode) buildAutomaticMemoryBlock(ctx context.Context, rc *engine.Run
 		score float64
 	}
 	items := make([]rankedMemory, 0, len(ranked))
-	for id, score := range ranked {
-		item, err := n.Memories.FindByID(ctx, rc.OwnerID, id)
-		if err != nil || item == nil || item.ConflictFlag || (item.ExpiresAt != nil && !item.ExpiresAt.After(time.Now().UTC())) {
+	idsToLoad := make([]int64, 0, len(ranked))
+	for id := range ranked {
+		idsToLoad = append(idsToLoad, id)
+	}
+	loadedItems, err := n.loadRecalledMemories(ctx, rc.OwnerID, idsToLoad)
+	if err != nil {
+		slog.WarnContext(ctx, "automatic memory recall degraded", "owner_id", rc.OwnerID, "run_id", rc.RunID, "error", err)
+		return nil
+	}
+	for i := range loadedItems {
+		item := &loadedItems[i]
+		score := ranked[item.ID]
+		if item.ConflictFlag || (item.ExpiresAt != nil && !item.ExpiresAt.After(time.Now().UTC())) {
 			continue
 		}
 		if item.ConversationID != nil && (rc.ConversationID == nil || *item.ConversationID != *rc.ConversationID) {
@@ -1856,6 +1873,13 @@ func (n AgentNode) buildAutomaticMemoryBlock(ctx context.Context, rc *engine.Run
 	}
 	_ = n.Memories.MarkUsed(ctx, rc.OwnerID, ids)
 	return &runtimeagent.ContextBlock{Name: "memory_recall", Role: conversation.RoleSystem, Content: strings.Join(lines, "\n"), Pinned: false}
+}
+
+func (n AgentNode) loadRecalledMemories(ctx context.Context, ownerID int64, ids []int64) ([]memory.Memory, error) {
+	if n.MemoryReader != nil {
+		return n.MemoryReader.GetMany(ctx, ownerID, ids)
+	}
+	return n.Memories.FindByIDs(ctx, ownerID, ids)
 }
 
 func skillIDsFromItems(items []skill.Skill) []int64 {
@@ -2036,6 +2060,7 @@ func runtimeToolNames(tools []toolruntime.RuntimeTool) []string {
 			names = append(names, name)
 		}
 	}
+	sort.Strings(names)
 	return names
 }
 
@@ -2319,7 +2344,12 @@ func (n AgentNode) injectWorkingMemory(
 		return blocks
 	}
 	wm, err := n.WorkingMemory.Get(ctx, rc.OwnerID, *rc.ConversationID)
-	if err != nil || wm == nil || wm.IsEmpty() {
+	if err != nil {
+		slog.WarnContext(ctx, "working memory read degraded", "owner_id", rc.OwnerID, "conversation_id", *rc.ConversationID, "run_id", rc.RunID, "error", err)
+		observability.MemoryRuntimeMetrics.RecordWorkingReadFailure()
+		return blocks
+	}
+	if wm == nil || wm.IsEmpty() {
 		return blocks
 	}
 	content := wm.ToContextBlock()
@@ -2335,28 +2365,21 @@ func (n AgentNode) injectWorkingMemory(
 	return append([]runtimeagent.ContextBlock{wmBlock}, blocks...)
 }
 
-func (n AgentNode) updateWorkingMemory(ctx context.Context, rc *engine.RunContext, result *runtimeagent.RunResult) {
-	if n.WorkingMemory == nil || rc.ConversationID == nil || result == nil {
-		return
+func (n AgentNode) updateWorkingMemory(ctx context.Context, rc *engine.RunContext, result *runtimeagent.RunResult) int {
+	if n.WorkingMemory == nil || rc.ConversationID == nil || result == nil || result.StopReason != runtimeagent.StopReasonFinalAnswer {
+		return 0
 	}
-	wm, err := n.WorkingMemory.Get(ctx, rc.OwnerID, *rc.ConversationID)
-	if err != nil {
-		return
-	}
-	if wm == nil {
-		wm = &memory.WorkingMemory{
-			OwnerID:        rc.OwnerID,
-			ConversationID: *rc.ConversationID,
-		}
-	}
-	wm.RoundNumber++
-	if result.FinalAnswer != "" {
+	wm, err := n.WorkingMemory.Update(ctx, rc.OwnerID, *rc.ConversationID, func(wm *memory.WorkingMemory) error {
+		wm.RoundNumber++
 		wm.ContextSummary = truncateString(result.FinalAnswer, 200)
+		return nil
+	})
+	if err != nil {
+		slog.ErrorContext(ctx, "working memory update failed", "owner_id", rc.OwnerID, "conversation_id", *rc.ConversationID, "run_id", rc.RunID, "error", err)
+		observability.MemoryRuntimeMetrics.RecordWorkingWriteFailure()
+		return 0
 	}
-	if result.StopReason != "" && result.StopReason != runtimeagent.StopReasonFinalAnswer {
-		wm.ContextSummary = "Agent stopped: " + result.StopReason
-	}
-	_ = n.WorkingMemory.Save(ctx, wm)
+	return wm.RoundNumber
 }
 
 func truncateString(s string, maxLen int) string {
@@ -2367,11 +2390,9 @@ func truncateString(s string, maxLen int) string {
 	return string(runes[:maxLen]) + "..."
 }
 
-func (n AgentNode) checkExtractionTrigger(ctx context.Context, rc *engine.RunContext, result *runtimeagent.RunResult) {
+func (n AgentNode) checkExtractionTrigger(ctx context.Context, rc *engine.RunContext, result *runtimeagent.RunResult, roundNumber int) {
 	if n.OnExtractTrigger == nil || rc.ConversationID == nil || result == nil {
 		return
 	}
-	if result.Iterations > 3 || result.StopReason != "" {
-		n.OnExtractTrigger(ctx, rc.OwnerID, *rc.ConversationID)
-	}
+	n.OnExtractTrigger(ctx, rc.OwnerID, *rc.ConversationID, roundNumber)
 }
