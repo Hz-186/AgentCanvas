@@ -56,11 +56,10 @@ check_migration_tables
 echo "==> go vet ./..."
 go vet ./...
 
-echo "==> go build check (api + worker + migrate + rule backfill)..."
+echo "==> go build check (api + worker + migrate)..."
 go build -o /dev/null ./cmd/api
 go build -o /dev/null ./cmd/worker
 go build -o /dev/null ./cmd/migrate
-go build -o /dev/null ./cmd/backfill-rule-sets
 
 echo ""
 echo "All validation checks passed."

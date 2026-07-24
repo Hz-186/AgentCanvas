@@ -49,7 +49,7 @@ type AgentProfileLoader interface {
 }
 
 type ActiveRuleSetLoader interface {
-	LoadActiveRuleSet(ctx context.Context, ownerID, workflowID int64) (*rules.CompiledRuleSet, error)
+	LoadActiveRuleSet(ctx context.Context, ownerID, workflowID int64) (*rules.RuleSet, error)
 }
 
 type Deps struct {

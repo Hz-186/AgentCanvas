@@ -69,9 +69,8 @@ func (r *WorkflowRuleSetRepository) UpdateDraft(ctx context.Context, item *workf
 			return workflow.ErrRuleSetConflict
 		}
 		stored.Revision++
-		stored.SourceHash = ""
-		stored.CompiledHash = ""
-		stored.CompiledSnapshotJSON = nil
+		stored.RuleHash = ""
+		stored.RuleSnapshotJSON = nil
 		stored.UpdatedAt = time.Now().UTC()
 		if err := tx.Save(&stored).Error; err != nil {
 			return err
@@ -85,7 +84,7 @@ func (r *WorkflowRuleSetRepository) UpdateDraft(ctx context.Context, item *workf
 	})
 }
 
-func (r *WorkflowRuleSetRepository) Publish(ctx context.Context, item *workflow.RuleSet, nodes []workflow.RuleNode, compiledSnapshot []byte, compiledHash, tokenEstimator string, publishedBy, expectedRevision int64) error {
+func (r *WorkflowRuleSetRepository) Publish(ctx context.Context, item *workflow.RuleSet, nodes []workflow.RuleNode, snapshot []byte, ruleHash string, publishedBy, expectedRevision int64) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var stored workflow.RuleSet
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND owner_id = ? AND workflow_id = ?", item.ID, item.OwnerID, item.WorkflowID).First(&stored).Error; err != nil {
@@ -108,10 +107,8 @@ func (r *WorkflowRuleSetRepository) Publish(ctx context.Context, item *workflow.
 		}
 		now := time.Now().UTC()
 		stored.Status = workflow.RuleSetStatusPublished
-		stored.SourceHash = item.SourceHash
-		stored.CompiledSnapshotJSON = append([]byte(nil), compiledSnapshot...)
-		stored.CompiledHash = compiledHash
-		stored.TokenEstimatorVersion = tokenEstimator
+		stored.RuleSnapshotJSON = append([]byte(nil), snapshot...)
+		stored.RuleHash = ruleHash
 		stored.PublishedBy = &publishedBy
 		stored.PublishedAt = &now
 		stored.UpdatedAt = now
@@ -131,7 +128,7 @@ func (r *WorkflowRuleSetRepository) Publish(ctx context.Context, item *workflow.
 	})
 }
 
-func (r *WorkflowRuleSetRepository) RollbackPublished(ctx context.Context, target *workflow.RuleSet, clone *workflow.RuleSet, publishedBy int64, compile workflow.RuleSetRollbackCompiler) error {
+func (r *WorkflowRuleSetRepository) RollbackPublished(ctx context.Context, target *workflow.RuleSet, clone *workflow.RuleSet, publishedBy int64, build workflow.RuleSetRollbackBuilder) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var stored workflow.RuleSet
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND owner_id = ? AND workflow_id = ?", target.ID, target.OwnerID, target.WorkflowID).First(&stored).Error; err != nil {
@@ -158,21 +155,20 @@ func (r *WorkflowRuleSetRepository) RollbackPublished(ctx context.Context, targe
 		clone.CreatedAt = now
 		clone.UpdatedAt = now
 		clone.Nodes = nil
-		clone.CompiledSnapshotJSON = nil
-		clone.CompiledHash = ""
+		clone.RuleSnapshotJSON = nil
+		clone.RuleHash = ""
 		if err := tx.Create(clone).Error; err != nil {
 			return err
 		}
-		if compile == nil {
-			return fmt.Errorf("rollback compiler is not configured")
+		if build == nil {
+			return fmt.Errorf("rollback rule builder is not configured")
 		}
-		nodes, snapshot, compiledHash, tokenEstimator, err := compile(clone.ID, clone.VersionNo)
+		nodes, snapshot, ruleHash, err := build(clone.ID, clone.VersionNo)
 		if err != nil {
 			return err
 		}
-		clone.CompiledSnapshotJSON = append([]byte(nil), snapshot...)
-		clone.CompiledHash = compiledHash
-		clone.TokenEstimatorVersion = tokenEstimator
+		clone.RuleSnapshotJSON = append([]byte(nil), snapshot...)
+		clone.RuleHash = ruleHash
 		if err := tx.Save(clone).Error; err != nil {
 			return err
 		}

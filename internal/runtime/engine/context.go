@@ -35,31 +35,31 @@ type AgentStepRecorder interface {
 }
 
 type RunContext struct {
-	OwnerID           int64                  `json:"owner_id" tag:"multi-tenant user ID"`
-	WorkflowID        int64                  `json:"workflow_id" tag:"parent agent ID"`
-	FlowVersionID     int64                  `json:"flow_version_id" tag:"DSL version ID"`
-	AgentID           int64                  `json:"agent_id,omitempty" tag:"independent agent ID"`
-	AgentReleaseID    int64                  `json:"agent_release_id,omitempty" tag:"pinned independent agent release ID"`
-	RuleSetID         int64                  `json:"rule_set_id,omitempty" tag:"pinned rule set ID"`
-	RuleSetVersion    string                 `json:"rule_set_version,omitempty" tag:"pinned rule set version"`
-	CompiledRuleHash  string                 `json:"compiled_rule_hash,omitempty" tag:"pinned compiled rule hash"`
-	CompiledRules     *rules.CompiledRuleSet `json:"-" tag:"verified immutable rule snapshot"`
-	RunID             int64                  `json:"run_id" tag:"unique run ID"`
-	ParentRunID       *int64                 `json:"parent_run_id" tag:"optional parent run ID"`
-	CallDepth         int                    `json:"call_depth" tag:"nested workflow call depth"`
-	WorkflowCallChain []int64                `json:"workflow_call_chain" tag:"ancestor agent IDs including current agent"`
-	ConversationID    *int64                 `json:"conversation_id" tag:"optional conversation ID"`
-	Input             map[string]any         `json:"input" tag:"original user input"`
-	Variables         map[string]any         `json:"variables" tag:"user-defined global vars"`
-	NodeInputs        map[string]NodeInput   `json:"node_inputs" tag:"per-node inputs"`
-	NodeOutputs       map[string]NodeOutput  `json:"node_outputs" tag:"per-node outputs"`
-	NodeErrors        map[string]string      `json:"node_errors" tag:"per-node error messages"`
-	NodeLatencies     map[string]int         `json:"node_latencies" tag:"per-node latency in ms"`
-	ExecutedNodes     map[string]bool        `json:"executed_nodes" tag:"per-node execution flags"`
-	Events            EventEmitter           `json:"events" tag:"event emitter"`
-	AgentSteps        AgentStepRecorder      `json:"agent_steps" tag:"agent step recorder"`
-	CurrentNodeID     string                 `json:"current_node_id" tag:"current node ID"`
-	CurrentNodeType   string                 `json:"current_node_type" tag:"current node type"`
+	OwnerID           int64                 `json:"owner_id" tag:"multi-tenant user ID"`
+	WorkflowID        int64                 `json:"workflow_id" tag:"parent agent ID"`
+	FlowVersionID     int64                 `json:"flow_version_id" tag:"DSL version ID"`
+	AgentID           int64                 `json:"agent_id,omitempty" tag:"independent agent ID"`
+	AgentReleaseID    int64                 `json:"agent_release_id,omitempty" tag:"pinned independent agent release ID"`
+	RuleSetID         int64                 `json:"rule_set_id,omitempty" tag:"pinned rule set ID"`
+	RuleSetVersion    string                `json:"rule_set_version,omitempty" tag:"pinned rule set version"`
+	RuleSetHash       string                `json:"rule_set_hash,omitempty" tag:"pinned rule set hash"`
+	Rules             []rules.Rule          `json:"-" tag:"verified immutable rules"`
+	RunID             int64                 `json:"run_id" tag:"unique run ID"`
+	ParentRunID       *int64                `json:"parent_run_id" tag:"optional parent run ID"`
+	CallDepth         int                   `json:"call_depth" tag:"nested workflow call depth"`
+	WorkflowCallChain []int64               `json:"workflow_call_chain" tag:"ancestor agent IDs including current agent"`
+	ConversationID    *int64                `json:"conversation_id" tag:"optional conversation ID"`
+	Input             map[string]any        `json:"input" tag:"original user input"`
+	Variables         map[string]any        `json:"variables" tag:"user-defined global vars"`
+	NodeInputs        map[string]NodeInput  `json:"node_inputs" tag:"per-node inputs"`
+	NodeOutputs       map[string]NodeOutput `json:"node_outputs" tag:"per-node outputs"`
+	NodeErrors        map[string]string     `json:"node_errors" tag:"per-node error messages"`
+	NodeLatencies     map[string]int        `json:"node_latencies" tag:"per-node latency in ms"`
+	ExecutedNodes     map[string]bool       `json:"executed_nodes" tag:"per-node execution flags"`
+	Events            EventEmitter          `json:"events" tag:"event emitter"`
+	AgentSteps        AgentStepRecorder     `json:"agent_steps" tag:"agent step recorder"`
+	CurrentNodeID     string                `json:"current_node_id" tag:"current node ID"`
+	CurrentNodeType   string                `json:"current_node_type" tag:"current node type"`
 }
 
 type NodeInput map[string]any

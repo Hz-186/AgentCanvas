@@ -52,8 +52,8 @@ func TestCreateRuleSetRejectsLegacyLevelWithHTTP400(t *testing.T) {
 	ctx.Params = gin.Params{{Key: "id", Value: "20"}}
 	ctx.Set("user_id", int64(1))
 	handler.CreateRuleSet(ctx)
-	if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), "strength") {
-		t.Fatalf("expected HTTP 400 with migration guidance, got %d body=%s", recorder.Code, recorder.Body.String())
+	if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), "no longer supported") {
+		t.Fatalf("expected HTTP 400 for removed level field, got %d body=%s", recorder.Code, recorder.Body.String())
 	}
 }
 

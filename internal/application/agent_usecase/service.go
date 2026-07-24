@@ -21,6 +21,7 @@ import (
 	runtimeagent "agentcanvas/internal/runtime/agent"
 	"agentcanvas/internal/runtime/engine"
 	runtimeevent "agentcanvas/internal/runtime/event"
+	"agentcanvas/internal/runtime/harness/rules"
 	runtimenode "agentcanvas/internal/runtime/node"
 	"agentcanvas/internal/runtime/toolruntime"
 )
@@ -93,6 +94,9 @@ func (s *Service) CreateAgent(ctx context.Context, ownerID int64, req CreateAgen
 	if err := definition.Validate(); err != nil {
 		return nil, fmt.Errorf("%w: %v", agenterrors.ErrInvalidInput, err)
 	}
+	if err := validateDefinitionRules(definition); err != nil {
+		return nil, fmt.Errorf("%w: %v", agenterrors.ErrInvalidInput, err)
+	}
 	item := &agentdomain.Agent{OwnerID: ownerID, Name: strings.TrimSpace(req.Name), Description: strings.TrimSpace(req.Description),
 		AvatarURL: strings.TrimSpace(req.AvatarURL), Status: agentdomain.StatusDraft, DraftDefinition: definition}
 	if err := s.agents.Create(ctx, item); err != nil {
@@ -139,6 +143,9 @@ func (s *Service) UpdateAgent(ctx context.Context, ownerID, id int64, req Update
 		if err := definition.Validate(); err != nil {
 			return nil, fmt.Errorf("%w: %v", agenterrors.ErrInvalidInput, err)
 		}
+		if err := validateDefinitionRules(definition); err != nil {
+			return nil, fmt.Errorf("%w: %v", agenterrors.ErrInvalidInput, err)
+		}
 		item.DraftDefinition = definition
 	}
 	if err := s.agents.Update(ctx, item); err != nil {
@@ -167,6 +174,10 @@ func (s *Service) ValidateAgent(ctx context.Context, ownerID, id int64) (*Valida
 		return nil, err
 	}
 	result := &ValidationResult{Valid: true, Errors: []string{}, Warnings: []string{}}
+	if err := validateDefinitionRules(item.DraftDefinition); err != nil {
+		result.Valid = false
+		result.Errors = append(result.Errors, err.Error())
+	}
 	_, checksum, validateErr := item.DraftDefinition.Snapshot()
 	if validateErr != nil {
 		result.Valid = false
@@ -240,6 +251,20 @@ func (s *Service) Publish(ctx context.Context, ownerID, id int64) (*agentdomain.
 		return nil, err
 	}
 	return release, nil
+}
+
+func validateDefinitionRules(definition agentdomain.Definition) error {
+	if len(definition.RulesJSON) == 0 || string(definition.RulesJSON) == "null" {
+		return nil
+	}
+	var items []rules.Rule
+	if err := json.Unmarshal(definition.RulesJSON, &items); err != nil {
+		return fmt.Errorf("rules_json is invalid: %w", err)
+	}
+	if _, err := rules.ValidateRules(items); err != nil {
+		return fmt.Errorf("rules_json is invalid: %w", err)
+	}
+	return nil
 }
 
 func (s *Service) validateWorkspaceDefinition(ctx context.Context, ownerID int64, definition agentdomain.Definition) (*workspace.Pack, error) {

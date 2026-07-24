@@ -283,7 +283,7 @@ func (s *Service) resumeRunFromCheckpoint(ctx context.Context, run *workflow.Run
 	if len(run.CallChainJSON) > 0 {
 		_ = json.Unmarshal(run.CallChainJSON, &callChain)
 	}
-	var pinnedRules *rules.CompiledRuleSet
+	var pinnedRules *rules.RuleSet
 	if run.RuleSetID != nil {
 		pinnedRules, err = s.loadPinnedRuleSet(ctx, run.OwnerID, run.WorkflowID, *run.RuleSetID)
 		if err != nil {
@@ -297,8 +297,8 @@ func (s *Service) resumeRunFromCheckpoint(ctx context.Context, run *workflow.Run
 		FlowVersionID:     run.FlowVersionID,
 		RuleSetID:         ruleSetIDValue(run.RuleSetID),
 		RuleSetVersion:    run.RuleSetVersion,
-		CompiledRuleHash:  run.CompiledRuleHash,
-		CompiledRules:     pinnedRules,
+		RuleSetHash:       run.RuleSetHash,
+		Rules:             ruleSetRules(pinnedRules),
 		RunID:             run.ID,
 		ParentRunID:       run.ParentRunID,
 		CallDepth:         run.CallDepth,

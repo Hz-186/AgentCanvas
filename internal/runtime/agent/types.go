@@ -77,9 +77,8 @@ type RunRequest struct {
 	RuleRiskLevel                   string
 	RuleSetVersion                  string
 	RuleSetID                       int64
-	CompiledRuleHash                string
-	CompiledRules                   *rules.CompiledRuleSet
-	CustomRules                     []rules.Rule
+	RuleSetHash                     string
+	Rules                           []rules.Rule
 	RuleTrace                       rules.Trace
 	ContextBlocks                   []ContextBlock
 	ToolPolicy                      ToolPolicy
@@ -165,25 +164,24 @@ type Approval struct {
 }
 
 type Checkpoint struct {
-	SnapshotVersion       int                    `json:"snapshot_version,omitempty"`
-	BaseMessages          []llm.ChatMessage      `json:"base_messages,omitempty"`
-	Transcript            []llm.ChatMessage      `json:"transcript,omitempty"`
-	Steps                 []RunStep              `json:"steps,omitempty"`
-	Messages              []llm.ChatMessage      `json:"messages"`
-	MessagesSummary       string                 `json:"messages_summary"`
-	PendingToolCall       *llm.ToolCall          `json:"pending_tool_call,omitempty"`
-	Context               ContextTrace           `json:"context"`
-	ToolPolicy            ToolPolicy             `json:"tool_policy"`
-	ToolNames             []string               `json:"tool_names"`
-	Metadata              map[string]any         `json:"metadata,omitempty"`
-	Plan                  *Plan                  `json:"plan,omitempty"`
-	ReflectionPolicy      reflection.Policy      `json:"reflection_policy,omitempty"`
-	RecalledReflectionIDs []int64                `json:"recalled_reflection_ids,omitempty"`
-	RuleSetVersion        string                 `json:"rule_set_version,omitempty"`
-	RuleSetID             int64                  `json:"rule_set_id,omitempty"`
-	CompiledHash          string                 `json:"compiled_hash,omitempty"`
-	CompiledRules         *rules.CompiledRuleSet `json:"compiled_rules,omitempty"`
-	CustomRules           []rules.Rule           `json:"custom_rules,omitempty"`
+	SnapshotVersion       int               `json:"snapshot_version,omitempty"`
+	BaseMessages          []llm.ChatMessage `json:"base_messages,omitempty"`
+	Transcript            []llm.ChatMessage `json:"transcript,omitempty"`
+	Steps                 []RunStep         `json:"steps,omitempty"`
+	Messages              []llm.ChatMessage `json:"messages"`
+	MessagesSummary       string            `json:"messages_summary"`
+	PendingToolCall       *llm.ToolCall     `json:"pending_tool_call,omitempty"`
+	Context               ContextTrace      `json:"context"`
+	ToolPolicy            ToolPolicy        `json:"tool_policy"`
+	ToolNames             []string          `json:"tool_names"`
+	Metadata              map[string]any    `json:"metadata,omitempty"`
+	Plan                  *Plan             `json:"plan,omitempty"`
+	ReflectionPolicy      reflection.Policy `json:"reflection_policy,omitempty"`
+	RecalledReflectionIDs []int64           `json:"recalled_reflection_ids,omitempty"`
+	RuleSetVersion        string            `json:"rule_set_version,omitempty"`
+	RuleSetID             int64             `json:"rule_set_id,omitempty"`
+	RuleSetHash           string            `json:"rule_set_hash,omitempty"`
+	Rules                 []rules.Rule      `json:"rules,omitempty"`
 }
 
 type ContextBlock struct {
@@ -212,7 +210,7 @@ type ContextTrace struct {
 	RuleBudget             RuleBudget          `json:"rule_budget,omitempty"`
 	RuleSetVersion         string              `json:"rule_set_version,omitempty"`
 	RuleSetID              int64               `json:"rule_set_id,omitempty"`
-	CompiledHash           string              `json:"compiled_hash,omitempty"`
+	RuleSetHash            string              `json:"rule_set_hash,omitempty"`
 	CoreOverflow           bool                `json:"core_overflow,omitempty"`
 	MandatoryTokens        int                 `json:"mandatory_tokens,omitempty"`
 	MandatoryBudgetTokens  int                 `json:"mandatory_budget_tokens,omitempty"`
