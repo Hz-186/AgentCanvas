@@ -107,7 +107,9 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 		})
 	}
 
+	// // ***
 	compactedBlocks, compactionUsage, initialCompaction := r.compactInitialHistory(ctx, req, tools)
+	// // ***
 	req.ContextBlocks = compactedBlocks
 	result.Usage = addUsage(result.Usage, compactionUsage)
 	baseMessages, contextTrace := ContextAssembler{}.Build(req)
@@ -123,7 +125,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 	}
 	contextTrace.RuleSetVersion = req.RuleSetVersion
 	contextTrace.RuleSetID = req.RuleSetID
-	contextTrace.CompiledHash = req.CompiledRuleHash
+	contextTrace.RuleSetHash = req.RuleSetHash
 	if contextTrace.CoreOverflow {
 		observability.RuleSystemMetrics.RecordMandatoryOverflow()
 		return nil, fmt.Errorf("%w: rule_set_id=%d version=%s mandatory_tokens=%d budget_tokens=%d deficit_tokens=%d",
@@ -133,6 +135,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 	transcript := make([]llm.ChatMessage, 0, req.MaxIterations*2)
 	previousRuleIDs := make([]string, 0)
 	// Plans guide the model through context; they do not drive a step scheduler.
+	// // ***
 	if req.Plan != nil && len(req.Plan.Steps) > 0 {
 		plan := clonePlan(req.Plan)
 		if plan.ExecutionState == "" {
@@ -153,6 +156,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 			_ = r.emit(ctx, planStep)
 		}
 	}
+	// // ***
 	result.Context = contextTrace
 	if len(req.ResumeMessages) == 0 && len(req.RecalledReflectionIDs) > 0 {
 		recalledJSON, _ := json.Marshal(req.RecalledReflectionIDs)
@@ -262,8 +266,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 				MaxRuleTokens:  req.MaxRuleTokens,
 				ProviderType:   req.Provider.ProviderType,
 				Model:          req.Model,
-				CustomRules:    req.CustomRules,
-				CompiledRules:  req.CompiledRules,
+				Rules:          req.Rules,
 			})
 			messages = assembleRoundMessages(baseMessages, ruleMessages(plan.Rules), transcript)
 			contextTrace.RuleTrace = mergeRuleTraces(req.RuleTrace, plan.Trace)
@@ -280,6 +283,9 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 			previousRuleIDs = append(previousRuleIDs[:0], plan.Trace.Loaded...)
 			result.Context = contextTrace
 		}
+		// // ***
+
+		//// ***
 		result.Iterations = iteration + 1
 		estimatedPromptTokens := modelMessagesTokens(req, messages) + modelToolSchemaTokens(req, tools)
 		allowedPromptTokens := hardPromptTokenLimit(req)
@@ -293,6 +299,8 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 			_ = r.emit(ctx, step)
 			return finish(result, r.now()), overflowErr
 		}
+		//// ***
+
 		llmStarted := r.now()
 		resp, err := r.LLM.ChatWithTools(ctx, req.Provider, llm.ToolChatRequest{
 			Model:       req.Model,
@@ -388,6 +396,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 			return finish(result, r.now()), nil
 		}
 	}
+	//
 	result.StopReason = StopReasonMaxIterations
 	result.FinalAnswer = "Agent stopped because max_iterations was exceeded."
 	finalStep2 := r.appendStep(result,
@@ -546,9 +555,6 @@ func mergeRuleTraces(persistent, dynamic rules.Trace) rules.Trace {
 	merged := dynamic
 	merged.Loaded = appendUniqueStrings(persistent.Loaded, dynamic.Loaded)
 	merged.EstimatedUsed += persistent.EstimatedUsed
-	merged.SavedTokens += persistent.SavedTokens
-	merged.CandidateCount += persistent.CandidateCount
-	merged.ConsideredCount += persistent.ConsideredCount
 	return merged
 }
 
@@ -642,6 +648,7 @@ func (r *Runner) executeToolBatch(
 		})
 		result.HookTrace = appendHookTrace(result.HookTrace, call.Name, pre.Traces)
 		if pre.Approval != nil && !slices.Contains(approvedToolCallIDs, call.ID) {
+			// // ***
 			for i := range prepared {
 				if prepared[i].execCancel != nil {
 					prepared[i].execCancel()
@@ -831,13 +838,12 @@ func checkpointFromMessages(
 			"tool_calls":          toolCalls,
 			"rule_set_version":    req.RuleSetVersion,
 			"rule_set_id":         req.RuleSetID,
-			"compiled_hash":       req.CompiledRuleHash,
+			"rule_set_hash":       req.RuleSetHash,
 		},
 		RuleSetVersion: req.RuleSetVersion,
 		RuleSetID:      req.RuleSetID,
-		CompiledHash:   req.CompiledRuleHash,
-		CompiledRules:  req.CompiledRules,
-		CustomRules:    append([]rules.Rule(nil), req.CustomRules...),
+		RuleSetHash:    req.RuleSetHash,
+		Rules:          append([]rules.Rule(nil), req.Rules...),
 	}
 }
 

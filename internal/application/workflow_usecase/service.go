@@ -876,7 +876,7 @@ func (s *Service) CallInlineAgent(ctx context.Context, req toolruntime.InlineAge
 	if !parentMatches {
 		return nil, fmt.Errorf("%w: inline agent parent run context does not match", agenterrors.ErrForbidden)
 	}
-	var pinnedRules *rules.CompiledRuleSet
+	var pinnedRules *rules.RuleSet
 	if parent.RuleSetID != nil {
 		pinnedRules, err = s.loadPinnedRuleSet(ctx, req.OwnerID, req.CallerWorkflowID, *parent.RuleSetID)
 		if err != nil {
@@ -897,14 +897,14 @@ func (s *Service) CallInlineAgent(ctx context.Context, req toolruntime.InlineAge
 	callChain := normalizeWorkflowCallChain(req.WorkflowCallChain, req.CallerWorkflowID)
 	callChainJSON, _ := json.Marshal(callChain)
 	now := time.Now().UTC()
-	run := &workflow.Run{OwnerID: req.OwnerID, WorkflowID: req.CallerWorkflowID, FlowVersionID: parent.FlowVersionID, AgentID: parent.AgentID, AgentReleaseID: parent.AgentReleaseID, RuleSetID: parent.RuleSetID, RuleSetVersion: parent.RuleSetVersion, CompiledRuleHash: parent.CompiledRuleHash, ConversationID: req.ConversationID, ParentRunID: &req.ParentRunID, CallerNodeID: req.CallerNodeID, CallDepth: req.CallDepth + 1, CallChainJSON: callChainJSON, RunKind: workflow.RunKindInlineAgent, DefinitionJSON: definitionJSON, DefinitionHash: hex.EncodeToString(definitionHash[:]), Status: workflow.RunStatusRunning, InputJSON: inputJSON, StartedAt: now}
+	run := &workflow.Run{OwnerID: req.OwnerID, WorkflowID: req.CallerWorkflowID, FlowVersionID: parent.FlowVersionID, AgentID: parent.AgentID, AgentReleaseID: parent.AgentReleaseID, RuleSetID: parent.RuleSetID, RuleSetVersion: parent.RuleSetVersion, RuleSetHash: parent.RuleSetHash, ConversationID: req.ConversationID, ParentRunID: &req.ParentRunID, CallerNodeID: req.CallerNodeID, CallDepth: req.CallDepth + 1, CallChainJSON: callChainJSON, RunKind: workflow.RunKindInlineAgent, DefinitionJSON: definitionJSON, DefinitionHash: hex.EncodeToString(definitionHash[:]), Status: workflow.RunStatusRunning, InputJSON: inputJSON, StartedAt: now}
 	if err := s.runs.Create(ctx, run); err != nil {
 		return nil, err
 	}
 	execCtx, cancel := context.WithCancelCause(ctx)
 	s.runCancels.Register(run.ID, cancel)
 	defer func() { cancel(nil); s.runCancels.Unregister(run.ID) }()
-	rc := &engine.RunContext{OwnerID: req.OwnerID, WorkflowID: req.CallerWorkflowID, FlowVersionID: parent.FlowVersionID, AgentID: req.CallerAgentID, AgentReleaseID: ruleSetIDValue(parent.AgentReleaseID), RuleSetID: ruleSetIDValue(parent.RuleSetID), RuleSetVersion: parent.RuleSetVersion, CompiledRuleHash: parent.CompiledRuleHash, CompiledRules: pinnedRules, RunID: run.ID, ParentRunID: &req.ParentRunID, CallDepth: req.CallDepth + 1, WorkflowCallChain: callChain, ConversationID: req.ConversationID, AgentSteps: s, Input: input, Events: &eventEmitter{repo: s.events, ownerID: req.OwnerID, runID: run.ID}}
+	rc := &engine.RunContext{OwnerID: req.OwnerID, WorkflowID: req.CallerWorkflowID, FlowVersionID: parent.FlowVersionID, AgentID: req.CallerAgentID, AgentReleaseID: ruleSetIDValue(parent.AgentReleaseID), RuleSetID: ruleSetIDValue(parent.RuleSetID), RuleSetVersion: parent.RuleSetVersion, RuleSetHash: parent.RuleSetHash, Rules: ruleSetRules(pinnedRules), RunID: run.ID, ParentRunID: &req.ParentRunID, CallDepth: req.CallDepth + 1, WorkflowCallChain: callChain, ConversationID: req.ConversationID, AgentSteps: s, Input: input, Events: &eventEmitter{repo: s.events, ownerID: req.OwnerID, runID: run.ID}}
 	output, execErr := s.executor.Execute(execCtx, rc, dsl)
 	cancelReason := s.runCancels.Reason(run.ID)
 	finished := time.Now().UTC()
@@ -1263,8 +1263,8 @@ func (s *Service) run(
 	callChainJSON, _ := json.Marshal(callChain)
 	now := time.Now().UTC()
 	var activeRuleSetID *int64
-	var activeRuleSet *rules.CompiledRuleSet
-	var activeRuleSetVersion, activeCompiledHash string
+	var activeRuleSet *rules.RuleSet
+	var activeRuleSetVersion, activeRuleHash string
 	if active, activeErr := s.LoadActiveRuleSet(ctx, ownerID, workflowID); activeErr != nil {
 		return nil, nil, activeErr
 	} else if active != nil {
@@ -1272,7 +1272,7 @@ func (s *Service) run(
 		id := active.ID
 		activeRuleSetID = &id
 		activeRuleSetVersion = active.Version
-		activeCompiledHash = active.CompiledHash
+		activeRuleHash = active.Hash
 	}
 	runKind := opts.RunKind
 	if runKind == "" {
@@ -1286,23 +1286,23 @@ func (s *Service) run(
 		agentReleaseID = &opts.AgentReleaseID
 	}
 	run := &workflow.Run{
-		OwnerID:          ownerID,
-		WorkflowID:       workflowID,
-		FlowVersionID:    version.ID,
-		RuleSetID:        activeRuleSetID,
-		RuleSetVersion:   activeRuleSetVersion,
-		CompiledRuleHash: activeCompiledHash,
-		RunKind:          runKind,
-		AgentID:          agentID,
-		AgentReleaseID:   agentReleaseID,
-		ConversationID:   req.ConversationID,
-		ParentRunID:      opts.ParentRunID,
-		CallerNodeID:     opts.CallerNodeID,
-		CallDepth:        opts.CallDepth,
-		CallChainJSON:    callChainJSON,
-		Status:           workflow.RunStatusRunning,
-		InputJSON:        inputJSON,
-		StartedAt:        now,
+		OwnerID:        ownerID,
+		WorkflowID:     workflowID,
+		FlowVersionID:  version.ID,
+		RuleSetID:      activeRuleSetID,
+		RuleSetVersion: activeRuleSetVersion,
+		RuleSetHash:    activeRuleHash,
+		RunKind:        runKind,
+		AgentID:        agentID,
+		AgentReleaseID: agentReleaseID,
+		ConversationID: req.ConversationID,
+		ParentRunID:    opts.ParentRunID,
+		CallerNodeID:   opts.CallerNodeID,
+		CallDepth:      opts.CallDepth,
+		CallChainJSON:  callChainJSON,
+		Status:         workflow.RunStatusRunning,
+		InputJSON:      inputJSON,
+		StartedAt:      now,
 	}
 	if err := s.runs.Create(ctx, run); err != nil {
 		return nil, nil, err
@@ -1324,8 +1324,8 @@ func (s *Service) run(
 		AgentReleaseID:    opts.AgentReleaseID,
 		RuleSetID:         ruleSetIDValue(activeRuleSetID),
 		RuleSetVersion:    activeRuleSetVersion,
-		CompiledRuleHash:  activeCompiledHash,
-		CompiledRules:     activeRuleSet,
+		RuleSetHash:       activeRuleHash,
+		Rules:             ruleSetRules(activeRuleSet),
 		RunID:             run.ID,
 		ParentRunID:       opts.ParentRunID,
 		CallDepth:         opts.CallDepth,

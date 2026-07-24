@@ -24,9 +24,6 @@ go build -o /dev/null ./cmd/worker
 echo "==> go build ./cmd/migrate (dry-run check)"
 go build -o /dev/null ./cmd/migrate
 
-echo "==> go build ./cmd/backfill-rule-sets (dry-run check)"
-go build -o /dev/null ./cmd/backfill-rule-sets
-
 echo "==> npm typecheck"
 npm --prefix web run typecheck
 

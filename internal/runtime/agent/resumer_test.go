@@ -24,24 +24,6 @@ func TestCheckpointFromJSON(t *testing.T) {
 	}
 }
 
-func TestCheckpointFromJSONConvertsLegacyRules(t *testing.T) {
-	data := json.RawMessage(`{"custom_rules":[{"id":"tenant.tool","name":"Tool","level":"l3_tool","content":"tool guidance"}]}`)
-	cp, err := CheckpointFromJSON(data)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(cp.CustomRules) != 1 || cp.CustomRules[0].Strength != rules.RuleOptional || !cp.CustomRules[0].Activation.Always {
-		t.Fatalf("legacy checkpoint rule was not normalized: %+v", cp.CustomRules)
-	}
-	foundToolUsed := false
-	for _, tag := range cp.CustomRules[0].Activation.TagAll {
-		foundToolUsed = foundToolUsed || tag == "tool_used"
-	}
-	if !foundToolUsed {
-		t.Fatalf("legacy tool rule must require tool_used: %+v", cp.CustomRules[0])
-	}
-}
-
 func TestBuildResumeRequestApproved(t *testing.T) {
 	cp := &Checkpoint{
 		Messages: []llm.ChatMessage{
@@ -123,13 +105,13 @@ func TestBuildResumeRequestUsesCheckpointRuleSnapshot(t *testing.T) {
 		Messages:       []llm.ChatMessage{{Role: conversation.RoleSystem, Content: "system"}},
 		Metadata:       map[string]any{},
 		RuleSetVersion: "release-2026-07",
-		CustomRules:    []rules.Rule{{ID: "tenant.release.check", Strength: rules.RuleOptional, Content: "check rollback", Activation: rules.Activation{Always: true}}},
+		Rules:          []rules.Rule{{ID: "tenant.release.check", Strength: rules.RuleOptional, Content: "check rollback", Activation: rules.Activation{Always: true}}},
 	}
-	resumed, err := BuildResumeRequest(ResumeRequest{RunRequest: RunRequest{RuleSetVersion: "current", CustomRules: []rules.Rule{{ID: "new", Content: "new"}}}, Checkpoint: checkpoint})
+	resumed, err := BuildResumeRequest(ResumeRequest{RunRequest: RunRequest{RuleSetVersion: "current", Rules: []rules.Rule{{ID: "new", Strength: rules.RuleMandatory, Content: "new"}}}, Checkpoint: checkpoint})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resumed.RuleSetVersion != "release-2026-07" || len(resumed.CustomRules) != 1 || resumed.CustomRules[0].ID != "tenant.release.check" {
+	if resumed.RuleSetVersion != "release-2026-07" || len(resumed.Rules) != 1 || resumed.Rules[0].ID != "tenant.release.check" {
 		t.Fatalf("expected checkpoint rule snapshot, got %+v", resumed)
 	}
 }
@@ -173,10 +155,10 @@ func TestCheckpointCapturesReflectionAndPlanState(t *testing.T) {
 	}
 }
 
-func TestBuildResumeRequestRejectsTamperedCompiledRuleSnapshot(t *testing.T) {
-	compiled, err := rules.CompileRuleSet([]rules.Rule{{
+func TestBuildResumeRequestRejectsTamperedRuleSnapshot(t *testing.T) {
+	set, err := rules.NewRuleSet([]rules.Rule{{
 		ID: "tenant.audit", Content: "audit", Strength: rules.RuleMandatory,
-	}}, rules.CompileOptions{RuleSetID: 8, Version: "2"})
+	}}, 8, "2")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -184,10 +166,10 @@ func TestBuildResumeRequestRejectsTamperedCompiledRuleSnapshot(t *testing.T) {
 		Messages:       []llm.ChatMessage{{Role: conversation.RoleSystem, Content: "system"}},
 		RuleSetID:      8,
 		RuleSetVersion: "2",
-		CompiledHash:   compiled.CompiledHash,
-		CompiledRules:  compiled,
+		RuleSetHash:    set.Hash,
+		Rules:          append([]rules.Rule(nil), set.Rules...),
 	}
-	compiled.Rules[0].Rule.Content = "tampered"
+	checkpoint.Rules[0].Content = "tampered"
 	if _, err := BuildResumeRequest(ResumeRequest{Checkpoint: checkpoint}); err == nil {
 		t.Fatal("expected tampered checkpoint rule snapshot to be rejected")
 	}

@@ -6,7 +6,6 @@ import (
 
 	"agentcanvas/internal/domain/conversation"
 	"agentcanvas/internal/infrastructure/llm"
-	"agentcanvas/internal/observability"
 	"agentcanvas/internal/runtime/harness/rules"
 )
 
@@ -18,54 +17,50 @@ type ResumeRequest struct {
 }
 
 func BuildResumeRequest(req ResumeRequest) (*RunRequest, error) {
-	messages := req.Checkpoint.Messages
+	if req.Checkpoint == nil {
+		return nil, fmt.Errorf("checkpoint is required")
+	}
+	messages := append([]llm.ChatMessage(nil), req.Checkpoint.Messages...)
 	baseMessages := append([]llm.ChatMessage(nil), req.Checkpoint.BaseMessages...)
 	transcript := append([]llm.ChatMessage(nil), req.Checkpoint.Transcript...)
 	resumeSteps := append([]RunStep(nil), req.Checkpoint.Steps...)
-	iteration := 0
-	toolCalls := 0
+	iteration, toolCalls := 0, 0
 	approvedToolCallIDs := metadataStringSlice(req.Checkpoint.Metadata["approved_tool_call_ids"])
 	if req.Approved && req.Checkpoint.PendingToolCall != nil {
 		approvedToolCallIDs = appendUniqueString(approvedToolCallIDs, req.Checkpoint.PendingToolCall.ID)
 	}
-	if v, ok := req.Checkpoint.Metadata["iteration"]; ok {
-		if i, ok := v.(float64); ok {
-			iteration = int(i)
-		}
+	if value, ok := req.Checkpoint.Metadata["iteration"].(float64); ok {
+		iteration = int(value)
 	}
-	if v, ok := req.Checkpoint.Metadata["tool_calls"]; ok {
-		if i, ok := v.(float64); ok {
-			toolCalls = int(i)
-		}
+	if value, ok := req.Checkpoint.Metadata["tool_calls"].(float64); ok {
+		toolCalls = int(value)
 	}
 	if !req.Approved && req.Checkpoint.PendingToolCall != nil {
-		rejectionContent := "Human rejected the request to execute tool " + req.Checkpoint.PendingToolCall.Name
+		content := "Human rejected the request to execute tool " + req.Checkpoint.PendingToolCall.Name
 		if req.RejectionNote != "" {
-			rejectionContent = "Human rejected: " + req.RejectionNote
+			content = "Human rejected: " + req.RejectionNote
 		}
-		messages = append(messages, llm.ChatMessage{
-			Role:       conversation.RoleTool,
-			ToolCallID: req.Checkpoint.PendingToolCall.ID,
-			Content:    rejectionContent,
-		})
+		messages = append(messages, llm.ChatMessage{Role: conversation.RoleTool, ToolCallID: req.Checkpoint.PendingToolCall.ID, Content: content})
 		if req.Checkpoint.SnapshotVersion >= 2 {
 			transcript = append(transcript, messages[len(messages)-1])
 		}
-		pending := req.Checkpoint.PendingToolCall
-		_ = pending
 	}
 	if len(baseMessages) == 0 {
-		// Legacy checkpoints only stored the already assembled message list.
 		baseMessages = append([]llm.ChatMessage(nil), messages...)
 		transcript = nil
 	}
-	contextBlocks := req.ContextBlocks
-	if len(contextBlocks) == 0 {
-		contextBlocks = nil
+	ruleItems := append([]rules.Rule(nil), req.Checkpoint.Rules...)
+	if len(ruleItems) == 0 {
+		ruleItems = append([]rules.Rule(nil), req.Rules...)
 	}
-	compiledRules, err := checkpointCompiledRules(req.Checkpoint, req.CompiledRules)
-	if err != nil {
-		return nil, err
+	if _, err := rules.ValidateLoadedRules(ruleItems); err != nil {
+		return nil, fmt.Errorf("checkpoint rules are invalid: %w", err)
+	}
+	if req.Checkpoint.RuleSetHash != "" {
+		set, err := rules.NewRuleSet(customRules(ruleItems), req.Checkpoint.RuleSetID, req.Checkpoint.RuleSetVersion)
+		if err != nil || set.Hash != req.Checkpoint.RuleSetHash {
+			return nil, fmt.Errorf("checkpoint rule set integrity check failed")
+		}
 	}
 	reflectionPolicy := req.ReflectionPolicy
 	recalledReflectionIDs := append([]int64(nil), req.RecalledReflectionIDs...)
@@ -79,90 +74,32 @@ func BuildResumeRequest(req ResumeRequest) (*RunRequest, error) {
 		plan = &cloned
 	}
 	return &RunRequest{
-		OwnerID:                         req.OwnerID,
-		WorkflowID:                      req.WorkflowID,
-		RunID:                           req.RunID,
-		NodeID:                          req.NodeID,
-		CallDepth:                       req.CallDepth,
-		WorkflowCallChain:               req.WorkflowCallChain,
-		ConversationID:                  req.ConversationID,
-		Provider:                        req.Provider,
-		Model:                           req.Model,
-		Mode:                            req.Mode,
-		Plan:                            plan,
-		SystemPrompt:                    req.SystemPrompt,
-		Task:                            req.Task,
-		ReflectionEnabled:               req.ReflectionEnabled,
-		ReflectionPolicy:                reflectionPolicy,
-		RecalledReflectionIDs:           recalledReflectionIDs,
-		Temperature:                     req.Temperature,
-		MaxIterations:                   req.MaxIterations,
-		MaxToolCalls:                    req.MaxToolCalls,
-		MaxExecutionTimeMS:              req.MaxExecutionTimeMS,
-		MaxParallelTools:                req.MaxParallelTools,
-		MaxInputChars:                   req.MaxInputChars,
-		MaxInputTokens:                  req.MaxInputTokens,
-		ContextWindowTokens:             req.ContextWindowTokens,
-		ReservedOutputTokens:            req.ReservedOutputTokens,
-		ContextSafetyMarginTokens:       req.ContextSafetyMarginTokens,
-		ModelAutoCompactTokenLimit:      req.ModelAutoCompactTokenLimit,
-		ModelAutoCompactTokenLimitScope: req.ModelAutoCompactTokenLimitScope,
-		CompactPrompt:                   req.CompactPrompt,
-		MaxRuleTokens:                   req.MaxRuleTokens,
-		RuleTags:                        append([]string(nil), req.RuleTags...),
-		RuleRiskLevel:                   req.RuleRiskLevel,
-		RuleSetVersion:                  firstNonEmpty(req.Checkpoint.RuleSetVersion, req.RuleSetVersion),
-		RuleSetID:                       firstPositive(req.Checkpoint.RuleSetID, req.RuleSetID),
-		CompiledRuleHash:                firstNonEmpty(req.Checkpoint.CompiledHash, req.CompiledRuleHash),
-		CompiledRules:                   compiledRules,
-		CustomRules:                     checkpointRules(req.Checkpoint, req.CustomRules),
-		RuleTrace:                       req.RuleTrace,
-		ContextBlocks:                   contextBlocks,
-		ToolPolicy:                      req.ToolPolicy,
-		ToolHookChain:                   req.ToolHookChain,
-		Tools:                           req.Tools,
-		ResumeMessages:                  messages,
-		ResumeBaseMessages:              baseMessages,
-		ResumeTranscript:                transcript,
-		ResumeSteps:                     resumeSteps,
-		ResumeIteration:                 iteration,
-		ResumeToolCalls:                 toolCalls,
-		ResumeApprovedToolCallIDs:       approvedToolCallIDs,
+		OwnerID: req.OwnerID, WorkflowID: req.WorkflowID, RunID: req.RunID, NodeID: req.NodeID,
+		CallDepth: req.CallDepth, WorkflowCallChain: req.WorkflowCallChain, ConversationID: req.ConversationID,
+		Provider: req.Provider, Model: req.Model, Mode: req.Mode, Plan: plan, SystemPrompt: req.SystemPrompt, Task: req.Task,
+		ReflectionEnabled: req.ReflectionEnabled, ReflectionPolicy: reflectionPolicy, RecalledReflectionIDs: recalledReflectionIDs,
+		Temperature: req.Temperature, MaxIterations: req.MaxIterations, MaxToolCalls: req.MaxToolCalls,
+		MaxExecutionTimeMS: req.MaxExecutionTimeMS, MaxParallelTools: req.MaxParallelTools, MaxInputChars: req.MaxInputChars,
+		MaxInputTokens: req.MaxInputTokens, ContextWindowTokens: req.ContextWindowTokens, ReservedOutputTokens: req.ReservedOutputTokens,
+		ContextSafetyMarginTokens: req.ContextSafetyMarginTokens, ModelAutoCompactTokenLimit: req.ModelAutoCompactTokenLimit,
+		ModelAutoCompactTokenLimitScope: req.ModelAutoCompactTokenLimitScope, CompactPrompt: req.CompactPrompt,
+		MaxRuleTokens: req.MaxRuleTokens, RuleTags: append([]string(nil), req.RuleTags...), RuleRiskLevel: req.RuleRiskLevel,
+		RuleSetVersion: firstNonEmpty(req.Checkpoint.RuleSetVersion, req.RuleSetVersion), RuleSetID: firstPositive(req.Checkpoint.RuleSetID, req.RuleSetID),
+		RuleSetHash: firstNonEmpty(req.Checkpoint.RuleSetHash, req.RuleSetHash), Rules: ruleItems, RuleTrace: req.RuleTrace,
+		ContextBlocks: req.ContextBlocks, ToolPolicy: req.ToolPolicy, ToolHookChain: req.ToolHookChain, Tools: req.Tools,
+		ResumeMessages: messages, ResumeBaseMessages: baseMessages, ResumeTranscript: transcript, ResumeSteps: resumeSteps,
+		ResumeIteration: iteration, ResumeToolCalls: toolCalls, ResumeApprovedToolCallIDs: approvedToolCallIDs,
 	}, nil
 }
 
-func checkpointCompiledRules(checkpoint *Checkpoint, fallback *rules.CompiledRuleSet) (*rules.CompiledRuleSet, error) {
-	if checkpoint != nil && checkpoint.CompiledRules != nil {
-		if checkpoint.RuleSetID > 0 && checkpoint.CompiledRules.ID != checkpoint.RuleSetID {
-			observability.RuleSystemMetrics.RecordSnapshotIntegrityFailure()
-			return nil, fmt.Errorf("checkpoint compiled rule set id mismatch")
+func customRules(items []rules.Rule) []rules.Rule {
+	custom := make([]rules.Rule, 0, len(items))
+	for _, rule := range items {
+		if rule.ID != "safety.output.boundary" && rule.ID != "core.task.completion" {
+			custom = append(custom, rule)
 		}
-		if checkpoint.RuleSetVersion != "" && checkpoint.CompiledRules.Version != checkpoint.RuleSetVersion {
-			observability.RuleSystemMetrics.RecordSnapshotIntegrityFailure()
-			return nil, fmt.Errorf("checkpoint compiled rule set version mismatch")
-		}
-		if err := rules.VerifyCompiledHash(checkpoint.CompiledRules); err != nil {
-			observability.RuleSystemMetrics.RecordSnapshotIntegrityFailure()
-			return nil, fmt.Errorf("checkpoint compiled rule integrity check failed: %w", err)
-		}
-		checkpoint.CompiledRules.Prepare()
-		return checkpoint.CompiledRules, nil
 	}
-	if fallback != nil {
-		if err := rules.VerifyCompiledHash(fallback); err != nil {
-			observability.RuleSystemMetrics.RecordSnapshotIntegrityFailure()
-			return nil, fmt.Errorf("fallback compiled rule integrity check failed: %w", err)
-		}
-		fallback.Prepare()
-	}
-	return fallback, nil
-}
-
-func checkpointRules(checkpoint *Checkpoint, fallback []rules.Rule) []rules.Rule {
-	if checkpoint != nil && len(checkpoint.CustomRules) > 0 {
-		return append([]rules.Rule(nil), checkpoint.CustomRules...)
-	}
-	return append([]rules.Rule(nil), fallback...)
+	return custom
 }
 
 func firstNonEmpty(values ...string) string {
@@ -173,7 +110,6 @@ func firstNonEmpty(values ...string) string {
 	}
 	return ""
 }
-
 func firstPositive(values ...int64) int64 {
 	for _, value := range values {
 		if value > 0 {
@@ -184,11 +120,11 @@ func firstPositive(values ...int64) int64 {
 }
 
 func metadataStringSlice(value any) []string {
+	if values, ok := value.([]string); ok {
+		return append([]string(nil), values...)
+	}
 	items, ok := value.([]any)
 	if !ok {
-		if strings, ok := value.([]string); ok {
-			return append([]string(nil), strings...)
-		}
 		return nil
 	}
 	out := make([]string, 0, len(items))
@@ -210,39 +146,9 @@ func appendUniqueString(values []string, value string) []string {
 }
 
 func CheckpointFromJSON(data json.RawMessage) (*Checkpoint, error) {
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(data, &fields); err != nil {
+	var checkpoint Checkpoint
+	if err := json.Unmarshal(data, &checkpoint); err != nil {
 		return nil, err
 	}
-	compiledRaw := fields["compiled_rules"]
-	customRaw := fields["custom_rules"]
-	delete(fields, "compiled_rules")
-	delete(fields, "custom_rules")
-	base, err := json.Marshal(fields)
-	if err != nil {
-		return nil, err
-	}
-	var cp Checkpoint
-	if err := json.Unmarshal(base, &cp); err != nil {
-		return nil, err
-	}
-	if len(compiledRaw) > 0 && string(compiledRaw) != "null" {
-		compiled, decodeErr := rules.DecodeCompiledRuleSet(compiledRaw)
-		if decodeErr != nil {
-			return nil, decodeErr
-		}
-		cp.CompiledRules = compiled
-	}
-	if len(customRaw) > 0 && string(customRaw) != "null" {
-		var legacy []rules.LegacyRuleDTO
-		if err := json.Unmarshal(customRaw, &legacy); err != nil {
-			return nil, err
-		}
-		converted, _, convertErr := rules.ConvertLegacyRules(legacy)
-		if convertErr != nil {
-			return nil, convertErr
-		}
-		cp.CustomRules = converted
-	}
-	return &cp, nil
+	return &checkpoint, nil
 }

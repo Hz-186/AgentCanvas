@@ -100,11 +100,11 @@ func DecodeAgentRuntimeDefinition(raw json.RawMessage) (AgentRuntimeDefinition, 
 		cfg.SystemPrompt = strings.Join(identity, "\n") + "\n\n" + cfg.SystemPrompt
 	}
 	if len(release.Rules) > 0 && string(release.Rules) != "null" {
-		if err := json.Unmarshal(release.Rules, &cfg.CustomRules); err != nil {
+		if err := json.Unmarshal(release.Rules, &cfg.Rules); err != nil {
 			return AgentRuntimeDefinition{}, fmt.Errorf("decode agent release rules: %w", err)
 		}
-		if _, err := rules.CompileRuntimeRuleSet(cfg.CustomRules); err != nil {
-			return AgentRuntimeDefinition{}, fmt.Errorf("compile agent release rules: %w", err)
+		if _, err := rules.ValidateRules(cfg.Rules); err != nil {
+			return AgentRuntimeDefinition{}, fmt.Errorf("validate agent release rules: %w", err)
 		}
 	}
 	return AgentRuntimeDefinition(cfg), nil

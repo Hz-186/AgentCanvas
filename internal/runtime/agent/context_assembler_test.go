@@ -261,11 +261,10 @@ func TestContextAssemblerCarriesRuleTrace(t *testing.T) {
 	_, trace := ContextAssembler{MaxChars: 5000}.Build(RunRequest{
 		Task: "answer the task",
 		RuleTrace: rules.Trace{
-			Loaded:            []string{"core.task.completion"},
-			SelectionStrategy: "deterministic_activation_budget:v1",
+			Loaded: []string{"core.task.completion"},
 		},
 	})
-	if trace.RuleTrace.SelectionStrategy != "deterministic_activation_budget:v1" || len(trace.RuleTrace.Loaded) != 1 {
+	if len(trace.RuleTrace.Loaded) != 1 {
 		t.Fatalf("expected rule trace to be preserved, got %+v", trace.RuleTrace)
 	}
 }

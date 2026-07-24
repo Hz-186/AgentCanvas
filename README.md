@@ -190,15 +190,15 @@ Agent 执行中
 
 规则运行时只保留两个强度：`mandatory` 无条件静态注入且不可删减；`optional` 根据显式激活信号、优先级和模型实际 token 成本确定性选择。平台 Mandatory 永远存在；没有激活版本化 RuleSet 时才使用内置 Optional 目录。
 
-每条 Optional 规则必须通过 `mode_any` / `tool_any` / `risk_any` / `tag_any` / `keywords_any` / `always` 等显式声明适用条件，空 Activation 会在保存或迁移预检时被拒绝。工具阶段规则使用 `tag_all: ["tool_used"]`，不依赖隐式等级。旧 `level` 只在迁移 DTO 中读取，新写入必须使用 `strength`。
+每条 Optional 规则必须通过 `mode_any` / `tool_any` / `risk_any` / `tag_any` / `keywords_any` / `always` 等显式声明适用条件，空 Activation 会在保存时被拒绝。工具阶段规则使用 `tag_all: ["tool_used"]`，不依赖隐式等级。旧 `level`、依赖图和 trigger 字段已完全移除。
 
-##### RuleSet 编译与发布
+##### RuleSet 校验与发布
 
 ```text
 Draft(revision N)
    │ Publish + expected_revision
    ▼
-同步校验并生成 graph-free v3 快照
+校验规则格式并冻结原始规则快照
    │
    ▼
 Published
@@ -206,15 +206,15 @@ Published
       Profile.active_rule_set_id
    │
    ▼
-      Run 固定 ID + Version + Compiled Hash
+      Run 固定 ID + Version + Rule Hash
 ```
 
-- **确定性编译器**：限制最多 50 条规则，拒绝重复 ID、空内容、无正向 Activation 的 Optional Rule 和非法 Policy Binding。
-- **线性预算选择**：Mandatory 始终注入；Optional 先执行硬排除与显式激活，再按 `priority DESC / token cost ASC / rule ID ASC` 加载，策略标识为 `deterministic_activation_budget:v1`。
-- **策略硬绑定**：`tool.dangerous_arguments.deny`、`tool.risk.require_approval`、`tool.host.allowlist`、`tool.execution_limits` 等绑定在编译期校验，运行时直接进入 Tool Hook Policy，不依赖 LLM 自觉遵守。
-- **不可变快照**：发布时固化规则、token cost、内容哈希和完整 `compiled_hash`；每个 Run / Checkpoint 固定 RuleSet ID、版本与哈希并执行完整性校验。
+- **直接规则加载**：限制最多 50 条自定义规则，保存和发布时拒绝重复 ID、空内容、无 Activation 的 Optional Rule 和非法 Policy Binding，不生成中间编译产物。
+- **两级线性选择**：Mandatory 始终注入；Optional 通过显式条件后按 `priority DESC / actual token cost ASC / rule ID ASC` 加载，超过 Optional 预算的规则直接剪枝。
+- **策略硬绑定**：`tool.dangerous_arguments.deny`、`tool.risk.require_approval`、`tool.host.allowlist`、`tool.execution_limits` 等绑定在规则校验时检查，运行时直接进入 Tool Hook Policy，不依赖 LLM 自觉遵守。
+- **不可变快照**：发布时固化原始规则和完整 `rule_hash`；每个 Run / Checkpoint 固定 RuleSet ID、版本与哈希并执行完整性校验。
 - **安全发布与回滚**：Mandatory token 加 safety margin 超过上下文预算时拒绝发布；新版本发布后旧版本进入 superseded，回滚会从历史快照重新校验并创建一个新的 Published 版本，不会原地篡改历史。
-- **硬切迁移**：新快照使用 `schema_version: 3`，旧图快照不再恢复。维护窗口内先备份数据库并运行 `go run ./cmd/backfill-rule-sets --remove-graph --dry-run`；预检通过后执行 `make migrate`，再运行 `go run ./cmd/backfill-rule-sets --remove-graph` 生成 v3 快照并迁移 Agent Release。预检失败时必须先人工补充 Activation 或删除对应规则。
+- **硬切迁移**：`000038_simplify_rule_loading` 将数据库列收敛为 `rule_hash` 与 `rule_snapshot_json`，并删除 trigger、预计算 token cost 和 content hash；旧编译快照与旧 checkpoint 不再兼容。
 
 RuleSet 状态只有 `draft / published / superseded`。Mandatory overflow、快照完整性、发布和回滚次数可通过 `GET /api/v1/health/rule-system` 观察。
 
@@ -513,7 +513,6 @@ Docker 容器六重隔离（`sandbox.go`）：
 cmd/                        API、Worker、Migration 三个入口
   api/main.go               ─ Gin HTTP Server (SSE 流式 + SPA 嵌入)
   worker/main.go            ─ 异步文档解析/索引与 Reflection Worker
-  backfill-rule-sets/main.go ─ 将旧 Profile 自定义规则回填为版本化 RuleSet
   backfill-agents/main.go    ─ 将旧 Dialog 幂等迁移为独立 Agent + Release
   migrate/main.go           ─ 数据库迁移工具
 configs/                    运行配置 (YAML)
@@ -535,8 +534,7 @@ internal/                   核心后端代码
     ingestion_usecase/       ─ 文档解析/切片/索引
     knowledge_usecase/       ─ 知识库管理/文档上传/检索/重建索引
     memory_usecase/          ─ 记忆提取/合并/Dream/缓存
-    rule_compile_usecase/    ─ RuleSet 异步依赖分析、确定性编译与发布
-    rule_backfill_usecase/   ─ 旧规则配置到版本化 RuleSet 的幂等回填
+    workflow_usecase/        ─ RuleSet 校验、版本发布与回滚
     reflection_usecase/      ─ Reflexion 召回/持久化/反馈/异步 Worker
     provider_usecase/        ─ 模型供应商管理/API Key 加密
     retrieval_usecase/       ─ Keyword/Vector/Hybrid 检索 + Rerank
@@ -633,8 +631,8 @@ skill/                      内置 Skill 预设 (explain-knowledge / record-know
 | `workflow_node_logs` | 节点执行日志 |
 | `workflow_run_steps` | 运行步骤 |
 | `workflow_profiles` | Profile 配置（Mode/Tool Packs/MCP/Memory/Reflection/RuleSet/Context/Output Schema/Risk Level） |
-| `workflow_rule_sets` | 版本化 RuleSet、发布状态、编译快照与回滚来源 |
-| `workflow_rule_nodes` | RuleSet 中的规则、强度、激活条件、策略绑定与编译元数据 |
+| `workflow_rule_sets` | 版本化 RuleSet、原始规则快照、发布状态与回滚来源 |
+| `workflow_rule_nodes` | RuleSet 中的规则、强度、激活条件与策略绑定 |
 | `workflow_eval_datasets` | 评估数据集 |
 | `workflow_eval_cases` | 评估用例 |
 | `workflow_eval_runs` | 评估运行记录 |
@@ -682,7 +680,6 @@ make dev              # 启动完整本地开发链路
 make run              # 迁移 + 前端构建 + API 启动
 make build            # 生产构建（含迁移表完整性校验）
 make worker             # 启动异步 Worker（文档解析、上下文索引、Reflexion）
-make backfill-rule-sets # 将旧 Profile 规则幂等迁移为版本化 RuleSet
 make backfill-agents    # 将旧 Dialog 幂等迁移为独立 Agent（可直接 go run ... --dry-run）
 make backfill-context-index # 按 content hash 增量登记统一语义索引 Outbox
 make migrate          # 运行数据库迁移

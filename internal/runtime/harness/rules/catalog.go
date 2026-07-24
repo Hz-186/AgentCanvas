@@ -1,7 +1,5 @@
 package rules
 
-import "strings"
-
 // DefaultPlatformMandatoryRules are platform constraints injected for every run.
 func DefaultPlatformMandatoryRules() []Rule {
 	return []Rule{
@@ -97,44 +95,15 @@ func DefaultFallbackOptionalRules() []Rule {
 	}
 }
 
-func runtimeRules(custom []Rule, includeFallback bool) []Rule {
+func RuntimeRules(custom []Rule, includeFallback bool) ([]Rule, error) {
+	validated, err := ValidateRules(custom)
+	if err != nil {
+		return nil, err
+	}
 	items := append([]Rule(nil), DefaultPlatformMandatoryRules()...)
 	if includeFallback {
 		items = append(items, DefaultFallbackOptionalRules()...)
 	}
-	items = append(items, custom...)
-	return items
-}
-
-func ResolveDynamicWithRules(systemPrompt, task, mode, risk string, toolNames, tags []string, budget int, custom []Rule) ([]Rule, Trace) {
-	compiled, err := CompileRuntimeRuleSet(custom)
-	if err != nil {
-		return nil, Trace{TokenBudget: budget, OptionalBudget: budget, SelectionStrategy: "rule_compile_failed:" + err.Error()}
-	}
-	return SelectOptionalRules(compiled, LoadContext{
-		Mode:         strings.TrimSpace(mode),
-		RiskLevel:    strings.TrimSpace(risk),
-		ToolNames:    append([]string(nil), toolNames...),
-		Tags:         dedupeStrings(tags),
-		Task:         strings.TrimSpace(task),
-		Conversation: strings.TrimSpace(systemPrompt),
-		TokenBudget:  budget,
-	})
-}
-
-func CompileRuntimeRuleSet(custom []Rule) (*CompiledRuleSet, error) {
-	return CompileRuleSet(runtimeRules(custom, true), CompileOptions{Version: "runtime"})
-}
-
-func CompileActiveRuleSet(custom []Rule) (*CompiledRuleSet, error) {
-	return CompileRuleSet(runtimeRules(custom, false), CompileOptions{Version: "runtime-active"})
-}
-
-// ResolvePersistentWithRules returns platform and RuleSet mandatory rules.
-func ResolvePersistentWithRules(custom []Rule) ([]Rule, Trace) {
-	compiled, err := CompileRuleSet(runtimeRules(custom, false), CompileOptions{Version: "runtime-mandatory"})
-	if err != nil {
-		return nil, Trace{SelectionStrategy: "rule_compile_failed:" + err.Error()}
-	}
-	return SelectMandatoryRules(compiled)
+	items = append(items, validated...)
+	return validateRules(items)
 }

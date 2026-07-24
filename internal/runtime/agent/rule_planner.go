@@ -32,8 +32,7 @@ type RulePlanningState struct {
 	MaxRuleTokens  int
 	ProviderType   string
 	Model          string
-	CustomRules    []rules.Rule
-	CompiledRules  *rules.CompiledRuleSet
+	Rules          []rules.Rule
 }
 
 type RulePlan struct {
@@ -55,42 +54,27 @@ type RuleBudget struct {
 
 func (RulePlanner) Plan(state RulePlanningState) RulePlan {
 	budget := calculateRuleBudget(state)
+	if state.Rules == nil {
+		state.Rules, _ = rules.RuntimeRules(nil, true)
+	}
 	tags := append([]string(nil), state.Tags...)
 	if len(state.UsedToolNames) > 0 {
 		tags = append(tags, "tool_used")
 	}
-	var selected []rules.Rule
-	var trace rules.Trace
-	if state.CompiledRules != nil {
-		selected, trace = rules.SelectOptionalRules(state.CompiledRules, rules.LoadContext{
-			Mode: state.Mode, RiskLevel: state.RiskLevel, ToolNames: state.UsedToolNames,
-			Tags: tags, Task: state.Task, Conversation: state.SystemPrompt,
-			TokenBudget: budget.AvailableRuleTokens, RuleTokenCosts: modelRuleTokenCosts(state),
-		})
-	} else {
-		selected, trace = rules.ResolveDynamicWithRules(
-			state.SystemPrompt,
-			state.Task,
-			state.Mode,
-			state.RiskLevel,
-			state.UsedToolNames,
-			tags,
-			budget.AvailableRuleTokens,
-			state.CustomRules,
-		)
-	}
+	selected, trace := rules.SelectOptionalRules(state.Rules, rules.LoadContext{
+		Mode: state.Mode, RiskLevel: state.RiskLevel, ToolNames: state.UsedToolNames,
+		Tags: tags, Task: state.Task, Conversation: state.SystemPrompt,
+		TokenBudget: budget.AvailableRuleTokens, RuleTokenCosts: modelRuleTokenCosts(state),
+	})
 	return RulePlan{Rules: selected, Trace: trace, Budget: budget}
 }
 
 func modelRuleTokenCosts(state RulePlanningState) map[string]int {
-	if state.CompiledRules == nil {
-		return nil
-	}
-	costs := make(map[string]int, len(state.CompiledRules.Rules))
-	for _, item := range state.CompiledRules.Rules {
-		result := tokencounter.Count(state.ProviderType, state.Model, item.Rule.Content)
+	costs := make(map[string]int, len(state.Rules))
+	for _, rule := range state.Rules {
+		result := tokencounter.Count(state.ProviderType, state.Model, rule.Content)
 		if result.Tokens > 0 {
-			costs[item.Rule.ID] = result.Tokens
+			costs[rule.ID] = result.Tokens
 		}
 	}
 	return costs

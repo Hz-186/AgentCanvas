@@ -29,11 +29,11 @@ type RuleSetRepository interface {
 	ListByWorkflow(ctx context.Context, ownerID, workflowID int64) ([]RuleSet, error)
 	FindByID(ctx context.Context, ownerID, workflowID, id int64) (*RuleSet, error)
 	UpdateDraft(ctx context.Context, item *RuleSet, nodes []RuleNode, expectedRevision int64) error
-	Publish(ctx context.Context, item *RuleSet, nodes []RuleNode, compiledSnapshot []byte, compiledHash, tokenEstimator string, publishedBy, expectedRevision int64) error
-	RollbackPublished(ctx context.Context, target *RuleSet, clone *RuleSet, publishedBy int64, compile RuleSetRollbackCompiler) error
+	Publish(ctx context.Context, item *RuleSet, nodes []RuleNode, snapshot []byte, ruleHash string, publishedBy, expectedRevision int64) error
+	RollbackPublished(ctx context.Context, target *RuleSet, clone *RuleSet, publishedBy int64, build RuleSetRollbackBuilder) error
 }
 
-type RuleSetRollbackCompiler func(ruleSetID int64, versionNo int) (nodes []RuleNode, snapshot []byte, compiledHash, tokenEstimator string, err error)
+type RuleSetRollbackBuilder func(ruleSetID int64, versionNo int) (nodes []RuleNode, snapshot []byte, ruleHash string, err error)
 
 type WorkflowVersionRepository interface {
 	Create(ctx context.Context, item *WorkflowVersion) error
