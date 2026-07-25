@@ -92,9 +92,10 @@ export function ContextRulesTrace({ trace }: { trace: unknown }) {
 	  {compactions.length > 0 ? (
 		<div className="context-rules-rounds">
 		  {compactions.map((item, index) => <article key={`compact-${index}`} className="context-rule-round">
-			<div className="context-rule-round-head"><strong>{String(item.trigger ?? 'auto')} compaction</strong><StatusBadge tone={item.status === 'completed' ? 'good' : item.status === 'fallback' ? 'warn' : 'bad'}>{String(item.status ?? 'unknown')}</StatusBadge></div>
+			<div className="context-rule-round-head"><strong>{String(item.trigger ?? 'auto')} snapshot</strong><StatusBadge tone={item.status === 'completed' ? 'good' : 'bad'}>{String(item.status ?? 'unknown')}</StatusBadge></div>
 			<p><span>Tokens</span>{formatTokens(number(item.before_tokens))} → {formatTokens(number(item.after_tokens))} · saved {formatTokens(number(item.saved_tokens))}</p>
-			{item.error ? <p><span>Fallback reason</span>{String(item.error)}</p> : null}
+			{item.snapshot_id ? <p><span>Snapshot</span>#{String(item.snapshot_id)} · messages {String(item.first_message_id ?? '?')}–{String(item.last_message_id ?? '?')}</p> : null}
+			{item.error ? <p><span>Failure reason</span>{String(item.error)}</p> : null}
 		  </article>)}
 		</div>
 	  ) : null}

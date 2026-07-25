@@ -39,7 +39,6 @@ export const nodeMeta: Record<NodeType, { label: string; icon: React.ElementType
   agent_loop: { label: 'Agent Loop', icon: Bot, description: '自治 ReAct Agent，自动调用工具并可委托子 Agent' },
   agent_call: { label: 'Agent Call', icon: WorkflowIcon, description: '静态调用另一个 Agent' },
   workflow_call: { label: 'Workflow Call', icon: WorkflowIcon, description: '兼容旧 DSL 的静态 Agent 调用' },
-  team_call: { label: 'Team Call', icon: WorkflowIcon, description: '调用一个 Workflow Team 的 supervisor' },
   code_sandbox: { label: 'Code Sandbox', icon: Braces, description: '隔离执行 Python 代码' },
   message: { label: 'Message', icon: Send, description: '输出或写入会话消息' },
   memory_read: { label: 'Memory Read', icon: BrainCircuit, description: '读取长期记忆' },
@@ -49,9 +48,12 @@ export const nodeMeta: Record<NodeType, { label: string; icon: React.ElementType
   switch: { label: 'Switch', icon: GitBranch, description: '按条件选择分支' },
   json_output: { label: 'JSON Output', icon: Braces, description: '校验结构化输出' },
   guardrail: { label: 'Guardrail', icon: ShieldCheck, description: '检查输出规则' },
+  team_call: { label: 'Team (legacy)', icon: WorkflowIcon, description: '历史 DSL 兼容节点，不可用于新画布' },
 };
 
-export const paletteNodeTypes = (Object.keys(nodeMeta) as NodeType[]).filter((type) => type !== 'workflow_call');
+// Static agent/workflow calls and Team/Supervisor nodes remain decode-only for
+// historical DSLs; new canvases expose only the dynamic Agent runtime.
+export const paletteNodeTypes = (Object.keys(nodeMeta) as NodeType[]).filter((type) => !['agent_call', 'workflow_call', 'team_call'].includes(type));
 
 export function isAgentNodeType(type: NodeType) {
   return type === 'agent_loop';
@@ -88,14 +90,11 @@ export function defaultConfig(type: NodeType): CanvasNodeData['config'] {
       mcp_server_ids: [],
       knowledge_top_k: 5,
       knowledge_mode: 'keyword',
-      call_workflow_ids: [],
-      max_workflow_call_depth: 3,
       code_execution_enabled: false,
       memory_enabled: false,
       max_iterations: 8,
       max_tool_calls: 16,
       max_execution_time_ms: 120000,
-		allow_inline_agents: true,
 		max_parallel_sub_agents: 8,
       max_input_chars: 96000,
       temperature: 0.2,
@@ -144,8 +143,7 @@ export function nodeSummaryItems(data: CanvasNodeData) {
     const skills = numberArray(config.skill_ids).length;
     const kb = numberArray(config.knowledge_ids).length;
     const mcp = numberArray(config.mcp_server_ids).length;
-    const callable = numberArray(config.call_workflow_ids).length;
-    return [agentModeFromConfig(config), String(config.model || 'inherit'), `${tools + kb + mcp + callable} tools`, `${skills} skills`, `${Number(config.max_iterations ?? 8)} loops`];
+    return [agentModeFromConfig(config), String(config.model || 'inherit'), `${tools + kb + mcp} tools`, `${skills} skills`, `${Number(config.max_iterations ?? 8)} loops`];
   }
   if (data.nodeType === 'knowledge_retrieval') return [`Top ${Number(config.top_k ?? 5)}`, String(config.mode ?? 'keyword'), `${numberArray(config.kb_ids).length} KB`];
   if (data.nodeType === 'llm') return [String(config.model || 'default'), `T ${Number(config.temperature ?? 0.7)}`, config.stream === false ? 'sync' : 'stream'];

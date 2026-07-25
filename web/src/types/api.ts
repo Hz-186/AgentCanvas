@@ -478,40 +478,12 @@ export interface AgentDefinition {
   reserved_output_tokens?: number;
   context_safety_margin_tokens?: number;
   max_rule_tokens?: number;
-  workspace_enabled?: boolean;
-  workspace_pack_id?: number | null;
   pre_turn_workflow_id?: number | null;
   pre_turn_workflow_version_id?: number | null;
   post_turn_workflow_id?: number | null;
   post_turn_workflow_version_id?: number | null;
 }
 
-export interface Workspace {
-  id: number;
-  owner_id: number;
-  name: string;
-  root_path: string;
-  default_branch: string;
-  status: 'active' | 'disabled';
-  created_at: string;
-  updated_at: string;
-}
-
-export interface WorkspacePack {
-  id: number;
-  owner_id: number;
-  workspace_id: number;
-  name: string;
-  allowed_paths: string[];
-  command_allowlist: string[];
-  network_enabled: boolean;
-  allowed_domains: string[];
-  docker_image: string;
-  timeout_seconds: number;
-  cpu_limit: string;
-  memory_limit_mb: number;
-  process_limit: number;
-  max_output_bytes: number;
   checksum: string;
   status: 'active' | 'disabled';
   created_at: string;
@@ -662,7 +634,6 @@ export interface ChatRequest {
   reserved_output_tokens?: number;
   context_safety_margin_tokens?: number;
   model_auto_compact_token_limit?: number;
-  model_auto_compact_token_limit_scope?: 'total' | 'body_after_prefix';
   compact_prompt?: string;
 }
 
@@ -670,7 +641,7 @@ export interface ConversationCompaction {
   id: number;
   conversation_id: number;
   trigger_type: 'auto' | 'manual';
-  status: 'completed' | 'fallback' | 'failed';
+  status: 'completed' | 'failed';
   provider_id: number;
   model: string;
   before_tokens: number;
@@ -1094,12 +1065,20 @@ export interface ApprovalRequest {
   tool_name: string;
   risk_level: string;
   reason: string;
-  request_json?: unknown;
+	request_json?: unknown;
+	interaction_id?: string;
+	options?: ApprovalOption[];
   status: 'pending' | 'approved' | 'rejected';
   decision_note: string;
   decided_at: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface ApprovalOption {
+  id: string;
+  label: string;
+  description?: string;
 }
 
 export interface WorkflowTeam {

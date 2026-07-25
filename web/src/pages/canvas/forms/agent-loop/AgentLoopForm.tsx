@@ -1,14 +1,14 @@
 import { useMemo, useState, type ReactNode } from 'react';
-import { Bot, ChevronDown, ChevronRight, Crosshair, Database, FileJson, GitBranch, Layers, ListChecks, MessageSquare, PlugZap, Plus, ShieldCheck, Sparkles, Trash2, Wrench } from 'lucide-react';
+import { Bot, ChevronDown, ChevronRight, Crosshair, Database, FileJson, Layers, ListChecks, MessageSquare, PlugZap, Plus, ShieldCheck, Sparkles, Trash2, Wrench } from 'lucide-react';
 import { Button, Field, Select, StatusBadge, TextArea, TextInput } from '../../../../components/ui';
-import type { KnowledgeBase, MCPServer, ModelProvider, Skill, ToolDefinition, Workflow } from '../../../../types/api';
+import type { KnowledgeBase, MCPServer, ModelProvider, Skill, ToolDefinition } from '../../../../types/api';
 import { prettyJson } from '../../../../utils/format';
 import { agentModeFromConfig, DEFAULT_REFLECTION_POLICY, patchAgentMode, stringArray } from '../../config';
 import type { AgentMode } from '../../types';
 import { useAgentFormValues } from './useAgentFormValues';
 import { useWatchAgentFormChange } from './useWatchAgentFormChange';
 
-type ModuleId = 'mode' | 'model' | 'prompt' | 'tools' | 'skills' | 'knowledge' | 'mcp' | 'sub_agents' | 'memory' | 'planning' | 'reflection' | 'policy' | 'output';
+type ModuleId = 'mode' | 'model' | 'prompt' | 'tools' | 'skills' | 'knowledge' | 'mcp' | 'memory' | 'planning' | 'reflection' | 'policy' | 'output';
 
 interface AgentLoopFormProps {
   config: Record<string, unknown>;
@@ -17,7 +17,6 @@ interface AgentLoopFormProps {
   skills: Skill[];
   knowledgeBases: KnowledgeBase[];
   mcpServers: MCPServer[];
-  callableWorkflows: Workflow[];
   updateConfig: (patch: Record<string, unknown>) => void;
   updateJSON: (key: string, raw: string) => void;
   addReferencedNode?: (kind: 'http_tool' | 'mcp_tool' | 'knowledge_retrieval' | 'agent_loop', id: number) => void;
@@ -125,7 +124,7 @@ function CardSelectList<T extends { id: number; name: string; description?: stri
   );
 }
 
-export function AgentLoopForm({ config, providers, tools, skills, knowledgeBases, mcpServers, callableWorkflows, updateConfig, updateJSON, addReferencedNode }: AgentLoopFormProps) {
+export function AgentLoopForm({ config, providers, tools, skills, knowledgeBases, mcpServers, updateConfig, updateJSON, addReferencedNode }: AgentLoopFormProps) {
   const values = useAgentFormValues(config);
   const onChange = useWatchAgentFormChange(updateConfig);
   const [expandedModules, setExpandedModules] = useState<Set<ModuleId>>(() => new Set(['mode', 'model', 'tools']));
@@ -143,8 +142,7 @@ export function AgentLoopForm({ config, providers, tools, skills, knowledgeBases
   const skillIds = values.skillIds;
   const knowledgeIds = values.knowledgeIds;
   const mcpIds = values.mcpServerIds;
-  const subAgentIds = values.callWorkflowIds;
-  const totalCallable = toolIds.length + knowledgeIds.length + mcpIds.length + subAgentIds.length;
+  const totalCallable = toolIds.length + knowledgeIds.length + mcpIds.length;
   const selectedProvider = providers.find((provider) => provider.id === values.providerId);
   const moduleOpen = useMemo(() => ({
     mode: expandedModules.has('mode'),
@@ -154,7 +152,6 @@ export function AgentLoopForm({ config, providers, tools, skills, knowledgeBases
     skills: expandedModules.has('skills'),
     knowledge: expandedModules.has('knowledge'),
     mcp: expandedModules.has('mcp'),
-    sub_agents: expandedModules.has('sub_agents'),
     memory: expandedModules.has('memory'),
     planning: expandedModules.has('planning'),
     reflection: expandedModules.has('reflection'),
@@ -264,22 +261,6 @@ export function AgentLoopForm({ config, providers, tools, skills, knowledgeBases
         <CardSelectList items={mcpServers} selectedIds={mcpIds} emptyLabel="还没有 MCP Server。" onChange={(ids) => onChange({ mcp_server_ids: ids })} onLocate={(id) => addReferencedNode?.('mcp_tool', id)} />
       </ModuleCard>
 
-      <ModuleCard id="sub_agents" title="Sub Agents" summary={selectedNames(callableWorkflows, subAgentIds)} icon={<GitBranch size={16} />} status={<StatusBadge tone={moduleTone(subAgentIds.length > 0)}>{subAgentIds.length}</StatusBadge>} expanded={moduleOpen.sub_agents} onToggle={toggleModule}>
-        <CardSelectList items={callableWorkflows} selectedIds={subAgentIds} emptyLabel="还没有可调用 Agent。" onChange={(ids) => onChange({ call_workflow_ids: ids })} onLocate={(id) => addReferencedNode?.('agent_loop', id)} />
-		<Field label="动态子 Agent">
-			<Select value={config.allow_inline_agents ? 'enabled' : 'disabled'} onChange={(event) => onChange({ allow_inline_agents: event.target.value === 'enabled' })}>
-				<option value="disabled">Disabled</option>
-				<option value="enabled">Enabled</option>
-			</Select>
-		</Field>
-		<Field label="最大并发子 Agent">
-			<TextInput type="number" min={1} max={64} value={Number(config.max_parallel_sub_agents ?? 8)} onChange={(event) => onChange({ max_parallel_sub_agents: Number(event.target.value) })} />
-		</Field>
-        <Field label="Agent 调用深度">
-          <TextInput type="number" min={1} max={5} value={Number(config.max_workflow_call_depth ?? 3)} onChange={(event) => onChange({ max_workflow_call_depth: Number(event.target.value) })} />
-        </Field>
-      </ModuleCard>
-
       <ModuleCard id="memory" title="Memory" summary={config.memory_enabled ? '读写长期记忆' : '关闭'} icon={<Layers size={16} />} status={<StatusBadge tone={moduleTone(Boolean(config.memory_enabled))}>{config.memory_enabled ? 'on' : 'off'}</StatusBadge>} expanded={moduleOpen.memory} onToggle={toggleModule}>
         <Field label="记忆工具">
           <Select value={config.memory_enabled ? 'enabled' : 'disabled'} onChange={(event) => onChange({ memory_enabled: event.target.value === 'enabled' })}>
@@ -363,7 +344,7 @@ export function AgentLoopForm({ config, providers, tools, skills, knowledgeBases
         {schemaError ? <p className="module-error-text">{schemaError}</p> : null}
       </ModuleCard>
 
-      <Button className="agent-module-add" onClick={() => setExpandedModules(new Set(['mode', 'model', 'prompt', 'tools', 'skills', 'knowledge', 'mcp', 'sub_agents', 'memory', 'planning', 'reflection', 'policy', 'output']))}>
+      <Button className="agent-module-add" onClick={() => setExpandedModules(new Set(['mode', 'model', 'prompt', 'tools', 'skills', 'knowledge', 'mcp', 'memory', 'planning', 'reflection', 'policy', 'output']))}>
         <Plus size={15} />
         展开全部模块
       </Button>
