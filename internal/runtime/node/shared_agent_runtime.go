@@ -107,7 +107,7 @@ func DecodeAgentRuntimeDefinition(raw json.RawMessage) (AgentRuntimeDefinition, 
 			return AgentRuntimeDefinition{}, fmt.Errorf("validate agent release rules: %w", err)
 		}
 	}
-	return AgentRuntimeDefinition(cfg), nil
+	return AgentRuntimeDefinition(normalizeLegacyAgentMode(cfg)), nil
 }
 
 func (r *SharedAgentRuntime) Execute(ctx context.Context, req AgentRunRequest, emit engine.EventEmitter) (*AgentRunResult, error) {
@@ -131,7 +131,13 @@ func (r *SharedAgentRuntime) run(ctx context.Context, req AgentRunRequest, emit 
 	}
 	cfg := agentRuntimeConfig(req.Definition)
 	cfg.TaskTemplate = req.Task
-	cfg.CallWorkflowToolName = "call_workflow"
+	// Independent Agent Chat never executes historical static delegation
+	// allowlists. New child work is always model-authored through run_subagent;
+	// old fields remain decode-only so historical releases can still be read.
+	cfg.CallWorkflowIDs = nil
+	cfg.CallAgentIDs = nil
+	cfg.AllowInlineAgents = false
+	cfg.CallWorkflowToolName = ""
 	cfg.AdditionalContextBlocks = append([]runtimeagent.ContextBlock(nil), req.ContextBlocks...)
 	output, err := r.node.runAgent(ctx, rc, engine.NodeInput{"query": req.Task}, cfg, "agent_runtime", false, resume)
 	if err != nil {

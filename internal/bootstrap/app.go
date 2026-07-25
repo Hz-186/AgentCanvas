@@ -39,6 +39,7 @@ import (
 	httpserver "agentcanvas/internal/interface/http"
 	"agentcanvas/internal/interface/http/handler"
 	"agentcanvas/internal/pkg/config"
+	"agentcanvas/internal/runtime/conversationcontext"
 
 	"github.com/gin-gonic/gin"
 )
@@ -300,7 +301,7 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 		secretBox,
 	)
 	chatService.ConfigureDream(jobQueue, redisClient, dreamCfg)
-	chatService.ConfigureCompaction(compactionRepo)
+	chatService.ConfigureConversationContext(&conversationcontext.Coordinator{History: messageRepo, Snapshots: compactionRepo, Client: chatClient})
 	reflectionService := reflectionusecase.Service{Reflections: reflectionRepo, Jobs: reflectionJobRepo, RecallLogs: reflectionRecallLogRepo, Events: reflectionEventSink,
 		DispatchEnabled: cfg.ReflectionQueue.Backend == "nats"}
 	if archivalVecStore != nil {

@@ -89,7 +89,7 @@ func (InlineAgentTool) Description() string {
 }
 
 func (InlineAgentTool) Parameters() json.RawMessage {
-	return json.RawMessage(`{"type":"object","properties":{"name":{"type":"string"},"description":{"type":"string"},"system_prompt":{"type":"string"},"task":{"type":"string"},"mode":{"type":"string","enum":["react","plan_execute","reflect"]},"model":{"type":"string"},"tool_ids":{"type":"array","items":{"type":"number"}},"skill_ids":{"type":"array","items":{"type":"number"}},"knowledge_ids":{"type":"array","items":{"type":"number"}},"mcp_server_ids":{"type":"array","items":{"type":"number"}},"max_iterations":{"type":"number"},"max_tool_calls":{"type":"number"},"max_execution_time_ms":{"type":"number"}},"required":["name","system_prompt","task"],"additionalProperties":false}`)
+	return json.RawMessage(`{"type":"object","properties":{"name":{"type":"string","description":"Optional label chosen by the parent model."},"description":{"type":"string"},"system_prompt":{"type":"string","description":"Optional role instructions chosen for this task."},"task":{"type":"string"},"mode":{"type":"string","enum":["react","plan_execute","reflect"]},"model":{"type":"string"},"tool_ids":{"type":"array","items":{"type":"number"}},"skill_ids":{"type":"array","items":{"type":"number"}},"knowledge_ids":{"type":"array","items":{"type":"number"}},"mcp_server_ids":{"type":"array","items":{"type":"number"}},"max_iterations":{"type":"number"},"max_tool_calls":{"type":"number"},"max_execution_time_ms":{"type":"number"}},"required":["task"],"additionalProperties":false}`)
 }
 
 func (InlineAgentTool) Metadata() ToolMetadata {
@@ -107,14 +107,34 @@ func (t InlineAgentTool) Execute(ctx context.Context, rc ToolRunContext, input j
 	definition.Name = strings.TrimSpace(definition.Name)
 	definition.SystemPrompt = strings.TrimSpace(definition.SystemPrompt)
 	definition.Task = strings.TrimSpace(definition.Task)
-	if definition.Name == "" || definition.SystemPrompt == "" || definition.Task == "" {
-		return &ToolResult{ContentText: "name, system_prompt, and task are required", IsError: true}, fmt.Errorf("name, system_prompt, and task are required")
+	if definition.Task == "" {
+		return &ToolResult{ContentText: "task is required", IsError: true}, fmt.Errorf("task is required")
+	}
+	if definition.Name == "" {
+		definition.Name = "subagent"
+	}
+	if definition.SystemPrompt == "" {
+		definition.SystemPrompt = "You are a focused sub-agent. Infer the role required by the task, work independently, and return concise evidence for the parent agent. Do not claim work you did not perform."
 	}
 	if len(definition.Name) > 128 || len(definition.SystemPrompt) > 16000 || len(definition.Task) > 16000 {
 		return &ToolResult{ContentText: "inline agent definition is too large", IsError: true}, fmt.Errorf("inline agent definition is too large")
 	}
 	if !isSubset(definition.ToolIDs, t.Default.AllowedToolIDs) || !isSubset(definition.SkillIDs, t.Default.AllowedSkillIDs) || !isSubset(definition.KnowledgeIDs, t.Default.AllowedKnowledgeIDs) || !isSubset(definition.MCPServerIDs, t.Default.AllowedMCPServerIDs) {
 		return &ToolResult{ContentText: "inline agent requested resources outside default_agent policy", IsError: true}, fmt.Errorf("inline agent requested resources outside default_agent policy")
+	}
+	// An omitted resource list means "inherit the parent Agent's permissions";
+	// it must not silently create a child with no tools or knowledge.
+	if len(definition.ToolIDs) == 0 {
+		definition.ToolIDs = append([]int64(nil), t.Default.AllowedToolIDs...)
+	}
+	if len(definition.SkillIDs) == 0 {
+		definition.SkillIDs = append([]int64(nil), t.Default.AllowedSkillIDs...)
+	}
+	if len(definition.KnowledgeIDs) == 0 {
+		definition.KnowledgeIDs = append([]int64(nil), t.Default.AllowedKnowledgeIDs...)
+	}
+	if len(definition.MCPServerIDs) == 0 {
+		definition.MCPServerIDs = append([]int64(nil), t.Default.AllowedMCPServerIDs...)
 	}
 	definition.ProviderID = t.Default.ProviderID
 	if requestedModel := strings.TrimSpace(definition.Model); requestedModel != "" && requestedModel != t.Default.Model {

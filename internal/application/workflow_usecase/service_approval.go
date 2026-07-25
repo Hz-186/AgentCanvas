@@ -375,7 +375,7 @@ func (s *Service) resumeRunFromCheckpoint(ctx context.Context, run *workflow.Run
 }
 
 func (s *Service) resumeAgentLoopNode() runtimenode.AgentLoopNode {
-	return runtimenode.AgentLoopNode{AgentNode: runtimenode.AgentNode{LLM: s.llm.(llm.ToolCallingClient), Providers: s, Tools: s.toolRegistry, ToolPacks: s.toolPacks, Skills: s.skills, Audits: s.audits, MCPServers: s.mcpServers, Retriever: s.retriever, MemoryReader: s.memoryReader, MemoryRetriever: s.memoryRetriever, Memories: s.memories, MemoryLogs: s.memoryLogs, WorkingMemory: s.workingMemory, OnExtractTrigger: s.triggerMemoryExtraction, WorkflowCaller: s, InlineAgentCaller: s, Profiles: s, RuleSets: s, Reflections: s.reflections, MessageHistory: s.messages, Compactions: s.compactions, ArchivalVecStore: s.archivalVecStore, ContextIndex: s.contextIndex, Embedder: s.embedder}}
+	return runtimenode.AgentLoopNode{AgentNode: runtimenode.AgentNode{LLM: s.llm.(llm.ToolCallingClient), Providers: s, Tools: s.toolRegistry, ToolPacks: s.toolPacks, Skills: s.skills, Audits: s.audits, MCPServers: s.mcpServers, Retriever: s.retriever, MemoryReader: s.memoryReader, MemoryRetriever: s.memoryRetriever, Memories: s.memories, MemoryLogs: s.memoryLogs, WorkingMemory: s.workingMemory, OnExtractTrigger: s.triggerMemoryExtraction, WorkflowCaller: s, InlineAgentCaller: s, Profiles: s, RuleSets: s, Reflections: s.reflections, MessageHistory: s.messages, ArchivalVecStore: s.archivalVecStore, ContextIndex: s.contextIndex, Embedder: s.embedder}}
 }
 
 func decodeRuntimeCheckpoint(stored *workflow.WorkflowCheckpoint, decision *workflow.ApprovalRequest) (*runtimeagent.Checkpoint, error) {

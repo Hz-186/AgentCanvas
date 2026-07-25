@@ -207,6 +207,58 @@ func TestRunnerResumeDoesNotDuplicateRecallOrPlanTraceSteps(t *testing.T) {
 	}
 }
 
+func TestRunnerResumeIgnoresNewContextOverflowAndUsesCheckpointContext(t *testing.T) {
+	client := &fakeToolClient{responses: []llm.ToolChatResponse{{Message: llm.ChatMessage{Role: conversation.RoleAssistant, Content: "done"}}}}
+	checkpointContext := ContextTrace{MaxChars: 4321, Strategy: "checkpoint", Included: []string{"checkpoint_history"}}
+	result, err := NewRunner(client).Run(context.Background(), RunRequest{
+		Model:           "m",
+		Task:            "task",
+		MaxIterations:   2,
+		MaxInputTokens:  100,
+		ContextBlocks:   []ContextBlock{{Name: "rule_mandatory", Role: conversation.RoleSystem, Content: strings.Repeat("overflow ", 100), Pinned: true}},
+		ResumeMessages:  []llm.ChatMessage{{Role: conversation.RoleUser, Content: "checkpoint task"}},
+		ResumeContext:   checkpointContext,
+		ResumeIteration: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Context.MaxChars != checkpointContext.MaxChars || result.Context.Strategy != "resumed_from_checkpoint" {
+		t.Fatalf("resume must preserve checkpoint context instead of rebuilding new context: %+v", result.Context)
+	}
+	if len(client.requests) != 1 || !messageContains(client.requests[0].Messages, "checkpoint task") {
+		t.Fatalf("resume must continue from checkpoint messages: %+v", client.requests)
+	}
+}
+
+func TestRuntimeCompactionDoesNotRecompactSummaryWithoutNewOldExchanges(t *testing.T) {
+	client := &fakeToolClient{responses: []llm.ToolChatResponse{
+		{Message: llm.ChatMessage{Role: conversation.RoleAssistant, Content: "first runtime summary"}},
+		{Message: llm.ChatMessage{Role: conversation.RoleAssistant, Content: "rolled runtime summary"}},
+	}}
+	runner := NewRunner(client)
+	req := RunRequest{Model: "m", Task: "task", ModelAutoCompactTokenLimit: 1}
+	transcript := make([]llm.ChatMessage, 0, 5)
+	for index := 0; index < 5; index++ {
+		transcript = append(transcript, llm.ChatMessage{Role: conversation.RoleAssistant, Content: "exchange"})
+	}
+	compacted, _, trace := runner.compactRuntimeTranscript(context.Background(), req, nil, transcript, nil)
+	if trace == nil || len(client.requests) != 1 || len(compacted) != 5 {
+		t.Fatalf("expected first compaction: calls=%d trace=%+v transcript=%+v", len(client.requests), trace, compacted)
+	}
+	unchanged, _, repeated := runner.compactRuntimeTranscript(context.Background(), req, nil, compacted, nil)
+	if repeated != nil || len(client.requests) != 1 || len(unchanged) != len(compacted) {
+		t.Fatalf("existing summary must not be compacted again without new old exchanges: calls=%d trace=%+v", len(client.requests), repeated)
+	}
+	withNewExchanges := append(append([]llm.ChatMessage(nil), compacted...),
+		llm.ChatMessage{Role: conversation.RoleAssistant, Content: "new exchange 1"},
+		llm.ChatMessage{Role: conversation.RoleAssistant, Content: "new exchange 2"})
+	_, _, rolled := runner.compactRuntimeTranscript(context.Background(), req, nil, withNewExchanges, nil)
+	if rolled == nil || len(client.requests) != 2 {
+		t.Fatalf("new old exchanges must roll the summary forward: calls=%d trace=%+v", len(client.requests), rolled)
+	}
+}
+
 func TestRunnerRevisesOnlyUnfinishedPlanAfterReflection(t *testing.T) {
 	client := &fakeToolClient{responses: []llm.ToolChatResponse{
 		{Message: llm.ChatMessage{Role: conversation.RoleAssistant, ToolCalls: []llm.ToolCall{{ID: "missing", Name: "missing_tool", Arguments: json.RawMessage(`{}`)}}}},
@@ -1088,14 +1140,6 @@ func TestReflectModeInstruction(t *testing.T) {
 	instr := modeInstruction(req)
 	if instr == "" {
 		t.Fatal("expected reflect instruction")
-	}
-}
-
-func TestSupervisorModeInstruction(t *testing.T) {
-	req := RunRequest{Mode: "supervisor"}
-	instr := modeInstruction(req)
-	if instr == "" {
-		t.Fatal("expected supervisor instruction")
 	}
 }
 

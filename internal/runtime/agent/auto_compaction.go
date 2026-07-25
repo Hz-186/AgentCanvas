@@ -36,12 +36,7 @@ func autoCompactLimit(req RunRequest) int {
 	return limit
 }
 
-func autoCompactScope(req RunRequest) string {
-	if strings.TrimSpace(req.ModelAutoCompactTokenLimitScope) == "body_after_prefix" {
-		return "body_after_prefix"
-	}
-	return "total"
-}
+func autoCompactScope(RunRequest) string { return "total" }
 
 func (r *Runner) compactInitialHistory(ctx context.Context, req RunRequest, tools []llm.ToolDefinition) ([]ContextBlock, llm.Usage, *CompactionTrace) {
 	blocks := append([]ContextBlock(nil), req.ContextBlocks...)

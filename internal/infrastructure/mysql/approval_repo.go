@@ -7,6 +7,7 @@ import (
 	"agentcanvas/internal/domain/workflow"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type ApprovalRepository struct{ db *gorm.DB }
@@ -76,4 +77,26 @@ func (r *ApprovalRepository) FindLatestCheckpointByRun(ctx context.Context, owne
 		return nil, err
 	}
 	return &item, nil
+}
+
+func (r *ApprovalRepository) ClaimResume(ctx context.Context, ownerID, runID int64) error {
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var run workflow.Run
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND owner_id = ?", runID, ownerID).First(&run).Error; err != nil {
+			return err
+		}
+		if run.Status != workflow.RunStatusWaitingHuman && run.Status != workflow.RunStatusPaused {
+			return gorm.ErrInvalidData
+		}
+		result := tx.Model(&workflow.Run{}).
+			Where("id = ? AND owner_id = ? AND status IN ?", runID, ownerID, []string{workflow.RunStatusWaitingHuman, workflow.RunStatusPaused}).
+			Updates(map[string]any{"status": workflow.RunStatusResuming, "updated_at": time.Now().UTC()})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return gorm.ErrInvalidData
+		}
+		return nil
+	})
 }

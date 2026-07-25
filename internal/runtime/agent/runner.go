@@ -107,36 +107,39 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 		})
 	}
 
-	// // ***
-	var compactedBlocks []ContextBlock
-	var compactionUsage llm.Usage
-	var initialCompaction *CompactionTrace
-	if len(req.ResumeMessages) == 0 {
-		compactedBlocks, compactionUsage, initialCompaction = r.compactInitialHistory(ctx, req, tools)
+	var baseMessages []llm.ChatMessage
+	var contextTrace ContextTrace
+	if len(req.ResumeMessages) > 0 {
+		if len(req.ResumeBaseMessages) > 0 {
+			baseMessages = append([]llm.ChatMessage(nil), req.ResumeBaseMessages...)
+		} else {
+			baseMessages = append([]llm.ChatMessage(nil), req.ResumeMessages...)
+		}
+		contextTrace = req.ResumeContext
+		contextTrace.Strategy = "resumed_from_checkpoint"
 	} else {
-		compactedBlocks = append([]ContextBlock(nil), req.ContextBlocks...)
-	}
-	// // ***
-	req.ContextBlocks = compactedBlocks
-	result.Usage = addUsage(result.Usage, compactionUsage)
-	baseMessages, contextTrace := ContextAssembler{}.Build(req)
-	counter := modelTokenCount(req, "token counter probe")
-	contextTrace.TokenCounterMethod = counter.Method
-	contextTrace.TokenCounterError = counter.Error
-	contextTrace.AutoCompactTokenLimit = autoCompactLimit(req)
-	contextTrace.AutoCompactLimitScope = autoCompactScope(req)
-	if initialCompaction != nil {
-		observability.ContextSystemMetrics.RecordCompaction(initialCompaction.Status)
-		contextTrace.Compactions = append(contextTrace.Compactions, *initialCompaction)
-		contextTrace.SavedTokens += initialCompaction.SavedTokens
-	}
-	contextTrace.RuleSetVersion = req.RuleSetVersion
-	contextTrace.RuleSetID = req.RuleSetID
-	contextTrace.RuleSetHash = req.RuleSetHash
-	if contextTrace.CoreOverflow {
-		observability.RuleSystemMetrics.RecordMandatoryOverflow()
-		return nil, fmt.Errorf("%w: rule_set_id=%d version=%s mandatory_tokens=%d budget_tokens=%d deficit_tokens=%d",
-			ErrMandatoryRuleBudgetExceeded, req.RuleSetID, req.RuleSetVersion, contextTrace.MandatoryTokens, contextTrace.MandatoryBudgetTokens, contextTrace.MandatoryDeficitTokens)
+		compactedBlocks, compactionUsage, initialCompaction := r.compactInitialHistory(ctx, req, tools)
+		req.ContextBlocks = compactedBlocks
+		result.Usage = addUsage(result.Usage, compactionUsage)
+		baseMessages, contextTrace = ContextAssembler{}.Build(req)
+		counter := modelTokenCount(req, "token counter probe")
+		contextTrace.TokenCounterMethod = counter.Method
+		contextTrace.TokenCounterError = counter.Error
+		contextTrace.AutoCompactTokenLimit = autoCompactLimit(req)
+		contextTrace.AutoCompactLimitScope = autoCompactScope(req)
+		if initialCompaction != nil {
+			observability.ContextSystemMetrics.RecordCompaction(initialCompaction.Status)
+			contextTrace.Compactions = append(contextTrace.Compactions, *initialCompaction)
+			contextTrace.SavedTokens += initialCompaction.SavedTokens
+		}
+		contextTrace.RuleSetVersion = req.RuleSetVersion
+		contextTrace.RuleSetID = req.RuleSetID
+		contextTrace.RuleSetHash = req.RuleSetHash
+		if contextTrace.CoreOverflow {
+			observability.RuleSystemMetrics.RecordMandatoryOverflow()
+			return nil, fmt.Errorf("%w: rule_set_id=%d version=%s mandatory_tokens=%d budget_tokens=%d deficit_tokens=%d",
+				ErrMandatoryRuleBudgetExceeded, req.RuleSetID, req.RuleSetVersion, contextTrace.MandatoryTokens, contextTrace.MandatoryBudgetTokens, contextTrace.MandatoryDeficitTokens)
+		}
 	}
 	messages := baseMessages
 	transcript := make([]llm.ChatMessage, 0, req.MaxIterations*2)
@@ -180,11 +183,6 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 	startIteration := 0
 	startToolCalls := 0
 	if len(req.ResumeMessages) > 0 {
-		if len(req.ResumeBaseMessages) > 0 {
-			baseMessages = append([]llm.ChatMessage(nil), req.ResumeBaseMessages...)
-		} else {
-			baseMessages = append([]llm.ChatMessage(nil), req.ResumeMessages...)
-		}
 		transcript = append([]llm.ChatMessage(nil), req.ResumeTranscript...)
 		messages = assembleRoundMessages(baseMessages, nil, transcript)
 		startIteration = req.ResumeIteration
@@ -194,10 +192,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 		if req.ResumeIteration > 0 {
 			startIteration = req.ResumeIteration
 		}
-		result.Context = ContextTrace{
-			MaxChars: defaultMaxInputChars,
-			Strategy: "resumed_from_checkpoint",
-		}
+		result.Context = contextTrace
 		unresolved := findUnresolvedToolCalls(messages, toolByName)
 		if len(unresolved) > 0 {
 			messageCountBeforeTools := len(messages)

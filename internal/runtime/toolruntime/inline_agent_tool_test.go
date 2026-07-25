@@ -49,3 +49,17 @@ func TestInlineAgentToolRejectsUnauthorizedModel(t *testing.T) {
 		t.Fatalf("expected unauthorized model rejection, result=%+v err=%v", result, err)
 	}
 }
+
+func TestInlineAgentToolAssignsDefaultRoleWhenParentOmitsIt(t *testing.T) {
+	caller := &fakeInlineAgentCaller{}
+	tool := InlineAgentTool{Caller: caller, Default: DefaultAgentConfig{Model: "model", AllowedToolIDs: []int64{1, 2}, AllowedSkillIDs: []int64{3}}}
+	if _, err := tool.Execute(context.Background(), ToolRunContext{OwnerID: 1}, json.RawMessage(`{"task":"find the regression"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if caller.req.Definition.Name != "subagent" || caller.req.Definition.SystemPrompt == "" {
+		t.Fatalf("expected runtime-assigned role defaults: %+v", caller.req.Definition)
+	}
+	if len(caller.req.Definition.ToolIDs) != 2 || len(caller.req.Definition.SkillIDs) != 1 {
+		t.Fatalf("expected child to inherit parent resources: %+v", caller.req.Definition)
+	}
+}

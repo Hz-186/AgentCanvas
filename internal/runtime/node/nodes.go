@@ -16,6 +16,7 @@ import (
 	"agentcanvas/internal/domain/workflow"
 	"agentcanvas/internal/infrastructure/llm"
 	"agentcanvas/internal/infrastructure/vectorstore"
+	"agentcanvas/internal/runtime/conversationcontext"
 	"agentcanvas/internal/runtime/engine"
 	"agentcanvas/internal/runtime/harness/rules"
 	"agentcanvas/internal/runtime/sandbox"
@@ -107,7 +108,7 @@ func DefaultNodes(deps Deps) ([]engine.Node, error) {
 		BeginNode{},
 		RetrievalNode{Retriever: deps.Retriever},
 		PromptNode{},
-		LLMNode{Client: deps.LLM, Providers: deps.Providers, History: deps.MessageHistory},
+		LLMNode{Client: deps.LLM, Providers: deps.Providers, History: deps.MessageHistory, Coordinator: conversationCoordinator(deps)},
 		AgentLoopNode{AgentNode: agentNode},
 		NewAgentCallNode(deps.WorkflowCaller),
 		NewWorkflowCallNode(deps.WorkflowCaller),
@@ -148,7 +149,7 @@ func buildAgentNode(deps Deps) AgentNode {
 		Reflections:       deps.Reflections,
 		Sandbox:           deps.Sandbox,
 		MessageHistory:    deps.MessageHistory,
-		Compactions:       deps.Compactions,
+		Coordinator:       conversationCoordinator(deps),
 		SessionSearch:     deps.SessionSearch,
 		ArchivalVecStore:  deps.ArchivalVecStore,
 		ContextIndex:      deps.ContextIndex,
@@ -156,4 +157,12 @@ func buildAgentNode(deps Deps) AgentNode {
 		SkillRoot:         workspaceRoot,
 		OnExtractTrigger:  deps.MemoryExtractionTrigger,
 	}
+}
+
+func conversationCoordinator(deps Deps) *conversationcontext.Coordinator {
+	snapshots, ok := deps.Compactions.(conversation.SnapshotRepository)
+	if !ok || deps.MessageHistory == nil || deps.LLM == nil {
+		return nil
+	}
+	return &conversationcontext.Coordinator{History: deps.MessageHistory, Snapshots: snapshots, Client: deps.LLM}
 }

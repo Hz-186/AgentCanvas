@@ -85,6 +85,9 @@ func (s *Service) chatMessagesForWindow(systemPrompt string, window conversation
 	}
 	for _, item := range window.Messages {
 		if role, content := strings.TrimSpace(item.Role), strings.TrimSpace(item.Content); content != "" && validChatRole(role) {
+			if role == conversation.RoleUser && content == strings.TrimSpace(question) {
+				continue
+			}
 			messages = append(messages, llm.ChatMessage{Role: role, Content: content})
 		}
 	}

@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"agentcanvas/internal/domain/conversation"
 	"agentcanvas/internal/infrastructure/llm"
@@ -26,6 +27,19 @@ func BuildResumeRequest(req ResumeRequest) (*RunRequest, error) {
 	resumeSteps := append([]RunStep(nil), req.Checkpoint.Steps...)
 	iteration, toolCalls := 0, 0
 	approvedToolCallIDs := metadataStringSlice(req.Checkpoint.Metadata["approved_tool_call_ids"])
+	if req.Approved && req.Checkpoint.Interaction != nil && strings.HasPrefix(req.RejectionNote, "choice:") {
+		choiceID := strings.TrimSpace(strings.TrimPrefix(req.RejectionNote, "choice:"))
+		validChoice := false
+		for _, option := range req.Checkpoint.Interaction.Options {
+			if option.ID == choiceID {
+				validChoice = true
+				break
+			}
+		}
+		if !validChoice {
+			return nil, fmt.Errorf("unknown interaction option %q", choiceID)
+		}
+	}
 	if req.Approved && req.Checkpoint.PendingToolCall != nil {
 		approvedToolCallIDs = appendUniqueString(approvedToolCallIDs, req.Checkpoint.PendingToolCall.ID)
 	}
@@ -82,13 +96,13 @@ func BuildResumeRequest(req ResumeRequest) (*RunRequest, error) {
 		MaxExecutionTimeMS: req.MaxExecutionTimeMS, MaxParallelTools: req.MaxParallelTools, MaxInputChars: req.MaxInputChars,
 		MaxInputTokens: req.MaxInputTokens, ContextWindowTokens: req.ContextWindowTokens, ReservedOutputTokens: req.ReservedOutputTokens,
 		ContextSafetyMarginTokens: req.ContextSafetyMarginTokens, ModelAutoCompactTokenLimit: req.ModelAutoCompactTokenLimit,
-		ModelAutoCompactTokenLimitScope: req.ModelAutoCompactTokenLimitScope, CompactPrompt: req.CompactPrompt,
+		CompactPrompt: req.CompactPrompt,
 		MaxRuleTokens: req.MaxRuleTokens, RuleTags: append([]string(nil), req.RuleTags...), RuleRiskLevel: req.RuleRiskLevel,
 		RuleSetVersion: firstNonEmpty(req.Checkpoint.RuleSetVersion, req.RuleSetVersion), RuleSetID: firstPositive(req.Checkpoint.RuleSetID, req.RuleSetID),
 		RuleSetHash: firstNonEmpty(req.Checkpoint.RuleSetHash, req.RuleSetHash), Rules: ruleItems, RuleTrace: req.RuleTrace,
 		ContextBlocks: req.ContextBlocks, ToolPolicy: req.ToolPolicy, ToolHookChain: req.ToolHookChain, Tools: req.Tools,
 		ResumeMessages: messages, ResumeBaseMessages: baseMessages, ResumeTranscript: transcript, ResumeSteps: resumeSteps,
-		ResumeIteration: iteration, ResumeToolCalls: toolCalls, ResumeApprovedToolCallIDs: approvedToolCallIDs,
+		ResumeContext: req.Checkpoint.Context, ResumeIteration: iteration, ResumeToolCalls: toolCalls, ResumeApprovedToolCallIDs: approvedToolCallIDs,
 	}, nil
 }
 
