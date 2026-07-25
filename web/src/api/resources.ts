@@ -70,8 +70,6 @@ import type {
   AgentRelease,
   AgentTurn,
   AgentTurnAccepted,
-  Workspace,
-  WorkspacePack,
   ImprovementReview,
   ChangeProposal,
 } from '../types/api';
