@@ -217,7 +217,7 @@ func (c Coordinator) compact(ctx context.Context, req Request, current Window, b
 		_ = c.Snapshots.ReleaseSnapshotClaim(context.Background(), req.OwnerID, req.ConversationID, token, err.Error())
 		return Result{}, err
 	}
-	older, recent := current.Messages[:len(current.Messages)-keepRecentMessages], current.Messages[len(current.Messages)-keepRecentMessages:]
+	var older, recent []conversation.Message
 	if req.ThroughMessageID > 0 {
 		cut := 0
 		for cut < len(current.Messages) && current.Messages[cut].ID <= req.ThroughMessageID {
@@ -226,6 +226,9 @@ func (c Coordinator) compact(ctx context.Context, req Request, current Window, b
 		if cut == 0 || current.Messages[cut-1].ID != req.ThroughMessageID {
 			return failed(fmt.Errorf("%w: through_message_id is not an active conversation message", ErrCompactionFailed))
 		}
+		older, recent = current.Messages[:cut], current.Messages[cut:]
+	} else if len(current.Messages) > keepRecentMessages {
+		cut := len(current.Messages) - keepRecentMessages
 		older, recent = current.Messages[:cut], current.Messages[cut:]
 	}
 	if len(older) == 0 {

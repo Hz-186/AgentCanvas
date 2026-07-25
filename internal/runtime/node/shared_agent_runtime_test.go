@@ -1,9 +1,12 @@
 package node
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"agentcanvas/internal/domain/memory"
 )
 
 func TestDecodeAgentRuntimeDefinitionBuildsIdentityAndCapabilities(t *testing.T) {
@@ -18,5 +21,17 @@ func TestDecodeAgentRuntimeDefinitionBuildsIdentityAndCapabilities(t *testing.T)
 	}
 	if len(cfg.ToolPackIDs) != 1 || len(cfg.CallAgentIDs) != 1 || len(cfg.CallWorkflowIDs) != 1 {
 		t.Fatalf("capabilities were not decoded: %+v", cfg)
+	}
+}
+
+type configuredMemoryRepository struct {
+	memory.Repository
+}
+
+func TestAgentRuntimeMemoryRequiresUnifiedContextIndex(t *testing.T) {
+	n := AgentNode{Memories: configuredMemoryRepository{}}
+	_, err := n.loadTools(context.Background(), 1, agentRuntimeConfig{MemoryEnabled: true}, nil)
+	if err == nil || !strings.Contains(err.Error(), "unified context index is not configured") {
+		t.Fatalf("expected unified context index configuration error, got %v", err)
 	}
 }

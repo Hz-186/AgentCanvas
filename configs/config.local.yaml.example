@@ -50,9 +50,6 @@ agent_runtime:
   worker_enabled: true
   worker_concurrency: 2
   lease_seconds: 30
-  workspace_enabled: false
-  workspace_allowed_roots: []
-  workspace_docker_image: agentcanvas/workspace:latest
   self_improvement_enabled: true
   memory_review_mode: suggest
   review_worker_concurrency: 1

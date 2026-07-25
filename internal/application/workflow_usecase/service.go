@@ -71,7 +71,6 @@ type Service struct {
 	providers         providerdomain.Repository
 	conversations     conversation.Repository
 	messages          conversation.MessageRepository
-	compactions       conversation.CompactionRepository
 	retriever         retrieval.Retriever
 	llm               llm.ChatClient
 	embedder          llm.EmbeddingClient
@@ -197,7 +196,6 @@ func NewService(
 		providers:        providers,
 		conversations:    conversations,
 		messages:         messages,
-		compactions:      compactions,
 		retriever:        retriever,
 		llm:              llmClient,
 		embedder:         embedder,
@@ -810,9 +808,9 @@ func (s *Service) CallWorkflow(ctx context.Context, req toolruntime.WorkflowCall
 	if req.OwnerID <= 0 || req.WorkflowID <= 0 || req.Input == nil {
 		return nil, agenterrors.ErrInvalidInput
 	}
-	if err := runtimeagent.CheckCallChain(callChain, req.WorkflowID, 0, req.CallDepth); err != nil {
+	if workflowCallChainContains(callChain, req.WorkflowID) {
 		s.recordBlockedWorkflowCall(ctx, req, "workflow_call_cycle_detected", maxDepth)
-		return nil, fmt.Errorf("%w: %v", agenterrors.ErrForbidden, err)
+		return nil, fmt.Errorf("%w: circular workflow call detected: workflow %d is already in the call chain", agenterrors.ErrForbidden, req.WorkflowID)
 	}
 	var parentRunID *int64
 	if req.ParentRunID > 0 {
@@ -844,6 +842,15 @@ func (s *Service) CallWorkflow(ctx context.Context, req toolruntime.WorkflowCall
 		LatencyMS:     run.LatencyMS,
 	}
 	return result, err
+}
+
+func workflowCallChainContains(callChain []int64, workflowID int64) bool {
+	for _, item := range callChain {
+		if item == workflowID {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Service) CallInlineAgent(ctx context.Context, req toolruntime.InlineAgentCallRequest) (*toolruntime.InlineAgentCallResult, error) {

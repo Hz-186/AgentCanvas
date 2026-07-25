@@ -50,12 +50,14 @@ func (f *fakeSnapshots) ReleaseSnapshotClaim(context.Context, int64, int64, stri
 }
 
 type fakeChat struct {
-	calls int
-	err   error
+	calls    int
+	err      error
+	requests []llm.ChatRequest
 }
 
-func (f *fakeChat) Chat(context.Context, llm.ChatProviderConfig, llm.ChatRequest) (*llm.ChatResponse, error) {
+func (f *fakeChat) Chat(_ context.Context, _ llm.ChatProviderConfig, req llm.ChatRequest) (*llm.ChatResponse, error) {
 	f.calls++
+	f.requests = append(f.requests, req)
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -112,5 +114,42 @@ func TestPrepareDoesNotAdvanceSnapshotWhenModelFails(t *testing.T) {
 	_, err := coordinator.Prepare(context.Background(), Request{OwnerID: 1, ConversationID: 1, Provider: llm.ChatProviderConfig{ProviderType: "openai_compatible"}, Model: "gpt-4o", WindowTokens: 1000, AutoLimit: 1, Render: render})
 	if !errors.Is(err, ErrCompactionFailed) || snapshots.current != nil {
 		t.Fatalf("failure advanced snapshot: snapshot=%+v err=%v", snapshots.current, err)
+	}
+}
+
+func TestForcePrepareWithShortHistoryReturnsErrorInsteadOfPanicking(t *testing.T) {
+	client := &fakeChat{}
+	snapshots := &fakeSnapshots{}
+	coordinator := Coordinator{History: fakeHistory{messages: []conversation.Message{{ID: 1, Role: "user", Content: "short"}}}, Snapshots: snapshots, Client: client}
+	_, err := coordinator.Prepare(context.Background(), Request{OwnerID: 1, ConversationID: 1, Provider: llm.ChatProviderConfig{ProviderType: "openai_compatible"}, Model: "gpt-4o", Force: true, Render: render})
+	if !errors.Is(err, ErrCompactionFailed) || client.calls != 0 || snapshots.current != nil {
+		t.Fatalf("short forced compaction must fail safely: calls=%d snapshot=%+v err=%v", client.calls, snapshots.current, err)
+	}
+}
+
+func TestPrepareRollsOnlyMessagesAfterSnapshotBoundary(t *testing.T) {
+	messages := make([]conversation.Message, 10)
+	for i := range messages {
+		messages[i] = conversation.Message{ID: int64(i + 1), Role: "user", Content: "important context detail"}
+	}
+	history := &fakeHistory{messages: messages}
+	client := &fakeChat{}
+	snapshots := &fakeSnapshots{}
+	coordinator := Coordinator{History: history, Snapshots: snapshots, Client: client}
+	req := Request{OwnerID: 1, ConversationID: 1, Provider: llm.ChatProviderConfig{ProviderType: "openai_compatible"}, Model: "gpt-4o", WindowTokens: 1000, AutoLimit: 1, Render: render}
+	first, err := coordinator.Prepare(context.Background(), req)
+	if err != nil || first.Window.Snapshot == nil || first.Window.Snapshot.LastMessageID != 2 || client.calls != 1 {
+		t.Fatalf("first snapshot failed: result=%+v calls=%d err=%v", first, client.calls, err)
+	}
+	unchanged, err := coordinator.Prepare(context.Background(), req)
+	if err != nil || unchanged.Trace.Created || client.calls != 1 {
+		t.Fatalf("snapshot must be reused without new compactable history: result=%+v calls=%d err=%v", unchanged, client.calls, err)
+	}
+	history.messages = append(history.messages,
+		conversation.Message{ID: 11, Role: "assistant", Content: "new result"},
+		conversation.Message{ID: 12, Role: "user", Content: "new request"})
+	rolled, err := coordinator.Prepare(context.Background(), req)
+	if err != nil || rolled.Window.Snapshot == nil || rolled.Window.Snapshot.SnapshotVersion != 2 || rolled.Window.Snapshot.LastMessageID != 4 || client.calls != 2 {
+		t.Fatalf("rolling snapshot failed: result=%+v calls=%d err=%v", rolled, client.calls, err)
 	}
 }

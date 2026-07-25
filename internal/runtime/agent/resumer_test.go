@@ -65,6 +65,19 @@ func TestBuildResumeRequestApproved(t *testing.T) {
 	}
 }
 
+func TestBuildResumeRequestRejectsUnknownInteractionOption(t *testing.T) {
+	cp := &Checkpoint{
+		Messages:        []llm.ChatMessage{{Role: conversation.RoleAssistant, ToolCalls: []llm.ToolCall{{ID: "call_1", Name: "write_memory", Arguments: json.RawMessage(`{}`)}}}},
+		PendingToolCall: &llm.ToolCall{ID: "call_1", Name: "write_memory", Arguments: json.RawMessage(`{}`)},
+		Interaction:     &Interaction{ID: "interaction-1", ToolCallID: "call_1", Options: []toolruntime.ApprovalOption{{ID: "keep_both", Label: "Keep both"}}},
+		Metadata:        map[string]any{},
+	}
+	_, err := BuildResumeRequest(ResumeRequest{RunRequest: RunRequest{Model: "m", Task: "save"}, Checkpoint: cp, Approved: true, RejectionNote: "choice:replace"})
+	if err == nil {
+		t.Fatal("expected unknown interaction option to be rejected")
+	}
+}
+
 func TestBuildResumeRequestRejected(t *testing.T) {
 	cp := &Checkpoint{
 		Messages: []llm.ChatMessage{

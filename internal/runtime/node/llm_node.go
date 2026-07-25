@@ -159,6 +159,9 @@ func (n LLMNode) buildMessages(ctx context.Context, rc *engine.RunContext, promp
 			if content == "" || !validChatRole(role) {
 				continue
 			}
+			if role == conversation.RoleUser && content == strings.TrimSpace(prompt) {
+				continue
+			}
 			messages = append(messages, llm.ChatMessage{Role: role, Content: content})
 		}
 	}

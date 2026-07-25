@@ -20,8 +20,10 @@ const (
 )
 
 const (
-	WriteActionCreate = "create"
-	WriteActionUpdate = "update"
+	WriteActionCreate   = "create"
+	WriteActionUpdate   = "update"
+	WriteActionNoop     = "noop"
+	WriteActionConflict = "conflict"
 )
 
 type Memory struct {

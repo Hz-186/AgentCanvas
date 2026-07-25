@@ -15,6 +15,9 @@ type ToolRunContext struct {
 	CallDepth         int
 	WorkflowCallChain []int64
 	ConversationID    *int64
+	// Task is the current run objective. Tools use it as a semantic query
+	// when the model omits an explicit query (for example memory recall).
+	Task string
 }
 
 type AgentCallRequest struct {
@@ -46,6 +49,24 @@ type ToolResult struct {
 	ContentText string          `json:"content_text,omitempty"`
 	IsError     bool            `json:"is_error,omitempty"`
 	Metadata    map[string]any  `json:"metadata,omitempty"`
+	Approval    *ToolApproval   `json:"approval,omitempty"`
+}
+
+// ToolApproval is a structured, user-facing approval request emitted by a
+// tool after it has inspected its arguments. Unlike risk approvals, these
+// requests can expose mutually exclusive choices (for example resolving a
+// conflicting memory as keep-existing, replace, or keep-both).
+type ToolApproval struct {
+	Kind    string           `json:"kind"`
+	Title   string           `json:"title"`
+	Reason  string           `json:"reason"`
+	Options []ApprovalOption `json:"options,omitempty"`
+}
+
+type ApprovalOption struct {
+	ID          string `json:"id"`
+	Label       string `json:"label"`
+	Description string `json:"description,omitempty"`
 }
 
 const (

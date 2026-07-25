@@ -20,6 +20,7 @@ import (
 	"agentcanvas/internal/infrastructure/llm"
 	queueinfra "agentcanvas/internal/infrastructure/queue"
 	agenterrors "agentcanvas/internal/pkg/errors"
+	"agentcanvas/internal/runtime/conversationcontext"
 
 	"github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
@@ -32,36 +33,35 @@ const (
 )
 
 type Service struct {
-	providers     providerdomain.Repository
-	dialogs       dialog.Repository
-	kbs           knowledge.KnowledgeBaseRepository
-	conversations conversation.Repository
-	messages      conversation.MessageRepository
-	usages        usage.Repository
-	retriever     retrieval.Retriever
-	llm           llm.ChatClient
-	secrets       *cryptoinfra.SecretBox
-	packer        *ContextPacker
-	prompts       *PromptBuilder
-	dreamQueue    queueinfra.JobQueue
-	redisClient   *redis.Client
-	dreamCfg      memory_usecase.DreamConfig
-	compactions   conversation.CompactionRepository
+	providers          providerdomain.Repository
+	dialogs            dialog.Repository
+	kbs                knowledge.KnowledgeBaseRepository
+	conversations      conversation.Repository
+	messages           conversation.MessageRepository
+	usages             usage.Repository
+	retriever          retrieval.Retriever
+	llm                llm.ChatClient
+	secrets            *cryptoinfra.SecretBox
+	packer             *ContextPacker
+	prompts            *PromptBuilder
+	dreamQueue         queueinfra.JobQueue
+	redisClient        *redis.Client
+	dreamCfg           memory_usecase.DreamConfig
+	contextCoordinator *conversationcontext.Coordinator
 }
 
 type ChatRequest struct {
-	ProviderID                      int64   `json:"provider_id" binding:"required"`
-	KBIDs                           []int64 `json:"kb_ids" binding:"required"`
-	Question                        string  `json:"question" binding:"required"`
-	ConversationID                  int64   `json:"conversation_id"`
-	Model                           string  `json:"model"`
-	TopK                            int     `json:"top_k"`
-	ContextWindowTokens             int     `json:"context_window_tokens"`
-	ReservedOutputTokens            int     `json:"reserved_output_tokens"`
-	ContextSafetyMarginTokens       int     `json:"context_safety_margin_tokens"`
-	ModelAutoCompactTokenLimit      int     `json:"model_auto_compact_token_limit"`
-	ModelAutoCompactTokenLimitScope string  `json:"model_auto_compact_token_limit_scope"`
-	CompactPrompt                   string  `json:"compact_prompt"`
+	ProviderID                 int64   `json:"provider_id" binding:"required"`
+	KBIDs                      []int64 `json:"kb_ids" binding:"required"`
+	Question                   string  `json:"question" binding:"required"`
+	ConversationID             int64   `json:"conversation_id"`
+	Model                      string  `json:"model"`
+	TopK                       int     `json:"top_k"`
+	ContextWindowTokens        int     `json:"context_window_tokens"`
+	ReservedOutputTokens       int     `json:"reserved_output_tokens"`
+	ContextSafetyMarginTokens  int     `json:"context_safety_margin_tokens"`
+	ModelAutoCompactTokenLimit int     `json:"model_auto_compact_token_limit"`
+	CompactPrompt              string  `json:"compact_prompt"`
 }
 
 type ChatResponse struct {
@@ -112,8 +112,6 @@ func (s *Service) ConfigureDream(queue queueinfra.JobQueue, redisClient *redis.C
 	s.redisClient = redisClient
 	s.dreamCfg = dreamCfg
 }
-
-func (s *Service) ConfigureCompaction(repo conversation.CompactionRepository) { s.compactions = repo }
 
 func (s *Service) Chat(ctx context.Context, ownerID, dialogID int64, req ChatRequest) (*ChatResponse, error) {
 	ctx = llm.WithOwnerID(ctx, ownerID)
@@ -353,8 +351,7 @@ func (s *Service) prepare(ctx context.Context, ownerID, dialogID int64, req Chat
 	}
 	packed := s.packer.Pack(ownerID, retrievalResp.Results)
 	prompt := s.prompts.Build(question, packed.Text)
-	messages := buildChatMessages(prompt, history, question)
-	messages, compaction, compactionUsage, compactErr := s.autoCompactChatMessages(ctx, ownerID, conv.ID, req.ProviderID, model, providerConfig, req, history, messages)
+	messages, compaction, compactionUsage, compactErr := s.prepareChatMessages(ctx, ownerID, conv.ID, req.ProviderID, model, providerConfig, req, prompt, question)
 	if compactErr != nil {
 		return nil, compactErr
 	}
@@ -375,30 +372,6 @@ func (s *Service) prepare(ctx context.Context, ownerID, dialogID int64, req Chat
 			Messages: messages,
 		},
 	}, nil
-}
-
-func buildChatMessages(systemPrompt string, history []conversation.Message, fallbackQuestion string) []llm.ChatMessage {
-	if len(history) > maxHistoryMessages {
-		history = history[len(history)-maxHistoryMessages:]
-	}
-	messages := make([]llm.ChatMessage, 0, len(history)+2)
-	messages = append(messages, llm.ChatMessage{Role: conversation.RoleSystem, Content: systemPrompt})
-	hasUserQuestion := false
-	for _, item := range history {
-		role := strings.TrimSpace(item.Role)
-		content := strings.TrimSpace(item.Content)
-		if content == "" || !validChatRole(role) {
-			continue
-		}
-		if role == conversation.RoleUser && content == fallbackQuestion {
-			hasUserQuestion = true
-		}
-		messages = append(messages, llm.ChatMessage{Role: role, Content: content})
-	}
-	if !hasUserQuestion && strings.TrimSpace(fallbackQuestion) != "" {
-		messages = append(messages, llm.ChatMessage{Role: conversation.RoleUser, Content: fallbackQuestion})
-	}
-	return messages
 }
 
 func validChatRole(role string) bool {

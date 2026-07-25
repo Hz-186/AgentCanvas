@@ -92,6 +92,13 @@ type ApprovalRepository interface {
 	FindLatestCheckpointByRun(ctx context.Context, ownerID, runID int64) (*WorkflowCheckpoint, error)
 }
 
+// ResumeClaimRepository atomically consumes a resumable run/checkpoint pair.
+// Implementations backed by a database must use conditional updates so a
+// second worker cannot execute the same pending tool call.
+type ResumeClaimRepository interface {
+	ClaimResume(ctx context.Context, ownerID, runID int64) error
+}
+
 type IndependentRunResumer interface {
 	ResumeIndependentRun(context.Context, *Run, *WorkflowCheckpoint, *ApprovalRequest) (*Run, error)
 }

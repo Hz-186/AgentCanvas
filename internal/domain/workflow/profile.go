@@ -8,28 +8,31 @@ import (
 )
 
 type Profile struct {
-	ID                          int64           `json:"id" gorm:"primaryKey;column:id"`
-	OwnerID                     int64           `json:"owner_id" gorm:"column:owner_id"`
-	WorkflowID                  int64           `json:"workflow_id" gorm:"column:workflow_id"`
-	Role                        string          `json:"role" gorm:"column:role"`
-	Goal                        string          `json:"goal" gorm:"column:goal"`
-	Backstory                   string          `json:"backstory" gorm:"column:backstory"`
-	SystemPrompt                string          `json:"system_prompt" gorm:"column:system_prompt"`
-	DefaultProviderID           *int64          `json:"default_provider_id" gorm:"column:default_provider_id"`
-	DefaultModel                string          `json:"default_model" gorm:"column:default_model"`
-	MaxIterations               int             `json:"max_iterations" gorm:"column:max_iterations"`
-	MaxExecutionTimeMS          int             `json:"max_execution_time_ms" gorm:"column:max_execution_time_ms"`
-	MemoryEnabled               bool            `json:"memory_enabled" gorm:"column:memory_enabled"`
-	PlanningEnabled             bool            `json:"planning_enabled" gorm:"column:planning_enabled"`
-	AllowDelegation             bool            `json:"allow_delegation" gorm:"column:allow_delegation"`
-	AllowCodeExecution          bool            `json:"allow_code_execution" gorm:"column:allow_code_execution"`
-	DefaultToolPackIDs          json.RawMessage `json:"default_tool_pack_ids" gorm:"column:default_tool_pack_ids"`
-	DefaultToolIDs              json.RawMessage `json:"default_tool_ids" gorm:"column:default_tool_ids"`
-	DefaultSkillIDs             json.RawMessage `json:"default_skill_ids" gorm:"column:default_skill_ids"`
-	DefaultMCPServerIDs         json.RawMessage `json:"default_mcp_server_ids" gorm:"column:default_mcp_server_ids"`
-	DefaultKnowledgeIDs         json.RawMessage `json:"default_knowledge_ids" gorm:"column:default_knowledge_ids"`
-	DefaultKnowledgeTopK        int             `json:"default_knowledge_top_k" gorm:"column:default_knowledge_top_k"`
-	DefaultKnowledgeMode        string          `json:"default_knowledge_mode" gorm:"column:default_knowledge_mode"`
+	ID                 int64  `json:"id" gorm:"primaryKey;column:id"`
+	OwnerID            int64  `json:"owner_id" gorm:"column:owner_id"`
+	WorkflowID         int64  `json:"workflow_id" gorm:"column:workflow_id"`
+	Role               string `json:"role" gorm:"column:role"`
+	Goal               string `json:"goal" gorm:"column:goal"`
+	Backstory          string `json:"backstory" gorm:"column:backstory"`
+	SystemPrompt       string `json:"system_prompt" gorm:"column:system_prompt"`
+	DefaultProviderID  *int64 `json:"default_provider_id" gorm:"column:default_provider_id"`
+	DefaultModel       string `json:"default_model" gorm:"column:default_model"`
+	MaxIterations      int    `json:"max_iterations" gorm:"column:max_iterations"`
+	MaxExecutionTimeMS int    `json:"max_execution_time_ms" gorm:"column:max_execution_time_ms"`
+	MemoryEnabled      bool   `json:"memory_enabled" gorm:"column:memory_enabled"`
+	PlanningEnabled    bool   `json:"planning_enabled" gorm:"column:planning_enabled"`
+	// Deprecated: new Agent releases do not derive delegation from Profile.
+	// Dynamic run_subagent inherits the parent runtime policy instead.
+	AllowDelegation      bool            `json:"allow_delegation" gorm:"column:allow_delegation"`
+	AllowCodeExecution   bool            `json:"allow_code_execution" gorm:"column:allow_code_execution"`
+	DefaultToolPackIDs   json.RawMessage `json:"default_tool_pack_ids" gorm:"column:default_tool_pack_ids"`
+	DefaultToolIDs       json.RawMessage `json:"default_tool_ids" gorm:"column:default_tool_ids"`
+	DefaultSkillIDs      json.RawMessage `json:"default_skill_ids" gorm:"column:default_skill_ids"`
+	DefaultMCPServerIDs  json.RawMessage `json:"default_mcp_server_ids" gorm:"column:default_mcp_server_ids"`
+	DefaultKnowledgeIDs  json.RawMessage `json:"default_knowledge_ids" gorm:"column:default_knowledge_ids"`
+	DefaultKnowledgeTopK int             `json:"default_knowledge_top_k" gorm:"column:default_knowledge_top_k"`
+	DefaultKnowledgeMode string          `json:"default_knowledge_mode" gorm:"column:default_knowledge_mode"`
+	// Deprecated: retained for historical profile decoding only.
 	DefaultCallWorkflowIDs      json.RawMessage `json:"default_call_workflow_ids" gorm:"column:default_call_workflow_ids"`
 	DefaultMaxWorkflowCallDepth int             `json:"default_max_workflow_call_depth" gorm:"column:default_max_workflow_call_depth"`
 	OutputSchemaJSON            json.RawMessage `json:"output_schema_json" gorm:"column:output_schema_json"`

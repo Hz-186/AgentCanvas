@@ -2,7 +2,7 @@
 
 AgentCanvas 是一个基于 **Go 1.22 + React 18 (TypeScript)** 构建的 **单人版 Agent Flow + RAG 知识库**工作台。项目采用 DDD 四层架构，以 **Agent = Model + Harness** 为核心理念，将 Agent 的壳分为 Commands（流程入口）、Skills（领域能力封装）、Rules（前馈约束）、Hooks（反馈兜底）四层，实现高可控、低 token 浪费的 Agent 执行运行时。
 
-> **当前前端的制作还没有完成，后端仍需要打磨。** 部分高级特性（MCP Server、Team/Crew AI、Eval 评估体系）的后端实现已完成，前端页面与交互流程仍在开发中。
+> **当前前端的制作还没有完成，后端仍需要打磨。** 部分高级特性（MCP Server、Eval 评估体系）的后端实现已完成，前端页面与交互流程仍在开发中。
 
 ---
 
@@ -61,7 +61,7 @@ Agent 的执行能力不仅仅取决于模型本身，更取决于包裹在模�
 ```
 
 四层职责边界被严格划分，避免 token 消耗失控：
-- **Commands**：流程入口，控制 Agent 的执行生命周期（run → plan → execute → evaluate → reflect → resume），统一调度 ReAct / Plan Guided、Supervisor 委派与持久化 Reflexion
+- **Commands**：流程入口，控制 Agent 的执行生命周期（run → plan → execute → evaluate → reflect → resume），统一调度 ReAct / Plan Guided、动态子 Agent 委派与持久化 Reflexion
 - **Skills**：领域能力封装，将可复用能力抽象为标准化模块，通过 `load_skill` / `skill_search` 工具按需加载
 - **Rules**：前馈约束，统一使用 `mandatory / optional` 强度和显式激活条件；Mandatory 始终注入，Optional 按优先级与 token 预算确定性加载
 - **Hooks**：反馈兜底，`preToolUse` / `postToolUse` 双环拦截，覆盖危险命令物理阻断 + 敏感字段脱敏 + 输出压缩
@@ -139,35 +139,25 @@ Run 结束 ──→ Reflection Job ──→ Worker 轨迹分析 ─┘
 
 当前方案通过 `reflection.EventSink` 将生命周期事件投影到 `workflow_run_events`；后续可替换为独立事件存储，实现事件溯源方案而无需修改 Agent Runtime。
 
-#### 4. Supervisor 模式（多 Agent 委派）
+#### 4. 动态子 Agent 委派
 
-Supervisor Agent 通过 `call_agent` 工具（`toolruntime.WorkflowCallTool`）将任务委派给子 Agent，自身负责审查结果和合成最终答案。
+Agent Runtime 通过 `run_subagent` 工具按任务即时创建临时子 Agent。子 Agent 不需要预先注册角色、提示词或白名单；主 Agent 在每次调用时决定任务分工和必要的提示词，运行时只继承安全策略、资源上限和调用深度限制。Supervisor 不再是独立模式，审查与合成责任属于当前 Agent Loop。
 
 **委派机制**：
 
 ```
-Supervisor Agent
-    │
-    │ call_agent(workflow_id=X, input=...)
+主 Agent
+    │ run_subagent(task, role_prompt?)
     ▼
 ┌──────────────────────────────────────────────┐
-│  安全检查 (supervisor.go:46-56)               │
-│  ├─ CheckCallChain() → 防循环委派              │
-│  │   └─ 目标 workflow 已在 callChain 中 → 拒绝  │
-│  └─ depth < maxDepth → 防深度过大             │
-│      └─ currentDepth >= maxDepth → 拒绝       │
-├──────────────────────────────────────────────┤
-│  启动子 Workflow Run (嵌套执行)                │
-│  ├─ parent_run_id 关联父 Run                  │
-│  ├─ caller_node_id 标记调用节点                │
-│  └─ call_depth = parent.call_depth + 1        │
-├──────────────────────────────────────────────┤
-│  子 Run 完成后返回结果给 Supervisor           │
-│  └─ Supervisor 审查结果 → 合成最终答案          │
+│ Runtime 安全边界                              │
+│ ├─ 继承父 Agent 的工具、审批、超时和资源权限   │
+│ ├─ call_depth / call_chain 防循环与过深嵌套      │
+│ └─ 子 Agent 结果回传给当前 Agent 合成           │
 └──────────────────────────────────────────────┘
 ```
 
-**白名单机制**：Supervisor 只能委派给 `call_workflow_ids` 中明确列出的子 Workflow。`max_workflow_call_depth`（默认范围 0-5）限制嵌套深度。
+子 Agent 不注册为独立角色，也不依赖 Team/Supervisor 配置；主模型在每次 `run_subagent` 调用中决定临时分工。旧 Team、`call_agent`、`call_workflow` 数据仅为历史 DSL/Run 恢复保留，不会进入新发布版本或新画布。
 
 #### 暂停/恢复与 Checkpoint 状态机
 
@@ -294,37 +284,18 @@ Available skills:
 
 ---
 
-### Multi-Agent / Crew AI 团队协作
+### Multi-Agent 动态协作
 
 #### 架构设计
 
-通过 Supervisor + Worker 角色分离，实现类 Crew AI 的多 Agent 协作：
+通过 Agent Runtime 的动态委派实现类 Codex/Cloud Code 的多 Agent 协作：
 
-```
-┌─────────────────────────────────────────────────┐
-│                  Crew Team                       │
-│  ┌───────────────────────────────────────────┐  │
-│  │           Supervisor Agent                │  │
-│  │  (审查结果 + 合成最终答案 + 质量把关)        │  │
-│  └──────────┬──────────┬──────────┬──────────┘  │
-│             │ call     │ call     │ call         │
-│             ▼          ▼          ▼             │
-│  ┌──────────┐ ┌──────────┐ ┌──────────┐        │
-│  │ Agent 1  │ │ Agent 2  │ │ Agent 3  │        │
-│  │(Researcher│ │(Writer)  │ │(Reviewer)│        │
-│  └──────────┘ └──────────┘ └──────────┘        │
-└─────────────────────────────────────────────────┘
-```
-
-**数据模型**（`workflow_teams` + `workflow_team_members`）：
-- Team 定义：名称、描述、Supervisor Workflow ID、全员 Workflow ID 列表
-- 每个 Team Member 有自己的独立 Profile（模式/Risk Level/Tool Packs/Skills/Memory Policy 等）
-- `AllowDelegation` 开关控制是否允许 Supervisor 将任务委派给子 Agent
+所有协作都由同一个 Agent Runtime 管理：父 Agent 动态创建临时子 Agent，子 Agent 继承安全策略和资源上限，结果回传父 Agent。历史 Team 表仅用于兼容读取。
 
 **安全机制**：
-- **循环委派检测**：`CheckCallChain(callChain, targetWorkflowID)` 检查目标是否已在调用链中
+- **循环委派检测**：`call_chain` 检查嵌套运行是否形成循环
 - **深度限制**：`call_depth` 追踪嵌套深度，受 `max_workflow_call_depth`（0-5）限制
-- **白名单制**：Supervisor 只能委派给 `call_workflow_ids` 中明确列出的子 Workflow
+- **策略继承**：所有子 Agent 继承当前 Run 的工具风险、审批、超时和深度策略
 
 ---
 
@@ -332,7 +303,7 @@ Available skills:
 
 基于有向无环图的声明式节点编排，`engine/executor.go` 实现完整的 DAG 执行器。
 
-**23 种节点类型**：
+**核心节点类型**：
 
 | 类别 | 节点 |
 |------|------|
@@ -340,7 +311,7 @@ Available skills:
 | AI 核心 | LLMNode、PromptNode、AgentLoopNode |
 | 检索 | RetrievalNode |
 | 记忆 | MemoryWriteNode、MemoryQueryNode |
-| 工具 | HttpToolNode、MCPToolNode、WorkflowCallNode、TeamCallNode |
+| 工具 | HttpToolNode、MCPToolNode、动态 `run_subagent`、MemoryTool |
 | 逻辑 | SwitchNode |
 | 沙箱 | CodeSandboxNode |
 | 输出 | StructuredOutputNode、OutputControlNode |
@@ -357,52 +328,9 @@ Available skills:
 
 ### 上下文压缩引擎
 
-为解决长对话的上下文窗口压力，Agent Loop、RAG Chat 与通用 LLM Node 统一执行 Codex 公开配置契约兼容的预算守卫：`context_window_tokens`、`model_auto_compact_token_limit`、`model_auto_compact_token_limit_scope` 和 `compact_prompt`。默认在上下文窗口 80% 处触发一次零温模型压缩，固定系统前缀、mandatory/safety/policy-binding 规则、当前任务、计划、未完成工具交换和最近完整轮次不会由相关性决定是否保留。
+Agent Loop、RAG Chat 与通用 LLM Node 使用持久化的会话滚动快照。超过 `model_auto_compact_token_limit`（默认窗口 80%）时，系统将“上一快照 + 新增原始消息”交给模型生成新的规范快照；后续请求只追加快照边界后的消息。原始消息保留用于审计、检索和重建。
 
-压缩模型失败、超时或返回空内容时，才使用 `contextcompress/` 的确定性抽取式引擎降级。压缩后仍超过“窗口 - 预留输出 - 安全余量”时显式返回 `context_overflow`，不会把超窗请求发送给 Provider。OpenAI-compatible 已知模型使用 `tiktoken-go`；未知模型使用保守 UTF-8 估算，并在 Context Trace 记录计数方法和 fallback 原因。
-
-#### 三步压缩管线
-
-以下管线是模型压缩不可用时的确定性 fallback：
-
-```
-Compress(items)
-  ├─ Select(items) → {Selected, Omitted, Scores}
-  │   └─ LazyGreedy 选择器 (子模优化)
-  ├─ rankFragments(Omitted) → 按 salience + keySignal 排序的片段
-  │   └─ 短片段惩罚 (≤2 tokens → 0.45x)
-  └─ selectFragments(fragments, budget) → 多样性贪心选择
-      └─ renderSummary → "Earlier conversation summary:" + 项目符号列表
-```
-
-#### 三重指纹相似度融合
-
-```go
-approximateSimilarity = 0.55*cosine + 0.30*jaccard + 0.15*hamming_sim
-```
-
-| 指纹 | 实现 | 权重 | 说明 |
-|------|------|------|------|
-| **TF-IDF Cosine** | IDF 加权词频向量的余弦相似度 | 55% | 语义内容相似度 |
-| **MinHash Jaccard** | 64 签名 MinHash（FNV64a + 旋转哈希），Jaccard = intersect / max(a,b) | 30% | 集合级别的相似度 |
-| **SimHash Hamming** | 64 位 IDF 加权 SimHash，`sim = 1 - hamming_distance/64` | 15% | 快速去重指纹 |
-
-#### 新颖度评分模型
-
-```go
-weight = (novelty + keySignal) * decay * importance
-```
-
-- **Novelty**：基于累积词频，`1 - (已见词权重/总权重)`，重复消息被压到 `0.08`
-- **KeySignal**：检测 `must/never/always/error/failed/必须/不要/错误/修复/约束/重要` 等关键信号词（每个 0.18，上限 0.9）
-- **TimeDecay**：`exp(-0.08 * age)`，Alpha=0 时关闭
-- **Pinned 保底**：系统指令等 pinned 条目 novelty 不低于 0.45
-
-#### 后缀数组最长公共子串
-
-- 倍增法 O(n log n) 后缀数组 + Kasai 算法 O(n) LCP
-- `longestCommonSubstringSimilarity`：最大 LCP / 较短文本长度，阈值 0.72
-- `longestPreviousPrefix`：双向扫描 LCP 找最大重复前缀
+快照只会在模型摘要、预算校验和持久化全部成功后推进。超时、空摘要、并发竞争失败或仍超过 `context_window_tokens - reserved_output_tokens - safety_margin` 时返回明确错误，绝不使用算法摘要或静默截断。Agent 的运行期工具 transcript 同样只保留完整 exchange，并写入 checkpoint 以支持无损恢复。
 
 ---
 
@@ -460,7 +388,7 @@ CachedChatClient.StreamChat()
 - 查询先做 Unicode NFKC、空格/标点/大小写和受控拼写规范化，再锁定产品名、错误码、版本、时间、环境、ID、路径、URL 和引号内容等硬条件。
 - 指代不明确时返回 `clarification_required`；低召回或多意图时每次查询最多调用一次改写模型，所有变体必须通过硬条件校验。
 - 多查询结果使用 RRF 融合、资源 ID/内容哈希去重，再进入 reranker。
-- Reflection、长期 Memory、Skill、非核心 Tool 和旧 Conversation Message 均有语义召回；Rules 只使用确定性的显式 Activation，mandatory、安全关键、policy-binding 规则始终常驻。
+- Reflection、短期/长期 Memory、Skill、非核心 Tool 和旧 Conversation Message 均通过向量召回；Rules 只使用确定性的显式 Activation，mandatory、安全关键、policy-binding 规则始终常驻。
 - `context_resource_index_outbox` 在资源写事务内登记索引版本，worker 使用 lease、`SKIP LOCKED`、指数退避和 DLQ；Milvus collection 按 provider/model/dimensions profile 隔离，索引故障不会扩大为业务写入故障。
 
 ---
@@ -478,6 +406,8 @@ CachedChatClient.StreamChat()
 
 - **Dream（记忆梦境）**：定时 Job 遍历记忆，LLM 自动提取合并，`conflict_flag` 冲突检测去重
 - **Working Memory** 事件驱动更新，`ToContextBlock()` 自动序列化为 LLM 可读格式
+- **记忆读取**：Agent Runtime 必须携带任务语义查询，只加载向量检索命中的记忆 ID，不再把最近若干条记忆作为默认上下文。
+- **记忆冲突**：写入前对同类语义记忆做冲突检测；冲突会暂停 Run 并创建带多个选项的审批请求，前端选择后通过 Checkpoint → Resume 将选项注入原工具调用。
 
 ---
 
@@ -540,12 +470,12 @@ internal/                   核心后端代码
     retrieval_usecase/       ─ Keyword/Vector/Hybrid 检索 + Rerank
     skill_usecase/           ─ Skill 技能管理 (12+条校验规则)
     tool_usecase/            ─ Tool 定义/Tool Policy/Tool Pack/MCP Server
-    workflow_usecase/        ─ Workflow CRUD/Flow Version/RuleSet/Run/Eval/Approval/Team
+    workflow_usecase/        ─ Workflow CRUD/Flow Version/RuleSet/Run/Eval/Approval
     audit_usecase/           ─ 审计日志查询
   bootstrap/                 ─ 启动引导 (App 装配器)
   domain/                   领域层 (15 个包, DDD)
 	agent/                   ─ 独立 Agent、不可变 Release 与 Turn
-    workflow/                ─ DSL/Workflow/FlowVersion/RuleSet/Run/Profile/Eval/Approval/Team
+    workflow/                ─ DSL/Workflow/FlowVersion/RuleSet/Run/Profile/Eval/Approval
     knowledge/               ─ 知识库/文档/Chunk/Ingestion
     memory/                  ─ 记忆/Working Memory/Cache
     reflection/              ─ 经验实体/策略/信号/Repository/EventSink 端口
@@ -588,14 +518,14 @@ internal/                   核心后端代码
     response/                ─ 统一 HTTP 响应格式
     strutil/                 ─ 字符串工具 (截断/脱敏)
   runtime/                  Agent 运行时引擎
-    agent/                   ─ Runner/Planner/Reflexion/Supervisor/Judge/Resumer/ContextAssembler
+    agent/                   ─ Agent Runtime/Runner/Resumer/ContextAssembler/Approval
     engine/                  ─ DAG 执行器/VariableResolver
     harness/                 ─ Harness框架: Rules (内置分层 + 确定性预算选择) + Hooks (preToolUse/postToolUse责任链)
     node/                    ─ 23 种节点实现
     toolruntime/             ─ 工具运行时 (7种Tool + ToolRegistry + Skill集成)
     evalharness/             ─ 评估指标 (Coverage + Judge)
     sandbox/                 ─ Docker六重隔离代码沙箱
-    contextcompress/         ─ 三重指纹压缩: SimHash+MinHash+Cosine/后缀数组LCS/LazyGreedy/CJK Shingle
+    conversationcontext/     ─ 持久化会话滚动快照协调器
 migrations/                 数据库迁移 SQL (35 组, .up.sql + .down.sql)
 scripts/                    本地脚本 (dev/migrate/lint/build/verify)
 web/                        React + Vite 前端 (SPA, 内嵌 embed)
@@ -747,7 +677,7 @@ POST   /api/v1/agents/:id/conversations/:conversation_id/fork   分支会话
 POST   /api/v1/agents/:id/conversations/:conversation_id/upgrade 使用当前 Release 创建升级分支
 ```
 
-独立 Agent Chat 直接调用与 `agent_loop` 节点共用的 `AgentRuntime`，不会创建 `Begin → Agent → Output` 伪 Workflow。Release 固定 Tool/Tool Pack、Skill、Knowledge、MCP、Memory、Reflection、Rules 与委派白名单；`call_agent`、`run_subagent` 和 `call_workflow` 是三种不同工具。
+独立 Agent Chat 直接调用与 `agent_loop` 节点共用的底层 `AgentRuntime`，不会创建 `Begin → Agent → Output` 伪 Workflow。Workflow 只负责把节点输入适配为 Agent Runtime 请求；工具、记忆、Working Memory、审批和 resume 均由底层 Agent 模块统一处理。`run_subagent` 是动态委派入口，旧 `call_agent` / `call_workflow` 仅为历史 DSL 保留兼容。
 
 ### Legacy RAG Chat（已弃用）
 
@@ -759,7 +689,7 @@ POST   /api/v1/dialogs/:dialog_id/rag/chat/stream     RAG 流式问答 (SSE)
 
 旧接口返回 `Deprecation`/`Sunset` 响应头；生产前端已迁移到 `/app/agents`，`/app/dialogs` 只保留重定向。
 
-### Workflow / Agent Flow / Eval / Team
+### Workflow / Agent Flow / Eval
 
 ```text
 POST   /api/v1/workflows                             创建 Workflow
@@ -784,7 +714,6 @@ POST   /api/v1/runs/:id/reflections/:reflection_id/feedback helpful/harmful 反�
 POST   /api/v1/workflows/:id/eval-datasets            创建评估数据集
 GET    /api/v1/eval-datasets/:id/trend                评估趋势
 GET    /api/v1/approval-requests                      审批请求
-POST   /api/v1/workflow-teams                         创建 Team
 ```
 
 规则系统健康指标：`GET /api/v1/health/rule-system`；Reflection 健康与进程/数据库指标：`GET /api/v1/health/reflection-system`；统一语义索引、Outbox/DLQ、压缩和 overflow 指标：`GET /api/v1/health/context-system`。

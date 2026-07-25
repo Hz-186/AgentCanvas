@@ -49,13 +49,28 @@ func (n MemoryReadNode) Run(ctx context.Context, rc *engine.RunContext, input en
 	emitRuntimeEvent(ctx, rc, runtimeevent.Event{Type: runtimeevent.MemoryReadStarted, RunID: rc.RunID})
 
 	result, err := (memory.RuntimeService{Memories: n.Memories, Retriever: n.Retriever, Archival: n.Archival}).Read(ctx, memory.ReadRequest{
-		OwnerID: rc.OwnerID, ConversationID: rc.ConversationID, MemoryTypes: cfg.MemoryTypes, Query: cfg.Query, Limit: cfg.Limit,
+		OwnerID: rc.OwnerID, ConversationID: rc.ConversationID, MemoryTypes: cfg.MemoryTypes,
+		Query: firstMemoryQuery(cfg.Query, rc), Limit: cfg.Limit, SemanticOnly: true,
 	})
 	if err != nil {
 		return nil, err
 	}
 	emitRuntimeEvent(ctx, rc, runtimeevent.Event{Type: runtimeevent.MemoryReadFinished, RunID: rc.RunID, Payload: map[string]any{"count": result.Count, "query": result.Query}})
 	return engine.NodeOutput{"memories": result.Memories, "memory_context": result.MemoryContext, "count": result.Count, "query": result.Query}, nil
+}
+
+func firstMemoryQuery(configured string, rc *engine.RunContext) string {
+	if value := strings.TrimSpace(engine.ResolveTemplate(configured, rc)); value != "" {
+		return value
+	}
+	if rc != nil {
+		for _, key := range []string{"query", "prompt", "content"} {
+			if value, ok := rc.Input[key].(string); ok && strings.TrimSpace(value) != "" {
+				return strings.TrimSpace(value)
+			}
+		}
+	}
+	return ""
 }
 
 type MemoryWriteNode struct {

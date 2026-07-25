@@ -3,7 +3,8 @@ package usage
 import "time"
 
 const (
-	TypeChat = "chat"
+	TypeChat              = "chat"
+	TypeContextCompaction = "context_compaction"
 )
 
 type ModelUsageLog struct {

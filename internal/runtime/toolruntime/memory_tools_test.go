@@ -161,7 +161,7 @@ func (r *fakeMemoryLogRepo) ListByRun(ctx context.Context, ownerID, runID int64)
 
 func TestMemoryReadToolReadsAndMarksMemory(t *testing.T) {
 	repo := &fakeMemoryRepo{}
-	tool := MemoryReadTool{Memories: repo}
+	tool := MemoryReadTool{Memories: repo, AllowLegacyListFallback: true}
 	result, err := tool.Execute(context.Background(), ToolRunContext{OwnerID: 1}, json.RawMessage(`{"memory_types":["summary_memory"],"limit":3}`))
 	if err != nil {
 		t.Fatal(err)
@@ -175,6 +175,19 @@ func TestMemoryReadToolReadsAndMarksMemory(t *testing.T) {
 	}
 	if output["memory_context"] != "remember this" || output["count"].(float64) != 1 {
 		t.Fatalf("unexpected output: %+v", output)
+	}
+}
+
+func TestMemoryReadToolRequiresUnifiedVectorIndexByDefault(t *testing.T) {
+	repo := &fakeMemoryRepo{}
+	tool := MemoryReadTool{Memories: repo}
+
+	result, err := tool.Execute(context.Background(), ToolRunContext{OwnerID: 1, RunID: 2, Task: "relevant fact"}, json.RawMessage(`{"limit":3}`))
+	if err == nil || result != nil {
+		t.Fatalf("expected missing vector index configuration error, result=%+v err=%v", result, err)
+	}
+	if repo.readReq.limit != 0 {
+		t.Fatalf("memory list fallback must not be used: %+v", repo.readReq)
 	}
 }
 
@@ -249,7 +262,7 @@ func TestMemoryReadToolWithSemanticQuery(t *testing.T) {
 func TestMemoryReadToolFallsBackWithoutQuery(t *testing.T) {
 	repo := &fakeMemoryRepo{}
 	retriever := &fakeSemanticRetriever{ids: []int64{99}}
-	tool := MemoryReadTool{Memories: repo, Retriever: retriever}
+	tool := MemoryReadTool{Memories: repo, Retriever: retriever, AllowLegacyListFallback: true}
 
 	_, err := tool.Execute(context.Background(), ToolRunContext{OwnerID: 1}, json.RawMessage(`{
 		"memory_types": ["summary_memory"],
@@ -266,7 +279,7 @@ func TestMemoryReadToolFallsBackWithoutQuery(t *testing.T) {
 func TestMemoryReadToolFallsBackWhenSearchFails(t *testing.T) {
 	repo := &fakeMemoryRepo{}
 	retriever := &fakeSemanticRetriever{ids: nil}
-	tool := MemoryReadTool{Memories: repo, Retriever: retriever}
+	tool := MemoryReadTool{Memories: repo, Retriever: retriever, AllowLegacyListFallback: true}
 
 	_, err := tool.Execute(context.Background(), ToolRunContext{OwnerID: 1}, json.RawMessage(`{
 		"query": "something",
@@ -278,5 +291,17 @@ func TestMemoryReadToolFallsBackWhenSearchFails(t *testing.T) {
 	}
 	if repo.readReq.limit != 3 {
 		t.Fatalf("expected fallback to ListForRead, got %+v", repo.readReq)
+	}
+}
+
+func TestMemoryWriteToolEmitsChoiceApprovalOnConflict(t *testing.T) {
+	repo := &fakeMemoryRepo{items: map[int64]*memory.Memory{9: {ID: 9, OwnerID: 1, MemoryType: memory.TypeProfile, Title: "response style", Content: "User prefers concise answers"}}}
+	tool := MemoryWriteTool{Memories: repo, Retriever: &fakeSemanticRetriever{ids: []int64{9}}}
+	result, err := tool.Execute(context.Background(), ToolRunContext{OwnerID: 1, RunID: 2}, json.RawMessage(`{"memory_type":"profile_memory","title":"response style","content":"User prefers detailed answers"}`))
+	if err != nil || result == nil || result.Approval == nil || len(result.Approval.Options) != 3 {
+		t.Fatalf("expected structured conflict approval, result=%+v err=%v", result, err)
+	}
+	if len(repo.items) != 1 {
+		t.Fatalf("conflicting memory must not be persisted before approval: %+v", repo.items)
 	}
 }
