@@ -484,12 +484,6 @@ export interface AgentDefinition {
   post_turn_workflow_version_id?: number | null;
 }
 
-  checksum: string;
-  status: 'active' | 'disabled';
-  created_at: string;
-  updated_at: string;
-}
-
 export interface Agent {
   id: number;
   owner_id: number;
