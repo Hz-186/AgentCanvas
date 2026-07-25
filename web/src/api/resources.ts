@@ -70,8 +70,6 @@ import type {
   AgentRelease,
   AgentTurn,
   AgentTurnAccepted,
-  Workspace,
-  WorkspacePack,
   ImprovementReview,
   ChangeProposal,
 } from '../types/api';
@@ -102,17 +100,6 @@ export const agentApi = {
   listChangeProposals: (id: number, status?: ChangeProposal['status']) => api.get<ChangeProposal[]>(`/agents/${id}/change-proposals`, status ? { status } : undefined),
   approveChangeProposal: (id: number, note?: string) => api.post<ChangeProposal>(`/agent-change-proposals/${id}/approve`, { note }),
   rejectChangeProposal: (id: number, note?: string) => api.post<ChangeProposal>(`/agent-change-proposals/${id}/reject`, { note }),
-};
-
-export const workspaceApi = {
-  list: () => api.get<Workspace[]>('/workspaces'),
-  get: (id: number) => api.get<Workspace>(`/workspaces/${id}`),
-  create: (body: { name: string; root_path: string; default_branch?: string }) => api.post<Workspace>('/workspaces', body),
-  remove: (id: number) => api.delete<{ success: boolean }>(`/workspaces/${id}`),
-  listPacks: (workspaceId: number) => api.get<WorkspacePack[]>(`/workspaces/${workspaceId}/packs`),
-  getPack: (id: number) => api.get<WorkspacePack>(`/workspace-packs/${id}`),
-  createPack: (workspaceId: number, body: Omit<WorkspacePack, 'id' | 'owner_id' | 'workspace_id' | 'checksum' | 'status' | 'created_at' | 'updated_at'>) => api.post<WorkspacePack>(`/workspaces/${workspaceId}/packs`, body),
-  removePack: (id: number) => api.delete<{ success: boolean }>(`/workspace-packs/${id}`),
 };
 
 export const resourceSummaryApi = {
@@ -292,7 +279,7 @@ export const conversationApi = {
   get: (dialogId: number, id: number) => api.get<Conversation>(`/dialogs/${dialogId}/conversations/${id}`),
   listMessages: (dialogId: number, id: number) => api.get<Message[]>(`/dialogs/${dialogId}/conversations/${id}/messages`),
   remove: (dialogId: number, id: number) => api.delete<{ success: boolean }>(`/dialogs/${dialogId}/conversations/${id}`),
-  compact: (id: number, body: { provider_id: number; model?: string; compact_prompt?: string }) => api.post<ConversationCompaction>(`/conversations/${id}/compact`, body),
+  compact: (id: number, body: { provider_id: number; model?: string; compact_prompt?: string; through_message_id?: number }) => api.post<ConversationCompaction>(`/conversations/${id}/compact`, body),
 };
 
 export const settingsApi = {

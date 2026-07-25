@@ -34,7 +34,7 @@ import {
 } from 'lucide-react';
 import { workflowApi, resourceSummaryApi, settingsApi } from '../api/resources';
 import { Button, EmptyState, Field, IconButton, Panel, Segmented, Select, StatusBadge, TextArea, TextInput, Toast } from '../components/ui';
-import type { AgentReflection, ReflectionStatus, Workflow, WorkflowProfile, WorkflowTeam, WorkflowTeamMember, ApprovalRequest, Conversation, EvalCase, EvalDataset, EvalResult, EvalRun, EvalTrend, FlowVersion, KnowledgeBase, MCPServer, MemoryWriteLog, Message, ModelProvider, Run, RunStep, RunTrace, Skill, ToolDefinition, ToolInvocation, ToolPack, WorkflowMessageResponse } from '../types/api';
+import type { AgentReflection, ReflectionStatus, Workflow, WorkflowProfile, ApprovalRequest, Conversation, EvalCase, EvalDataset, EvalResult, EvalRun, EvalTrend, FlowVersion, KnowledgeBase, MCPServer, MemoryWriteLog, Message, ModelProvider, Run, RunStep, RunTrace, Skill, ToolDefinition, ToolInvocation, ToolPack, WorkflowMessageResponse } from '../types/api';
 import type { NodeType } from '../types/flow';
 import type { RuntimeEvent } from '../types/events';
 import { formatDate, friendlyErrorMessage, parseJsonObject, prettyJson } from '../utils/format';
@@ -136,7 +136,7 @@ export function CanvasPage() {
   const [skills, setSkills] = useState<Skill[]>([]);
   const [toolPacks, setToolPacks] = useState<ToolPack[]>([]);
   const [mcpServers, setMcpServers] = useState<MCPServer[]>([]);
-  const [mode, setMode] = useState<'config' | 'profile' | 'reflections' | 'team' | 'approvals' | 'eval' | 'chat' | 'debug' | 'dsl'>('config');
+  const [mode, setMode] = useState<'config' | 'profile' | 'reflections' | 'approvals' | 'eval' | 'chat' | 'debug' | 'dsl'>('config');
   const [paletteWidth, setPaletteWidth] = useState(DEFAULT_PALETTE_WIDTH);
   const [configWidth, setConfigWidth] = useState(DEFAULT_PANEL_WIDTH);
   const [sidePanelOpen, setSidePanelOpen] = useState(true);
@@ -165,14 +165,6 @@ export function CanvasPage() {
   const [pendingChatAnswer, setPendingChatAnswer] = useState('');
   const [chatStreaming, setChatStreaming] = useState(false);
   const [approvalRequests, setApprovalRequests] = useState<ApprovalRequest[]>([]);
-  const [workflowTeams, setWorkflowTeams] = useState<WorkflowTeam[]>([]);
-  const [teamMembers, setTeamMembers] = useState<WorkflowTeamMember[]>([]);
-  const [teamName, setTeamName] = useState('');
-  const [teamStrategy, setTeamStrategy] = useState<'supervisor' | 'handoff'>('supervisor');
-  const [teamMaxDepth, setTeamMaxDepth] = useState(3);
-  const [selectedTeamId, setSelectedTeamId] = useState(0);
-  const [teamMemberWorkflowId, setTeamMemberWorkflowId] = useState(0);
-  const [teamMemberRole, setTeamMemberRole] = useState('worker');
   const [evalDatasets, setEvalDatasets] = useState<EvalDataset[]>([]);
   const [evalCases, setEvalCases] = useState<EvalCase[]>([]);
   const [evalDatasetName, setEvalDatasetName] = useState('');
@@ -225,7 +217,7 @@ export function CanvasPage() {
   useEffect(() => {
     let cancelled = false;
     async function load() {
-      const [workflowResp, profileResp, reflectionResp, workflowsResp, providersResp, kbResp, toolResp, skillResp, toolPackResp, mcpResp, approvalResp, evalDatasetResp, teamResp, versionResp, conversationResp] = await Promise.all([
+      const [workflowResp, profileResp, reflectionResp, workflowsResp, providersResp, kbResp, toolResp, skillResp, toolPackResp, mcpResp, approvalResp, evalDatasetResp, versionResp, conversationResp] = await Promise.all([
         workflowApi.get(workflowId),
         workflowApi.getProfile(workflowId),
         workflowApi.listReflections(workflowId),
@@ -238,7 +230,6 @@ export function CanvasPage() {
         settingsApi.tools.listMCPServers(),
         workflowApi.listApprovalRequests('pending'),
         workflowApi.listEvalDatasets(workflowId),
-        workflowApi.listTeams(),
         workflowApi.listFlowVersions(workflowId),
         workflowApi.listConversations(workflowId),
       ]);
@@ -264,9 +255,6 @@ export function CanvasPage() {
       setApprovalRequests(approvalResp.filter((item) => item.workflow_id === workflowId));
       setEvalDatasets(evalDatasetResp);
       setSelectedEvalDatasetId(evalDatasetResp[0]?.id ?? 0);
-      const ownedTeams = teamResp.filter((team) => team.supervisor_workflow_id === workflowId);
-      setWorkflowTeams(ownedTeams);
-      setSelectedTeamId(ownedTeams[0]?.id ?? 0);
       setConversations(conversationResp);
       setConversationId(conversationResp[0]?.id ?? 0);
       const sortedVersions = [...versionResp].sort((left, right) => right.version_no - left.version_no);
@@ -375,28 +363,10 @@ export function CanvasPage() {
     setLatestEvalResults(latest ? await workflowApi.listEvalResults(latest.id) : []);
   }
 
-  async function refreshTeams() {
-    const teams = (await workflowApi.listTeams()).filter((team) => team.supervisor_workflow_id === workflowId);
-    setWorkflowTeams(teams);
-    setSelectedTeamId((current) => current || teams[0]?.id || 0);
-  }
-
-  async function refreshTeamMembers(teamId = selectedTeamId) {
-    if (!teamId) {
-      setTeamMembers([]);
-      return;
-    }
-    setTeamMembers(await workflowApi.listTeamMembers(teamId));
-  }
-
   useEffect(() => {
     void refreshEvalCases().catch((err) => setError(friendlyErrorMessage(err, '加载 Eval Case 失败')));
     void refreshEvalRuns().catch((err) => setError(friendlyErrorMessage(err, '加载 Eval Run 失败')));
   }, [selectedEvalDatasetId]);
-
-  useEffect(() => {
-    void refreshTeamMembers().catch((err) => setError(friendlyErrorMessage(err, '加载 Team 成员失败')));
-  }, [selectedTeamId]);
 
   // 组件卸载时取消进行中的调试流。
   useEffect(() => () => {
@@ -670,7 +640,6 @@ export function CanvasPage() {
         max_execution_time_ms: profile.max_execution_time_ms,
         memory_enabled: profile.memory_enabled,
         planning_enabled: profile.planning_enabled,
-        allow_delegation: profile.allow_delegation,
         allow_code_execution: profile.allow_code_execution,
         default_tool_pack_ids: profile.default_tool_pack_ids ?? [],
         default_tool_ids: profile.default_tool_ids ?? [],
@@ -679,8 +648,6 @@ export function CanvasPage() {
         default_knowledge_ids: profile.default_knowledge_ids ?? [],
         default_knowledge_top_k: profile.default_knowledge_top_k ?? 5,
         default_knowledge_mode: profile.default_knowledge_mode ?? 'hybrid',
-        default_call_workflow_ids: profile.default_call_workflow_ids ?? [],
-        default_max_workflow_call_depth: profile.default_max_workflow_call_depth ?? 3,
         output_schema_json: profile.output_schema_json ?? {},
         tool_policy_json: profile.tool_policy_json ?? {},
         memory_policy_json: profile.memory_policy_json ?? {},
@@ -697,10 +664,10 @@ export function CanvasPage() {
     }
   }
 
-  async function decideApproval(item: ApprovalRequest, approve: boolean) {
+  async function decideApproval(item: ApprovalRequest, approve: boolean, optionID?: string) {
     try {
       if (approve) {
-        await workflowApi.approveRequest(item.id, 'approved from AgentCanvas workbench');
+        await workflowApi.approveRequest(item.id, optionID ? `choice:${optionID}` : 'approved from AgentCanvas workbench');
       } else {
         await workflowApi.rejectRequest(item.id, 'rejected from AgentCanvas workbench');
       }
@@ -789,53 +756,6 @@ export function CanvasPage() {
     const trace = await workflowApi.getRunTrace(runId);
     if (signal?.aborted) return;
     applyRunTrace(trace);
-  }
-
-  async function createTeam() {
-    const name = teamName.trim();
-    if (!name) {
-      setError('Team 名称不能为空');
-      return;
-    }
-    try {
-      const created = await workflowApi.createTeam({ name, supervisor_workflow_id: workflowId, handoff_strategy: teamStrategy, max_depth: teamMaxDepth });
-      setTeamName('');
-      setTeamStrategy('supervisor');
-      setTeamMaxDepth(3);
-      await refreshTeams();
-      setSelectedTeamId(created.id);
-      setMessage('Workflow Team 已创建');
-      setError('');
-    } catch (err) {
-      setError(friendlyErrorMessage(err, '创建 Workflow Team 失败'));
-    }
-  }
-
-  async function addTeamMember() {
-    if (!selectedTeamId || !teamMemberWorkflowId) {
-      setError('请选择 Team 和成员 Workflow');
-      return;
-    }
-    try {
-      await workflowApi.addTeamMember(selectedTeamId, { workflow_id: teamMemberWorkflowId, role: teamMemberRole || 'worker' });
-      setTeamMemberWorkflowId(0);
-      await refreshTeamMembers(selectedTeamId);
-      setMessage('Team 成员已加入');
-      setError('');
-    } catch (err) {
-      setError(friendlyErrorMessage(err, '添加 Team 成员失败'));
-    }
-  }
-
-  async function removeTeamMember(agentMemberId: number) {
-    if (!selectedTeamId) return;
-    try {
-      await workflowApi.removeTeamMember(selectedTeamId, agentMemberId);
-      await refreshTeamMembers(selectedTeamId);
-      setMessage('Team 成员已移除');
-    } catch (err) {
-      setError(friendlyErrorMessage(err, '移除 Team 成员失败'));
-    }
   }
 
   async function runDebug() {
@@ -1090,7 +1010,7 @@ export function CanvasPage() {
           <p className="muted truncate">WORKFLOW STUDIO · {restoredFromVersion ? `RESTORED FROM v${restoredFromVersion} · UNSAVED DRAFT` : version ? `VERSION ${version.version_no}` : 'UNSAVED DRAFT'}</p>
         </div>
         <div className="canvas-tools">
-          <Segmented value={mode} onChange={setMode} options={[{ value: 'config', label: 'Build' }, { value: 'profile', label: 'Profile' }, { value: 'reflections', label: 'Reflections' }, { value: 'team', label: 'Team' }, { value: 'approvals', label: 'Approvals' }, { value: 'eval', label: 'Evaluate' }, { value: 'chat', label: 'Dialogue' }, { value: 'debug', label: 'Debug' }, { value: 'dsl', label: 'DSL' }]} />
+          <Segmented value={mode} onChange={setMode} options={[{ value: 'config', label: 'Build' }, { value: 'profile', label: 'Profile' }, { value: 'reflections', label: 'Reflections' }, { value: 'approvals', label: 'Approvals' }, { value: 'eval', label: 'Evaluate' }, { value: 'chat', label: 'Dialogue' }, { value: 'debug', label: 'Debug' }, { value: 'dsl', label: 'DSL' }]} />
           <div ref={versionControlRef} className="canvas-version-control">
             <Button
               className="canvas-version-trigger"
@@ -1274,7 +1194,6 @@ export function CanvasPage() {
                   skills={skills}
                   knowledgeBases={knowledgeBases}
                   mcpServers={mcpServers}
-                  callableWorkflows={callableWorkflows}
                   updateConfig={updateSelectedConfig}
                   updateJSON={updateSelectedJSON}
                   addReferencedNode={addReferencedNode}
@@ -1296,22 +1215,6 @@ export function CanvasPage() {
                   </Field>
                   <Field label="最大调用深度">
                     <TextInput type="number" min={1} max={5} value={Number(config.max_depth ?? 3)} onChange={(event) => updateSelectedConfig({ max_depth: Number(event.target.value) })} />
-                  </Field>
-                </>
-              )}
-              {selected.data.nodeType === 'team_call' && (
-                <>
-                  <Field label="Team">
-                    <Select value={Number(config.team_id ?? 0)} onChange={(event) => updateSelectedConfig({ team_id: Number(event.target.value) })}>
-                      <option value={0}>选择 Team</option>
-                      {workflowTeams.map((team) => <option key={team.id} value={team.id}>{team.name}</option>)}
-                    </Select>
-                  </Field>
-                  <Field label="最大调用深度">
-                    <TextInput type="number" min={0} max={5} value={Number(config.max_depth ?? 3)} onChange={(event) => updateSelectedConfig({ max_depth: Number(event.target.value) })} />
-                  </Field>
-                  <Field label="输入 JSON" hint="0 表示使用 Team 默认深度；支持 {{sys.query}} 和 {{node_id.field}}">
-                    <TextArea value={prettyJson(config.input ?? { query: '{{sys.query}}' })} onChange={(event) => updateSelectedJSON('input', event.target.value)} />
                   </Field>
                 </>
               )}
@@ -1546,24 +1449,6 @@ export function CanvasPage() {
                   <option value="enabled">Enabled</option>
                 </Select>
               </Field>
-              <Field label="Delegation">
-                <Select value={profile.allow_delegation ? 'enabled' : 'disabled'} onChange={(event) => setProfile({ ...profile, allow_delegation: event.target.value === 'enabled' })}>
-                  <option value="disabled">Disabled</option>
-                  <option value="enabled">Enabled</option>
-                </Select>
-              </Field>
-              <Field label="默认可调用 Agent">
-                <Select
-                  multiple
-                  value={numberArray(profile.default_call_workflow_ids).map(String)}
-                  onChange={(event) => setProfile({ ...profile, default_call_workflow_ids: Array.from(event.target.selectedOptions).map((option) => Number(option.value)) })}
-                >
-                  {callableWorkflows.map((workflow) => <option key={workflow.id} value={workflow.id}>{workflow.name}</option>)}
-                </Select>
-              </Field>
-              <Field label="默认调用深度">
-                <TextInput type="number" min={1} max={5} value={profile.default_max_workflow_call_depth ?? 3} onChange={(event) => setProfile({ ...profile, default_max_workflow_call_depth: Number(event.target.value) })} />
-              </Field>
               <Field label="Code Execution">
                 <Select value={profile.allow_code_execution ? 'enabled' : 'disabled'} onChange={(event) => setProfile({ ...profile, allow_code_execution: event.target.value === 'enabled' })}>
                   <option value="disabled">Disabled</option>
@@ -1701,59 +1586,7 @@ export function CanvasPage() {
 
           {mode === 'approvals' ? (
             <Panel title="人工审批" eyebrow={`${approvalRequests.length} pending`}>
-              <ApprovalQueue items={approvalRequests} onDecide={(item, approve) => void decideApproval(item, approve)} />
-              {error ? <p className="error-text">{error}</p> : null}
-            </Panel>
-          ) : null}
-
-          {mode === 'team' ? (
-            <Panel title="Workflow Team" eyebrow={`${teamMembers.length} members`}>
-              <Field label="新建 Team">
-                <div className="inline-form">
-                  <TextInput value={teamName} onChange={(event) => setTeamName(event.target.value)} placeholder="Research Team" />
-                  <Select value={teamStrategy} onChange={(event) => setTeamStrategy(event.target.value as 'supervisor' | 'handoff')}>
-                    <option value="supervisor">Supervisor</option>
-                    <option value="handoff">Handoff</option>
-                  </Select>
-                  <TextInput type="number" min={1} max={5} value={teamMaxDepth} onChange={(event) => setTeamMaxDepth(Number(event.target.value))} />
-                  <Button onClick={() => void createTeam()}>创建</Button>
-                </div>
-              </Field>
-              <Field label="当前 Team">
-                <Select value={selectedTeamId} onChange={(event) => setSelectedTeamId(Number(event.target.value))}>
-                  <option value={0}>选择 Team</option>
-                  {workflowTeams.map((team) => <option key={team.id} value={team.id}>{team.name}</option>)}
-                </Select>
-              </Field>
-              <div className="inline-form">
-                <Select value={teamMemberWorkflowId} onChange={(event) => setTeamMemberWorkflowId(Number(event.target.value))}>
-                  <option value={0}>选择成员 Workflow</option>
-                  {callableWorkflows.map((workflow) => <option key={workflow.id} value={workflow.id}>{workflow.name}</option>)}
-                </Select>
-                <TextInput value={teamMemberRole} onChange={(event) => setTeamMemberRole(event.target.value)} placeholder="researcher" />
-                <Button onClick={() => void addTeamMember()}>加入</Button>
-              </div>
-              {workflowTeams.length === 0 ? (
-                <EmptyState icon={<WorkflowIcon size={22} />} title="还没有 Team" description="创建 Team 后，当前 Workflow 会作为 supervisor 管理成员 Workflow。" />
-              ) : (
-                <div className="trace-list">
-                  {teamMembers.length === 0 ? <p className="muted">当前 Team 暂无成员。</p> : null}
-                  {teamMembers.map((member) => {
-                    const memberWorkflow = callableWorkflows.find((item) => item.id === member.workflow_id);
-                    return (
-                      <article className="trace-item" key={member.id}>
-                        <div className="trace-item-head">
-                          <strong>{memberWorkflow?.name ?? `Agent #${member.workflow_id}`}</strong>
-                          <StatusBadge tone="info">{member.role || 'worker'}</StatusBadge>
-                        </div>
-                        <div className="toolbar-actions">
-                          <Button onClick={() => void removeTeamMember(member.workflow_id)}>移除</Button>
-                        </div>
-                      </article>
-                    );
-                  })}
-                </div>
-              )}
+              <ApprovalQueue items={approvalRequests} onDecide={(item, approve, optionID) => void decideApproval(item, approve, optionID)} />
               {error ? <p className="error-text">{error}</p> : null}
             </Panel>
           ) : null}
