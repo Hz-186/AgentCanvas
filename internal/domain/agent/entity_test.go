@@ -23,13 +23,6 @@ func TestDefinitionSnapshotIsNormalizedAndDeterministic(t *testing.T) {
 	}
 }
 
-func TestDefinitionRejectsWorkspaceWithoutPack(t *testing.T) {
-	err := (Definition{ProviderID: 1, Mode: "react", WorkspaceEnabled: true}).Validate()
-	if err == nil {
-		t.Fatal("expected workspace policy validation error")
-	}
-}
-
 func TestDefinitionRejectsInvalidLimits(t *testing.T) {
 	err := (Definition{ProviderID: 1, Mode: "react", MaxIterations: 51}).Validate()
 	if err == nil {

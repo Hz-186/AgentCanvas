@@ -23,7 +23,6 @@ import (
 	"agentcanvas/internal/domain/skill"
 	"agentcanvas/internal/domain/tool"
 	"agentcanvas/internal/domain/workflow"
-	"agentcanvas/internal/domain/workspace"
 	memoryretrieval "agentcanvas/internal/infrastructure/retrieval"
 	"agentcanvas/internal/infrastructure/vectorstore"
 	runtimeagent "agentcanvas/internal/runtime/agent"
@@ -58,8 +57,6 @@ type AgentNode struct {
 	Profiles          AgentProfileLoader
 	RuleSets          ActiveRuleSetLoader
 	Reflections       reflection.Advisor
-	Workspaces        workspace.Repository
-	WorkspaceManager  *toolruntime.WorkspaceManager
 	Sandbox           sandbox.Runner
 	MessageHistory    MessageHistoryReader
 	Compactions       conversation.CompactionRepository
@@ -67,7 +64,7 @@ type AgentNode struct {
 	ArchivalVecStore  vectorstore.Store
 	ContextIndex      contextresource.Index
 	Embedder          llm.EmbeddingClient
-	WorkspaceRoot     string
+	SkillRoot         string
 
 	OnExtractTrigger func(ctx context.Context, ownerID int64, conversationID int64, roundNumber int)
 }
@@ -109,8 +106,6 @@ type agentRuntimeConfig struct {
 	MCPServerIDs                    []int64                     `json:"mcp_server_ids"`
 	MaxWorkflowCallDepth            int                         `json:"max_workflow_call_depth"`
 	CodeExecutionEnabled            bool                        `json:"code_execution_enabled"`
-	WorkspaceEnabled                bool                        `json:"workspace_enabled"`
-	WorkspacePackID                 *int64                      `json:"workspace_pack_id"`
 	MemoryEnabled                   bool                        `json:"memory_enabled"`
 	MaxIterations                   int                         `json:"max_iterations"`
 	MaxToolCalls                    int                         `json:"max_tool_calls"`
@@ -176,8 +171,6 @@ type agentNodeConfig struct {
 		MCPServerIDs         []int64 `json:"mcp_server_ids"`
 		MaxWorkflowCallDepth int     `json:"max_workflow_call_depth"`
 		CodeExecutionEnabled bool    `json:"code_execution_enabled"`
-		WorkspaceEnabled     bool    `json:"workspace_enabled"`
-		WorkspacePackID      *int64  `json:"workspace_pack_id"`
 		AllowInlineAgents    bool    `json:"allow_inline_agents"`
 	} `json:"tools"`
 	Memory struct {
@@ -294,10 +287,6 @@ func parseAgentNodeConfig(config json.RawMessage) (agentRuntimeConfig, error) {
 	}
 	if nested.Tools.CodeExecutionEnabled {
 		cfg.CodeExecutionEnabled = true
-	}
-	if nested.Tools.WorkspaceEnabled {
-		cfg.WorkspaceEnabled = true
-		cfg.WorkspacePackID = nested.Tools.WorkspacePackID
 	}
 	if nested.Tools.AllowInlineAgents {
 		cfg.AllowInlineAgents = true
@@ -423,9 +412,6 @@ func validateAgentRuntimeConfig(cfg agentRuntimeConfig, nodeType string, require
 	if cfg.Mode != "" && cfg.Mode != "react" && cfg.Mode != "plan_execute" {
 		return fmt.Errorf("%w: %s mode must be react or plan_execute", agenterrors.ErrInvalidInput, nodeType)
 	}
-	if cfg.WorkspaceEnabled && (cfg.WorkspacePackID == nil || *cfg.WorkspacePackID <= 0) {
-		return fmt.Errorf("%w: %s workspace_pack_id is required when workspace is enabled", agenterrors.ErrInvalidInput, nodeType)
-	}
 	for _, risk := range cfg.RequireApprovalForRisk {
 		normalized := strings.TrimSpace(risk)
 		if normalized != "" && normalized != toolruntime.RiskLow && normalized != toolruntime.RiskMedium && normalized != toolruntime.RiskHigh {
@@ -523,23 +509,7 @@ func (n AgentNode) runAgent(
 	if semanticProvider != nil {
 		embeddingProviderID, embeddingModel = semanticProvider.ProviderID, semanticProvider.EmbeddingModel
 	}
-	workspaceExecution, err := n.acquireWorkspaceExecution(ctx, rc.OwnerID, rc.RunID, cfg)
-	if err != nil {
-		return nil, err
-	}
-	keepWorkspace := false
-	if workspaceExecution != nil {
-		defer func() {
-			if keepWorkspace {
-				workspaceExecution.Suspend()
-				return
-			}
-			releaseContext, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-			_ = workspaceExecution.Release(releaseContext)
-		}()
-	}
-	tools, err := n.loadTools(ctx, rc.OwnerID, cfg, semanticProvider, workspaceExecution)
+	tools, err := n.loadTools(ctx, rc.OwnerID, cfg, semanticProvider)
 	if err != nil {
 		return nil, err
 	}
@@ -549,40 +519,48 @@ func (n AgentNode) runAgent(
 		return nil, fmt.Errorf("%w: %s task is required", agenterrors.ErrInvalidInput, nodeType)
 	}
 	recallTask := task
-	if planner, ok := n.Retriever.(queryUnderstandingPlanner); ok {
-		turns := queryTurnsFromConversation(ctx, n.MessageHistory, rc)
-		rewriteProviderID := loaded.ProviderID
-		if strings.TrimSpace(cfg.RetrievalPolicy.QueryRewriteMode) == "disabled" {
-			rewriteProviderID = 0
-		}
-		queryPlan, planErr := planner.PlanQuery(ctx, retrieval.RetrievalRequest{
-			OwnerID:           rc.OwnerID,
-			Query:             task,
-			Conversation:      turns,
-			RewriteProviderID: rewriteProviderID,
-			RewriteModel:      loaded.Model,
-		})
-		if planErr == nil {
-			if queryPlan.NeedsClarification {
-				question := strings.TrimSpace(queryPlan.ClarificationQuestion)
-				if question == "" {
-					question = "请明确你指的是哪个产品、服务或对象。"
-				}
-				emitRuntimeEvent(ctx, rc, runtimeevent.Event{Type: runtimeevent.ClarificationRequired, RunID: rc.RunID, NodeID: rc.CurrentNodeID, NodeType: nodeType,
-					Payload: map[string]any{"question": question, "unresolved_references": queryPlan.UnresolvedReferences}})
-				return engine.NodeOutput{"content": question, "final_answer": question, "stop_reason": runtimeagent.StopReasonClarification, "clarification": map[string]any{"required": true, "question": question, "unresolved_references": queryPlan.UnresolvedReferences}}, nil
+	if resume == nil {
+		if planner, ok := n.Retriever.(queryUnderstandingPlanner); ok {
+			turns := queryTurnsFromConversation(ctx, n.MessageHistory, rc)
+			rewriteProviderID := loaded.ProviderID
+			if strings.TrimSpace(cfg.RetrievalPolicy.QueryRewriteMode) == "disabled" {
+				rewriteProviderID = 0
 			}
-			if strings.TrimSpace(queryPlan.PreciseQuery) != "" {
-				recallTask = queryPlan.PreciseQuery
+			queryPlan, planErr := planner.PlanQuery(ctx, retrieval.RetrievalRequest{
+				OwnerID:           rc.OwnerID,
+				Query:             task,
+				Conversation:      turns,
+				RewriteProviderID: rewriteProviderID,
+				RewriteModel:      loaded.Model,
+			})
+			if planErr == nil {
+				if queryPlan.NeedsClarification {
+					question := strings.TrimSpace(queryPlan.ClarificationQuestion)
+					if question == "" {
+						question = "请明确你指的是哪个产品、服务或对象。"
+					}
+					emitRuntimeEvent(ctx, rc, runtimeevent.Event{Type: runtimeevent.ClarificationRequired, RunID: rc.RunID, NodeID: rc.CurrentNodeID, NodeType: nodeType,
+						Payload: map[string]any{"question": question, "unresolved_references": queryPlan.UnresolvedReferences}})
+					return engine.NodeOutput{"content": question, "final_answer": question, "stop_reason": runtimeagent.StopReasonClarification, "clarification": map[string]any{"required": true, "question": question, "unresolved_references": queryPlan.UnresolvedReferences}}, nil
+				}
+				if strings.TrimSpace(queryPlan.PreciseQuery) != "" {
+					recallTask = queryPlan.PreciseQuery
+				}
 			}
 		}
 	}
 	systemPrompt := cfg.SystemPrompt
 	mode := agentMode(cfg.Mode)
 	// Conversation blocks provide context; they do not track plan progress.
-	conversationBlocks := buildConversationContext(ctx, n, rc, recallTask, cfg.MaxInputChars, cfg.RetrievalPolicy)
-	tools = n.semanticShortlistTools(ctx, semanticProvider, recallTask, tools)
-	skillBlocks := n.buildSkillContextBlocks(ctx, rc.OwnerID, cfg, semanticProvider, recallTask)
+	conversationBlocks := []runtimeagent.ContextBlock(nil)
+	if resume == nil {
+		conversationBlocks = buildConversationContext(ctx, n, rc, recallTask, cfg.MaxInputChars, cfg.RetrievalPolicy)
+		tools = n.semanticShortlistTools(ctx, semanticProvider, recallTask, tools)
+	}
+	skillBlocks := []runtimeagent.ContextBlock(nil)
+	if resume == nil {
+		skillBlocks = n.buildSkillContextBlocks(ctx, rc.OwnerID, cfg, semanticProvider, recallTask)
+	}
 	var ruleErr error
 	cfg.Rules, ruleErr = rules.RuntimeRules(cfg.Rules, cfg.RuleSetID == 0)
 	if ruleErr != nil {
@@ -596,8 +574,10 @@ func (n AgentNode) runAgent(
 	contextBlocks = append(contextBlocks, cfg.AdditionalContextBlocks...)
 	// // ***
 	contextBlocks = append(contextBlocks, conversationBlocks...)
-	if memoryBlock := n.buildAutomaticMemoryBlock(ctx, rc, cfg, semanticProvider, recallTask); memoryBlock != nil {
-		contextBlocks = append(contextBlocks, *memoryBlock)
+	if resume == nil {
+		if memoryBlock := n.buildAutomaticMemoryBlock(ctx, rc, cfg, semanticProvider, recallTask); memoryBlock != nil {
+			contextBlocks = append(contextBlocks, *memoryBlock)
+		}
 	}
 	reflectionPolicy, policyErr := effectiveReflectionPolicy(cfg)
 	if policyErr != nil {
@@ -629,7 +609,9 @@ func (n AgentNode) runAgent(
 			})
 		}
 	}
-	contextBlocks = n.injectWorkingMemory(ctx, rc, contextBlocks)
+	if resume == nil {
+		contextBlocks = n.injectWorkingMemory(ctx, rc, contextBlocks)
+	}
 	var plan *runtimeagent.Plan
 	// Generate an initial plan only for a new plan-and-execute run.
 	if resume == nil && mode == "plan_execute" && task != "" {
@@ -794,7 +776,6 @@ func (n AgentNode) runAgent(
 	result, err := runner.Run(ctx, runRequest)
 	n.persistAgentCompactions(ctx, rc, loaded, result)
 	if result != nil && (result.StopReason == runtimeagent.StopReasonWaitingHuman || result.StopReason == runtimeagent.StopReasonPaused) {
-		keepWorkspace = true
 	}
 	if result != nil {
 		eventType := runtimeevent.AgentFinished
@@ -1498,33 +1479,9 @@ func agentStepRecord(step runtimeagent.RunStep, nodeID string) engine.AgentStepR
 	}
 }
 
-func (n AgentNode) loadTools(ctx context.Context, ownerID int64, cfg agentRuntimeConfig, provider *LoadedProvider, workspaceExecutions ...*toolruntime.WorkspaceExecution) ([]toolruntime.RuntimeTool, error) {
-	var workspaceExecution *toolruntime.WorkspaceExecution
-	if len(workspaceExecutions) > 0 {
-		workspaceExecution = workspaceExecutions[0]
-	}
+func (n AgentNode) loadTools(ctx context.Context, ownerID int64, cfg agentRuntimeConfig, provider *LoadedProvider) ([]toolruntime.RuntimeTool, error) {
 	tools := make([]toolruntime.RuntimeTool, 0, len(cfg.ToolIDs)+2)
 	tools = append(tools, toolruntime.HumanApprovalTool{})
-	if cfg.WorkspaceEnabled {
-		if cfg.WorkspacePackID == nil || *cfg.WorkspacePackID <= 0 {
-			return nil, fmt.Errorf("agent_runtime workspace_pack_id is required")
-		}
-		if n.Workspaces == nil {
-			return nil, fmt.Errorf("agent_runtime workspace repository is not configured")
-		}
-		pack, err := n.Workspaces.FindPack(ctx, ownerID, *cfg.WorkspacePackID)
-		if err != nil || pack.Status != workspace.StatusActive || pack.DeletedAt != nil {
-			return nil, fmt.Errorf("agent_runtime workspace pack is unavailable")
-		}
-		workspaceItem, err := n.Workspaces.FindWorkspace(ctx, ownerID, pack.WorkspaceID)
-		if err != nil || workspaceItem.Status != workspace.StatusActive || workspaceItem.DeletedAt != nil {
-			return nil, fmt.Errorf("agent_runtime workspace is unavailable")
-		}
-		if workspaceExecution != nil && workspaceExecution.Workspace != nil {
-			workspaceItem = workspaceExecution.Workspace
-		}
-		tools = append(tools, toolruntime.NewWorkspaceTools(workspaceItem, pack, nil)...)
-	}
 	loadedSkills, err := n.loadSkillDefinitions(ctx, ownerID, cfg.SkillIDs)
 	if err != nil {
 		return nil, err
@@ -1534,7 +1491,7 @@ func (n AgentNode) loadTools(ctx context.Context, ownerID int64, cfg agentRuntim
 			Repository:      n.Skills,
 			Audits:          n.Audits,
 			AllowedSkillIDs: skillIDsFromItems(loadedSkills),
-			WorkspaceRoot:   n.WorkspaceRoot,
+			SkillRoot:       n.SkillRoot,
 			MaxContentBytes: cfg.MaxToolOutputBytes,
 		})
 		if strings.TrimSpace(cfg.SkillLoadingMode) == "search" || len(loadedSkills) > 10 {
@@ -1624,24 +1581,6 @@ func (n AgentNode) loadTools(ctx context.Context, ownerID int64, cfg agentRuntim
 		return nil, err
 	}
 	return append(tools, loaded...), nil
-}
-
-func (n AgentNode) acquireWorkspaceExecution(ctx context.Context, ownerID, runID int64, cfg agentRuntimeConfig) (*toolruntime.WorkspaceExecution, error) {
-	if !cfg.WorkspaceEnabled {
-		return nil, nil
-	}
-	if cfg.WorkspacePackID == nil || *cfg.WorkspacePackID <= 0 || n.Workspaces == nil || n.WorkspaceManager == nil {
-		return nil, fmt.Errorf("agent_runtime workspace manager is not configured")
-	}
-	pack, err := n.Workspaces.FindPack(ctx, ownerID, *cfg.WorkspacePackID)
-	if err != nil || pack.Status != workspace.StatusActive || pack.DeletedAt != nil {
-		return nil, fmt.Errorf("agent_runtime workspace pack is unavailable")
-	}
-	workspaceItem, err := n.Workspaces.FindWorkspace(ctx, ownerID, pack.WorkspaceID)
-	if err != nil || workspaceItem.Status != workspace.StatusActive || workspaceItem.DeletedAt != nil {
-		return nil, fmt.Errorf("agent_runtime workspace is unavailable")
-	}
-	return n.WorkspaceManager.Acquire(ctx, ownerID, runID, workspaceItem)
 }
 
 func (n AgentNode) loadSkillDefinitions(ctx context.Context, ownerID int64, ids []int64) ([]skill.Skill, error) {

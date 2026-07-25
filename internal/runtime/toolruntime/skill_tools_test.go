@@ -77,7 +77,7 @@ func TestSkillLoadToolReadsLocalPathSkill(t *testing.T) {
 	repo := &fakeSkillRepo{items: map[int64]*skill.Skill{
 		1: {ID: 1, OwnerID: 1, Name: "local", Description: "local skill", SourceType: skill.SourceLocalPath, BundlePath: dir, EntryFile: "SKILL.md", Status: skill.StatusActive},
 	}}
-	tool := SkillLoadTool{Repository: repo, AllowedSkillIDs: []int64{1}, WorkspaceRoot: dir, MaxContentBytes: 1024}
+	tool := SkillLoadTool{Repository: repo, AllowedSkillIDs: []int64{1}, SkillRoot: dir, MaxContentBytes: 1024}
 	result, err := tool.Execute(context.Background(), ToolRunContext{OwnerID: 1}, json.RawMessage(`{"skill_id":1}`))
 	if err != nil {
 		t.Fatal(err)

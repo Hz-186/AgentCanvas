@@ -70,8 +70,6 @@ type Definition struct {
 	ReservedOutputTokens      int             `json:"reserved_output_tokens,omitempty"`
 	ContextSafetyMarginTokens int             `json:"context_safety_margin_tokens,omitempty"`
 	MaxRuleTokens             int             `json:"max_rule_tokens,omitempty"`
-	WorkspaceEnabled          bool            `json:"workspace_enabled,omitempty"`
-	WorkspacePackID           *int64          `json:"workspace_pack_id,omitempty"`
 	PreTurnWorkflowID         *int64          `json:"pre_turn_workflow_id,omitempty"`
 	PreTurnWorkflowVersionID  *int64          `json:"pre_turn_workflow_version_id,omitempty"`
 	PostTurnWorkflowID        *int64          `json:"post_turn_workflow_id,omitempty"`
@@ -164,9 +162,6 @@ func (d Definition) Validate() error {
 	}
 	if d.MaxInputChars < 0 || d.MaxInputTokens < 0 || d.ContextWindowTokens < 0 || d.ReservedOutputTokens < 0 || d.ContextSafetyMarginTokens < 0 || d.MaxRuleTokens < 0 {
 		return fmt.Errorf("context limits must not be negative")
-	}
-	if d.WorkspaceEnabled && d.WorkspacePackID == nil {
-		return fmt.Errorf("workspace_pack_id is required when workspace is enabled")
 	}
 	if (d.PreTurnWorkflowID == nil) != (d.PreTurnWorkflowVersionID == nil) {
 		return fmt.Errorf("pre_turn_workflow_id and pre_turn_workflow_version_id must be configured together")

@@ -32,7 +32,6 @@ type RouterDeps struct {
 	DialogHandler     *handler.DialogHandler
 	ChatHandler       *handler.ChatHandler
 	AgentHandler      *handler.AgentHandler
-	WorkspaceHandler  *handler.WorkspaceHandler
 	WorkflowHandler   *handler.WorkflowHandler
 	ResourceHandler   *handler.ResourceHandler
 	AuthService       *authusecase.Service
@@ -96,14 +95,6 @@ func NewRouter(deps RouterDeps) *gin.Engine {
 			protected.POST("/agent-change-proposals/:id/approve", deps.AgentHandler.ApproveChangeProposal)
 			protected.POST("/agent-change-proposals/:id/reject", deps.AgentHandler.RejectChangeProposal)
 			protected.GET("/runs/:id/events/stream", deps.AgentHandler.StreamRunEvents)
-			protected.POST("/workspaces", deps.WorkspaceHandler.Create)
-			protected.GET("/workspaces", deps.WorkspaceHandler.List)
-			protected.GET("/workspaces/:id", deps.WorkspaceHandler.Get)
-			protected.DELETE("/workspaces/:id", deps.WorkspaceHandler.Delete)
-			protected.POST("/workspaces/:id/packs", deps.WorkspaceHandler.CreatePack)
-			protected.GET("/workspaces/:id/packs", deps.WorkspaceHandler.ListPacks)
-			protected.GET("/workspace-packs/:id", deps.WorkspaceHandler.GetPack)
-			protected.DELETE("/workspace-packs/:id", deps.WorkspaceHandler.DeletePack)
 
 			protected.GET("/provider-catalog", deps.ProviderHandler.ListCatalog)
 			registerCRUD(protected, "/model-providers", ":id", deps.ProviderHandler.Create, deps.ProviderHandler.List, deps.ProviderHandler.Get, deps.ProviderHandler.Update, deps.ProviderHandler.Delete)

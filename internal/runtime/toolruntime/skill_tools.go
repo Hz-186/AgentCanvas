@@ -19,7 +19,7 @@ type SkillLoadTool struct {
 	Repository      skill.Repository
 	Audits          audit.Repository
 	AllowedSkillIDs []int64
-	WorkspaceRoot   string
+	SkillRoot       string
 	MaxContentBytes int
 }
 
@@ -63,7 +63,7 @@ func (t SkillLoadTool) Execute(ctx context.Context, rc ToolRunContext, input jso
 	if item.Status != skill.StatusActive || item.DeletedAt != nil {
 		return &ToolResult{ContentText: "skill is not active", IsError: true}, fmt.Errorf("%w: skill is not active", agenterrors.ErrInvalidInput)
 	}
-	content, err := loadSkillContentFromItem(t.WorkspaceRoot, item)
+	content, err := loadSkillContentFromItem(t.SkillRoot, item)
 	if err != nil {
 		return &ToolResult{ContentText: err.Error(), IsError: true}, err
 	}
@@ -202,7 +202,7 @@ func loadSkillContentFromItem(workspaceRoot string, item *skill.Skill) (string, 
 		return "", err
 	}
 	if bundlePath != root && !strings.HasPrefix(bundlePath, root+string(os.PathSeparator)) {
-		return "", fmt.Errorf("%w: bundle_path must stay within the workspace", agenterrors.ErrInvalidInput)
+		return "", fmt.Errorf("%w: bundle_path must stay within the skill root", agenterrors.ErrInvalidInput)
 	}
 	entryFile := strings.TrimSpace(item.EntryFile)
 	if entryFile == "" {

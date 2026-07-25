@@ -149,9 +149,21 @@ func (r *Runner) compactRuntimeTranscript(ctx context.Context, req RunRequest, b
 	if measured < limit {
 		return transcript, llm.Usage{}, nil
 	}
+	var previousSummary *llm.ChatMessage
+	if len(exchanges) > 0 && isRuntimeSummaryExchange(exchanges[0]) {
+		previousSummary = &exchanges[0].messages[0]
+		exchanges = exchanges[1:]
+		if len(exchanges) <= defaultCompactKeepRecent {
+			return transcript, llm.Usage{}, nil
+		}
+	}
 	older := exchanges[:len(exchanges)-defaultCompactKeepRecent]
 	payload := make([]llm.ChatMessage, 0)
 	removedTokens := 0
+	if previousSummary != nil {
+		payload = append(payload, *previousSummary)
+		removedTokens += modelMessagesTokens(req, []llm.ChatMessage{*previousSummary})
+	}
 	for _, exchange := range older {
 		payload = append(payload, exchange.messages...)
 		removedTokens += modelMessagesTokens(req, exchange.messages)
@@ -189,6 +201,11 @@ func (r *Runner) compactRuntimeTranscript(ctx context.Context, req RunRequest, b
 	trace.SavedTokens = maxInt(0, measured-after)
 	trace.Summary = summary
 	return result, usage, trace
+}
+
+func isRuntimeSummaryExchange(exchange transcriptExchange) bool {
+	return len(exchange.messages) == 1 && exchange.messages[0].Role == conversation.RoleSystem &&
+		strings.HasPrefix(strings.TrimSpace(exchange.messages[0].Content), "EARLIER RUNTIME SUMMARY:")
 }
 
 func (r *Runner) summarizeContext(ctx context.Context, req RunRequest, messages []llm.ChatMessage) (string, llm.Usage, error) {

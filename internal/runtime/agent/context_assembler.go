@@ -6,7 +6,6 @@ import (
 
 	"agentcanvas/internal/domain/conversation"
 	"agentcanvas/internal/infrastructure/llm"
-	"agentcanvas/internal/runtime/contextcompress"
 )
 
 const defaultMaxInputChars = 24000
@@ -42,11 +41,15 @@ func (a ContextAssembler) Build(req RunRequest) ([]llm.ChatMessage, ContextTrace
 		Strategy:       "token_budget:pinned_recent_summary_dedupe",
 	}
 	blocks := make([]ContextBlock, 0, len(req.ContextBlocks)+2)
-	if strings.TrimSpace(req.SystemPrompt) != "" {
+	systemPrompt := req.SystemPrompt
+	if req.EnforceContextPrecedence && hasAdvisoryContext(req.ContextBlocks) && strings.TrimSpace(systemPrompt) != "" {
+		systemPrompt += "\n\n" + contextPrecedenceInstruction
+	}
+	if strings.TrimSpace(systemPrompt) != "" {
 		blocks = append(blocks, ContextBlock{
 			Name:    "system",
 			Role:    conversation.RoleSystem,
-			Content: req.SystemPrompt,
+			Content: systemPrompt,
 			Pinned:  true,
 		})
 	}
@@ -67,6 +70,12 @@ func (a ContextAssembler) Build(req RunRequest) ([]llm.ChatMessage, ContextTrace
 				Pinned:  true,
 			})
 		}
+	}
+	if req.EnforceContextPrecedence && hasAdvisoryContext(req.ContextBlocks) && strings.TrimSpace(systemPrompt) == "" {
+		blocks = append(blocks, ContextBlock{
+			Name: "context_precedence", Role: conversation.RoleSystem, Pinned: true,
+			Content: contextPrecedenceInstruction,
+		})
 	}
 	contextBlocks, preTrace := compressContextBlocks(req.ContextBlocks)
 	for _, blockTrace := range preTrace {
@@ -193,6 +202,20 @@ func (a ContextAssembler) Build(req RunRequest) ([]llm.ChatMessage, ContextTrace
 	return messages, trace
 }
 
+const contextPrecedenceInstruction = "Context precedence: the current user request and the latest conversation messages are authoritative. Conversation snapshots, working memory, retrieved memories, and search results are advisory and may be stale or contradictory. When they conflict, follow the latest explicit user instruction and state uncertainty instead of silently merging incompatible facts."
+
+func hasAdvisoryContext(blocks []ContextBlock) bool {
+	for _, block := range blocks {
+		switch tokenAuditCategory(block.Name) {
+		case "history", "working_memory", "memory", "retrieval", "reflection_memory":
+			if strings.TrimSpace(block.Content) != "" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func isMandatoryRuleBlock(name string) bool {
 	return tokenAuditCategory(name) == "rules_mandatory"
 }
@@ -234,79 +257,37 @@ func truncateRunes(content string, maxBytes int) string {
 }
 
 func compressContextBlocks(blocks []ContextBlock) ([]ContextBlock, []ContextBlockTrace) {
-	blocks, historyTrace := summarizeHistoryBlocks(blocks, 4)
-	blocks, dedupeTrace := dedupeRetrievalBlocks(blocks)
-	return blocks, append(historyTrace, dedupeTrace...)
+	return dedupeContextBlocks(blocks)
 }
 
-func summarizeHistoryBlocks(blocks []ContextBlock, keepRecent int) ([]ContextBlock, []ContextBlockTrace) {
-	historyIndexes := make([]int, 0)
-	for i, block := range blocks {
-		if block.Pinned || tokenAuditCategory(block.Name) != "history" || strings.TrimSpace(block.Content) == "" {
+// Context sources are intentionally layered: current conversation history is
+// authoritative, while memory and working-memory blocks are advisory. Exact
+// duplicates must be removed before token budgeting so a snapshot plus its
+// live tail cannot occupy the window twice.
+func dedupeContextBlocks(blocks []ContextBlock) ([]ContextBlock, []ContextBlockTrace) {
+	seen := map[string]bool{}
+	result := make([]ContextBlock, 0, len(blocks))
+	trace := make([]ContextBlockTrace, 0)
+	for _, block := range blocks {
+		content := strings.TrimSpace(block.Content)
+		category := tokenAuditCategory(block.Name)
+		if content == "" || (category != "retrieval" && category != "history" && category != "working_memory" && category != "memory") {
+			result = append(result, block)
 			continue
 		}
-		historyIndexes = append(historyIndexes, i)
-	}
-	if len(historyIndexes) <= keepRecent {
-		return blocks, nil
-	}
-	summarizedCount := len(historyIndexes) - keepRecent
-	candidateIndexes := historyIndexes[:summarizedCount]
-	items := make([]contextcompress.Item, 0, len(candidateIndexes))
-	originalTokens := 0
-	for turn, index := range candidateIndexes {
-		content := strings.TrimSpace(blocks[index].Content)
-		originalTokens += estimateContextTokens(content)
-		items = append(items, contextcompress.Item{
-			ID:      index,
-			Content: content,
-			Tokens:  estimateContextTokens(content),
-			Turn:    turn + 1,
-		})
-	}
-	compressionBudget := originalTokens / 3
-	if compressionBudget < 1 {
-		compressionBudget = 1
-	}
-	compressOpts := contextcompress.DefaultOptions()
-	compressOpts.Budget = compressionBudget
-	compressOpts.SummaryBudget = compressionBudget
-	compression := contextcompress.Compress(items, compressOpts)
-	selected := make(map[int]bool, len(compression.Kept))
-	for _, item := range compression.Kept {
-		selected[item.Item.ID] = true
-	}
-	summarized := make(map[int]bool, summarizedCount)
-	summarizedTokens := 0
-	for _, index := range candidateIndexes {
-		if selected[index] {
-			continue
-		}
-		content := strings.TrimSpace(blocks[index].Content)
-		summarized[index] = true
-		summarizedTokens += estimateContextTokens(content)
-	}
-	if compression.Summary == "" || len(summarized) == 0 {
-		return blocks, nil
-	}
-	summary := compression.Summary
-	result := make([]ContextBlock, 0, len(blocks)-summarizedCount+1)
-	inserted := false
-	for i, block := range blocks {
-		if summarized[i] {
-			if !inserted {
-				result = append(result, ContextBlock{Name: "history_summary", Role: conversation.RoleSystem, Content: summary})
-				inserted = true
+		key := category + "\x1f" + strings.ToLower(strings.Join(strings.Fields(content), " "))
+		if seen[key] {
+			name := block.Name
+			if name == "" {
+				name = block.Role
 			}
+			trace = append(trace, ContextBlockTrace{Name: name, Role: block.Role, OriginalChars: len(content), SavedTokens: estimateContextTokens(content), Status: "omitted"})
 			continue
 		}
+		seen[key] = true
 		result = append(result, block)
 	}
-	savedTokens := summarizedTokens - estimateContextTokens(summary)
-	if savedTokens < 0 {
-		savedTokens = 0
-	}
-	return result, []ContextBlockTrace{{Name: "history_summary", Role: conversation.RoleSystem, OriginalChars: summarizedTokens * 4, IncludedChars: len(summary), EstimatedTokens: estimateContextTokens(summary), SavedTokens: savedTokens, Status: "compressed"}}
+	return result, trace
 }
 
 func dedupeRetrievalBlocks(blocks []ContextBlock) ([]ContextBlock, []ContextBlockTrace) {
@@ -426,8 +407,6 @@ func modeInstruction(req RunRequest) string {
 		return "Use a plan-and-execute approach: first outline a concise private execution plan in the response context, then call tools or answer step by step. If a step fails, revise the plan and continue within budget."
 	case "reflect":
 		return "Use reflection: after each tool result or draft answer, verify correctness, schema compliance, and missing evidence before finalizing."
-	case "supervisor":
-		return "Act as a supervisor Agent: delegate only to allowed specialist agents when useful, inspect their results, and keep responsibility for the final answer."
 	default:
 		return ""
 	}

@@ -108,7 +108,14 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 	}
 
 	// // ***
-	compactedBlocks, compactionUsage, initialCompaction := r.compactInitialHistory(ctx, req, tools)
+	var compactedBlocks []ContextBlock
+	var compactionUsage llm.Usage
+	var initialCompaction *CompactionTrace
+	if len(req.ResumeMessages) == 0 {
+		compactedBlocks, compactionUsage, initialCompaction = r.compactInitialHistory(ctx, req, tools)
+	} else {
+		compactedBlocks = append([]ContextBlock(nil), req.ContextBlocks...)
+	}
 	// // ***
 	req.ContextBlocks = compactedBlocks
 	result.Usage = addUsage(result.Usage, compactionUsage)
