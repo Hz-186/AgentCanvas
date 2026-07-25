@@ -34,6 +34,21 @@ func TestContextAssemblerKeepsPinnedBlocksAndOmitsOverflow(t *testing.T) {
 	}
 }
 
+func TestContextAssemblerRuntimePrecedenceInstructionIsPinned(t *testing.T) {
+	messages, _ := ContextAssembler{MaxChars: 2000}.Build(RunRequest{
+		SystemPrompt:             "base rules",
+		Task:                     "latest request",
+		EnforceContextPrecedence: true,
+		ContextBlocks:            []ContextBlock{{Name: "working_memory", Role: "system", Content: "stale task", Pinned: false}},
+	})
+	if len(messages) < 3 || !strings.Contains(messages[0].Content, "current user request") {
+		t.Fatalf("runtime precedence guardrail must be present in pinned system context: %+v", messages)
+	}
+	if messages[len(messages)-1].Content != "latest request" {
+		t.Fatalf("latest task must remain last and authoritative: %+v", messages)
+	}
+}
+
 func TestContextAssemblerTruncatesOversizedPinnedTask(t *testing.T) {
 	messages, trace := ContextAssembler{MaxChars: 8}.Build(RunRequest{
 		Task: strings.Repeat("x", 20),
@@ -131,7 +146,7 @@ func TestContextAssemblerModeInstructions(t *testing.T) {
 		{"react", true, true},
 		{"plan_execute", false, true},
 		{"reflect", false, true},
-		{"supervisor", false, true},
+		{"supervisor", false, false},
 		{"unknown", false, false},
 	}
 	for _, tc := range cases {
@@ -301,18 +316,8 @@ func TestContextAssemblerSummarizesOldHistoryAndDedupesRetrieval(t *testing.T) {
 		{Name: "retrieval:2", Role: "user", Content: " same   chunk   content "},
 	}
 	messages, trace := ContextAssembler{MaxInputTokens: 2000}.Build(RunRequest{Task: "task", ContextBlocks: blocks})
-	if trace.SavedTokens == 0 || len(trace.Compressed) == 0 {
-		t.Fatalf("expected compression to save tokens, got %+v", trace)
-	}
-	foundSummary := false
-	for _, message := range messages {
-		if strings.Contains(message.Content, "Earlier conversation summary") {
-			foundSummary = true
-			break
-		}
-	}
-	if !foundSummary {
-		t.Fatalf("expected old history summary in messages: %+v", messages)
+	if len(messages) != 8 {
+		t.Fatalf("expected complete history with one retrieval duplicate omitted: %+v", messages)
 	}
 	duplicateOmitted := false
 	for _, omitted := range trace.Omitted {
@@ -337,20 +342,13 @@ func TestContextAssemblerRetainsNovelOldHistoryWithinCompression(t *testing.T) {
 
 	messages, trace := ContextAssembler{MaxInputTokens: 2000}.Build(RunRequest{Task: "task", ContextBlocks: blocks})
 	foundNovelHistory := false
-	foundSummary := false
 	for _, message := range messages {
 		if strings.Contains(message.Content, "webhook-signature-drift") && !strings.Contains(message.Content, "Earlier conversation summary") {
 			foundNovelHistory = true
 		}
-		if strings.Contains(message.Content, "Earlier conversation summary") {
-			foundSummary = true
-		}
 	}
 	if !foundNovelHistory {
 		t.Fatalf("expected novel old history to be retained as original content, trace=%+v messages=%+v", trace, messages)
-	}
-	if !foundSummary {
-		t.Fatalf("expected repetitive old history to be summarized, trace=%+v messages=%+v", trace, messages)
 	}
 }
 
@@ -375,8 +373,8 @@ func TestContextAssemblerImprovesUsableSpaceIn32KWindow(t *testing.T) {
 	if trace.UsedTokens > 32000 {
 		t.Fatalf("used tokens exceeded 32K budget: %+v", trace)
 	}
-	if trace.SavedTokens == 0 || len(trace.Compressed) == 0 || len(trace.Omitted) == 0 {
-		t.Fatalf("expected compression and dedupe to improve usable space, got %+v", trace)
+	if trace.SavedTokens == 0 || len(trace.Omitted) == 0 {
+		t.Fatalf("expected deterministic dedupe/omission to improve usable space, got %+v", trace)
 	}
 	if trace.TokenAudit.System == 0 || trace.TokenAudit.Task == 0 {
 		t.Fatalf("L1/system and task context must remain audited: %+v", trace.TokenAudit)

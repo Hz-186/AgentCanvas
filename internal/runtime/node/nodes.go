@@ -14,7 +14,6 @@ import (
 	"agentcanvas/internal/domain/skill"
 	"agentcanvas/internal/domain/tool"
 	"agentcanvas/internal/domain/workflow"
-	"agentcanvas/internal/domain/workspace"
 	"agentcanvas/internal/infrastructure/llm"
 	"agentcanvas/internal/infrastructure/vectorstore"
 	"agentcanvas/internal/runtime/engine"
@@ -81,7 +80,6 @@ type Deps struct {
 	RuleSets                ActiveRuleSetLoader
 	Reflections             reflection.Advisor
 	Teams                   workflow.TeamRepository
-	Workspaces              workspace.Repository
 	Sandbox                 sandbox.Runner
 	ArchivalVecStore        vectorstore.Store
 	ContextIndex            contextresource.Index
@@ -128,10 +126,6 @@ func DefaultNodes(deps Deps) ([]engine.Node, error) {
 
 func buildAgentNode(deps Deps) AgentNode {
 	workspaceRoot, _ := os.Getwd()
-	var workspaceManager *toolruntime.WorkspaceManager
-	if deps.Workspaces != nil {
-		workspaceManager = toolruntime.NewWorkspaceManager(deps.Workspaces)
-	}
 	return AgentNode{
 		LLM:               deps.ToolCalling,
 		Providers:         deps.Providers,
@@ -152,8 +146,6 @@ func buildAgentNode(deps Deps) AgentNode {
 		Profiles:          deps.Profiles,
 		RuleSets:          deps.RuleSets,
 		Reflections:       deps.Reflections,
-		Workspaces:        deps.Workspaces,
-		WorkspaceManager:  workspaceManager,
 		Sandbox:           deps.Sandbox,
 		MessageHistory:    deps.MessageHistory,
 		Compactions:       deps.Compactions,
@@ -161,7 +153,7 @@ func buildAgentNode(deps Deps) AgentNode {
 		ArchivalVecStore:  deps.ArchivalVecStore,
 		ContextIndex:      deps.ContextIndex,
 		Embedder:          deps.Embedder,
-		WorkspaceRoot:     workspaceRoot,
+		SkillRoot:         workspaceRoot,
 		OnExtractTrigger:  deps.MemoryExtractionTrigger,
 	}
 }

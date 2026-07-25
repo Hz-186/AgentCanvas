@@ -41,56 +41,61 @@ const (
 )
 
 type RunRequest struct {
-	OwnerID                         int64
-	WorkflowID                      int64
-	AgentID                         int64
-	AgentReleaseID                  int64
-	RunID                           int64
-	NodeID                          string
-	CallDepth                       int
-	WorkflowCallChain               []int64
-	ConversationID                  *int64
-	Provider                        llm.ChatProviderConfig
-	Model                           string
-	Mode                            string
-	Plan                            *Plan
-	SystemPrompt                    string
-	Task                            string
-	ReflectionEnabled               bool
-	ReflectionPolicy                reflection.Policy
-	RecalledReflectionIDs           []int64
-	Temperature                     *float64
-	MaxIterations                   int
-	MaxToolCalls                    int
-	MaxExecutionTimeMS              int
-	MaxParallelTools                int
-	MaxInputChars                   int
-	MaxInputTokens                  int
-	ContextWindowTokens             int
-	ReservedOutputTokens            int
-	ContextSafetyMarginTokens       int
-	ModelAutoCompactTokenLimit      int
-	ModelAutoCompactTokenLimitScope string
-	CompactPrompt                   string
-	MaxRuleTokens                   int
-	RuleTags                        []string
-	RuleRiskLevel                   string
-	RuleSetVersion                  string
-	RuleSetID                       int64
-	RuleSetHash                     string
-	Rules                           []rules.Rule
-	RuleTrace                       rules.Trace
-	ContextBlocks                   []ContextBlock
-	ToolPolicy                      ToolPolicy
-	ToolHookChain                   hooks.ToolHookChain
-	Tools                           []toolruntime.RuntimeTool
-	ResumeMessages                  []llm.ChatMessage
-	ResumeBaseMessages              []llm.ChatMessage
-	ResumeTranscript                []llm.ChatMessage
-	ResumeSteps                     []RunStep
-	ResumeIteration                 int
-	ResumeToolCalls                 int
-	ResumeApprovedToolCallIDs       []string
+	OwnerID           int64
+	WorkflowID        int64
+	AgentID           int64
+	AgentReleaseID    int64
+	RunID             int64
+	NodeID            string
+	CallDepth         int
+	WorkflowCallChain []int64
+	ConversationID    *int64
+	Provider          llm.ChatProviderConfig
+	Model             string
+	Mode              string
+	Plan              *Plan
+	SystemPrompt      string
+	Task              string
+	// EnforceContextPrecedence adds the runtime guardrail that treats the
+	// latest user request/transcript as authoritative over advisory memory.
+	// It is enabled by the workflow-independent Runtime; low-level assembler
+	// callers may leave it disabled for backwards-compatible composition.
+	EnforceContextPrecedence   bool
+	ReflectionEnabled          bool
+	ReflectionPolicy           reflection.Policy
+	RecalledReflectionIDs      []int64
+	Temperature                *float64
+	MaxIterations              int
+	MaxToolCalls               int
+	MaxExecutionTimeMS         int
+	MaxParallelTools           int
+	MaxInputChars              int
+	MaxInputTokens             int
+	ContextWindowTokens        int
+	ReservedOutputTokens       int
+	ContextSafetyMarginTokens  int
+	ModelAutoCompactTokenLimit int
+	CompactPrompt              string
+	MaxRuleTokens              int
+	RuleTags                   []string
+	RuleRiskLevel              string
+	RuleSetVersion             string
+	RuleSetID                  int64
+	RuleSetHash                string
+	Rules                      []rules.Rule
+	RuleTrace                  rules.Trace
+	ContextBlocks              []ContextBlock
+	ToolPolicy                 ToolPolicy
+	ToolHookChain              hooks.ToolHookChain
+	Tools                      []toolruntime.RuntimeTool
+	ResumeMessages             []llm.ChatMessage
+	ResumeBaseMessages         []llm.ChatMessage
+	ResumeTranscript           []llm.ChatMessage
+	ResumeSteps                []RunStep
+	ResumeContext              ContextTrace
+	ResumeIteration            int
+	ResumeToolCalls            int
+	ResumeApprovedToolCallIDs  []string
 }
 
 type RunResult struct {
@@ -156,11 +161,24 @@ type RunStep struct {
 type ToolPolicy = hooks.ToolPolicy
 
 type Approval struct {
-	ToolCallID string                   `json:"tool_call_id"`
-	ToolName   string                   `json:"tool_name"`
-	RiskLevel  string                   `json:"risk_level"`
-	Reason     string                   `json:"reason"`
-	Metadata   toolruntime.ToolMetadata `json:"metadata"`
+	ToolCallID string                       `json:"tool_call_id"`
+	ToolName   string                       `json:"tool_name"`
+	RiskLevel  string                       `json:"risk_level"`
+	Reason     string                       `json:"reason"`
+	Metadata   toolruntime.ToolMetadata     `json:"metadata"`
+	Kind       string                       `json:"kind,omitempty"`
+	Title      string                       `json:"title,omitempty"`
+	Options    []toolruntime.ApprovalOption `json:"options,omitempty"`
+}
+
+// Interaction is the durable user decision boundary for a paused run.
+type Interaction struct {
+	ID         string                       `json:"id"`
+	Kind       string                       `json:"kind"`
+	Title      string                       `json:"title"`
+	Reason     string                       `json:"reason"`
+	Options    []toolruntime.ApprovalOption `json:"options,omitempty"`
+	ToolCallID string                       `json:"tool_call_id,omitempty"`
 }
 
 type Checkpoint struct {
@@ -182,6 +200,7 @@ type Checkpoint struct {
 	RuleSetID             int64             `json:"rule_set_id,omitempty"`
 	RuleSetHash           string            `json:"rule_set_hash,omitempty"`
 	Rules                 []rules.Rule      `json:"rules,omitempty"`
+	Interaction           *Interaction      `json:"interaction,omitempty"`
 }
 
 type ContextBlock struct {

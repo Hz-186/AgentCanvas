@@ -30,17 +30,14 @@ type Config struct {
 }
 
 type AgentRuntimeConfig struct {
-	WorkerEnabled           bool     `yaml:"worker_enabled"`
-	WorkerConcurrency       int      `yaml:"worker_concurrency"`
-	LeaseSeconds            int      `yaml:"lease_seconds"`
-	WorkspaceEnabled        bool     `yaml:"workspace_enabled"`
-	WorkspaceAllowedRoots   []string `yaml:"workspace_allowed_roots"`
-	WorkspaceDockerImage    string   `yaml:"workspace_docker_image"`
-	SelfImprovementEnabled  bool     `yaml:"self_improvement_enabled"`
-	MemoryReviewMode        string   `yaml:"memory_review_mode"`
-	ReviewWorkerConcurrency int      `yaml:"review_worker_concurrency"`
-	ReviewProviderID        int64    `yaml:"review_provider_id"`
-	ReviewModel             string   `yaml:"review_model"`
+	WorkerEnabled           bool   `yaml:"worker_enabled"`
+	WorkerConcurrency       int    `yaml:"worker_concurrency"`
+	LeaseSeconds            int    `yaml:"lease_seconds"`
+	SelfImprovementEnabled  bool   `yaml:"self_improvement_enabled"`
+	MemoryReviewMode        string `yaml:"memory_review_mode"`
+	ReviewWorkerConcurrency int    `yaml:"review_worker_concurrency"`
+	ReviewProviderID        int64  `yaml:"review_provider_id"`
+	ReviewModel             string `yaml:"review_model"`
 }
 
 type AppConfig struct {
@@ -371,9 +368,6 @@ func (c *Config) setDefaults() {
 	if c.AgentRuntime.LeaseSeconds == 0 {
 		c.AgentRuntime.LeaseSeconds = 30
 	}
-	if c.AgentRuntime.WorkspaceDockerImage == "" {
-		c.AgentRuntime.WorkspaceDockerImage = "agentcanvas/workspace:latest"
-	}
 	if c.AgentRuntime.MemoryReviewMode == "" {
 		c.AgentRuntime.MemoryReviewMode = "suggest"
 	}
@@ -469,9 +463,6 @@ func (c *Config) Validate() error {
 	}
 	if c.AgentRuntime.WorkerConcurrency <= 0 || c.AgentRuntime.WorkerConcurrency > 64 || c.AgentRuntime.LeaseSeconds < 10 {
 		return fmt.Errorf("agent_runtime worker concurrency or lease duration is invalid")
-	}
-	if c.AgentRuntime.WorkspaceEnabled && len(c.AgentRuntime.WorkspaceAllowedRoots) == 0 {
-		return fmt.Errorf("agent_runtime.workspace_allowed_roots is required when workspace is enabled")
 	}
 	if c.AgentRuntime.MemoryReviewMode != "off" && c.AgentRuntime.MemoryReviewMode != "suggest" && c.AgentRuntime.MemoryReviewMode != "auto" {
 		return fmt.Errorf("agent_runtime.memory_review_mode must be off, suggest, or auto")

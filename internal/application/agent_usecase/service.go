@@ -15,7 +15,6 @@ import (
 	agentdomain "agentcanvas/internal/domain/agent"
 	"agentcanvas/internal/domain/conversation"
 	"agentcanvas/internal/domain/workflow"
-	"agentcanvas/internal/domain/workspace"
 	"agentcanvas/internal/infrastructure/llm"
 	agenterrors "agentcanvas/internal/pkg/errors"
 	runtimeagent "agentcanvas/internal/runtime/agent"
@@ -35,7 +34,6 @@ type Service struct {
 	events        workflow.RunEventRepository
 	steps         workflow.RunStepRepository
 	approvals     workflow.ApprovalRepository
-	workspaces    workspace.Repository
 	improvement   TurnReviewEnqueuer
 	sessionSearch conversation.MessageSearchIndex
 	runtime       runtimenode.AgentRuntime
@@ -61,14 +59,9 @@ func NewService(
 	approvals workflow.ApprovalRepository,
 	lifecycle LifecycleWorkflowRuntime,
 	runtime runtimenode.AgentRuntime,
-	workspaceRepositories ...workspace.Repository,
 ) *Service {
-	var workspaceRepository workspace.Repository
-	if len(workspaceRepositories) > 0 {
-		workspaceRepository = workspaceRepositories[0]
-	}
 	return &Service{agents: agents, turns: turns, conversations: conversations, messages: messages, runs: runs,
-		events: events, steps: steps, approvals: approvals, workspaces: workspaceRepository, lifecycle: lifecycle, runtime: runtime, cancels: map[int64]context.CancelFunc{}, leaseDuration: 30 * time.Second}
+		events: events, steps: steps, approvals: approvals, lifecycle: lifecycle, runtime: runtime, cancels: map[int64]context.CancelFunc{}, leaseDuration: 30 * time.Second}
 }
 
 type CreateAgentRequest struct {
@@ -195,10 +188,6 @@ func (s *Service) ValidateAgent(ctx context.Context, ownerID, id int64) (*Valida
 			result.Errors = append(result.Errors, binding.event+": "+err.Error())
 		}
 	}
-	if _, err := s.validateWorkspaceDefinition(ctx, ownerID, item.DraftDefinition); err != nil {
-		result.Valid = false
-		result.Errors = append(result.Errors, err.Error())
-	}
 	result.Checksum = checksum
 	return result, nil
 }
@@ -226,22 +215,6 @@ func (s *Service) Publish(ctx context.Context, ownerID, id int64) (*agentdomain.
 	if err != nil {
 		return nil, err
 	}
-	workspacePack, err := s.validateWorkspaceDefinition(ctx, ownerID, item.DraftDefinition)
-	if err != nil {
-		return nil, fmt.Errorf("%w: %v", agenterrors.ErrInvalidInput, err)
-	}
-	if workspacePack != nil {
-		var snapshot map[string]any
-		if err := json.Unmarshal(resources, &snapshot); err != nil {
-			return nil, err
-		}
-		snapshot["workspace_pack_id"] = workspacePack.ID
-		snapshot["workspace_pack_checksum"] = workspacePack.Checksum
-		resources, err = json.Marshal(snapshot)
-		if err != nil {
-			return nil, err
-		}
-	}
 	release := &agentdomain.Release{OwnerID: ownerID, AgentID: id, VersionNo: version, Definition: item.DraftDefinition,
 		ResourceVersions: resources, RuleSetHash: ruleHash, ToolSchemaHash: toolHash, CreatedBy: ownerID}
 	if err := s.agents.CreateRelease(ctx, release); err != nil {
@@ -267,27 +240,6 @@ func validateDefinitionRules(definition agentdomain.Definition) error {
 	return nil
 }
 
-func (s *Service) validateWorkspaceDefinition(ctx context.Context, ownerID int64, definition agentdomain.Definition) (*workspace.Pack, error) {
-	if !definition.WorkspaceEnabled {
-		return nil, nil
-	}
-	if definition.WorkspacePackID == nil || *definition.WorkspacePackID <= 0 {
-		return nil, fmt.Errorf("workspace_pack_id is required when workspace is enabled")
-	}
-	if s.workspaces == nil {
-		return nil, fmt.Errorf("workspace runtime is not configured")
-	}
-	pack, err := s.workspaces.FindPack(ctx, ownerID, *definition.WorkspacePackID)
-	if err != nil || pack.Status != workspace.StatusActive || pack.DeletedAt != nil {
-		return nil, fmt.Errorf("workspace pack is unavailable")
-	}
-	workspaceItem, err := s.workspaces.FindWorkspace(ctx, ownerID, pack.WorkspaceID)
-	if err != nil || workspaceItem.Status != workspace.StatusActive || workspaceItem.DeletedAt != nil {
-		return nil, fmt.Errorf("workspace is unavailable")
-	}
-	return pack, nil
-}
-
 func (s *Service) ListReleases(ctx context.Context, ownerID, agentID int64) ([]agentdomain.Release, error) {
 	if _, err := s.GetAgent(ctx, ownerID, agentID); err != nil {
 		return nil, err
@@ -311,7 +263,7 @@ func (s *Service) Capabilities(ctx context.Context, ownerID, releaseID int64) (m
 		"tools": len(d.ToolIDs), "tool_packs": len(d.ToolPackIDs), "skills": len(d.SkillIDs),
 		"knowledge_bases": len(d.KnowledgeIDs), "mcp_servers": len(d.MCPServerIDs),
 		"callable_agents": len(d.CallableAgentIDs), "callable_workflows": len(d.CallableWorkflowIDs),
-		"memory": d.MemoryEnabled, "reflection": d.ReflectionEnabled, "workspace": d.WorkspaceEnabled,
+		"memory": d.MemoryEnabled, "reflection": d.ReflectionEnabled,
 	}, nil
 }
 

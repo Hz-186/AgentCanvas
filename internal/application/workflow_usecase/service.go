@@ -24,7 +24,6 @@ import (
 	"agentcanvas/internal/domain/skill"
 	"agentcanvas/internal/domain/tool"
 	"agentcanvas/internal/domain/workflow"
-	"agentcanvas/internal/domain/workspace"
 	cryptoinfra "agentcanvas/internal/infrastructure/crypto"
 	"agentcanvas/internal/infrastructure/llm"
 	queueinfra "agentcanvas/internal/infrastructure/queue"
@@ -69,7 +68,6 @@ type Service struct {
 	mcpServers        tool.MCPRepository
 	toolRegistry      toolruntime.Registry
 	toolInvocations   tool.InvocationRepository
-	workspaces        workspace.Repository
 	providers         providerdomain.Repository
 	conversations     conversation.Repository
 	messages          conversation.MessageRepository
@@ -165,7 +163,6 @@ func NewService(
 	compactions conversation.CompactionRepository,
 	secrets *cryptoinfra.SecretBox,
 	reflectionAdvisor reflection.Advisor,
-	workspaceRepositories ...workspace.Repository,
 ) (*Service, error) {
 	toolCalling, ok := llmClient.(llm.ToolCallingClient)
 	if !ok {
@@ -174,10 +171,6 @@ func NewService(
 	var registry toolruntime.Registry
 	if tools != nil {
 		registry = toolruntime.BasicRegistry{Tools: tools, Invocations: toolInvocations}
-	}
-	var workspaceRepository workspace.Repository
-	if len(workspaceRepositories) > 0 {
-		workspaceRepository = workspaceRepositories[0]
 	}
 	s := &Service{
 		workflows:        workflows,
@@ -201,7 +194,6 @@ func NewService(
 		mcpServers:       mcpServers,
 		toolRegistry:     registry,
 		toolInvocations:  toolInvocations,
-		workspaces:       workspaceRepository,
 		providers:        providers,
 		conversations:    conversations,
 		messages:         messages,
@@ -245,7 +237,6 @@ func NewService(
 		Reflections:             reflectionAdvisor,
 		Audits:                  audits,
 		Teams:                   teams,
-		Workspaces:              workspaceRepository,
 		Sandbox:                 sandbox.NewDockerRunner(),
 		ArchivalVecStore:        archivalVecStore,
 		ContextIndex:            contextIndex,

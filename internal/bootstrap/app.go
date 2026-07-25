@@ -22,7 +22,6 @@ import (
 	skillusecase "agentcanvas/internal/application/skill_usecase"
 	toolusecase "agentcanvas/internal/application/tool_usecase"
 	agentusecase "agentcanvas/internal/application/workflow_usecase"
-	workspaceusecase "agentcanvas/internal/application/workspace_usecase"
 	"agentcanvas/internal/domain/contextresource"
 	"agentcanvas/internal/domain/resource"
 	"agentcanvas/internal/infrastructure"
@@ -40,7 +39,6 @@ import (
 	httpserver "agentcanvas/internal/interface/http"
 	"agentcanvas/internal/interface/http/handler"
 	"agentcanvas/internal/pkg/config"
-	"agentcanvas/internal/runtime/toolruntime"
 
 	"github.com/gin-gonic/gin"
 )
@@ -118,7 +116,6 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 	agentRepo := mysqlinfra.NewAgentRepository(db)
 	agentTurnRepo := mysqlinfra.NewAgentTurnRepository(db)
 	agentImprovementRepo := mysqlinfra.NewAgentImprovementRepository(db)
-	workspaceRepo := mysqlinfra.NewWorkspaceRepository(db)
 	conversationRepo := mysqlinfra.NewConversationRepository(db)
 	messageRepo := mysqlinfra.NewMessageRepository(db)
 	compactionRepo := mysqlinfra.NewConversationCompactionRepository(db)
@@ -272,26 +269,6 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 	auditService := auditusecase.NewService(auditRepo)
 	memoryService := memoryusecase.NewServiceWithCacheAndRetriever(memoryRepo, memoryCache, memoryRetrievalStore)
 	toolService := toolusecase.NewService(toolDefinitionRepo)
-	workspaceService := workspaceusecase.NewService(workspaceRepo, cfg.AgentRuntime.WorkspaceEnabled, cfg.AgentRuntime.WorkspaceAllowedRoots, cfg.AgentRuntime.WorkspaceDockerImage)
-	if cfg.AgentRuntime.WorkspaceEnabled {
-		workspaceManager := toolruntime.NewWorkspaceManager(workspaceRepo)
-		go func() {
-			ticker := time.NewTicker(time.Minute)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case <-ticker.C:
-					cleanupContext, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-					if err := workspaceManager.CleanupExpired(cleanupContext, time.Now().UTC(), 100); err != nil {
-						log.Warn("cleanup expired workspace leases failed", "error", err)
-					}
-					cancel()
-				}
-			}
-		}()
-	}
 	workspaceRoot, _ := os.Getwd()
 	skillService := skillusecase.NewService(skillRepo, workspaceRoot)
 	knowledgeService := knowledgeusecase.NewService(
@@ -365,7 +342,6 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 		compactionRepo,
 		secretBox,
 		reflectionService,
-		workspaceRepo,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("init workflow service: %w", err)
@@ -374,7 +350,7 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 	workflowService.ConfigureMemoryReader(memoryService)
 	workflowService.ConfigureRuleSets(workflowRuleSetRepo)
 	independentAgentService := independentagentusecase.NewService(agentRepo, agentTurnRepo, conversationRepo, messageRepo,
-		runRepo, runEventRepo, runStepRepo, approvalRepo, workflowService, workflowService.AgentRuntime(), workspaceRepo)
+		runRepo, runEventRepo, runStepRepo, approvalRepo, workflowService, workflowService.AgentRuntime())
 	toolCallingClient, ok := chatClient.(llm.ToolCallingClient)
 	if !ok {
 		return nil, fmt.Errorf("init self-improvement service: tool calling client is required")
@@ -412,7 +388,6 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 	dialogHandler := handler.NewDialogHandler(dialogService)
 	chatHandler := handler.NewChatHandler(chatService)
 	agentHandler := handler.NewAgentHandler(independentAgentService, improvementService)
-	workspaceHandler := handler.NewWorkspaceHandler(workspaceService)
 	workflowHandler := handler.NewWorkflowHandler(workflowService)
 	reflectionHandler := handler.NewReflectionHandler(reflectionService)
 	resourceHandler := handler.NewResourceHandler(resourceusecase.NewService(resourceQuery))
@@ -438,7 +413,6 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 		DialogHandler:     dialogHandler,
 		ChatHandler:       chatHandler,
 		AgentHandler:      agentHandler,
-		WorkspaceHandler:  workspaceHandler,
 		WorkflowHandler:   workflowHandler,
 		ReflectionHandler: reflectionHandler,
 		ResourceHandler:   resourceHandler,
