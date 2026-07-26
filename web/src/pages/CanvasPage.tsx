@@ -33,6 +33,7 @@ import {
   X,
 } from 'lucide-react';
 import { workflowApi, resourceSummaryApi, settingsApi } from '../api/resources';
+import { EngineeringAscii } from '../components/editorial';
 import { Button, EmptyState, Field, IconButton, Panel, Segmented, Select, StatusBadge, TextArea, TextInput, Toast } from '../components/ui';
 import type { AgentReflection, ReflectionStatus, Workflow, WorkflowProfile, ApprovalRequest, Conversation, EvalCase, EvalDataset, EvalResult, EvalRun, EvalTrend, FlowVersion, KnowledgeBase, MCPServer, MemoryWriteLog, Message, ModelProvider, Run, RunStep, RunTrace, Skill, ToolDefinition, ToolInvocation, ToolPack, WorkflowMessageResponse } from '../types/api';
 import type { NodeType } from '../types/flow';
@@ -1006,9 +1007,10 @@ export function CanvasPage() {
     <div ref={canvasPageRef} className="canvas-page">
       <header className="canvas-toolbar glass">
         <div className="min-w-0">
-          <h1 className="canvas-editorial-title truncate"><span>{workflow?.name ?? 'Agent'}</span> <em>Canvas</em></h1>
+          <h1 className="canvas-editorial-title truncate"><span>{workflow?.name ?? 'Agent'}</span> <span className="canvas-editorial-accent">Canvas</span></h1>
           <p className="muted truncate">WORKFLOW STUDIO · {restoredFromVersion ? `RESTORED FROM v${restoredFromVersion} · UNSAVED DRAFT` : version ? `VERSION ${version.version_no}` : 'UNSAVED DRAFT'}</p>
         </div>
+        <EngineeringAscii compact label="FLOW.RUNTIME" className="canvas-ascii" />
         <div className="canvas-tools">
           <Segmented value={mode} onChange={setMode} options={[{ value: 'config', label: 'Build' }, { value: 'profile', label: 'Profile' }, { value: 'reflections', label: 'Reflections' }, { value: 'approvals', label: 'Approvals' }, { value: 'eval', label: 'Evaluate' }, { value: 'chat', label: 'Dialogue' }, { value: 'debug', label: 'Debug' }, { value: 'dsl', label: 'DSL' }]} />
           <div ref={versionControlRef} className="canvas-version-control">

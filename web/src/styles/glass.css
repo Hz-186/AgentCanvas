@@ -87,6 +87,27 @@ html[data-theme='dark'] .glass-strong::after {
   }
 }
 
+/* 深色工作台采用实体层级，而不是半透明玻璃叠层。保留 .glass 类名以兼容现有组件。 */
+html[data-theme='dark'] .glass,
+html[data-theme='dark'] .glass-strong {
+  background: var(--glass-bg);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--shadow-md);
+}
+
+html[data-theme='dark'] .glass-strong {
+  background: var(--glass-bg-strong);
+}
+
+html[data-theme='dark'] .glass::before,
+html[data-theme='dark'] .glass-strong::before,
+html[data-theme='dark'] .glass::after,
+html[data-theme='dark'] .glass-strong::after {
+  display: none;
+}
+
 /* 实底可读容器：正文、表单、代码、长列表 */
 .surface {
   position: relative;

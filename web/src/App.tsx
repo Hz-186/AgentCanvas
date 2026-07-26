@@ -7,7 +7,6 @@ import {
   Network,
   LibraryBig,
   Settings,
-  Sparkles,
   Wrench,
 } from 'lucide-react';
 import {
@@ -21,7 +20,7 @@ import {
   useNavigate,
 } from 'react-router-dom';
 import { IconButton } from './components/ui';
-import { AmbientLiquidField } from './components/editorial';
+import { AgentCanvasMark, AmbientLiquidField, EngineeringAscii } from './components/editorial';
 import { ThemeControl } from './components/ThemeControl';
 import { LoginPage, RegisterPage } from './pages/AuthPages';
 import { WorkflowsPage } from './pages/WorkflowsPage';
@@ -138,12 +137,14 @@ function AppShell() {
         <aside className="sidebar glass">
           <div className="sidebar-brand">
           <div className="app-logo">
-            <Sparkles size={18} />
+            <AgentCanvasMark size={30} />
           </div>
           <div className="min-w-0">
-            <strong className="truncate">AgentCanvas</strong>
+            <strong className="truncate">AGENTCANVAS</strong>
+            <small className="brand-runtime">RUNTIME STUDIO</small>
           </div>
           </div>
+          <EngineeringAscii compact label="CORE.ROUTER" className="sidebar-ascii" />
           <nav className="nav-list" aria-label="Primary navigation">
             {nav.map((item) => {
               const Icon = item.icon;
@@ -199,7 +200,13 @@ function Boot() {
     void initialize();
   }, [initialize]);
 
-  if (!booted) return <div className="app-loading">Waking Agent Canvas...</div>;
+  if (!booted) return (
+    <div className="app-loading app-loading-runtime">
+      <AgentCanvasMark size={46} />
+      <EngineeringAscii label="BOOT.SEQUENCE" />
+      <span>INITIALIZING AGENT RUNTIME_</span>
+    </div>
+  );
 
   return (
     <Routes>
