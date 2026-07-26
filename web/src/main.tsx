@@ -5,6 +5,7 @@ import './styles/tokens.css';
 import './styles/glass.css';
 import './styles/base.css';
 import './styles/app.css';
+import './styles/dark.css';
 import { App } from './App';
 
 ReactDOM.createRoot(document.getElementById('root')!).render(

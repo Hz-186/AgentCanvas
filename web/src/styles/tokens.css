@@ -7,20 +7,22 @@
    ============================================================ */
 
 :root {
-  /* —— 冷调蓝紫钛灰：克制、低饱和，不使用偏绿主色 —— */
-  --accent: #7482b8;
-  --accent-hover: #6473aa;
-  --accent-active: #566397;
-  --accent-soft: rgba(116, 130, 184, 0.15);
-  --accent-ring: rgba(116, 130, 184, 0.38);
-  --accent-contrast: #ffffff;
+  /* —— 电气青蓝：用于运行状态、关键路径与主操作 —— */
+  --accent: #53e7f6;
+  --accent-hover: #8bf4ff;
+  --accent-active: #2bc7da;
+  --accent-soft: rgba(83, 231, 246, 0.13);
+  --accent-ring: rgba(83, 231, 246, 0.36);
+  --accent-contrast: #03171d;
+  --accent-secondary: #7287ff;
+  --accent-secondary-soft: rgba(114, 135, 255, 0.14);
 
   /* —— 语义色 —— */
-  --success: #6f82b9;
-  --warning: #e3a008;
-  --danger: #e5484d;
-  --danger-soft: rgba(229, 72, 77, 0.12);
-  --info: #7187c5;
+  --success: #86c99c;
+  --warning: #e8b15d;
+  --danger: #ef746b;
+  --danger-soft: rgba(239, 116, 107, 0.13);
+  --info: #7db5df;
 
   /* —— 圆角 —— */
   --radius-xs: 6px;
@@ -52,8 +54,8 @@
 
   --font-sans: 'Avenir Next', Inter, 'SF Pro Display', 'SF Pro Text', -apple-system, BlinkMacSystemFont,
     'PingFang SC', 'Noto Sans CJK SC', 'Segoe UI', system-ui, sans-serif;
-  --font-display: 'Bodoni 72', Didot, 'Iowan Old Style', 'Times New Roman', serif;
-  --font-script: 'Snell Roundhand', 'Apple Chancery', 'URW Chancery L', cursive;
+  --font-display: 'Avenir Next', Inter, 'SF Pro Display', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-script: 'Avenir Next', Inter, -apple-system, BlinkMacSystemFont, sans-serif;
   --font-mono: 'SFMono-Regular', 'SF Mono', Menlo, Monaco, 'Cascadia Code', 'JetBrains Mono',
     'Fira Code', Consolas, 'Liberation Mono', ui-monospace, monospace;
 
@@ -84,13 +86,20 @@
 html[data-theme='light'] {
   color-scheme: light;
 
+  --accent: #087f98;
+  --accent-hover: #0a94ad;
+  --accent-active: #066b82;
+  --accent-soft: rgba(8, 127, 152, 0.12);
+  --accent-ring: rgba(8, 127, 152, 0.3);
+  --accent-contrast: #ffffff;
+
   /* 背景层：从最底到最上 */
-  --bg-app: #e8eaf2;
-  --bg-app-gradient: linear-gradient(142deg, #f5f6fa 0%, #e4e7f0 48%, #d9dce8 100%);
-  --bg-surface: rgba(245, 247, 252, 0.46);
-  --bg-surface-2: rgba(248, 249, 253, 0.64);
-  --bg-surface-3: rgba(224, 227, 238, 0.76);
-  --bg-elevated: rgba(249, 250, 254, 0.82);
+  --bg-app: #e9f5f8;
+  --bg-app-gradient: linear-gradient(142deg, #f4fcfd 0%, #e5f3f7 48%, #dbeaf1 100%);
+  --bg-surface: rgba(241, 251, 253, 0.58);
+  --bg-surface-2: rgba(247, 253, 254, 0.76);
+  --bg-surface-3: rgba(217, 235, 241, 0.8);
+  --bg-elevated: rgba(249, 254, 255, 0.9);
 
   /* 玻璃面板 */
   --glass-bg: rgba(239, 242, 250, 0.52);
@@ -102,16 +111,16 @@ html[data-theme='light'] {
   --canvas-grid: rgba(91, 103, 151, 0.22);
 
   /* 文本 */
-  --text-primary: #202437;
-  --text-secondary: #62697f;
-  --text-tertiary: #9298aa;
+  --text-primary: #102a34;
+  --text-secondary: #536d77;
+  --text-tertiary: #8399a1;
   --text-disabled: #b7bbc7;
   --text-on-accent: #ffffff;
 
   /* 边框与分隔 */
-  --border: rgba(73, 82, 120, 0.15);
-  --border-strong: rgba(66, 76, 117, 0.26);
-  --separator: rgba(72, 82, 122, 0.13);
+  --border: rgba(43, 88, 102, 0.16);
+  --border-strong: rgba(35, 84, 100, 0.3);
+  --separator: rgba(43, 88, 102, 0.13);
 
   /* 控件 */
   --control-bg: rgba(229, 232, 244, 0.48);
@@ -119,6 +128,25 @@ html[data-theme='light'] {
   --control-bg-active: rgba(210, 216, 237, 0.66);
   --input-bg: rgba(238, 240, 248, 0.48);
   --input-bg-focus: rgba(246, 247, 252, 0.68);
+
+  /* 工程工作台表面：浅深主题共享几何，只切换这些颜色。 */
+  --engineering-workspace: #d8e9ed;
+  --engineering-main: #edf8fa;
+  --engineering-surface: #f7fcfd;
+  --engineering-surface-hover: #e7f3f5;
+  --engineering-control: #e1eff2;
+  --engineering-control-hover: #d4e9ed;
+  --engineering-canvas: #e9f5f7;
+  --engineering-canvas-surface: #f2fafb;
+  --engineering-node: #dceef2;
+  --engineering-node-subtle: #e8f5f7;
+  --engineering-divider: #88aab3;
+  --engineering-edge: #5d8590;
+  --engineering-grid: #789ba4;
+  --engineering-auth-page: radial-gradient(circle at 16% 18%, rgba(21, 162, 187, .2), transparent 28%), radial-gradient(circle at 82% 12%, rgba(114, 135, 255, .17), transparent 29%), linear-gradient(135deg, #effcff 0%, #dff2f6 52%, #e6edf9 100%);
+  --engineering-auth-shell: rgba(241, 252, 254, .94);
+  --engineering-auth-brand: linear-gradient(90deg, rgba(8, 127, 152, .045) 1px, transparent 1px), linear-gradient(rgba(8, 127, 152, .045) 1px, transparent 1px), linear-gradient(135deg, rgba(213, 243, 247, .86), rgba(235, 247, 250, .66));
+  --engineering-auth-stage: linear-gradient(160deg, rgba(224, 246, 249, .92), rgba(239, 249, 252, .98));
 
   /* 阴影 */
   --shadow-sm: 0 2px 6px rgba(55, 61, 90, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.54);
@@ -131,38 +159,62 @@ html[data-theme='light'] {
 html[data-theme='dark'] {
   color-scheme: dark;
 
-  --bg-app: #11131d;
-  --bg-app-gradient: linear-gradient(145deg, #222638 0%, #11131d 58%, #0b0d14 100%);
-  --bg-surface: rgba(27, 30, 45, 0.76);
-  --bg-surface-2: rgba(36, 40, 58, 0.8);
-  --bg-surface-3: rgba(46, 50, 70, 0.84);
-  --bg-elevated: rgba(36, 40, 58, 0.92);
+  --accent: #53e7f6;
+  --accent-hover: #8bf4ff;
+  --accent-active: #2bc7da;
+  --accent-ring: rgba(83, 231, 246, 0.36);
+  --accent-contrast: #03171d;
 
-  --glass-bg: rgba(37, 40, 57, 0.54);
-  --glass-bg-strong: rgba(27, 30, 44, 0.78);
-  --glass-border: rgba(255, 255, 255, 0.14);
-  --glass-highlight: rgba(255, 255, 255, 0.16);
-  --tech-line: rgba(186, 194, 225, 0.065);
-  --tech-line-strong: rgba(186, 194, 225, 0.11);
-  --canvas-grid: rgba(181, 191, 225, 0.17);
+  --bg-app: #07151d;
+  --bg-app-gradient: linear-gradient(145deg, #0b2330 0%, #07161f 48%, #0c1b29 100%);
+  --bg-surface: #0b1c25;
+  --bg-surface-2: #102631;
+  --bg-surface-3: #17333f;
+  --bg-elevated: #17323e;
 
-  --text-primary: #f0f1f7;
-  --text-secondary: #b4b8c9;
-  --text-tertiary: #7f859c;
-  --text-disabled: #555a70;
-  --text-on-accent: #ffffff;
+  --glass-bg: #0b1c25;
+  --glass-bg-strong: #102631;
+  --glass-border: #294652;
+  --glass-highlight: rgba(255, 255, 255, 0.08);
+  --tech-line: rgba(188, 201, 210, 0.055);
+  --tech-line-strong: rgba(188, 201, 210, 0.1);
+  --canvas-grid: rgba(181, 195, 204, 0.14);
 
-  --border: rgba(255, 255, 255, 0.1);
-  --border-strong: rgba(255, 255, 255, 0.18);
-  --separator: rgba(255, 255, 255, 0.07);
+  --text-primary: #e9fbff;
+  --text-secondary: #a1bbc4;
+  --text-tertiary: #6f909c;
+  --text-disabled: #46626c;
+  --text-on-accent: #03171d;
 
-  --control-bg: rgba(255, 255, 255, 0.08);
-  --control-bg-hover: rgba(255, 255, 255, 0.13);
-  --control-bg-active: rgba(255, 255, 255, 0.18);
-  --input-bg: rgba(18, 24, 32, 0.48);
-  --input-bg-focus: rgba(24, 32, 43, 0.7);
+  --border: #24414d;
+  --border-strong: #3b6270;
+  --separator: #1d3945;
 
-  --accent-soft: rgba(126, 140, 207, 0.2);
+  --control-bg: #102732;
+  --control-bg-hover: #183642;
+  --control-bg-active: #20434f;
+  --input-bg: #081820;
+  --input-bg-focus: #0d232d;
+
+  --engineering-workspace: #061016;
+  --engineering-main: #07151d;
+  --engineering-surface: #0d222c;
+  --engineering-surface-hover: #102732;
+  --engineering-control: #14303a;
+  --engineering-control-hover: #1b3a46;
+  --engineering-canvas: #071820;
+  --engineering-canvas-surface: #081a22;
+  --engineering-node: #173541;
+  --engineering-node-subtle: #102932;
+  --engineering-divider: #354f5a;
+  --engineering-edge: #6f9ba6;
+  --engineering-grid: #587985;
+  --engineering-auth-page: radial-gradient(circle at 16% 18%, rgba(83, 231, 246, .18), transparent 28%), radial-gradient(circle at 82% 12%, rgba(114, 135, 255, .22), transparent 29%), linear-gradient(135deg, #0e2d3a 0%, #091a24 52%, #0d1b2b 100%);
+  --engineering-auth-shell: rgba(5, 19, 27, .9);
+  --engineering-auth-brand: linear-gradient(90deg, rgba(83, 231, 246, .035) 1px, transparent 1px), linear-gradient(rgba(83, 231, 246, .035) 1px, transparent 1px), linear-gradient(135deg, rgba(20, 60, 74, .56), rgba(6, 24, 33, .35));
+  --engineering-auth-stage: linear-gradient(160deg, rgba(16, 45, 57, .82), rgba(7, 23, 31, .96));
+
+  --accent-soft: rgba(83, 231, 246, 0.13);
 
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
   --shadow-md: 0 4px 14px rgba(0, 0, 0, 0.4);
