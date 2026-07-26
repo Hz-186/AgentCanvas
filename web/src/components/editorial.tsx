@@ -1,5 +1,51 @@
 import { useEffect, useRef, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 
+export function AgentCanvasMark({ size = 36 }: { size?: number }) {
+  return (
+    <svg
+      className="agentcanvas-mark"
+      width={size}
+      height={size}
+      viewBox="0 0 40 40"
+      fill="none"
+      role="img"
+      aria-label="AgentCanvas"
+    >
+      <path className="agentcanvas-mark-frame" d="M15 7H7v8M25 7h8v8M33 25v8h-8M15 33H7v-8" />
+      <path className="agentcanvas-mark-route" d="M10.5 20h7l4.5-7v14l4.5-7h3" />
+      <circle cx="10.5" cy="20" r="2.2" />
+      <circle cx="22" cy="13" r="2.2" />
+      <circle cx="22" cy="27" r="2.2" />
+      <circle cx="29.5" cy="20" r="2.2" />
+    </svg>
+  );
+}
+
+export function EngineeringAscii({
+  label = 'RUNTIME',
+  compact = false,
+  className = '',
+}: {
+  label?: string;
+  compact?: boolean;
+  className?: string;
+}) {
+  const normalizedLabel = label.toUpperCase().replace(/[^A-Z0-9._/-]/g, '_').slice(0, 24);
+  const graph = compact
+    ? '[IN]--(AGENT)-->{OUT}\n         +--{TOOL}'
+    : '      +--[CONTEXT]--+\n[IN]--(01 AGENT)--+-->{OUT}\n      +--{TOOLS}---+';
+
+  return (
+    <figure className={`engineering-ascii ${compact ? 'engineering-ascii-compact' : ''} ${className}`.trim()} aria-hidden="true">
+      <figcaption>
+        <span>AC://{normalizedLabel}</span>
+        <span className="engineering-ascii-state"><i /> SYNC</span>
+      </figcaption>
+      <pre><code>{graph}</code></pre>
+    </figure>
+  );
+}
+
 export function EditorialHeader({
   word,
   script,
@@ -21,11 +67,14 @@ export function EditorialHeader({
         <p className="editorial-kicker">{kicker}</p>
         <h1 className="editorial-title">
           <span>{word}</span>
-          <em>{script}</em>
+          <span className="editorial-title-accent">{script}</span>
         </h1>
         <p className="editorial-description">{description}</p>
       </div>
-      {action ? <div className="editorial-action">{action}</div> : null}
+      <div className="editorial-utility">
+        <EngineeringAscii label={`${word}.${script}`} />
+        {action ? <div className="editorial-action">{action}</div> : null}
+      </div>
     </header>
   );
 }
@@ -147,7 +196,10 @@ export function ResizableRail({
 }
 
 export function storedWidth(key: string, fallback: number) {
-  const value = Number(localStorage.getItem(key));
+  const storedValue = localStorage.getItem(key);
+  if (storedValue === null) return fallback;
+
+  const value = Number(storedValue);
   return Number.isFinite(value) ? value : fallback;
 }
 

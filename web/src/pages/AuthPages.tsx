@@ -1,107 +1,83 @@
-import { useCallback, useEffect, useRef, useState, type FormEvent, type PointerEvent as ReactPointerEvent } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { ActivitySquare, ArrowRight, Github, LockKeyhole, Mail, Network, Route, Sparkles, Workflow } from 'lucide-react';
+import { ArrowRight, Github, LockKeyhole, Mail, Network } from 'lucide-react';
 import { authApi } from '../api/auth';
 import { tokenStorage } from '../api/token';
+import { AgentCanvasMark } from '../components/editorial';
 import { Button, Field, TextInput } from '../components/ui';
 import { ThemeControl } from '../components/ThemeControl';
 import { useAuthStore } from '../stores/authStore';
 import { friendlyErrorMessage } from '../utils/format';
 
-const LIQUID_GLASS_POINTER_QUERY = '(hover: hover) and (pointer: fine) and (prefers-reduced-motion: no-preference)';
+const TERMINAL_FRAMES = [
+  [
+    '              +--[MEMORY]',
+    '              |',
+    '[INPUT]--(01 AGENT)--+-->{TOOL}',
+    '              |      |',
+    '              +--[POLICY]-->{OUT}',
+  ],
+  [
+    '              +==[MEMORY]',
+    '              :',
+    '[INPUT]==(01 AGENT)==+==>{TOOL}',
+    '              |      :',
+    '              +--[POLICY]-->{OUT}',
+  ],
+  [
+    '              +--[MEMORY]',
+    '              |',
+    '[INPUT]--(01 AGENT)--+-->{TOOL}',
+    '              |      |',
+    '              +==[POLICY]==>{OUT}',
+  ],
+];
 
-function clamp(value: number, min: number, max: number) {
-  return Math.min(max, Math.max(min, value));
-}
+function AgentRuntimeTerminal() {
+  const [frame, setFrame] = useState(0);
 
-function canUseLiquidGlassPointer() {
-  return typeof window !== 'undefined' && window.matchMedia(LIQUID_GLASS_POINTER_QUERY).matches;
+  useEffect(() => {
+    const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+    if (reducedMotion.matches) return undefined;
+    const timer = window.setInterval(() => {
+      setFrame((value) => (value + 1) % TERMINAL_FRAMES.length);
+    }, 760);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  return (
+    <div className="auth-terminal" aria-label="Animated Agent runtime topology">
+      <div className="auth-terminal-bar">
+        <span>AC://RUNTIME/GRAPH</span>
+        <span className="auth-terminal-state"><i /> LIVE</span>
+      </div>
+      <pre aria-hidden="true"><code>{TERMINAL_FRAMES[frame].join('\n')}</code></pre>
+      <div className="auth-terminal-command">
+        <span>$</span> agentcanvas run workflow.ac <b>_</b>
+      </div>
+    </div>
+  );
 }
 
 function AuthBrandPanel() {
-  const panelRef = useRef<HTMLElement>(null);
-
-  const resetPanel = useCallback(() => {
-    const panel = panelRef.current;
-    if (!panel) return;
-
-    panel.dataset.liquidActive = 'false';
-    panel.style.setProperty('--tilt-x', '0deg');
-    panel.style.setProperty('--tilt-y', '0deg');
-    panel.style.setProperty('--shift-x', '0px');
-    panel.style.setProperty('--shift-y', '0px');
-    panel.style.setProperty('--glass-shadow-x', '0px');
-    panel.style.setProperty('--glass-shadow-y', '26px');
-    panel.style.setProperty('--glass-shadow-blur', '66px');
-  }, []);
-
-  const updatePanel = useCallback(
-    (event: ReactPointerEvent<HTMLElement>) => {
-      if (!canUseLiquidGlassPointer()) {
-        resetPanel();
-        return;
-      }
-
-      const panel = panelRef.current;
-      if (!panel) return;
-
-      const rect = panel.getBoundingClientRect();
-      const x = clamp((event.clientX - rect.left) / rect.width, 0, 1);
-      const y = clamp((event.clientY - rect.top) / rect.height, 0, 1);
-      const normalizedX = x - 0.5;
-      const normalizedY = y - 0.5;
-
-      panel.dataset.liquidActive = 'true';
-      panel.style.setProperty('--tilt-x', `${(-normalizedY * 8).toFixed(2)}deg`);
-      panel.style.setProperty('--tilt-y', `${(normalizedX * 10).toFixed(2)}deg`);
-      panel.style.setProperty('--shift-x', `${(normalizedX * 10).toFixed(2)}px`);
-      panel.style.setProperty('--shift-y', `${(normalizedY * 8).toFixed(2)}px`);
-      panel.style.setProperty('--glass-shadow-x', `${(-normalizedX * 18).toFixed(2)}px`);
-      panel.style.setProperty('--glass-shadow-y', `${(30 + normalizedY * 12).toFixed(2)}px`);
-      panel.style.setProperty('--glass-shadow-blur', `${(72 + Math.abs(normalizedX) * 16).toFixed(2)}px`);
-    },
-    [resetPanel],
-  );
-
-  useEffect(() => {
-    const panel = panelRef.current;
-    if (!panel) return undefined;
-
-    const motionQuery = window.matchMedia(LIQUID_GLASS_POINTER_QUERY);
-    const handleMotionChange = () => {
-      if (!motionQuery.matches) resetPanel();
-    };
-
-    resetPanel();
-    motionQuery.addEventListener('change', handleMotionChange);
-
-    return () => {
-      motionQuery.removeEventListener('change', handleMotionChange);
-    };
-  }, [resetPanel]);
 
   return (
-    <aside ref={panelRef} className="auth-brand" onPointerEnter={updatePanel} onPointerMove={updatePanel} onPointerLeave={resetPanel}>
+    <aside className="auth-brand">
       <div className="auth-brand-content">
-        <div className="auth-brand-kicker">
-          <span className="brand-mark"><Sparkles size={20} /></span>
-          <span>INTELLIGENT WORKFLOW STUDIO</span>
+        <div className="auth-brand-lockup">
+          <span className="brand-mark"><AgentCanvasMark size={38} /></span>
+          <span><strong>AGENTCANVAS</strong><small>VISUAL AGENT ENGINEERING</small></span>
         </div>
-        <h1><span>Agent</span> <em>Canvas</em></h1>
-        <p>Compose intelligence.<br />Make every decision visible.</p>
+        <div className="auth-brand-copy">
+          <span className="auth-brand-kicker">SYSTEMS / NOT SLIDES</span>
+          <h1><span>BUILD AGENTS.</span><span>SEE THE SYSTEM.</span></h1>
+          <p>Design the graph. Route the models.<br />Trace every decision.</p>
+        </div>
+        <AgentRuntimeTerminal />
         <div className="auth-feature-grid">
-          <span>
-            <Workflow size={18} />
-            FLOW DESIGN
-          </span>
-          <span>
-            <Route size={18} />
-            MODEL ROUTING
-          </span>
-          <span>
-            <ActivitySquare size={18} />
-            LIVE TRACING
-          </span>
+          <span><b>01</b>FLOW GRAPH</span>
+          <span><b>02</b>MODEL ROUTING</span>
+          <span><b>03</b>LIVE TRACING</span>
         </div>
       </div>
     </aside>
@@ -125,6 +101,10 @@ function AuthFrame({
         <ThemeControl />
       </div>
       <section className="auth-shell">
+        <div className="auth-shell-meta" aria-hidden="true">
+          <span>AC / ACCESS NODE</span>
+          <span>26.07 / ONLINE</span>
+        </div>
         <AuthBrandPanel />
         <div className="auth-mirror-stage">
           <div className="auth-mirror-edge" aria-hidden="true" />
@@ -134,7 +114,7 @@ function AuthFrame({
               <Link className={mode === 'register' ? 'active' : ''} to="/register">Register</Link>
             </nav>
             <div className="auth-card-heading">
-              <span className="auth-step">{mode === 'login' ? '01 / ACCESS' : '01 / ACCOUNT'}</span>
+              <span className="auth-step">{mode === 'login' ? '01 / ACCESS' : '02 / IDENTITY'}</span>
               <h2>{title}</h2>
               <p className="muted">{subtitle}</p>
             </div>
@@ -227,7 +207,7 @@ export function LoginPage() {
   }
 
   return (
-    <AuthFrame mode="login" title="Welcome back." subtitle="Enter your workspace and continue building.">
+    <AuthFrame mode="login" title="Enter the runtime." subtitle="Authenticate to resume your agent systems.">
       <form className="form-stack" noValidate onSubmit={(event) => void onSubmit(event)}>
         <Field label="EMAIL">
           <div className="auth-input-wrap">
@@ -285,7 +265,7 @@ export function RegisterPage() {
   }
 
   return (
-    <AuthFrame mode="register" title="Begin here." subtitle="Create an identity for your new workspace.">
+    <AuthFrame mode="register" title="Create operator ID." subtitle="Provision a new identity for this runtime.">
       <form className="form-stack" noValidate onSubmit={(event) => void onSubmit(event)}>
         <Field label="NAME">
           <div className="auth-input-wrap">
