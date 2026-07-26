@@ -19,6 +19,7 @@ type Repository interface {
 type AgentRepository interface {
 	Repository
 	ListByAgent(ctx context.Context, ownerID, agentID int64) ([]Conversation, error)
+	UpdateAgentMode(ctx context.Context, ownerID, id int64, mode string) error
 }
 
 type MessageRepository interface {

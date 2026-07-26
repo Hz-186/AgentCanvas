@@ -1131,10 +1131,13 @@ func (s *Service) CancelRun(ctx context.Context, ownerID, id int64) (*workflow.R
 		if err := s.runs.Update(ctx, item); err != nil {
 			return nil, err
 		}
-		if wasRunning && item.RunKind == workflow.RunKindAgent && s.agentRunCanceller != nil {
-			s.agentRunCanceller.CancelIndependentRun(id)
-		} else if wasRunning {
+		if wasRunning && item.RunKind != workflow.RunKindAgent {
 			_ = s.runCancels.Cancel(id)
+		}
+	}
+	if item.Status == workflow.RunStatusCancelled && item.RunKind == workflow.RunKindAgent && s.agentRunCanceller != nil {
+		if err := s.agentRunCanceller.CancelIndependentRun(ctx, ownerID, id); err != nil {
+			return nil, err
 		}
 	}
 	return item, nil
