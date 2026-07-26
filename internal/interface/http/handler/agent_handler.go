@@ -1,6 +1,8 @@
 package handler
 
 import (
+	"encoding/json"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -34,7 +36,7 @@ func (h *AgentHandler) Create(c *gin.Context) {
 		return
 	}
 	var req agentusecase.CreateAgentRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
+	if err := bindStrictAgentJSON(c, &req); err != nil {
 		writeAppError(c, agenterrors.ErrInvalidInput)
 		return
 	}
@@ -78,11 +80,29 @@ func (h *AgentHandler) Update(c *gin.Context) {
 		return
 	}
 	var req agentusecase.UpdateAgentRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
+	if err := bindStrictAgentJSON(c, &req); err != nil {
 		writeAppError(c, agenterrors.ErrInvalidInput)
 		return
 	}
 	item, err := h.service.UpdateAgent(c.Request.Context(), ownerID, id, req)
+	if err != nil {
+		writeAppError(c, err)
+		return
+	}
+	response.OK(c, item)
+}
+
+func (h *AgentHandler) UpdateSettings(c *gin.Context) {
+	ownerID, id, ok := ownerAndID(c, "id")
+	if !ok {
+		return
+	}
+	var settings agentusecase.AgentEditableSettings
+	if err := bindStrictAgentJSON(c, &settings); err != nil {
+		writeAppError(c, agenterrors.ErrInvalidInput)
+		return
+	}
+	item, err := h.service.UpdateAgentSettings(c.Request.Context(), ownerID, id, settings)
 	if err != nil {
 		writeAppError(c, err)
 		return
@@ -174,12 +194,30 @@ func (h *AgentHandler) CreateConversation(c *gin.Context) {
 	}
 	var req agentusecase.CreateConversationRequest
 	if c.Request.ContentLength > 0 {
-		if err := c.ShouldBindJSON(&req); err != nil {
+		if err := bindStrictAgentJSON(c, &req); err != nil {
 			writeAppError(c, agenterrors.ErrInvalidInput)
 			return
 		}
 	}
 	item, err := h.service.CreateConversation(c.Request.Context(), ownerID, agentID, req)
+	if err != nil {
+		writeAppError(c, err)
+		return
+	}
+	response.OK(c, item)
+}
+
+func (h *AgentHandler) UpdateConversationMode(c *gin.Context) {
+	ownerID, agentID, conversationID, ok := agentConversationIDs(c)
+	if !ok {
+		return
+	}
+	var req agentusecase.UpdateConversationModeRequest
+	if err := bindStrictAgentJSON(c, &req); err != nil {
+		writeAppError(c, agenterrors.ErrInvalidInput)
+		return
+	}
+	item, err := h.service.UpdateConversationMode(c.Request.Context(), ownerID, agentID, conversationID, req)
 	if err != nil {
 		writeAppError(c, err)
 		return
@@ -246,7 +284,7 @@ func (h *AgentHandler) StartTurn(c *gin.Context) {
 		return
 	}
 	var req agentusecase.CreateTurnRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
+	if err := bindStrictAgentJSON(c, &req); err != nil {
 		writeAppError(c, agenterrors.ErrInvalidInput)
 		return
 	}
@@ -256,6 +294,22 @@ func (h *AgentHandler) StartTurn(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusAccepted, response.Body{Code: 0, Message: http.StatusText(http.StatusAccepted), Data: accepted})
+}
+
+func bindStrictAgentJSON(c *gin.Context, target any) error {
+	decoder := json.NewDecoder(c.Request.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		return err
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return io.ErrUnexpectedEOF
+		}
+		return err
+	}
+	return nil
 }
 
 func (h *AgentHandler) GetTurn(c *gin.Context) {
