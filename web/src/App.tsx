@@ -144,7 +144,6 @@ function AppShell() {
             <small className="brand-runtime">RUNTIME STUDIO</small>
           </div>
           </div>
-          <EngineeringAscii compact label="CORE.ROUTER" className="sidebar-ascii" />
           <nav className="nav-list" aria-label="Primary navigation">
             {nav.map((item) => {
               const Icon = item.icon;
