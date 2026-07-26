@@ -11,25 +11,36 @@ import { friendlyErrorMessage } from '../utils/format';
 
 const TERMINAL_FRAMES = [
   [
-    '              +--[MEMORY]',
-    '              |',
-    '[INPUT]--(01 AGENT)--+-->{TOOL}',
-    '              |      |',
-    '              +--[POLICY]-->{OUT}',
+    '      +--[MEMORY]---+        +--{CACHE}',
+    '      |              |        |',
+    '[INPUT]-->(01 AGENT)--+-->{TOOL}--+-->{OUT}',
+    '      |              |        |',
+    '      +--[POLICY]----+-->{TRACE}--+ ',
+    '             \\---[REFLEXION]---/    ',
   ],
   [
-    '              +==[MEMORY]',
-    '              :',
-    '[INPUT]==(01 AGENT)==+==>{TOOL}',
-    '              |      :',
-    '              +--[POLICY]-->{OUT}',
+    '      +==[MEMORY]===+        +=={CACHE}',
+    '      :              |        |',
+    '[INPUT]==>(01 AGENT)==+==>{TOOL}==+==>{OUT}',
+    '      |              :        |',
+    '      +==[POLICY]====+==>{TRACE}==+',
+    '             \\===[REFLEXION]===/    ',
   ],
   [
-    '              +--[MEMORY]',
-    '              |',
-    '[INPUT]--(01 AGENT)--+-->{TOOL}',
-    '              |      |',
-    '              +==[POLICY]==>{OUT}',
+    '      +--[MEMORY]---+        +--{CACHE}',
+    '      |              :        |',
+    '[INPUT]-->(01 AGENT)--+-->{TOOL}==+-->{OUT}',
+    '      |              |        :',
+    '      +==[POLICY]====+-->{TRACE}--+',
+    '             \\---[REFLEXION]===/    ',
+  ],
+  [
+    '      +--[MEMORY]===+        +=={CACHE}',
+    '      :              |        |',
+    '[INPUT]==>(01 AGENT)==+-->{TOOL}--+==>{OUT}',
+    '      |              :        |',
+    '      +--[POLICY]----+==>{TRACE}==+',
+    '             \\===[REFLEXION]---/    ',
   ],
 ];
 
@@ -46,7 +57,7 @@ function AgentRuntimeTerminal() {
   }, []);
 
   return (
-    <div className="auth-terminal" aria-label="Animated Agent runtime topology">
+    <div className={`auth-terminal auth-terminal-frame-${frame}`} aria-label="Animated Agent runtime topology">
       <div className="auth-terminal-bar">
         <span>AC://RUNTIME/GRAPH</span>
         <span className="auth-terminal-state"><i /> LIVE</span>
