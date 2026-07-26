@@ -84,13 +84,68 @@ CREATE TABLE IF NOT EXISTS workflow_rule_compile_jobs (
     KEY idx_rule_compile_set (rule_set_id, id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
-ALTER TABLE workflow_profiles
-    ADD COLUMN active_rule_set_id BIGINT NULL AFTER context_policy_json,
-    ADD COLUMN rule_compiler_provider_id BIGINT NULL AFTER active_rule_set_id,
-    ADD COLUMN rule_compiler_model VARCHAR(128) NOT NULL DEFAULT '' AFTER rule_compiler_provider_id;
+-- 000021 was already applied in some development databases before these
+-- profile policy columns were appended to that migration. Reconcile those
+-- databases here so the rule-set columns below have a stable anchor.
+SELECT COUNT(*) INTO @has_tool_policy_json FROM information_schema.COLUMNS
+WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'workflow_profiles' AND COLUMN_NAME = 'tool_policy_json';
+SELECT COUNT(*) INTO @has_memory_policy_json FROM information_schema.COLUMNS
+WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'workflow_profiles' AND COLUMN_NAME = 'memory_policy_json';
+SELECT COUNT(*) INTO @has_context_policy_json FROM information_schema.COLUMNS
+WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'workflow_profiles' AND COLUMN_NAME = 'context_policy_json';
+SELECT COUNT(*) INTO @has_risk_level FROM information_schema.COLUMNS
+WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'workflow_profiles' AND COLUMN_NAME = 'risk_level';
+SELECT COUNT(*) INTO @has_mode FROM information_schema.COLUMNS
+WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'workflow_profiles' AND COLUMN_NAME = 'mode';
+SET @profile_policy_ddl = IF(
+    @has_tool_policy_json + @has_memory_policy_json + @has_context_policy_json + @has_risk_level + @has_mode = 5,
+    'SELECT 1',
+    CONCAT('ALTER TABLE workflow_profiles ', CONCAT_WS(', ',
+        IF(@has_tool_policy_json = 0, 'ADD COLUMN tool_policy_json JSON NULL', NULL),
+        IF(@has_memory_policy_json = 0, 'ADD COLUMN memory_policy_json JSON NULL', NULL),
+        IF(@has_context_policy_json = 0, 'ADD COLUMN context_policy_json JSON NULL', NULL),
+        IF(@has_risk_level = 0, 'ADD COLUMN risk_level VARCHAR(32) NOT NULL DEFAULT ''medium''', NULL),
+        IF(@has_mode = 0, 'ADD COLUMN mode VARCHAR(32) NOT NULL DEFAULT ''react''', NULL)
+    ))
+);
+PREPARE profile_policy_stmt FROM @profile_policy_ddl;
+EXECUTE profile_policy_stmt;
+DEALLOCATE PREPARE profile_policy_stmt;
 
-ALTER TABLE workflow_runs
-    ADD COLUMN rule_set_id BIGINT NULL AFTER flow_version_id,
-    ADD COLUMN rule_set_version VARCHAR(64) NOT NULL DEFAULT '' AFTER rule_set_id,
-    ADD COLUMN compiled_rule_hash VARCHAR(64) NOT NULL DEFAULT '' AFTER rule_set_version;
+SELECT COUNT(*) INTO @has_active_rule_set_id FROM information_schema.COLUMNS
+WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'workflow_profiles' AND COLUMN_NAME = 'active_rule_set_id';
+SELECT COUNT(*) INTO @has_rule_compiler_provider_id FROM information_schema.COLUMNS
+WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'workflow_profiles' AND COLUMN_NAME = 'rule_compiler_provider_id';
+SELECT COUNT(*) INTO @has_rule_compiler_model FROM information_schema.COLUMNS
+WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'workflow_profiles' AND COLUMN_NAME = 'rule_compiler_model';
+SET @profile_rule_ddl = IF(
+    @has_active_rule_set_id + @has_rule_compiler_provider_id + @has_rule_compiler_model = 3,
+    'SELECT 1',
+    CONCAT('ALTER TABLE workflow_profiles ', CONCAT_WS(', ',
+        IF(@has_active_rule_set_id = 0, 'ADD COLUMN active_rule_set_id BIGINT NULL', NULL),
+        IF(@has_rule_compiler_provider_id = 0, 'ADD COLUMN rule_compiler_provider_id BIGINT NULL', NULL),
+        IF(@has_rule_compiler_model = 0, 'ADD COLUMN rule_compiler_model VARCHAR(128) NOT NULL DEFAULT ''''', NULL)
+    ))
+);
+PREPARE profile_rule_stmt FROM @profile_rule_ddl;
+EXECUTE profile_rule_stmt;
+DEALLOCATE PREPARE profile_rule_stmt;
 
+SELECT COUNT(*) INTO @has_rule_set_id FROM information_schema.COLUMNS
+WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'workflow_runs' AND COLUMN_NAME = 'rule_set_id';
+SELECT COUNT(*) INTO @has_rule_set_version FROM information_schema.COLUMNS
+WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'workflow_runs' AND COLUMN_NAME = 'rule_set_version';
+SELECT COUNT(*) INTO @has_compiled_rule_hash FROM information_schema.COLUMNS
+WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'workflow_runs' AND COLUMN_NAME = 'compiled_rule_hash';
+SET @run_rule_ddl = IF(
+    @has_rule_set_id + @has_rule_set_version + @has_compiled_rule_hash = 3,
+    'SELECT 1',
+    CONCAT('ALTER TABLE workflow_runs ', CONCAT_WS(', ',
+        IF(@has_rule_set_id = 0, 'ADD COLUMN rule_set_id BIGINT NULL', NULL),
+        IF(@has_rule_set_version = 0, 'ADD COLUMN rule_set_version VARCHAR(64) NOT NULL DEFAULT ''''', NULL),
+        IF(@has_compiled_rule_hash = 0, 'ADD COLUMN compiled_rule_hash VARCHAR(64) NOT NULL DEFAULT ''''', NULL)
+    ))
+);
+PREPARE run_rule_stmt FROM @run_rule_ddl;
+EXECUTE run_rule_stmt;
+DEALLOCATE PREPARE run_rule_stmt;

@@ -24,10 +24,8 @@ import (
 	"gorm.io/gorm"
 )
 
-type RetrievalStore interface {
-	domainretrieval.Indexer
-	domainretrieval.Retriever
-}
+// RetrievalStore is the infrastructure-facing retrieval backend contract.
+type RetrievalStore = domainretrieval.Backend
 
 type InitOptions struct {
 	IncludeMemoryRetrieval bool

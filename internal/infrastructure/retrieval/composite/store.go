@@ -9,23 +9,20 @@ import (
 	"agentcanvas/internal/domain/retrieval"
 )
 
+// Store coordinates primary and vector retrieval backends.
 type Store struct {
-	Primary retrieval.Indexer
-	Keyword retrieval.Retriever
-	Vector  interface {
-		retrieval.Indexer
-		retrieval.Retriever
-	}
+	// Primary handles keyword indexing and retrieval.
+	Primary retrieval.Backend
+	// Vector handles vector indexing and retrieval.
+	Vector retrieval.Backend
 }
 
-func New(primary interface {
-	retrieval.Indexer
-	retrieval.Retriever
-}, vector interface {
-	retrieval.Indexer
-	retrieval.Retriever
-}) *Store {
-	return &Store{Primary: primary, Keyword: primary, Vector: vector}
+// New creates a store backed by primary and vector retrieval engines.
+func New(primary, vector retrieval.Backend) *Store {
+	return &Store{
+		Primary: primary,
+		Vector:  vector,
+	}
 }
 
 func (s *Store) EnsureIndex(ctx context.Context) error {
@@ -90,21 +87,21 @@ func (s *Store) DeleteByKnowledgeBase(ctx context.Context, ownerID, kbID int64) 
 
 func (s *Store) Search(ctx context.Context, req retrieval.RetrievalRequest) (*retrieval.RetrievalResponse, error) {
 	start := time.Now()
-	if s.Keyword == nil {
+	if s.Primary == nil {
 		return nil, nil
 	}
 	if s.Vector == nil || req.Mode == retrieval.ModeKeyword {
-		return s.Keyword.Search(ctx, req)
+		return s.Primary.Search(ctx, req)
 	}
 	if req.Mode == retrieval.ModeVector {
 		return s.Vector.Search(ctx, req)
 	}
 	if req.Mode != retrieval.ModeHybrid {
-		return s.Keyword.Search(ctx, req)
+		return s.Primary.Search(ctx, req)
 	}
 	keywordReq := req
 	keywordReq.Mode = retrieval.ModeKeyword
-	keywordResp, err := s.Keyword.Search(ctx, keywordReq)
+	keywordResp, err := s.Primary.Search(ctx, keywordReq)
 	if err != nil {
 		return nil, err
 	}
@@ -116,7 +113,15 @@ func (s *Store) Search(ctx context.Context, req retrieval.RetrievalRequest) (*re
 	vectorResp, err := s.Vector.Search(ctx, vectorReq)
 	if err != nil {
 		keywordResp.LatencyMS = int(time.Since(start).Milliseconds())
-		keywordResp.Trace = append(keywordResp.Trace, retrieval.RetrievalTraceRecord{Stage: "hybrid_vector_recall", Mode: retrieval.ModeVector, Message: "vector_backend_failed", Metadata: map[string]any{"error": err.Error(), "keyword_count": len(keywordResp.Results)}})
+		keywordResp.Trace = append(keywordResp.Trace, retrieval.RetrievalTraceRecord{
+			Stage:   "hybrid_vector_recall",
+			Mode:    retrieval.ModeVector,
+			Message: "vector_backend_failed",
+			Metadata: map[string]any{
+				"error":         err.Error(),
+				"keyword_count": len(keywordResp.Results),
+			},
+		})
 		return keywordResp, nil
 	}
 	if vectorResp == nil {
@@ -129,8 +134,22 @@ func (s *Store) Search(ctx context.Context, req retrieval.RetrievalRequest) (*re
 	results := fuse(keywordResp.Results, vectorResp.Results, weight, req.TopK)
 	trace := append([]retrieval.RetrievalTraceRecord{}, keywordResp.Trace...)
 	trace = append(trace, vectorResp.Trace...)
-	trace = append(trace, retrieval.RetrievalTraceRecord{Stage: "hybrid_fusion", Mode: retrieval.ModeHybrid, Message: "keyword_vector_fused", Metadata: map[string]any{"keyword_count": len(keywordResp.Results), "vector_count": len(vectorResp.Results), "result_count": len(results), "vector_weight": weight}})
-	return &retrieval.RetrievalResponse{Results: results, LatencyMS: int(time.Since(start).Milliseconds()), Trace: trace}, nil
+	trace = append(trace, retrieval.RetrievalTraceRecord{
+		Stage:   "hybrid_fusion",
+		Mode:    retrieval.ModeHybrid,
+		Message: "keyword_vector_fused",
+		Metadata: map[string]any{
+			"keyword_count": len(keywordResp.Results),
+			"vector_count":  len(vectorResp.Results),
+			"result_count":  len(results),
+			"vector_weight": weight,
+		},
+	})
+	return &retrieval.RetrievalResponse{
+		Results:   results,
+		LatencyMS: int(time.Since(start).Milliseconds()),
+		Trace:     trace,
+	}, nil
 }
 
 func fuse(keywordResults, vectorResults []retrieval.RetrievalResult, vectorWeight float64, topK int) []retrieval.RetrievalResult {

@@ -1,5 +1,13 @@
-ALTER TABLE workflow_profiles
-    ADD COLUMN reflection_policy_json JSON NULL AFTER memory_policy_json;
+SELECT COUNT(*) INTO @has_reflection_policy_json FROM information_schema.COLUMNS
+WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'workflow_profiles' AND COLUMN_NAME = 'reflection_policy_json';
+SET @reflection_policy_ddl = IF(
+    @has_reflection_policy_json = 1,
+    'SELECT 1',
+    'ALTER TABLE workflow_profiles ADD COLUMN reflection_policy_json JSON NULL'
+);
+PREPARE reflection_policy_stmt FROM @reflection_policy_ddl;
+EXECUTE reflection_policy_stmt;
+DEALLOCATE PREPARE reflection_policy_stmt;
 
 CREATE TABLE IF NOT EXISTS agent_reflections (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
@@ -75,7 +83,7 @@ CREATE TABLE IF NOT EXISTS agent_reflection_recall_logs (
     run_id BIGINT NOT NULL,
     node_id VARCHAR(128) NOT NULL DEFAULT '',
     score DOUBLE NOT NULL DEFAULT 0,
-    rank INT NOT NULL DEFAULT 0,
+    `rank` INT NOT NULL DEFAULT 0,
     injected_tokens INT NOT NULL DEFAULT 0,
     outcome VARCHAR(64) NOT NULL DEFAULT '',
     verdict VARCHAR(32) NOT NULL DEFAULT '',

@@ -640,7 +640,7 @@ func (r *ReflectionRecallLogRepository) Create(ctx context.Context, item *reflec
 
 func (r *ReflectionRecallLogRepository) ListByRun(ctx context.Context, ownerID, runID int64) ([]reflection.RecallLog, error) {
 	var items []reflection.RecallLog
-	err := r.db.WithContext(ctx).Where("owner_id = ? AND run_id = ?", ownerID, runID).Order("rank ASC, id ASC").Find(&items).Error
+	err := r.db.WithContext(ctx).Where("owner_id = ? AND run_id = ?", ownerID, runID).Order("`rank` ASC, id ASC").Find(&items).Error
 	return items, err
 }
 

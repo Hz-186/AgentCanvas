@@ -62,8 +62,10 @@ type HardConstraint struct {
 }
 
 type QueryPlan struct {
-	OriginalQuery         string           `json:"original_query"`
-	NormalizedQuery       string           `json:"normalized_query"`
+	OriginalQuery string `json:"original_query"`
+	// Standardized questions after removing spaces and special punctuation marks
+	NormalizedQuery string `json:"normalized_query"`
+	// after replace "it"
 	ResolvedQuery         string           `json:"resolved_query,omitempty"`
 	PreciseQuery          string           `json:"precise_query"`
 	HardConstraints       []HardConstraint `json:"hard_constraints,omitempty"`
@@ -90,7 +92,7 @@ type RetrievalResult struct {
 	Score        float64        `json:"score"`
 	KeywordScore float64        `json:"keyword_score"`
 	VectorScore  float64        `json:"vector_score"`
-	FinalScore   float64        `json:"final_score"`
+	FinalScore   float64        `json:"final_score"` // after Rerank
 	Content      string         `json:"content"`
 	Highlight    string         `json:"highlight"`
 	DocumentName string         `json:"document_name"`
@@ -99,7 +101,7 @@ type RetrievalResult struct {
 }
 
 type RetrievalResponse struct {
-	Results       []RetrievalResult      `json:"results"`
+	Results       []RetrievalResult      `json:"results"` // List of all chunks results found
 	LatencyMS     int                    `json:"latency_ms"`
 	Diagnostics   *RecallDiagnostics     `json:"diagnostics,omitempty"`
 	Trace         []RetrievalTraceRecord `json:"trace,omitempty"`
@@ -107,8 +109,10 @@ type RetrievalResponse struct {
 	Clarification *Clarification         `json:"clarification,omitempty"`
 }
 
+// RecallDiagnostics Diagnostics
 type RecallDiagnostics struct {
-	LowRecall         bool    `json:"low_recall"`
+	LowRecall bool `json:"low_recall"`
+	// such like "vector similarity lower than threshold"
 	Reason            string  `json:"reason,omitempty"`
 	ResultCount       int     `json:"result_count"`
 	RequestedTopK     int     `json:"requested_top_k"`
@@ -131,14 +135,27 @@ type RetrievalTraceRecord struct {
 	Metadata map[string]any `json:"metadata,omitempty"`
 }
 
+// Indexer maintains searchable document indexes.
 type Indexer interface {
+	// EnsureIndex creates the backing index or collection when needed.
 	EnsureIndex(ctx context.Context) error
+	// IndexChunks writes document chunks to the backing index.
 	IndexChunks(ctx context.Context, docs []ChunkIndexDocument) error
+	// SetDocumentEnabled toggles all indexed chunks for a document.
 	SetDocumentEnabled(ctx context.Context, ownerID, documentID int64, enabled bool) error
+	// DeleteByDocument removes all indexed chunks for a document.
 	DeleteByDocument(ctx context.Context, ownerID, documentID int64) error
+	// DeleteByKnowledgeBase removes all indexed chunks for a knowledge base.
 	DeleteByKnowledgeBase(ctx context.Context, ownerID, kbID int64) error
 }
 
+// Retriever searches indexed document chunks.
 type Retriever interface {
 	Search(ctx context.Context, req RetrievalRequest) (*RetrievalResponse, error)
+}
+
+// Backend combines indexing and retrieval capabilities.
+type Backend interface {
+	Indexer
+	Retriever
 }
