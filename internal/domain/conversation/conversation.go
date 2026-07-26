@@ -18,6 +18,7 @@ type Conversation struct {
 	WorkflowID           *int64          `json:"workflow_id,omitempty" gorm:"column:workflow_id"`
 	AgentID              *int64          `json:"agent_id,omitempty" gorm:"column:agent_id"`
 	AgentReleaseID       *int64          `json:"agent_release_id,omitempty" gorm:"column:agent_release_id"`
+	AgentMode            string          `json:"agent_mode,omitempty" gorm:"column:agent_mode"`
 	ParentConversationID *int64          `json:"parent_conversation_id,omitempty" gorm:"column:parent_conversation_id"`
 	Messages             []MessageItem   `json:"messages" gorm:"-"`
 	MessageJSON          string          `json:"-" gorm:"column:message_json"`

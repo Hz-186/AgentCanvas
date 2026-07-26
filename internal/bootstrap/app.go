@@ -352,6 +352,7 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 	workflowService.ConfigureRuleSets(workflowRuleSetRepo)
 	independentAgentService := independentagentusecase.NewService(agentRepo, agentTurnRepo, conversationRepo, messageRepo,
 		runRepo, runEventRepo, runStepRepo, approvalRepo, workflowService, workflowService.AgentRuntime())
+	independentAgentService.ConfigureEditableResources(providerRepo, knowledgeRepo)
 	toolCallingClient, ok := chatClient.(llm.ToolCallingClient)
 	if !ok {
 		return nil, fmt.Errorf("init self-improvement service: tool calling client is required")

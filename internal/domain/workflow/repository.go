@@ -104,7 +104,7 @@ type IndependentRunResumer interface {
 }
 
 type IndependentRunCanceller interface {
-	CancelIndependentRun(int64) bool
+	CancelIndependentRun(context.Context, int64, int64) error
 }
 
 type TeamRepository interface {

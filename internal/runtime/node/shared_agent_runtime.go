@@ -136,7 +136,7 @@ func (r *SharedAgentRuntime) run(ctx context.Context, req AgentRunRequest, emit 
 	// old fields remain decode-only so historical releases can still be read.
 	cfg.CallWorkflowIDs = nil
 	cfg.CallAgentIDs = nil
-	cfg.AllowInlineAgents = false
+	cfg.AllowInlineAgents = true
 	cfg.CallWorkflowToolName = ""
 	cfg.AdditionalContextBlocks = append([]runtimeagent.ContextBlock(nil), req.ContextBlocks...)
 	output, err := r.node.runAgent(ctx, rc, engine.NodeInput{"query": req.Task}, cfg, "agent_runtime", false, resume)

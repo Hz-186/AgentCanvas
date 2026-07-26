@@ -14,6 +14,8 @@ import (
 
 	agentdomain "agentcanvas/internal/domain/agent"
 	"agentcanvas/internal/domain/conversation"
+	"agentcanvas/internal/domain/knowledge"
+	"agentcanvas/internal/domain/provider"
 	"agentcanvas/internal/domain/workflow"
 	"agentcanvas/internal/infrastructure/llm"
 	agenterrors "agentcanvas/internal/pkg/errors"
@@ -38,6 +40,8 @@ type Service struct {
 	sessionSearch conversation.MessageSearchIndex
 	runtime       runtimenode.AgentRuntime
 	lifecycle     LifecycleWorkflowRuntime
+	providers     provider.Repository
+	knowledge     knowledge.BaseRepository
 	cancelMu      sync.Mutex
 	cancels       map[int64]context.CancelFunc
 	leaseDuration time.Duration
@@ -65,50 +69,156 @@ func NewService(
 }
 
 type CreateAgentRequest struct {
-	Name        string                 `json:"name" binding:"required"`
-	Description string                 `json:"description"`
-	AvatarURL   string                 `json:"avatar_url"`
-	Definition  agentdomain.Definition `json:"definition" binding:"required"`
+	Name        string                `json:"name"`
+	Description string                `json:"description"`
+	AvatarURL   string                `json:"avatar_url"`
+	Settings    AgentEditableSettings `json:"settings"`
 }
 
 type UpdateAgentRequest struct {
-	Name        *string                 `json:"name"`
-	Description *string                 `json:"description"`
-	AvatarURL   *string                 `json:"avatar_url"`
-	Status      *string                 `json:"status"`
-	Definition  *agentdomain.Definition `json:"definition"`
+	Name        *string `json:"name"`
+	Description *string `json:"description"`
+	AvatarURL   *string `json:"avatar_url"`
 }
 
-func (s *Service) CreateAgent(ctx context.Context, ownerID int64, req CreateAgentRequest) (*agentdomain.Agent, error) {
+type AgentEditableSettings struct {
+	ProviderID   int64    `json:"provider_id"`
+	Model        string   `json:"model"`
+	SystemPrompt string   `json:"system_prompt"`
+	KnowledgeIDs []int64  `json:"knowledge_ids"`
+	Temperature  *float64 `json:"temperature,omitempty"`
+}
+
+type AgentView struct {
+	ID               int64                 `json:"id"`
+	OwnerID          int64                 `json:"owner_id"`
+	Name             string                `json:"name"`
+	Description      string                `json:"description"`
+	AvatarURL        string                `json:"avatar_url"`
+	Status           string                `json:"status"`
+	Settings         AgentEditableSettings `json:"settings"`
+	CurrentReleaseID *int64                `json:"current_release_id,omitempty"`
+	CreatedAt        time.Time             `json:"created_at"`
+	UpdatedAt        time.Time             `json:"updated_at"`
+}
+
+const defaultAgentSystemPrompt = "You are a capable, careful AI agent. Use tools when they materially help, and return a concise final answer."
+
+func ManagedDefinition(settings AgentEditableSettings) agentdomain.Definition {
+	return agentdomain.Definition{
+		ProviderID: settings.ProviderID, Model: strings.TrimSpace(settings.Model),
+		SystemPrompt: strings.TrimSpace(settings.SystemPrompt), Temperature: settings.Temperature,
+		Mode: "react", KnowledgeIDs: normalizeIDs(settings.KnowledgeIDs), KnowledgeTopK: 5, KnowledgeMode: "hybrid",
+		SkillLoadingMode: "auto", MemoryEnabled: true, ReflectionEnabled: true, AllowInlineAgents: true,
+		MaxIterations: 8, MaxToolCalls: 16, MaxExecutionTimeMS: 120000, MaxToolTimeoutMS: 30000,
+		MaxToolOutputBytes: 512 * 1024, MaxParallelSubAgents: 4, MaxWorkflowCallDepth: 3, OutputMode: "final_answer",
+	}.Normalize()
+}
+
+func normalizeIDs(ids []int64) []int64 {
+	seen := make(map[int64]struct{}, len(ids))
+	result := make([]int64, 0, len(ids))
+	for _, id := range ids {
+		if id <= 0 {
+			continue
+		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		result = append(result, id)
+	}
+	return result
+}
+
+func settingsFromDefinition(definition agentdomain.Definition) AgentEditableSettings {
+	return AgentEditableSettings{ProviderID: definition.ProviderID, Model: definition.Model, SystemPrompt: definition.SystemPrompt,
+		KnowledgeIDs: append([]int64(nil), definition.KnowledgeIDs...), Temperature: definition.Temperature}
+}
+
+func viewAgent(item *agentdomain.Agent) *AgentView {
+	if item == nil {
+		return nil
+	}
+	return &AgentView{ID: item.ID, OwnerID: item.OwnerID, Name: item.Name, Description: item.Description, AvatarURL: item.AvatarURL,
+		Status: item.Status, Settings: settingsFromDefinition(item.DraftDefinition), CurrentReleaseID: item.CurrentReleaseID,
+		CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt}
+}
+
+func (s *Service) ConfigureEditableResources(providers provider.Repository, knowledgeBases knowledge.BaseRepository) {
+	s.providers, s.knowledge = providers, knowledgeBases
+}
+
+func (s *Service) validateEditableSettings(ctx context.Context, ownerID int64, settings AgentEditableSettings) error {
+	definition := ManagedDefinition(settings)
+	if definition.SystemPrompt == "" {
+		definition.SystemPrompt = defaultAgentSystemPrompt
+	}
+	if err := definition.Validate(); err != nil {
+		return fmt.Errorf("%w: %v", agenterrors.ErrInvalidInput, err)
+	}
+	if s.providers == nil || s.knowledge == nil {
+		return errors.New("agent editable resource validation is not configured")
+	}
+	providerItem, err := s.providers.FindByID(ctx, ownerID, settings.ProviderID)
+	if err != nil || providerItem.Status != provider.StatusActive {
+		return agenterrors.ErrInvalidInput
+	}
+	for _, id := range definition.KnowledgeIDs {
+		item, findErr := s.knowledge.FindByID(ctx, ownerID, id)
+		if findErr != nil || item.Status != knowledge.KnowledgeBaseStatusActive {
+			return agenterrors.ErrInvalidInput
+		}
+	}
+	return nil
+}
+
+func (s *Service) CreateAgent(ctx context.Context, ownerID int64, req CreateAgentRequest) (*AgentView, error) {
 	if ownerID <= 0 || strings.TrimSpace(req.Name) == "" {
 		return nil, agenterrors.ErrInvalidInput
 	}
-	definition := req.Definition.Normalize()
-	if err := definition.Validate(); err != nil {
-		return nil, fmt.Errorf("%w: %v", agenterrors.ErrInvalidInput, err)
+	if err := s.validateEditableSettings(ctx, ownerID, req.Settings); err != nil {
+		return nil, err
 	}
-	if err := validateDefinitionRules(definition); err != nil {
-		return nil, fmt.Errorf("%w: %v", agenterrors.ErrInvalidInput, err)
+	definition := ManagedDefinition(req.Settings)
+	if definition.SystemPrompt == "" {
+		definition.SystemPrompt = defaultAgentSystemPrompt
 	}
 	item := &agentdomain.Agent{OwnerID: ownerID, Name: strings.TrimSpace(req.Name), Description: strings.TrimSpace(req.Description),
 		AvatarURL: strings.TrimSpace(req.AvatarURL), Status: agentdomain.StatusDraft, DraftDefinition: definition}
 	if err := s.agents.Create(ctx, item); err != nil {
 		return nil, err
 	}
-	return item, nil
+	if _, err := s.Publish(ctx, ownerID, item.ID); err != nil {
+		return nil, err
+	}
+	return s.GetAgent(ctx, ownerID, item.ID)
 }
 
-func (s *Service) ListAgents(ctx context.Context, ownerID int64) ([]agentdomain.Agent, error) {
-	return s.agents.ListByOwner(ctx, ownerID)
+func (s *Service) ListAgents(ctx context.Context, ownerID int64) ([]AgentView, error) {
+	items, err := s.agents.ListByOwner(ctx, ownerID)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]AgentView, 0, len(items))
+	for index := range items {
+		result = append(result, *viewAgent(&items[index]))
+	}
+	return result, nil
 }
 
-func (s *Service) GetAgent(ctx context.Context, ownerID, id int64) (*agentdomain.Agent, error) {
+func (s *Service) getAgent(ctx context.Context, ownerID, id int64) (*agentdomain.Agent, error) {
 	item, err := s.agents.FindByID(ctx, ownerID, id)
 	return item, mapNotFound(err)
 }
 
-func (s *Service) UpdateAgent(ctx context.Context, ownerID, id int64, req UpdateAgentRequest) (*agentdomain.Agent, error) {
-	item, err := s.GetAgent(ctx, ownerID, id)
+func (s *Service) GetAgent(ctx context.Context, ownerID, id int64) (*AgentView, error) {
+	item, err := s.getAgent(ctx, ownerID, id)
+	return viewAgent(item), err
+}
+
+func (s *Service) UpdateAgent(ctx context.Context, ownerID, id int64, req UpdateAgentRequest) (*AgentView, error) {
+	item, err := s.getAgent(ctx, ownerID, id)
 	if err != nil {
 		return nil, err
 	}
@@ -124,31 +234,35 @@ func (s *Service) UpdateAgent(ctx context.Context, ownerID, id int64, req Update
 	if req.AvatarURL != nil {
 		item.AvatarURL = strings.TrimSpace(*req.AvatarURL)
 	}
-	if req.Status != nil {
-		status := strings.TrimSpace(*req.Status)
-		if status != agentdomain.StatusDraft && status != agentdomain.StatusActive && status != agentdomain.StatusArchived {
-			return nil, agenterrors.ErrInvalidInput
-		}
-		item.Status = status
+	if err := s.agents.Update(ctx, item); err != nil {
+		return nil, err
 	}
-	if req.Definition != nil {
-		definition := req.Definition.Normalize()
-		if err := definition.Validate(); err != nil {
-			return nil, fmt.Errorf("%w: %v", agenterrors.ErrInvalidInput, err)
-		}
-		if err := validateDefinitionRules(definition); err != nil {
-			return nil, fmt.Errorf("%w: %v", agenterrors.ErrInvalidInput, err)
-		}
-		item.DraftDefinition = definition
+	return viewAgent(item), nil
+}
+
+func (s *Service) UpdateAgentSettings(ctx context.Context, ownerID, id int64, settings AgentEditableSettings) (*AgentView, error) {
+	if err := s.validateEditableSettings(ctx, ownerID, settings); err != nil {
+		return nil, err
+	}
+	item, err := s.getAgent(ctx, ownerID, id)
+	if err != nil {
+		return nil, err
+	}
+	item.DraftDefinition = ManagedDefinition(settings)
+	if item.DraftDefinition.SystemPrompt == "" {
+		item.DraftDefinition.SystemPrompt = defaultAgentSystemPrompt
 	}
 	if err := s.agents.Update(ctx, item); err != nil {
 		return nil, err
 	}
-	return item, nil
+	if _, err := s.Publish(ctx, ownerID, id); err != nil {
+		return nil, err
+	}
+	return s.GetAgent(ctx, ownerID, id)
 }
 
 func (s *Service) DeleteAgent(ctx context.Context, ownerID, id int64) error {
-	if _, err := s.GetAgent(ctx, ownerID, id); err != nil {
+	if _, err := s.getAgent(ctx, ownerID, id); err != nil {
 		return err
 	}
 	return s.agents.SoftDelete(ctx, ownerID, id)
@@ -162,7 +276,7 @@ type ValidationResult struct {
 }
 
 func (s *Service) ValidateAgent(ctx context.Context, ownerID, id int64) (*ValidationResult, error) {
-	item, err := s.GetAgent(ctx, ownerID, id)
+	item, err := s.getAgent(ctx, ownerID, id)
 	if err != nil {
 		return nil, err
 	}
@@ -193,7 +307,7 @@ func (s *Service) ValidateAgent(ctx context.Context, ownerID, id int64) (*Valida
 }
 
 func (s *Service) Publish(ctx context.Context, ownerID, id int64) (*agentdomain.Release, error) {
-	item, err := s.GetAgent(ctx, ownerID, id)
+	item, err := s.getAgent(ctx, ownerID, id)
 	if err != nil {
 		return nil, err
 	}
@@ -241,7 +355,7 @@ func validateDefinitionRules(definition agentdomain.Definition) error {
 }
 
 func (s *Service) ListReleases(ctx context.Context, ownerID, agentID int64) ([]agentdomain.Release, error) {
-	if _, err := s.GetAgent(ctx, ownerID, agentID); err != nil {
+	if _, err := s.getAgent(ctx, ownerID, agentID); err != nil {
 		return nil, err
 	}
 	return s.agents.ListReleases(ctx, ownerID, agentID)
@@ -269,10 +383,22 @@ func (s *Service) Capabilities(ctx context.Context, ownerID, releaseID int64) (m
 
 type CreateConversationRequest struct {
 	Title string `json:"title"`
+	Mode  string `json:"mode"`
+}
+
+func normalizeAgentMode(mode string) (string, error) {
+	mode = strings.TrimSpace(mode)
+	if mode == "" {
+		return "react", nil
+	}
+	if mode != "react" && mode != "plan_execute" {
+		return "", agenterrors.ErrInvalidInput
+	}
+	return mode, nil
 }
 
 func (s *Service) CreateConversation(ctx context.Context, ownerID, agentID int64, req CreateConversationRequest) (*conversation.Conversation, error) {
-	agentItem, err := s.GetAgent(ctx, ownerID, agentID)
+	agentItem, err := s.getAgent(ctx, ownerID, agentID)
 	if err != nil {
 		return nil, err
 	}
@@ -283,16 +409,48 @@ func (s *Service) CreateConversation(ctx context.Context, ownerID, agentID int64
 	if title == "" {
 		title = "New conversation"
 	}
+	mode, err := normalizeAgentMode(req.Mode)
+	if err != nil {
+		return nil, err
+	}
 	item := &conversation.Conversation{OwnerID: ownerID, AgentID: &agentID, AgentReleaseID: agentItem.CurrentReleaseID,
-		Title: title, Name: title, Source: conversation.SourceAgent}
+		Title: title, Name: title, Source: conversation.SourceAgent, AgentMode: mode}
 	if err := s.conversations.Create(ctx, item); err != nil {
 		return nil, err
 	}
 	return item, nil
 }
 
+type UpdateConversationModeRequest struct {
+	Mode string `json:"mode"`
+}
+
+func (s *Service) UpdateConversationMode(ctx context.Context, ownerID, agentID, conversationID int64, req UpdateConversationModeRequest) (*conversation.Conversation, error) {
+	item, err := s.GetConversation(ctx, ownerID, agentID, conversationID)
+	if err != nil {
+		return nil, err
+	}
+	latest, latestErr := s.turns.FindLatestByConversation(ctx, ownerID, agentID, conversationID)
+	if latestErr != nil && !errors.Is(latestErr, agentdomain.ErrNoTurnAvailable) && !errors.Is(mapNotFound(latestErr), agenterrors.ErrNotFound) {
+		return nil, latestErr
+	}
+	if latestErr == nil && (latest.Status == agentdomain.TurnStatusQueued || latest.Status == agentdomain.TurnStatusRetryWait ||
+		latest.Status == agentdomain.TurnStatusRunning || latest.Status == agentdomain.TurnStatusWaitingHuman || latest.Status == agentdomain.TurnStatusPaused) {
+		return nil, fmt.Errorf("%w: cannot change mode while a turn is active", agenterrors.ErrInvalidInput)
+	}
+	mode, err := normalizeAgentMode(req.Mode)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.conversations.UpdateAgentMode(ctx, ownerID, conversationID, mode); err != nil {
+		return nil, err
+	}
+	item.AgentMode = mode
+	return item, nil
+}
+
 func (s *Service) ListConversations(ctx context.Context, ownerID, agentID int64) ([]conversation.Conversation, error) {
-	if _, err := s.GetAgent(ctx, ownerID, agentID); err != nil {
+	if _, err := s.getAgent(ctx, ownerID, agentID); err != nil {
 		return nil, err
 	}
 	return s.conversations.ListByAgent(ctx, ownerID, agentID)
@@ -336,7 +494,7 @@ func (s *Service) ForkConversation(ctx context.Context, ownerID, agentID, conver
 	}
 	releaseID := source.AgentReleaseID
 	if useCurrentRelease {
-		agentItem, getErr := s.GetAgent(ctx, ownerID, agentID)
+		agentItem, getErr := s.getAgent(ctx, ownerID, agentID)
 		if getErr != nil {
 			return nil, getErr
 		}
@@ -347,7 +505,7 @@ func (s *Service) ForkConversation(ctx context.Context, ownerID, agentID, conver
 	}
 	title := source.Title + " (fork)"
 	fork := &conversation.Conversation{OwnerID: ownerID, AgentID: &agentID, AgentReleaseID: releaseID,
-		ParentConversationID: &source.ID, Title: title, Name: title, Source: conversation.SourceAgent}
+		ParentConversationID: &source.ID, Title: title, Name: title, Source: conversation.SourceAgent, AgentMode: source.AgentMode}
 	if err := s.conversations.Create(ctx, fork); err != nil {
 		return nil, err
 	}
@@ -373,8 +531,25 @@ type CreateTurnRequest struct {
 }
 
 type TurnAccepted struct {
-	Turn *agentdomain.Turn `json:"turn"`
-	Run  *workflow.Run     `json:"run"`
+	Turn        *agentdomain.Turn     `json:"turn"`
+	Run         *workflow.Run         `json:"run"`
+	UserMessage *conversation.Message `json:"user_message"`
+}
+
+func (s *Service) userMessageForTurn(ctx context.Context, ownerID int64, turn *agentdomain.Turn) *conversation.Message {
+	if turn == nil || turn.UserMessageID <= 0 {
+		return nil
+	}
+	items, err := s.messages.ListByConversation(ctx, ownerID, turn.ConversationID)
+	if err != nil {
+		return nil
+	}
+	for index := range items {
+		if items[index].ID == turn.UserMessageID {
+			return &items[index]
+		}
+	}
+	return nil
 }
 
 func (s *Service) StartTurn(ctx context.Context, ownerID, agentID, conversationID int64, idempotencyKey string, req CreateTurnRequest) (*TurnAccepted, error) {
@@ -392,7 +567,7 @@ func (s *Service) StartTurn(ctx context.Context, ownerID, agentID, conversationI
 		if existing.RunID != nil {
 			run, _ = s.runs.FindByID(ctx, ownerID, *existing.RunID)
 		}
-		return &TurnAccepted{Turn: existing, Run: run}, nil
+		return &TurnAccepted{Turn: existing, Run: run, UserMessage: s.userMessageForTurn(ctx, ownerID, existing)}, nil
 	}
 	if conv.AgentReleaseID == nil || *conv.AgentReleaseID <= 0 {
 		return nil, agenterrors.ErrInvalidInput
@@ -400,7 +575,11 @@ func (s *Service) StartTurn(ctx context.Context, ownerID, agentID, conversationI
 	userMessage := &conversation.Message{OwnerID: ownerID, ConversationID: conversationID, Role: conversation.RoleUser,
 		Content: content, ContentType: conversation.ContentTypeText, MetadataJSON: "{}"}
 	now := time.Now().UTC()
-	inputJSON, _ := json.Marshal(map[string]any{"query": content})
+	mode, err := normalizeAgentMode(conv.AgentMode)
+	if err != nil {
+		return nil, err
+	}
+	inputJSON, _ := json.Marshal(map[string]any{"query": content, "mode": mode})
 	run := &workflow.Run{OwnerID: ownerID, RunKind: workflow.RunKindAgent, AgentID: &agentID,
 		AgentReleaseID: conv.AgentReleaseID, ConversationID: &conversationID, Status: workflow.RunStatusQueued,
 		InputJSON: inputJSON, StartedAt: now, CreatedAt: now, UpdatedAt: now}
@@ -413,18 +592,18 @@ func (s *Service) StartTurn(ctx context.Context, ownerID, agentID, conversationI
 			if existing.RunID != nil {
 				existingRun, _ = s.runs.FindByID(ctx, ownerID, *existing.RunID)
 			}
-			return &TurnAccepted{Turn: existing, Run: existingRun}, nil
+			return &TurnAccepted{Turn: existing, Run: existingRun, UserMessage: s.userMessageForTurn(ctx, ownerID, existing)}, nil
 		}
 		return nil, err
 	}
 	if s.sessionSearch != nil {
 		_ = s.sessionSearch.IndexMessage(ctx, ownerID, agentID, userMessage)
 	}
-	return &TurnAccepted{Turn: turn, Run: run}, nil
+	return &TurnAccepted{Turn: turn, Run: run, UserMessage: userMessage}, nil
 }
 
 func (s *Service) SearchSessions(ctx context.Context, ownerID, agentID int64, request conversation.MessageSearchRequest) ([]conversation.MessageSearchResult, error) {
-	if _, err := s.GetAgent(ctx, ownerID, agentID); err != nil {
+	if _, err := s.getAgent(ctx, ownerID, agentID); err != nil {
 		return nil, err
 	}
 	if s.sessionSearch == nil {
@@ -451,6 +630,12 @@ func (s *Service) executeTurnOwned(ctx context.Context, turn *agentdomain.Turn) 
 		s.failTurn(ctx, turn, nil, err)
 		return
 	}
+	if run.Status == workflow.RunStatusCancelled {
+		finished := time.Now().UTC()
+		turn.Status, turn.FinishedAt = agentdomain.TurnStatusCancelled, &finished
+		_ = s.turns.Update(ctx, turn)
+		return
+	}
 	run.Status, run.ErrorMessage = workflow.RunStatusRunning, ""
 	_ = s.runs.Update(ctx, run)
 	execCtx, cancel := context.WithCancel(ctx)
@@ -473,6 +658,9 @@ func (s *Service) executeTurnOwned(ctx context.Context, turn *agentdomain.Turn) 
 	var input map[string]any
 	_ = json.Unmarshal(turn.InputJSON, &input)
 	task, _ := input["query"].(string)
+	if mode, modeErr := normalizeAgentMode(fmt.Sprint(input["mode"])); modeErr == nil {
+		definition.Mode = mode
+	}
 	emitter := &runEventEmitter{repo: s.events, ownerID: turn.OwnerID, runID: run.ID}
 	contextBlocks := []runtimeagent.ContextBlock{}
 	pre, err := s.runLifecycle(ctx, "pre_turn", release.Definition, turn, run, task, nil, emitter)
@@ -783,6 +971,9 @@ func (s *Service) ResumeIndependentRun(ctx context.Context, run *workflow.Run, s
 	var input map[string]any
 	_ = json.Unmarshal(run.InputJSON, &input)
 	task, _ := input["query"].(string)
+	if mode, modeErr := normalizeAgentMode(fmt.Sprint(input["mode"])); modeErr == nil {
+		definition.Mode = mode
+	}
 	turn.Status = agentdomain.TurnStatusRunning
 	_ = s.turns.Update(ctx, turn)
 	execCtx, cancel := context.WithCancel(ctx)
@@ -833,15 +1024,25 @@ func (s *Service) unregisterCancel(runID int64) {
 	defer s.cancelMu.Unlock()
 	delete(s.cancels, runID)
 }
-func (s *Service) CancelIndependentRun(runID int64) bool {
+func (s *Service) CancelIndependentRun(ctx context.Context, ownerID, runID int64) error {
+	turn, err := s.turns.FindByRunID(ctx, ownerID, runID)
+	if err != nil {
+		return mapNotFound(err)
+	}
+	if turn.Status == agentdomain.TurnStatusQueued || turn.Status == agentdomain.TurnStatusRunning || turn.Status == agentdomain.TurnStatusRetryWait {
+		finished := time.Now().UTC()
+		turn.Status, turn.FinishedAt = agentdomain.TurnStatusCancelled, &finished
+		if err := s.turns.Update(ctx, turn); err != nil {
+			return err
+		}
+	}
 	s.cancelMu.Lock()
 	cancel := s.cancels[runID]
 	s.cancelMu.Unlock()
-	if cancel == nil {
-		return false
+	if cancel != nil {
+		cancel()
 	}
-	cancel()
-	return true
+	return nil
 }
 
 func (s *Service) ExecuteAcceptedTurn(ctx context.Context, ownerID, turnID int64) error {

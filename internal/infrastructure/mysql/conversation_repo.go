@@ -81,6 +81,12 @@ func (r *ConversationRepository) ListByAgent(ctx context.Context, ownerID, agent
 	return items, err
 }
 
+func (r *ConversationRepository) UpdateAgentMode(ctx context.Context, ownerID, id int64, mode string) error {
+	return r.db.WithContext(ctx).Model(&conversation.Conversation{}).
+		Where("id = ? AND owner_id = ? AND source = ? AND deleted_at IS NULL", id, ownerID, conversation.SourceAgent).
+		Updates(map[string]any{"agent_mode": mode, "updated_at": time.Now().UTC()}).Error
+}
+
 func (r *ConversationRepository) FindByID(ctx context.Context, ownerID, id int64) (*conversation.Conversation, error) {
 	var item conversation.Conversation
 	err := r.db.WithContext(ctx).
