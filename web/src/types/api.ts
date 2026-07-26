@@ -429,59 +429,19 @@ export interface Conversation {
   workflow_id?: number | null;
   agent_id?: number | null;
   agent_release_id?: number | null;
+  agent_mode?: 'react' | 'plan_execute';
   parent_conversation_id?: number | null;
   last_message_at: string | null;
   created_at: string;
   updated_at: string;
 }
 
-export interface AgentDefinition {
+export interface AgentEditableSettings {
   provider_id: number;
   model: string;
   system_prompt: string;
-  role?: string;
-  goal?: string;
-  backstory?: string;
-  mode: 'react' | 'plan_execute';
+  knowledge_ids: number[];
   temperature?: number;
-  tool_pack_ids?: number[];
-  tool_ids?: number[];
-  skill_ids?: number[];
-  skill_loading_mode?: 'auto' | 'metadata_only' | 'search';
-  knowledge_ids?: number[];
-  knowledge_top_k?: number;
-  knowledge_mode?: 'keyword' | 'vector' | 'hybrid';
-  mcp_server_ids?: number[];
-  callable_agent_ids?: number[];
-  call_workflow_ids?: number[];
-  allow_inline_agents?: boolean;
-  max_parallel_sub_agents?: number;
-  max_workflow_call_depth?: number;
-  memory_enabled?: boolean;
-  reflection_enabled?: boolean;
-  memory_policy_json?: unknown;
-  reflection_policy_json?: unknown;
-  tool_policy_json?: unknown;
-  context_policy_json?: unknown;
-  rules_json?: unknown;
-  output_schema_json?: unknown;
-  output_mode?: 'final_answer' | 'full';
-  return_intermediate_steps?: boolean;
-  max_iterations?: number;
-  max_tool_calls?: number;
-  max_execution_time_ms?: number;
-  max_tool_timeout_ms?: number;
-  max_tool_output_bytes?: number;
-  max_input_chars?: number;
-  max_input_tokens?: number;
-  context_window_tokens?: number;
-  reserved_output_tokens?: number;
-  context_safety_margin_tokens?: number;
-  max_rule_tokens?: number;
-  pre_turn_workflow_id?: number | null;
-  pre_turn_workflow_version_id?: number | null;
-  post_turn_workflow_id?: number | null;
-  post_turn_workflow_version_id?: number | null;
 }
 
 export interface Agent {
@@ -491,25 +451,11 @@ export interface Agent {
   description: string;
   avatar_url: string;
   status: 'draft' | 'active' | 'archived';
-  definition: AgentDefinition;
+  settings: AgentEditableSettings;
   current_release_id?: number | null;
   legacy_dialog_id?: number | null;
   created_at: string;
   updated_at: string;
-}
-
-export interface AgentRelease {
-  id: number;
-  owner_id: number;
-  agent_id: number;
-  version_no: number;
-  definition: AgentDefinition;
-  checksum: string;
-  rule_set_hash: string;
-  tool_schema_hash: string;
-  resource_versions?: unknown;
-  created_by: number;
-  created_at: string;
 }
 
 export interface AgentTurn {
@@ -535,6 +481,7 @@ export interface AgentTurn {
 export interface AgentTurnAccepted {
   turn: AgentTurn;
   run: Run;
+  user_message: Message;
 }
 
 export interface ImprovementReview {
