@@ -1006,11 +1006,13 @@ export function CanvasPage() {
   return (
     <div ref={canvasPageRef} className="canvas-page">
       <header className="canvas-toolbar glass">
-        <div className="min-w-0">
-          <h1 className="canvas-editorial-title truncate"><span>{workflow?.name ?? 'Agent'}</span> <span className="canvas-editorial-accent">Canvas</span></h1>
+        <div className="canvas-terminal-copy min-w-0">
+          <h1 className="canvas-editorial-title"><span className="truncate">{workflow?.name ?? 'Agent'}</span> <span className="canvas-editorial-accent">Canvas</span></h1>
           <p className="muted truncate">WORKFLOW STUDIO · {restoredFromVersion ? `RESTORED FROM v${restoredFromVersion} · UNSAVED DRAFT` : version ? `VERSION ${version.version_no}` : 'UNSAVED DRAFT'}</p>
         </div>
-        <EngineeringAscii compact label="FLOW.RUNTIME" className="canvas-ascii" />
+        <div className="canvas-terminal-visual">
+          <EngineeringAscii label="FLOW.RUNTIME" className="canvas-title-ascii" />
+        </div>
         <div className="canvas-tools">
           <Segmented value={mode} onChange={setMode} options={[{ value: 'config', label: 'Build' }, { value: 'profile', label: 'Profile' }, { value: 'reflections', label: 'Reflections' }, { value: 'approvals', label: 'Approvals' }, { value: 'eval', label: 'Evaluate' }, { value: 'chat', label: 'Dialogue' }, { value: 'debug', label: 'Debug' }, { value: 'dsl', label: 'DSL' }]} />
           <div ref={versionControlRef} className="canvas-version-control">

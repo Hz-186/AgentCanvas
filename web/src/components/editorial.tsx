@@ -1,4 +1,4 @@
-import { useEffect, useRef, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 
 export function AgentCanvasMark({ size = 36 }: { size?: number }) {
   return (
@@ -31,12 +31,50 @@ export function EngineeringAscii({
   className?: string;
 }) {
   const normalizedLabel = label.toUpperCase().replace(/[^A-Z0-9._/-]/g, '_').slice(0, 24);
+  const topologyIndex = [...normalizedLabel].reduce((sum, character) => sum + character.charCodeAt(0), 0) % 4;
+  const topologies = [
+    [
+      ['        +----[MEMORY]----+       ', '     +--+--+           +--+--+    ', '[IN]-->(AGENT)----+---->{MODEL}-->{OUT}', '     +--+--+      |    +--+--+    ', '        |      +--+--+    |       ', '        +----->{TOOL}<----+       ', '               +--[TRACE]         '],
+      ['        +====[MEMORY]====+       ', '     +==+==+           +--+--+    ', '[IN]==>(AGENT)====+====>{MODEL}==>{OUT}', '     +--+--+      :    +==+==+    ', '        |      +==+==+    |       ', '        +====>{TOOL}<====+       ', '               +==[TRACE]         '],
+      ['        +----[MEMORY]----+       ', '     +--+--+           +==+==+    ', '[IN]-->(AGENT)----+---->{MODEL}-->{OUT}', '     +==+==+      |    +--+--+    ', '        :      +--+--+    |       ', '        +----->{TOOL}<====+       ', '               +==[TRACE]         '],
+    ],
+    [
+      ['+--{INPUT}----+             +--{CACHE}', '|             v             |         ', '+----->[ROUTER]---+---->[MODEL]----+  ', '|          |      |        |       |  ', '+--[RULE]--+   +--+--+  +--+--+    |  ', '               {TOOL}  [MEMORY]    |  ', '                  +------->{OUT}<--+  '],
+      ['+=={INPUT}====+             +=={CACHE}', ':             v             |         ', '+=====>[ROUTER]===+====>[MODEL]====+  ', '|          :      |        |       :  ', '+==[RULE]==+   +==+==+  +--+--+    |  ', '               {TOOL}  [MEMORY]    |  ', '                  +======>{OUT}<==+  '],
+      ['+--{INPUT}----+             +--{CACHE}', '|             :             |         ', '+----->[ROUTER]---+---->[MODEL]====+  ', ':          |      |        :       |  ', '+==[RULE]==+   +--+--+  +==+==+    |  ', '               {TOOL}  [MEMORY]    |  ', '                  +------->{OUT}<--+  '],
+    ],
+    [
+      ['          +----[PLAN]----+         ', '       +--+--+          +--+--+      ', '[IN]-->{AGENT}----+---->{CRITIC}--+  ', '       +--+--+     |    +--+--+   |  ', '          |     +--+--+    |      |  ', '          +---->{TOOL}-----+      |  ', '             [MEMORY]----->{OUT}<-+  '],
+      ['          +====[PLAN]====+         ', '       +==+==+          +--+--+      ', '[IN]==>{AGENT}====+====>{CRITIC}==+  ', '       +--+--+     :    +==+==+   |  ', '          |     +==+==+    |      :  ', '          +====>{TOOL}=====+      |  ', '             [MEMORY]=====>{OUT}<=+  '],
+      ['          +----[PLAN]----+         ', '       +--+--+          +==+==+      ', '[IN]-->{AGENT}----+---->{CRITIC}--+  ', '       +==+==+     |    +--+--+   :  ', '          :     +--+--+    |      |  ', '          +---->{TOOL}=====+      |  ', '             [MEMORY]----->{OUT}<-+  '],
+    ],
+    [
+      ['+--[CONTEXT]----+        +----{POLICY}', '|               |        |            ', '[IN]---->(CORE)--+---+----+---->{OUT} ', '|          +----+---+----+            ', '+--[MEM]-->{MCP}     {TOOL}<--[RULE]  ', '            +---------+              ', '        [TRACE]---->[AUDIT]           '],
+      ['+==[CONTEXT]====+        +===={POLICY}', ':               |        |            ', '[IN]=====>(CORE)==+===+====+====>{OUT} ', '|          +====+===+====+            ', '+==[MEM]==>{MCP}     {TOOL}<==[RULE]  ', '            +=========+              ', '        [TRACE]====>[AUDIT]           '],
+      ['+--[CONTEXT]----+        +----{POLICY}', '|               :        |            ', '[IN]---->(CORE)--+---+====+---->{OUT} ', ':          +----+---+----+            ', '+==[MEM]==>{MCP}     {TOOL}<--[RULE]  ', '            +=========+              ', '        [TRACE]---->[AUDIT]           '],
+    ],
+  ] as const;
+  const compactGraphs = [
+    ['+--[AC]--+\n|  / \\  |\n+-(IO)--+\n|  \\ /  |\n+--{TOOL}+', '+==[AC]==+\n|  / \\  |\n+=(IO)===+\n|  \\ /  |\n+=={TOOL}='],
+    ['+--{IN}--+\n|   |    |\n+>[CORE]-+\n|   |    |\n+-->{OUT}+', '+=={IN}==+\n|   :    |\n+=>[CORE]=+\n|   |    |\n+==>{OUT}='],
+    ['+--[PLAN]+\n|  /     |\n+>(FLOW)-+\n|  \\    |\n+--[MEM]-+', '+==[PLAN]+\n|  /     |\n+>(FLOW)=+\n|  \\    |\n+==[MEM]=-'],
+    ['+--{CTX}-+\n|  +--+  |\n+-(MCP)-+\n|  +--+  |\n+--{OUT}-+', '+=={CTX}=+\n|  +==+  |\n+=(MCP)=+\n|  +==+  |\n+=={OUT}='],
+  ] as const;
+  const [frame, setFrame] = useState(0);
+
+  useEffect(() => {
+    const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+    if (reducedMotion.matches) return undefined;
+    const timer = window.setInterval(() => setFrame((value) => (value + 1) % 3), compact ? 920 : 760);
+    return () => window.clearInterval(timer);
+  }, [compact]);
+
   const graph = compact
-    ? '[IN]--(AGENT)-->{OUT}\n         +--{TOOL}'
-    : '      +--[CONTEXT]--+\n[IN]--(01 AGENT)--+-->{OUT}\n      +--{TOOLS}---+';
+    ? compactGraphs[topologyIndex][frame % compactGraphs[topologyIndex].length]
+    : topologies[topologyIndex][frame].join('\n');
 
   return (
-    <figure className={`engineering-ascii ${compact ? 'engineering-ascii-compact' : ''} ${className}`.trim()} aria-hidden="true">
+    <figure className={`engineering-ascii topology-${topologyIndex} ${compact ? 'engineering-ascii-compact' : ''} ${className}`.trim()} aria-hidden="true">
       <figcaption>
         <span>AC://{normalizedLabel}</span>
         <span className="engineering-ascii-state"><i /> SYNC</span>
@@ -71,10 +109,10 @@ export function EditorialHeader({
         </h1>
         <p className="editorial-description">{description}</p>
       </div>
-      <div className="editorial-utility">
-        <EngineeringAscii label={`${word}.${script}`} />
-        {action ? <div className="editorial-action">{action}</div> : null}
+      <div className="editorial-terminal-visual">
+        <EngineeringAscii label={`${word}.${script}`} className="editorial-inline-ascii" />
       </div>
+      {action ? <div className="editorial-action">{action}</div> : null}
     </header>
   );
 }
