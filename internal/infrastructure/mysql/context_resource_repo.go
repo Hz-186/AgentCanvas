@@ -59,7 +59,7 @@ func (r *ContextResourceRepository) Backfill(ctx context.Context, resourceType s
 		}
 	case contextresource.TypeLongTermMemory:
 		var items []memory.Memory
-		if err := r.db.WithContext(ctx).Where("id > ? AND deleted_at IS NULL AND conflict_flag = ? AND memory_level IN ?", afterID, false, []string{memory.LevelShortTerm, memory.LevelLongTerm}).Order("id ASC").Limit(limit).Find(&items).Error; err != nil {
+		if err := r.db.WithContext(ctx).Where("id > ? AND deleted_at IS NULL AND status = ? AND conflict_flag = ? AND (expires_at IS NULL OR expires_at > ?) AND memory_level IN ?", afterID, memory.StatusActive, false, time.Now().UTC(), []string{memory.LevelShortTerm, memory.LevelLongTerm}).Order("id ASC").Limit(limit).Find(&items).Error; err != nil {
 			return result, err
 		}
 		for i := range items {
@@ -280,10 +280,10 @@ func (r *ContextResourceRepository) LoadDocument(ctx context.Context, item conte
 		if value.ConversationID != nil {
 			conversationID = *value.ConversationID
 		}
-		if value.MemoryLevel == memory.LevelWorking || value.ConflictFlag {
+		if !value.IsRecallable(time.Now().UTC()) {
 			return nilOrLoadError(gorm.ErrRecordNotFound)
 		}
-		return document(item, memoryContextText(value), conversationID, map[string]any{"memory_type": value.MemoryType, "memory_level": value.MemoryLevel, "conflict_flag": value.ConflictFlag, "importance": value.Importance}), nil
+		return document(item, memoryContextText(value), conversationID, map[string]any{"memory_type": value.MemoryType, "memory_level": value.MemoryLevel, "scope_type": value.ScopeType, "scope_id": value.ScopeID, "status": value.Status, "conflict_flag": value.ConflictFlag, "importance": value.Importance}), nil
 	case contextresource.TypeSkill:
 		var value skill.Skill
 		if err := r.db.WithContext(ctx).Where("owner_id = ? AND id = ? AND deleted_at IS NULL", item.OwnerID, id).First(&value).Error; err != nil {

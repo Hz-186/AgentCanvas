@@ -3,6 +3,7 @@ package queue
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -237,9 +238,11 @@ func (c *natsJetStreamClient) Fetch(ctx context.Context, stream, durable string,
 	if err != nil {
 		return nil, err
 	}
-	messages, err := sub.Fetch(limit, nats.Context(ctx), nats.MaxWait(maxWait))
+	fetchCtx, cancel := context.WithTimeout(ctx, maxWait)
+	defer cancel()
+	messages, err := sub.Fetch(limit, nats.Context(fetchCtx))
 	if err != nil {
-		if err == nats.ErrTimeout {
+		if errors.Is(err, nats.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
 			return nil, nil
 		}
 		return nil, err

@@ -6,9 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"math"
 	"net/http"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -179,8 +177,6 @@ func (s *Store) Search(ctx context.Context, req retrieval.RetrievalRequest) (*re
 		results, err = s.keywordSearch(ctx, req, req.TopK)
 	case retrieval.ModeVector:
 		results, err = s.vectorSearch(ctx, req, req.TopK)
-	case retrieval.ModeHybrid:
-		results, err = s.hybridSearch(ctx, req)
 	default:
 		err = fmt.Errorf("unsupported retrieval mode: %s", req.Mode)
 	}
@@ -249,60 +245,6 @@ func (s *Store) vectorSearch(ctx context.Context, req retrieval.RetrievalRequest
 	for i := range results {
 		results[i].VectorScore = results[i].Score
 		results[i].FinalScore = results[i].Score
-	}
-	return results, nil
-}
-
-func (s *Store) hybridSearch(ctx context.Context, req retrieval.RetrievalRequest) ([]retrieval.RetrievalResult, error) {
-	keywordResults, err := s.keywordSearch(ctx, req, req.CandidateK)
-	if err != nil {
-		return nil, err
-	}
-	vectorResults, err := s.vectorSearch(ctx, req, req.CandidateK)
-	if err != nil {
-		return nil, err
-	}
-	weight := req.HybridWeight
-	if weight == 0 {
-		weight = 0.5
-	}
-	if weight < 0 {
-		weight = 0
-	}
-	if weight > 1 {
-		weight = 1
-	}
-	merged := make(map[int64]retrieval.RetrievalResult, len(keywordResults)+len(vectorResults))
-	maxKeyword := maxScore(keywordResults)
-	maxVector := maxScore(vectorResults)
-	for _, item := range keywordResults {
-		item.KeywordScore = item.Score
-		item.FinalScore = normalizeScore(item.Score, maxKeyword) * (1 - weight)
-		item.Score = item.FinalScore
-		merged[item.ChunkID] = item
-	}
-	for _, item := range vectorResults {
-		existing, ok := merged[item.ChunkID]
-		if !ok {
-			existing = item
-		}
-		existing.VectorScore = item.Score
-		existing.FinalScore += normalizeScore(item.Score, maxVector) * weight
-		existing.Score = existing.FinalScore
-		if existing.Highlight == "" {
-			existing.Highlight = item.Highlight
-		}
-		merged[item.ChunkID] = existing
-	}
-	results := make([]retrieval.RetrievalResult, 0, len(merged))
-	for _, item := range merged {
-		results = append(results, item)
-	}
-	sort.SliceStable(results, func(i, j int) bool {
-		return results[i].FinalScore > results[j].FinalScore
-	})
-	if len(results) > req.TopK {
-		results = results[:req.TopK]
 	}
 	return results, nil
 }
@@ -468,19 +410,4 @@ func max(a, b int) int {
 		return a
 	}
 	return b
-}
-
-func maxScore(results []retrieval.RetrievalResult) float64 {
-	maxValue := 0.0
-	for _, item := range results {
-		maxValue = math.Max(maxValue, item.Score)
-	}
-	return maxValue
-}
-
-func normalizeScore(score, maxValue float64) float64 {
-	if maxValue <= 0 {
-		return 0
-	}
-	return score / maxValue
 }

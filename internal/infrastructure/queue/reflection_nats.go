@@ -3,6 +3,7 @@ package queue
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -165,9 +166,11 @@ func (t *ReflectionNATSTransport) Fetch(ctx context.Context, limit int) ([]refle
 	if err != nil {
 		return nil, err
 	}
-	messages, err := sub.Fetch(limit, nats.Context(ctx), nats.MaxWait(time.Second))
+	fetchCtx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	messages, err := sub.Fetch(limit, nats.Context(fetchCtx))
 	if err != nil {
-		if err == nats.ErrTimeout {
+		if errors.Is(err, nats.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
 			return nil, nil
 		}
 		return nil, err

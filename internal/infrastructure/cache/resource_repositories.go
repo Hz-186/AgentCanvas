@@ -200,6 +200,24 @@ func (r *MemoryRepository) Create(ctx context.Context, item *memory.Memory) erro
 	r.changed(ctx, item.OwnerID)
 	return nil
 }
+func (r *MemoryRepository) Replace(ctx context.Context, ownerID, supersededID int64, replacement *memory.Memory) error {
+	repository, ok := r.Repository.(memory.AtomicReplacementRepository)
+	if !ok {
+		return fmt.Errorf("memory repository does not support atomic replacement")
+	}
+	if err := repository.Replace(ctx, ownerID, supersededID, replacement); err != nil {
+		return err
+	}
+	r.changed(ctx, ownerID)
+	return nil
+}
+func (r *MemoryRepository) ListFiltered(ctx context.Context, ownerID int64, filter memory.ListFilter) ([]memory.Memory, error) {
+	repository, ok := r.Repository.(memory.FilteredRepository)
+	if !ok {
+		return nil, fmt.Errorf("memory repository does not support filtered listing")
+	}
+	return repository.ListFiltered(ctx, ownerID, filter)
+}
 func (r *MemoryRepository) FindByIDs(ctx context.Context, ownerID int64, ids []int64) ([]memory.Memory, error) {
 	byID := make(map[int64]memory.Memory, len(ids))
 	misses := make([]int64, 0, len(ids))

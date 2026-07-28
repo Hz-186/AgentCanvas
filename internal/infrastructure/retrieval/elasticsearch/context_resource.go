@@ -43,7 +43,10 @@ func NewContextKeywordIndex(client *esclient.Client, index string) *ContextKeywo
 	if strings.TrimSpace(index) == "" {
 		index = defaultContextResourceIndex
 	}
-	return &ContextKeywordIndex{client: client, index: strings.TrimSpace(index)}
+	return &ContextKeywordIndex{
+		client: client,
+		index:  strings.TrimSpace(index),
+	}
 }
 
 func (s *ContextKeywordIndex) EnsureIndex(ctx context.Context) error {
@@ -72,7 +75,9 @@ func (s *ContextKeywordIndex) EnsureIndex(ctx context.Context) error {
 	if response.StatusCode != http.StatusNotFound {
 		return fmt.Errorf("check context resource index failed: %s", response.Status())
 	}
-	response, err = s.client.Indices.Create(s.index, s.client.Indices.Create.WithContext(ctx), s.client.Indices.Create.WithBody(strings.NewReader(contextResourceMapping)))
+	response, err = s.client.Indices.Create(s.index, s.client.Indices.Create.WithContext(ctx), s.client.Indices.Create.WithBody(
+		strings.NewReader(contextResourceMapping),
+	))
 	if err != nil {
 		return err
 	}
@@ -100,8 +105,15 @@ func (s *ContextKeywordIndex) Upsert(ctx context.Context, document contextresour
 	if err := s.ensureIndex(ctx); err != nil {
 		return profile, err
 	}
-	payload, err := json.Marshal(map[string]any{"owner_id": document.OwnerID, "workflow_id": document.WorkflowID, "conversation_id": document.ConversationID,
-		"resource_type": document.ResourceType, "resource_id": document.ResourceID, "content_hash": document.ContentHash, "content": document.Content})
+	payload, err := json.Marshal(map[string]any{
+		"owner_id":        document.OwnerID,
+		"workflow_id":     document.WorkflowID,
+		"conversation_id": document.ConversationID,
+		"resource_type":   document.ResourceType,
+		"resource_id":     document.ResourceID,
+		"content_hash":    document.ContentHash,
+		"content":         document.Content,
+	})
 	if err != nil {
 		return profile, err
 	}

@@ -3,10 +3,11 @@ package composite
 import (
 	"context"
 	"fmt"
-	"sort"
+	"math"
 	"time"
 
 	"agentcanvas/internal/domain/retrieval"
+	"agentcanvas/internal/domain/retrieval/fusion"
 )
 
 // Store coordinates primary and vector retrieval backends.
@@ -15,6 +16,13 @@ type Store struct {
 	Primary retrieval.Backend
 	// Vector handles vector indexing and retrieval.
 	Vector retrieval.Backend
+	shared bool
+}
+
+// NewShared creates a store where one backend provides both atomic search modes.
+// Lifecycle operations are sent to the shared backend only once.
+func NewShared(backend retrieval.Backend) *Store {
+	return &Store{Primary: backend, Vector: backend, shared: true}
 }
 
 // New creates a store backed by primary and vector retrieval engines.
@@ -31,7 +39,7 @@ func (s *Store) EnsureIndex(ctx context.Context) error {
 			return err
 		}
 	}
-	if s.Vector != nil {
+	if s.Vector != nil && !s.shared {
 		return s.Vector.EnsureIndex(ctx)
 	}
 	return nil
@@ -43,7 +51,7 @@ func (s *Store) IndexChunks(ctx context.Context, docs []retrieval.ChunkIndexDocu
 			return err
 		}
 	}
-	if s.Vector != nil {
+	if s.Vector != nil && !s.shared {
 		return s.Vector.IndexChunks(ctx, docs)
 	}
 	return nil
@@ -55,7 +63,7 @@ func (s *Store) SetDocumentEnabled(ctx context.Context, ownerID, documentID int6
 			return err
 		}
 	}
-	if s.Vector != nil {
+	if s.Vector != nil && !s.shared {
 		return s.Vector.SetDocumentEnabled(ctx, ownerID, documentID, enabled)
 	}
 	return nil
@@ -67,7 +75,7 @@ func (s *Store) DeleteByDocument(ctx context.Context, ownerID, documentID int64)
 			return err
 		}
 	}
-	if s.Vector != nil {
+	if s.Vector != nil && !s.shared {
 		return s.Vector.DeleteByDocument(ctx, ownerID, documentID)
 	}
 	return nil
@@ -79,28 +87,51 @@ func (s *Store) DeleteByKnowledgeBase(ctx context.Context, ownerID, kbID int64) 
 			return err
 		}
 	}
-	if s.Vector != nil {
+	if s.Vector != nil && !s.shared {
 		return s.Vector.DeleteByKnowledgeBase(ctx, ownerID, kbID)
 	}
 	return nil
 }
 
 func (s *Store) Search(ctx context.Context, req retrieval.RetrievalRequest) (*retrieval.RetrievalResponse, error) {
-	start := time.Now()
-	if s.Primary == nil {
-		return nil, nil
-	}
-	if s.Vector == nil || req.Mode == retrieval.ModeKeyword {
+	switch req.Mode {
+	case retrieval.ModeKeyword:
+		if s.Primary == nil {
+			return nil, fmt.Errorf("keyword retrieval backend is not configured")
+		}
 		return s.Primary.Search(ctx, req)
-	}
-	if req.Mode == retrieval.ModeVector {
+	case retrieval.ModeVector:
+		if s.Vector == nil {
+			return nil, fmt.Errorf("vector retrieval backend is not configured")
+		}
 		return s.Vector.Search(ctx, req)
+	case retrieval.ModeHybrid:
+		return s.hybridSearch(ctx, req)
+	default:
+		return nil, fmt.Errorf("unsupported retrieval mode: %s", req.Mode)
 	}
-	if req.Mode != retrieval.ModeHybrid {
-		return s.Primary.Search(ctx, req)
+}
+
+func (s *Store) hybridSearch(ctx context.Context, req retrieval.RetrievalRequest) (*retrieval.RetrievalResponse, error) {
+	if s.Primary == nil {
+		return nil, fmt.Errorf("keyword retrieval backend is not configured")
 	}
+	if s.Vector == nil {
+		return nil, fmt.Errorf("vector retrieval backend is not configured")
+	}
+	start := time.Now()
+	topK := req.TopK
+	if topK <= 0 {
+		topK = 8
+	}
+	candidateK := req.CandidateK
+	if candidateK <= 0 {
+		candidateK = max(topK*4, 20)
+	}
+	candidateK = max(candidateK, topK)
 	keywordReq := req
 	keywordReq.Mode = retrieval.ModeKeyword
+	keywordReq.TopK = candidateK
 	keywordResp, err := s.Primary.Search(ctx, keywordReq)
 	if err != nil {
 		return nil, err
@@ -110,8 +141,10 @@ func (s *Store) Search(ctx context.Context, req retrieval.RetrievalRequest) (*re
 	}
 	vectorReq := req
 	vectorReq.Mode = retrieval.ModeVector
+	vectorReq.TopK = candidateK
 	vectorResp, err := s.Vector.Search(ctx, vectorReq)
 	if err != nil {
+		keywordResp.Results = truncateResults(keywordResp.Results, topK)
 		keywordResp.LatencyMS = int(time.Since(start).Milliseconds())
 		keywordResp.Trace = append(keywordResp.Trace, retrieval.RetrievalTraceRecord{
 			Stage:   "hybrid_vector_recall",
@@ -128,10 +161,10 @@ func (s *Store) Search(ctx context.Context, req retrieval.RetrievalRequest) (*re
 		vectorResp = &retrieval.RetrievalResponse{}
 	}
 	weight := req.HybridWeight
-	if weight <= 0 || weight > 1 {
+	if weight <= 0 || weight > 1 || math.IsNaN(weight) || math.IsInf(weight, 0) {
 		weight = 0.5
 	}
-	results := fuse(keywordResp.Results, vectorResp.Results, weight, req.TopK)
+	results := fusion.WeightedRetrievalResults(keywordResp.Results, vectorResp.Results, weight, topK)
 	trace := append([]retrieval.RetrievalTraceRecord{}, keywordResp.Trace...)
 	trace = append(trace, vectorResp.Trace...)
 	trace = append(trace, retrieval.RetrievalTraceRecord{
@@ -152,77 +185,16 @@ func (s *Store) Search(ctx context.Context, req retrieval.RetrievalRequest) (*re
 	}, nil
 }
 
-func fuse(keywordResults, vectorResults []retrieval.RetrievalResult, vectorWeight float64, topK int) []retrieval.RetrievalResult {
-	merged := make(map[string]retrieval.RetrievalResult, len(keywordResults)+len(vectorResults))
-	maxKeyword := maxScore(keywordResults)
-	maxVector := maxScore(vectorResults)
-	for _, item := range keywordResults {
-		item.KeywordScore = effectiveScore(item)
-		item.FinalScore = normalize(item.KeywordScore, maxKeyword) * (1 - vectorWeight)
-		item.Score = item.FinalScore
-		merged[resultKey(item)] = item
-	}
-	for _, item := range vectorResults {
-		key := resultKey(item)
-		existing, ok := merged[key]
-		if !ok {
-			existing = item
-		}
-		existing.VectorScore = effectiveScore(item)
-		existing.FinalScore += normalize(existing.VectorScore, maxVector) * vectorWeight
-		existing.Score = existing.FinalScore
-		if existing.Content == "" {
-			existing.Content = item.Content
-		}
-		if existing.DocumentName == "" {
-			existing.DocumentName = item.DocumentName
-		}
-		if existing.PageNo == nil {
-			existing.PageNo = item.PageNo
-		}
-		if existing.Metadata == nil {
-			existing.Metadata = item.Metadata
-		}
-		merged[key] = existing
-	}
-	results := make([]retrieval.RetrievalResult, 0, len(merged))
-	for _, item := range merged {
-		results = append(results, item)
-	}
-	sort.SliceStable(results, func(i, j int) bool { return results[i].FinalScore > results[j].FinalScore })
+func truncateResults(results []retrieval.RetrievalResult, topK int) []retrieval.RetrievalResult {
 	if topK > 0 && len(results) > topK {
-		results = results[:topK]
+		return results[:topK]
 	}
 	return results
 }
 
-func resultKey(item retrieval.RetrievalResult) string {
-	if item.ChunkID != 0 {
-		return fmt.Sprintf("chunk:%d", item.ChunkID)
+func max(a, b int) int {
+	if a > b {
+		return a
 	}
-	return fmt.Sprintf("doc:%d:kb:%d:page:%v:content:%s", item.DocumentID, item.KBID, item.PageNo, item.Content)
-}
-
-func maxScore(items []retrieval.RetrievalResult) float64 {
-	max := 0.0
-	for _, item := range items {
-		if score := effectiveScore(item); score > max {
-			max = score
-		}
-	}
-	return max
-}
-
-func effectiveScore(item retrieval.RetrievalResult) float64 {
-	if item.FinalScore != 0 {
-		return item.FinalScore
-	}
-	return item.Score
-}
-
-func normalize(score, max float64) float64 {
-	if max <= 0 {
-		return score
-	}
-	return score / max
+	return b
 }

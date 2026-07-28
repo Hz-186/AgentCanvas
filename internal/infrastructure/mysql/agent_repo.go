@@ -447,6 +447,22 @@ func (r *AgentImprovementRepository) CompleteReview(ctx context.Context, review 
 	})
 }
 
+func (r *AgentImprovementRepository) CreateProposal(ctx context.Context, item *agentdomain.ChangeProposal) error {
+	now := time.Now().UTC()
+	if item.CreatedAt.IsZero() {
+		item.CreatedAt = now
+	}
+	item.UpdatedAt = now
+	result := r.db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(item)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return r.db.WithContext(ctx).Where("owner_id = ? AND agent_id = ? AND kind = ? AND checksum = ?", item.OwnerID, item.AgentID, item.Kind, item.Checksum).First(item).Error
+	}
+	return nil
+}
+
 func (r *AgentImprovementRepository) FailReview(ctx context.Context, review *agentdomain.ImprovementReview, cause error, retryAt *time.Time) error {
 	status := agentdomain.ReviewStatusFailed
 	if retryAt != nil && review.AttemptCount < review.MaxAttempts {
@@ -477,7 +493,10 @@ func (r *AgentImprovementRepository) ListProposals(ctx context.Context, ownerID,
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
-	query := r.db.WithContext(ctx).Where("owner_id = ? AND agent_id = ?", ownerID, agentID)
+	query := r.db.WithContext(ctx).Where("owner_id = ?", ownerID)
+	if agentID > 0 {
+		query = query.Where("agent_id = ?", agentID)
+	}
 	if status != "" {
 		query = query.Where("status = ?", status)
 	}

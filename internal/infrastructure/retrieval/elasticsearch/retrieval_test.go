@@ -50,23 +50,14 @@ func TestVectorSearchBuildsKNNBody(t *testing.T) {
 	}
 }
 
-func TestHybridSearchRunsKeywordAndVectorSearches(t *testing.T) {
-	bodies := make([]map[string]any, 0, 2)
+func TestHybridSearchIsRejectedWithoutCallingElasticsearch(t *testing.T) {
+	calls := 0
 	store := newTestStore(t, func(w http.ResponseWriter, r *http.Request) {
-		var body map[string]any
-		data, _ := io.ReadAll(r.Body)
-		if err := json.Unmarshal(data, &body); err != nil {
-			t.Fatalf("decode search body: %v", err)
-		}
-		bodies = append(bodies, body)
-		if _, ok := body["knn"]; ok {
-			writeSearchHits(w, []map[string]any{{"chunk_id": 200, "score": 3.0, "content": "vector result"}})
-			return
-		}
-		writeSearchHits(w, []map[string]any{{"chunk_id": 100, "score": 5.0, "content": "keyword result"}})
+		calls++
+		t.Fatal("hybrid search must not call elasticsearch")
 	})
 
-	resp, err := store.Search(context.Background(), retrieval.RetrievalRequest{
+	_, err := store.Search(context.Background(), retrieval.RetrievalRequest{
 		OwnerID:      1,
 		KBIDs:        []int64{10},
 		Query:        "agent canvas",
@@ -76,20 +67,26 @@ func TestHybridSearchRunsKeywordAndVectorSearches(t *testing.T) {
 		QueryVector:  []float32{0.1, 0.2, 0.3},
 		HybridWeight: 0.5,
 	})
-	if err != nil {
-		t.Fatalf("Search() error = %v", err)
+	if err == nil || !strings.Contains(err.Error(), "unsupported retrieval mode: hybrid") {
+		t.Fatalf("Search() error = %v, want unsupported hybrid mode", err)
 	}
-	if len(bodies) != 2 {
-		t.Fatalf("search calls = %d, want 2", len(bodies))
+	if calls != 0 {
+		t.Fatalf("elasticsearch calls = %d, want 0", calls)
 	}
-	if _, ok := bodies[0]["query"]; !ok {
-		t.Fatalf("first body should be keyword query: %#v", bodies[0])
+}
+
+func TestUnknownSearchModeIsRejectedWithoutCallingElasticsearch(t *testing.T) {
+	calls := 0
+	store := newTestStore(t, func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		t.Fatal("unknown search mode must not call elasticsearch")
+	})
+	_, err := store.Search(context.Background(), retrieval.RetrievalRequest{Mode: retrieval.Mode("unknown")})
+	if err == nil || !strings.Contains(err.Error(), "unsupported retrieval mode: unknown") {
+		t.Fatalf("Search() error = %v, want unsupported unknown mode", err)
 	}
-	if _, ok := bodies[1]["knn"]; !ok {
-		t.Fatalf("second body should be knn query: %#v", bodies[1])
-	}
-	if len(resp.Results) != 2 {
-		t.Fatalf("results = %#v", resp.Results)
+	if calls != 0 {
+		t.Fatalf("elasticsearch calls = %d, want 0", calls)
 	}
 }
 
