@@ -15,6 +15,11 @@ type ExtractionService struct {
 	extractions memory.ExtractionJobRepository
 	merges      memory.MergeLogRepository
 	messages    DreamMessageRepository
+	candidates  memory.CandidateWriter
+}
+
+func (s *ExtractionService) ConfigureCandidates(candidates memory.CandidateWriter) {
+	s.candidates = candidates
 }
 
 func NewExtractionService(memories memory.Repository, extractions memory.ExtractionJobRepository, merges memory.MergeLogRepository, messageRepositories ...DreamMessageRepository) *ExtractionService {
@@ -42,7 +47,10 @@ func (s *ExtractionService) ScheduleDream(ctx context.Context, ownerID, conversa
 	for _, item := range messages {
 		ids = append(ids, item.ID)
 	}
-	idsJSON, _ := json.Marshal(ids)
+	idsJSON, err := json.Marshal(ids)
+	if err != nil {
+		return nil, fmt.Errorf("marshal dream message ids: %w", err)
+	}
 	now := time.Now().UTC()
 	due := now.Add(cfg.IdleTimeout)
 	reason := "idle"
@@ -76,7 +84,10 @@ func (s *ExtractionService) StartExtraction(ctx context.Context, ownerID, conver
 	if existingID, ok := s.findOpenJob(ctx, ownerID, conversationID); ok {
 		return existingID, nil
 	}
-	idsJSON, _ := json.Marshal(messageIDs)
+	idsJSON, err := json.Marshal(messageIDs)
+	if err != nil {
+		return 0, fmt.Errorf("marshal extraction message ids: %w", err)
+	}
 	job := &memory.ExtractionJob{
 		OwnerID:          ownerID,
 		ConversationID:   conversationID,
@@ -113,7 +124,9 @@ func (s *ExtractionService) ProcessNextDream(ctx context.Context, dream *DreamWo
 			retryAt := time.Now().UTC().Add(time.Duration(job.AttemptCount) * time.Minute)
 			job.DueAt = &retryAt
 		}
-		_ = s.extractions.Update(ctx, &job)
+		if updateErr := s.extractions.Update(ctx, &job); updateErr != nil {
+			return true, fmt.Errorf("dream job failed: %v; persist retry state: %w", err, updateErr)
+		}
 		return true, err
 	}
 	return true, nil
@@ -139,16 +152,21 @@ func (s *ExtractionService) CompleteExtraction(ctx context.Context, jobID, owner
 	if err != nil {
 		return err
 	}
-	resultJSON, _ := json.Marshal(result)
+	resultJSON, err := json.Marshal(result)
+	if err != nil {
+		return fmt.Errorf("marshal extraction result: %w", err)
+	}
 	job.Status = string(memory.ExtractionCompleted)
 	job.ResultJSON = resultJSON
 	if result == nil {
 		return s.extractions.Update(ctx, job)
 	}
-	if err := s.applyExtractionResults(ctx, ownerID, result); err != nil {
+	if err := s.applyExtractionResults(ctx, job, result); err != nil {
 		job.Status = string(memory.ExtractionFailed)
 		job.ErrorMessage = err.Error()
-		_ = s.extractions.Update(ctx, job)
+		if updateErr := s.extractions.Update(ctx, job); updateErr != nil {
+			return fmt.Errorf("apply extraction result: %v; persist failure state: %w", err, updateErr)
+		}
 		return err
 	}
 	return s.extractions.Update(ctx, job)
@@ -164,7 +182,10 @@ func (s *ExtractionService) FailExtraction(ctx context.Context, jobID, ownerID i
 	return s.extractions.Update(ctx, job)
 }
 
-func (s *ExtractionService) applyExtractionResults(ctx context.Context, ownerID int64, result *memory.ExtractionResult) error {
+func (s *ExtractionService) applyExtractionResults(ctx context.Context, job *memory.ExtractionJob, result *memory.ExtractionResult) error {
+	if s.candidates == nil {
+		return fmt.Errorf("memory candidate service is not configured")
+	}
 	allItems := make([]struct {
 		memoryType string
 		item       memory.ExtractedMemoryItem
@@ -175,12 +196,8 @@ func (s *ExtractionService) applyExtractionResults(ctx context.Context, ownerID 
 			item       memory.ExtractedMemoryItem
 		}{memory.TypeProfile, item})
 	}
-	for _, item := range result.SummaryMemories {
-		allItems = append(allItems, struct {
-			memoryType string
-			item       memory.ExtractedMemoryItem
-		}{memory.TypeSummary, item})
-	}
+	// summary_memory is a read-only compatibility type. Conversation continuity
+	// is owned exclusively by conversation_compactions in V2.
 	for _, item := range result.EpisodicMemories {
 		allItems = append(allItems, struct {
 			memoryType string
@@ -194,7 +211,7 @@ func (s *ExtractionService) applyExtractionResults(ctx context.Context, ownerID 
 		}{memory.TypeTask, item})
 	}
 
-	for _, entry := range allItems {
+	for index, entry := range allItems {
 		if entry.item.Content == "" || entry.item.Confidence < 0.5 {
 			continue
 		}
@@ -206,66 +223,14 @@ func (s *ExtractionService) applyExtractionResults(ctx context.Context, ownerID 
 			importance = 1
 		}
 
-		if err := s.upsertMemory(ctx, ownerID, entry.memoryType, entry.item.Title, entry.item.Content, importance, entry.item.Confidence); err != nil {
+		if _, err := s.candidates.Suggest(ctx, memory.CandidateRequest{OwnerID: job.OwnerID, ConversationID: job.ConversationID,
+			SourceID: fmt.Sprintf("legacy-extraction:%d:%s:%d", job.ID, entry.memoryType, index), MemoryType: entry.memoryType,
+			Title: entry.item.Title, Content: entry.item.Content, Action: "create", Importance: importance,
+			Evidence: []string{fmt.Sprintf("extraction_job:%d", job.ID)}, Source: "legacy_extraction"}); err != nil {
 			return err
 		}
 	}
 	return nil
-}
-
-func (s *ExtractionService) upsertMemory(ctx context.Context, ownerID int64, memoryType, title, content string, importance, confidence float64) error {
-	existing, err := s.memories.List(ctx, ownerID, []string{memoryType}, nil, 20, 0)
-	if err != nil {
-		return s.createNewMemory(ctx, ownerID, memoryType, title, content, importance)
-	}
-	contentLower := strings.ToLower(strings.TrimSpace(content))
-	for _, mem := range existing {
-		memLower := strings.ToLower(strings.TrimSpace(mem.Content))
-		similarity := calculateSimilarity(contentLower, memLower)
-		if similarity > 0.85 {
-			return nil
-		}
-		if similarity > 0.70 && importance > mem.Importance {
-			mem.Content = mem.Content + "\n" + content
-			if title != "" {
-				mem.Title = title
-			}
-			if err := s.memories.Update(ctx, &mem); err != nil {
-				return err
-			}
-			if err := s.logMerge(ctx, ownerID, 0, mem.ID, similarity, "auto-merge by extraction"); err != nil {
-				return err
-			}
-			return nil
-		}
-	}
-	return s.createNewMemory(ctx, ownerID, memoryType, title, content, importance)
-}
-
-func (s *ExtractionService) createNewMemory(ctx context.Context, ownerID int64, memoryType, title, content string, importance float64) error {
-	item := &memory.Memory{
-		OwnerID:     ownerID,
-		MemoryType:  memoryType,
-		MemoryLevel: memory.LevelShortTerm,
-		Title:       title,
-		Content:     content,
-		Importance:  importance,
-		Source:      "auto_extraction",
-	}
-	return s.memories.Create(ctx, item)
-}
-
-func (s *ExtractionService) logMerge(ctx context.Context, ownerID, sourceID, targetID int64, similarity float64, reason string) error {
-	if s.merges == nil {
-		return nil
-	}
-	return s.merges.Create(ctx, &memory.MergeLog{
-		OwnerID:    ownerID,
-		SourceID:   sourceID,
-		TargetID:   targetID,
-		Similarity: similarity,
-		Reason:     reason,
-	})
 }
 
 func calculateSimilarity(a, b string) float64 {

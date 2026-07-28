@@ -103,9 +103,9 @@ func TestExtractionService_CompleteExtractionFailsWhenCreateFails(t *testing.T) 
 	memRepo.created = nil
 	extRepo := &fakeExtractionRepo{}
 	svc := NewExtractionService(memRepo, extRepo, &fakeMergeRepo{})
+	svc.ConfigureCandidates(&fakeCandidateWriter{err: errors.New("candidate failed")})
 
 	jobID, _ := svc.StartExtraction(context.Background(), 100, 1, []int64{1})
-	memRepo.createErr = errors.New("create failed")
 	err := svc.CompleteExtraction(context.Background(), jobID, 100, &memory.ExtractionResult{
 		ProfileMemories: []memory.ExtractedMemoryItem{{Content: "will fail", Confidence: 0.9}},
 	})
@@ -118,22 +118,24 @@ func TestExtractionService_CompleteExtractionFailsWhenCreateFails(t *testing.T) 
 	}
 }
 
-func TestExtractionService_CompleteExtractionFailsWhenMergeLogFails(t *testing.T) {
+func TestExtractionService_CompatibilityAdapterDoesNotMergeDirectly(t *testing.T) {
 	memRepo := &fakeMemRepo{items: map[int64]*memory.Memory{}}
 	memRepo.Create(context.Background(), &memory.Memory{OwnerID: 100, MemoryType: memory.TypeProfile, Content: "alpha beta gamma delta epsilon zeta eta theta", Importance: 0.1})
 	extRepo := &fakeExtractionRepo{}
 	svc := NewExtractionService(memRepo, extRepo, &fakeMergeRepo{err: errors.New("merge log failed")})
+	candidates := &fakeCandidateWriter{}
+	svc.ConfigureCandidates(candidates)
 
 	jobID, _ := svc.StartExtraction(context.Background(), 100, 1, []int64{1})
 	err := svc.CompleteExtraction(context.Background(), jobID, 100, &memory.ExtractionResult{
 		ProfileMemories: []memory.ExtractedMemoryItem{{Content: "alpha beta gamma delta epsilon zeta eta iota", Confidence: 0.9, Importance: 0.9}},
 	})
-	if err == nil {
-		t.Fatal("expected merge log error")
+	if err != nil {
+		t.Fatal(err)
 	}
 	job, _ := extRepo.FindByID(context.Background(), 100, jobID)
-	if job.Status != string(memory.ExtractionFailed) {
-		t.Fatalf("expected failed job, got %s", job.Status)
+	if job.Status != string(memory.ExtractionCompleted) || len(candidates.items) != 1 {
+		t.Fatalf("legacy extraction must create a candidate without merge writes: job=%+v candidates=%+v", job, candidates.items)
 	}
 }
 
@@ -195,6 +197,8 @@ func TestExtractionService_CompleteExtraction(t *testing.T) {
 	extRepo := &fakeExtractionRepo{}
 	mergeRepo := &fakeMergeRepo{}
 	svc := NewExtractionService(memRepo, extRepo, mergeRepo)
+	candidates := &fakeCandidateWriter{}
+	svc.ConfigureCandidates(candidates)
 
 	jobID, _ := svc.StartExtraction(context.Background(), 100, 1, []int64{1, 2, 3})
 	result := &memory.ExtractionResult{
@@ -216,8 +220,8 @@ func TestExtractionService_CompleteExtraction(t *testing.T) {
 	}
 
 	items, _ := memRepo.List(context.Background(), 100, nil, nil, 50, 0)
-	if len(items) != 2 {
-		t.Fatalf("expected 2 memories created, got %d", len(items))
+	if len(items) != 0 || len(candidates.items) != 1 {
+		t.Fatalf("expected one profile candidate and no direct/summary memory writes, memories=%d candidates=%d", len(items), len(candidates.items))
 	}
 }
 
@@ -245,6 +249,8 @@ func TestExtractionService_Deduplication(t *testing.T) {
 	extRepo := &fakeExtractionRepo{}
 	mergeRepo := &fakeMergeRepo{}
 	svc := NewExtractionService(memRepo, extRepo, mergeRepo)
+	candidates := &fakeCandidateWriter{}
+	svc.ConfigureCandidates(candidates)
 
 	jobID, _ := svc.StartExtraction(context.Background(), 100, 1, []int64{1})
 	result := &memory.ExtractionResult{
@@ -252,11 +258,16 @@ func TestExtractionService_Deduplication(t *testing.T) {
 			{Content: "user prefers dark mode for the interface", Confidence: 0.9, Importance: 0.8},
 		},
 	}
-	svc.CompleteExtraction(context.Background(), jobID, 100, result)
+	if err := svc.CompleteExtraction(context.Background(), jobID, 100, result); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.applyExtractionResults(context.Background(), extRepo.jobs[jobID], result); err != nil {
+		t.Fatal(err)
+	}
 
 	items, _ := memRepo.List(context.Background(), 100, nil, nil, 50, 0)
-	if len(items) > 1 {
-		t.Fatalf("expected no duplicate memory created, got %d items", len(items))
+	if len(items) != 1 || len(candidates.items) != 1 {
+		t.Fatalf("expected idempotent candidate and unchanged active memory, memories=%d candidates=%d", len(items), len(candidates.items))
 	}
 }
 
@@ -264,6 +275,8 @@ func TestExtractionService_LowConfidenceFiltered(t *testing.T) {
 	memRepo := &fakeMemRepo{items: map[int64]*memory.Memory{}}
 	extRepo := &fakeExtractionRepo{}
 	svc := NewExtractionService(memRepo, extRepo, &fakeMergeRepo{})
+	candidates := &fakeCandidateWriter{}
+	svc.ConfigureCandidates(candidates)
 
 	jobID, _ := svc.StartExtraction(context.Background(), 100, 1, []int64{1})
 	result := &memory.ExtractionResult{
@@ -274,11 +287,12 @@ func TestExtractionService_LowConfidenceFiltered(t *testing.T) {
 	}
 	svc.CompleteExtraction(context.Background(), jobID, 100, result)
 
-	items, _ := memRepo.List(context.Background(), 100, nil, nil, 50, 0)
-	if len(items) != 1 {
-		t.Fatalf("expected 1 memory (low confidence filtered), got %d", len(items))
+	if len(candidates.items) != 1 {
+		t.Fatalf("expected 1 candidate (low confidence filtered), got %d", len(candidates.items))
 	}
-	if items[0].Content != "Confirmed fact" {
-		t.Fatalf("unexpected content: %s", items[0].Content)
+	for _, item := range candidates.items {
+		if item.Content != "Confirmed fact" {
+			t.Fatalf("unexpected content: %s", item.Content)
+		}
 	}
 }

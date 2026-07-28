@@ -23,10 +23,13 @@ func (s *ConsolidationService) UpgradeShortTermToLongTerm(ctx context.Context, o
 	for _, item := range items {
 		if item.AccessCount >= minAccessCount && item.Importance >= minImportance {
 			item.MemoryLevel = memory.LevelLongTerm
-			if err := s.memories.Update(ctx, &item); err == nil {
-				_ = s.memories.IncrementConsolidationCount(ctx, ownerID, item.ID)
-				upgraded++
+			if err := s.memories.Update(ctx, &item); err != nil {
+				return upgraded, err
 			}
+			if err := s.memories.IncrementConsolidationCount(ctx, ownerID, item.ID); err != nil {
+				return upgraded, err
+			}
+			upgraded++
 		}
 	}
 	return upgraded, nil
@@ -49,9 +52,10 @@ func (s *ConsolidationService) DowngradeWeakLongTerm(ctx context.Context, ownerI
 	for _, item := range items {
 		if item.Importance < minImportance && item.AccessCount < 3 {
 			item.MemoryLevel = memory.LevelShortTerm
-			if err := s.memories.Update(ctx, &item); err == nil {
-				downgraded++
+			if err := s.memories.Update(ctx, &item); err != nil {
+				return downgraded, err
 			}
+			downgraded++
 		}
 	}
 	return downgraded, nil

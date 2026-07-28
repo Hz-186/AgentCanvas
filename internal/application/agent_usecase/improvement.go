@@ -42,6 +42,7 @@ type ImprovementService struct {
 	messages         conversation.MessageRepository
 	steps            workflow.RunStepRepository
 	memories         memory.Repository
+	memoryCommands   memory.Commander
 	reflections      reflection.Repository
 	skills           skill.Repository
 	providers        ImprovementProviderLoader
@@ -54,6 +55,10 @@ type ImprovementService struct {
 
 func (s *ImprovementService) ConfigureReviewModel(providerID int64, model string) {
 	s.reviewProviderID, s.reviewModel = providerID, strings.TrimSpace(model)
+}
+
+func (s *ImprovementService) ConfigureMemoryCommands(commands memory.Commander) {
+	s.memoryCommands = commands
 }
 
 func NewImprovementService(repository agentdomain.ImprovementRepository, agents agentdomain.Repository, turns agentdomain.TurnRepository,
@@ -138,6 +143,10 @@ type proposedChanges struct {
 }
 
 func (s *ImprovementService) processReview(ctx context.Context, review *agentdomain.ImprovementReview) error {
+	release, err := s.agents.FindReleaseByID(ctx, review.OwnerID, review.AgentReleaseID)
+	if err != nil {
+		return err
+	}
 	loaded, err := s.providers.LoadChatProviderConfig(ctx, review.OwnerID, review.ProviderID, review.Model)
 	if err != nil {
 		return err
@@ -164,21 +173,9 @@ func (s *ImprovementService) processReview(ctx context.Context, review *agentdom
 	if err != nil {
 		return fmt.Errorf("decode improvement review: %w", err)
 	}
-	proposals := s.normalizeProposals(review, result.Proposals)
+	proposals := s.normalizeProposalsWithMemory(review, result.Proposals, release.Definition.MemoryEnabled)
 	if err := s.repository.CompleteReview(ctx, review, proposals); err != nil {
 		return err
-	}
-	if s.memoryMode == MemoryReviewAuto {
-		for i := range proposals {
-			if proposals[i].Kind == agentdomain.ProposalKindMemory && proposals[i].Status == agentdomain.ProposalStatusPending && proposals[i].Confidence >= 0.9 {
-				items, _ := s.repository.ListProposals(ctx, review.OwnerID, review.AgentID, agentdomain.ProposalStatusPending, 100)
-				for j := range items {
-					if items[j].Checksum == proposals[i].Checksum {
-						_, _ = s.DecideProposal(ctx, review.OwnerID, items[j].ID, true, "Automatically approved by memory_mode=auto")
-					}
-				}
-			}
-		}
 	}
 	return nil
 }
@@ -210,6 +207,10 @@ func (s *ImprovementService) reviewTrajectory(ctx context.Context, review *agent
 }
 
 func (s *ImprovementService) normalizeProposals(review *agentdomain.ImprovementReview, candidates []proposedChange) []agentdomain.ChangeProposal {
+	return s.normalizeProposalsWithMemory(review, candidates, true)
+}
+
+func (s *ImprovementService) normalizeProposalsWithMemory(review *agentdomain.ImprovementReview, candidates []proposedChange, memoryEnabled bool) []agentdomain.ChangeProposal {
 	if len(candidates) > 8 {
 		candidates = candidates[:8]
 	}
@@ -219,7 +220,7 @@ func (s *ImprovementService) normalizeProposals(review *agentdomain.ImprovementR
 		if kind != agentdomain.ProposalKindMemory && kind != agentdomain.ProposalKindReflection && kind != agentdomain.ProposalKindSkill && kind != agentdomain.ProposalKindRule {
 			continue
 		}
-		if kind == agentdomain.ProposalKindMemory && s.memoryMode == MemoryReviewOff {
+		if kind == agentdomain.ProposalKindMemory && (!memoryEnabled || s.memoryMode == MemoryReviewOff) {
 			continue
 		}
 		candidate.Title, candidate.Content = limitText(strings.TrimSpace(candidate.Title), 512), limitText(strings.TrimSpace(candidate.Content), 8000)
@@ -279,23 +280,76 @@ func (s *ImprovementService) DecideProposal(ctx context.Context, ownerID, propos
 	return proposal, s.repository.UpdateProposal(ctx, proposal)
 }
 
+func (s *ImprovementService) DecideMemoryProposal(ctx context.Context, ownerID, proposalID int64, approved bool, note string) (*agentdomain.ChangeProposal, error) {
+	proposal, err := s.repository.FindProposal(ctx, ownerID, proposalID)
+	if err != nil {
+		return nil, err
+	}
+	if proposal.Kind != agentdomain.ProposalKindMemory {
+		return nil, fmt.Errorf("proposal is not a memory candidate")
+	}
+	return s.DecideProposal(ctx, ownerID, proposalID, approved, note)
+}
+
 func (s *ImprovementService) applyProposal(ctx context.Context, proposal *agentdomain.ChangeProposal) error {
 	switch proposal.Kind {
 	case agentdomain.ProposalKindMemory:
 		var payload struct {
-			MemoryType string `json:"memory_type"`
-			Level      string `json:"level"`
+			MemoryID       int64  `json:"memory_id"`
+			MemoryType     string `json:"memory_type"`
+			Level          string `json:"level"`
+			Action         string `json:"action"`
+			ConversationID int64  `json:"conversation_id"`
+			ScopeType      string `json:"scope_type"`
+			ScopeID        int64  `json:"scope_id"`
+			Source         string `json:"source"`
 		}
-		_ = json.Unmarshal(proposal.PayloadJSON, &payload)
+		if err := json.Unmarshal(proposal.PayloadJSON, &payload); err != nil {
+			return err
+		}
+		if s.memoryCommands == nil {
+			return fmt.Errorf("memory command service is not configured")
+		}
+		if payload.Action == "delete" || payload.Action == "revoke" {
+			if payload.MemoryID <= 0 {
+				return fmt.Errorf("memory proposal revoke requires memory_id")
+			}
+			return s.memoryCommands.Revoke(ctx, proposal.OwnerID, payload.MemoryID, "approved memory proposal")
+		}
 		if payload.MemoryType == "" {
 			payload.MemoryType = memory.TypeProfile
 		}
 		if payload.Level == "" {
 			payload.Level = memory.LevelLongTerm
 		}
-		metadata, _ := json.Marshal(map[string]any{"proposal_id": proposal.ID, "review_id": proposal.ReviewID, "evidence": json.RawMessage(proposal.EvidenceJSON), "checksum": proposal.Checksum})
-		return s.memories.Create(ctx, &memory.Memory{OwnerID: proposal.OwnerID, MemoryType: payload.MemoryType, MemoryLevel: payload.Level,
-			Title: proposal.Title, Content: proposal.Content, Importance: proposal.Confidence, Source: "self_improvement_proposal", MetadataJSON: metadata})
+		metadata, _ := json.Marshal(map[string]any{"proposal_id": proposal.ID, "review_id": proposal.ReviewID, "turn_id": proposal.TurnID, "run_id": proposal.RunID, "evidence": json.RawMessage(proposal.EvidenceJSON), "checksum": proposal.Checksum})
+		sourceKeyValue := fmt.Sprintf("proposal:%d", proposal.ID)
+		var conversationID *int64
+		if payload.ConversationID > 0 {
+			conversationID = &payload.ConversationID
+		}
+		request := memory.WriteRequest{OwnerID: proposal.OwnerID, ConversationID: conversationID, MemoryType: payload.MemoryType,
+			Title: proposal.Title, Content: proposal.Content, Importance: proposal.Confidence, Source: payload.Source,
+			SourceKey: &sourceKeyValue, MetadataJSON: metadata, ScopeType: payload.ScopeType, ScopeID: payload.ScopeID, Status: memory.StatusActive,
+			Reason: "approved memory proposal", RunID: proposal.RunID}
+		if request.Source == "" {
+			request.Source = "approved_memory_proposal"
+		}
+		if payload.MemoryID > 0 && (payload.Action == "update" || payload.Action == "replace") {
+			request.SupersedesID = &payload.MemoryID
+			result, err := s.memoryCommands.Execute(ctx, request)
+			if err != nil {
+				return err
+			}
+			if !result.ReplacementApplied {
+				if err := s.memoryCommands.Supersede(ctx, proposal.OwnerID, payload.MemoryID, result.Memory.ID, "approved replacement proposal"); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+		_, err := s.memoryCommands.Execute(ctx, request)
+		return err
 	case agentdomain.ProposalKindReflection:
 		agentID := proposal.AgentID
 		return s.reflections.Create(ctx, &reflection.Reflection{OwnerID: proposal.OwnerID, WorkflowID: -proposal.AgentID, AgentID: &agentID,

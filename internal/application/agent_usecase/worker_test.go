@@ -32,6 +32,18 @@ func TestNormalizeImprovementProposalsPreservesEvidenceAndAuditHash(t *testing.T
 	}
 }
 
+func TestNormalizeImprovementProposalsDropsMemoryWhenDisabled(t *testing.T) {
+	service := &ImprovementService{}
+	review := &agent.ImprovementReview{ID: 2, OwnerID: 3, AgentID: 4, TurnID: 5, RunID: 6}
+	items := service.normalizeProposalsWithMemory(review, []proposedChange{
+		{Kind: agent.ProposalKindMemory, Title: "Preference", Content: "User prefers Chinese.", Confidence: .9, Evidence: []string{"direct evidence"}},
+		{Kind: agent.ProposalKindReflection, Title: "Lesson", Content: "Validate before applying.", Confidence: .9, Evidence: []string{"direct evidence"}},
+	}, false)
+	if len(items) != 1 || items[0].Kind != agent.ProposalKindReflection {
+		t.Fatalf("memory_enabled=false must suppress only memory candidates: %+v", items)
+	}
+}
+
 type workerTurnRepo struct {
 	expired  []agent.Turn
 	requeued []int64

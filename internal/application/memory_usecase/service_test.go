@@ -363,9 +363,9 @@ func TestServiceDeleteInvalidatesCache(t *testing.T) {
 		t.Fatal("expected cache invalidation on delete")
 	}
 
-	_, err = repo.FindByID(context.Background(), 100, 1)
-	if err == nil {
-		t.Fatal("expected not found after delete")
+	item, err := repo.FindByID(context.Background(), 100, 1)
+	if err != nil || item.Status != memory.StatusRevoked {
+		t.Fatalf("expected auditable revoked version after delete: item=%+v err=%v", item, err)
 	}
 }
 
@@ -383,7 +383,7 @@ func TestServiceCreateIgnoresCacheInvalidationError(t *testing.T) {
 	}
 }
 
-func TestServiceCreateIndexesMemory(t *testing.T) {
+func TestServiceCreateUsesTransactionalOutboxInsteadOfLegacyIndex(t *testing.T) {
 	repo := &fakeMemRepo{items: map[int64]*memory.Memory{}}
 	retriever := &fakeServiceRetriever{}
 	svc := NewServiceWithCacheAndRetriever(repo, nil, retriever)
@@ -392,12 +392,12 @@ func TestServiceCreateIndexesMemory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(retriever.indexed) != 1 || retriever.indexed[0].ID != item.ID || retriever.indexed[0].MemoryLevel != memory.LevelLongTerm {
-		t.Fatalf("unexpected indexed memories: %+v", retriever.indexed)
+	if item.ID == 0 || len(retriever.indexed) != 0 {
+		t.Fatalf("legacy index must remain shadow-read only: item=%+v indexed=%+v", item, retriever.indexed)
 	}
 }
 
-func TestServiceDeleteRemovesIndex(t *testing.T) {
+func TestServiceDeleteUsesTransactionalOutboxInsteadOfLegacyIndex(t *testing.T) {
 	repo := &fakeMemRepo{items: map[int64]*memory.Memory{1: {ID: 1, OwnerID: 100, MemoryType: memory.TypeProfile, Content: "delete me"}}}
 	retriever := &fakeServiceRetriever{}
 	svc := NewServiceWithCacheAndRetriever(repo, nil, retriever)
@@ -405,8 +405,8 @@ func TestServiceDeleteRemovesIndex(t *testing.T) {
 	if err := svc.Delete(context.Background(), 100, 1); err != nil {
 		t.Fatal(err)
 	}
-	if len(retriever.deleted) != 1 || retriever.deleted[0] != 1 {
-		t.Fatalf("unexpected deleted indexes: %v", retriever.deleted)
+	if len(retriever.deleted) != 0 {
+		t.Fatalf("legacy index must not receive delete writes: %v", retriever.deleted)
 	}
 }
 
