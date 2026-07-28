@@ -49,6 +49,7 @@ import type {
   RunStep,
   NodeLog,
   Memory,
+	MemoryRecallLog,
   MemoryWriteLog,
   ToolDefinition,
   ToolInvocation,
@@ -298,10 +299,16 @@ export const settingsApi = {
     list: (limit = 30, offset = 0) => api.get<AuditLog[]>('/audit-logs', { limit, offset }),
   },
   memories: {
-    list: () => api.get<Memory[]>('/memories'),
+	list: (params?: { memory_type?: string; status?: string; scope_type?: string; scope_id?: number; source?: string; conversation_id?: number }) => api.get<Memory[]>('/memories', params),
     create: (body: { memory_type: string; title?: string; content: string; importance?: number; source?: string }) =>
       api.post<Memory>('/memories', body),
+	update: (id: number, body: Partial<Pick<Memory, 'memory_type' | 'title' | 'content' | 'importance' | 'source' | 'metadata_json'>>) => api.patch<Memory>(`/memories/${id}`, body),
     remove: (id: number) => api.delete<{ success: boolean }>(`/memories/${id}`),
+	listCandidates: (status?: ChangeProposal['status']) => api.get<ChangeProposal[]>('/memory-candidates', status ? { status } : undefined),
+	approveCandidate: (id: number, note = '') => api.post<ChangeProposal>(`/memory-candidates/${id}/approve`, { note }),
+	rejectCandidate: (id: number, note = '') => api.post<ChangeProposal>(`/memory-candidates/${id}/reject`, { note }),
+	listRecallLogs: (memoryId?: number) => api.get<MemoryRecallLog[]>('/memory-recall-logs', memoryId ? { memory_id: memoryId } : undefined),
+	setRecallFeedback: (id: number, feedback: MemoryRecallLog['feedback']) => api.post<{ success: boolean }>(`/memory-recall-logs/${id}/feedback`, { feedback }),
   },
   tools: {
     list: () => api.get<ToolDefinition[]>('/tool-definitions'),

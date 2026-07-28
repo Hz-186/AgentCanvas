@@ -3,19 +3,20 @@ import { ArrowUpRight, BrainCircuit, Boxes, FlaskConical, Globe2, KeyRound, Netw
 import { resourceSummaryApi, settingsApi } from '../api/resources';
 import { EditorialHeader } from '../components/editorial';
 import { Button, EmptyState, Field, IconButton, Modal, Panel, Select, StatusBadge, TextArea, TextInput, Toast } from '../components/ui';
-import type { ApiToken, AuditLog, MCPServer, MCPToolCache, Memory, ModelProvider, ProviderCatalog, ProviderType, Skill, ToolDefinition, ToolPack, ToolPackItem, ToolPolicy } from '../types/api';
+import type { ApiToken, AuditLog, ChangeProposal, MCPServer, MCPToolCache, Memory, MemoryRecallLog, ModelProvider, ProviderCatalog, ProviderType, Skill, ToolDefinition, ToolPack, ToolPackItem, ToolPolicy } from '../types/api';
 import { formatDate, friendlyErrorMessage, parseJsonObject } from '../utils/format';
 
 const providerTypes: ProviderType[] = ['openai_compatible', 'deepseek', 'qwen', 'ollama', 'azure_openai', 'local'];
 const CUSTOM_PROVIDER = '__custom__';
 const memoryTypeOptions = [
   { value: 'profile_memory', label: '个人画像（偏好与设定）' },
-  { value: 'summary_memory', label: '摘要记忆（压缩上下文）' },
   { value: 'episodic_memory', label: '事件记忆（具体经历）' },
   { value: 'task_memory', label: '任务记忆（目标与待办）' },
+	{ value: 'archival_memory', label: '归档记忆（长期事实）' },
 ];
 
 function memoryTypeLabel(value: string) {
+	if (value === 'summary_memory') return '旧摘要记忆（只读兼容）';
   return memoryTypeOptions.find((option) => option.value === value)?.label ?? value;
 }
 
@@ -43,16 +44,27 @@ function maskTokenPrefix(prefix: string) {
 
 export function MemoryPage() {
   const [memories, setMemories] = useState<Memory[]>([]);
+	const [candidates, setCandidates] = useState<ChangeProposal[]>([]);
+	const [activeView, setActiveView] = useState<'active' | 'pending' | 'conflicts' | 'history'>('active');
   const [memoryOpen, setMemoryOpen] = useState(false);
+	const [editingMemoryId, setEditingMemoryId] = useState(0);
   const [memoryType, setMemoryType] = useState(memoryTypeOptions[0].value);
   const [memoryTitle, setMemoryTitle] = useState('');
   const [memoryContent, setMemoryContent] = useState('');
+	const [memoryImportance, setMemoryImportance] = useState(0.5);
+	const [recallMemory, setRecallMemory] = useState<Memory | null>(null);
+	const [recallLogs, setRecallLogs] = useState<MemoryRecallLog[]>([]);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
 
   async function load() {
     try {
-      setMemories(await settingsApi.memories.list());
+		const [memoryItems, candidateItems] = await Promise.all([
+			settingsApi.memories.list(),
+			settingsApi.memories.listCandidates('pending'),
+		]);
+		setMemories(memoryItems);
+		setCandidates(candidateItems);
       setError('');
     } catch (err) {
       setError(friendlyErrorMessage(err, '加载记忆失败'));
@@ -63,14 +75,42 @@ export function MemoryPage() {
     void load();
   }, []);
 
-  async function createMemory(event: FormEvent) {
+	const visibleMemories = useMemo(() => memories.filter((item) => {
+		const status = item.status || 'active';
+		if (activeView === 'active') return status === 'active' && !item.conflict_flag;
+		if (activeView === 'conflicts') return Boolean(item.conflict_flag);
+		if (activeView === 'history') return status === 'superseded' || status === 'revoked';
+		return false;
+	}), [activeView, memories]);
+
+	function openCreateMemory() {
+		setEditingMemoryId(0);
+		setMemoryType(memoryTypeOptions[0].value);
+		setMemoryTitle('');
+		setMemoryContent('');
+		setMemoryImportance(0.5);
+		setMemoryOpen(true);
+	}
+
+	function openEditMemory(item: Memory) {
+		setEditingMemoryId(item.id);
+		setMemoryType(item.memory_type);
+		setMemoryTitle(item.title || '');
+		setMemoryContent(item.content);
+		setMemoryImportance(item.importance);
+		setMemoryOpen(true);
+	}
+
+  async function saveMemory(event: FormEvent) {
     event.preventDefault();
     try {
-      await settingsApi.memories.create({ memory_type: memoryType, title: memoryTitle, content: memoryContent, importance: 0.5, source: 'manual' });
+		if (editingMemoryId) {
+			await settingsApi.memories.update(editingMemoryId, { memory_type: memoryType, title: memoryTitle, content: memoryContent, importance: memoryImportance, source: 'manual' });
+		} else {
+			await settingsApi.memories.create({ memory_type: memoryType, title: memoryTitle, content: memoryContent, importance: memoryImportance, source: 'manual' });
+		}
       setMemoryOpen(false);
-      setMemoryTitle('');
-      setMemoryContent('');
-      setMessage('记忆已创建');
+		setMessage(editingMemoryId ? '记忆已更新' : '记忆已创建');
       await load();
     } catch (err) {
       setError(friendlyErrorMessage(err, '创建记忆失败'));
@@ -80,31 +120,71 @@ export function MemoryPage() {
   async function removeMemory(id: number) {
     try {
       await settingsApi.memories.remove(id);
-      setMessage('记忆已删除');
+		setMessage('记忆已撤销，可在历史版本中追溯');
       await load();
     } catch (err) {
       setError(friendlyErrorMessage(err, '删除记忆失败'));
     }
   }
 
+	async function decideCandidate(id: number, approved: boolean) {
+		try {
+			if (approved) await settingsApi.memories.approveCandidate(id);
+			else await settingsApi.memories.rejectCandidate(id);
+			setMessage(approved ? '候选已批准并写入有效记忆' : '候选已拒绝');
+			await load();
+		} catch (err) {
+			setError(friendlyErrorMessage(err, '审核候选失败'));
+		}
+	}
+
+	async function showRecallReason(item: Memory) {
+		try {
+			setRecallMemory(item);
+			setRecallLogs(await settingsApi.memories.listRecallLogs(item.id));
+		} catch (err) {
+			setError(friendlyErrorMessage(err, '加载召回记录失败'));
+		}
+	}
+
   return (
     <div className="page memory-page">
-      <EditorialHeader word="Memory" script="Archive" kicker="LONG-TERM CONTEXT / 04" description="长期记忆 · 管理可被 Agent 读取和写入的持久上下文。" action={<Button tone="primary" onClick={() => setMemoryOpen(true)}>
+      <EditorialHeader word="Memory" script="Center" kicker="GOVERNED CONTEXT / V2" description="有效记忆、候选审核、冲突与版本历史 · 所有自动记忆先审核、后生效。" action={<Button tone="primary" onClick={openCreateMemory}>
           <Plus size={17} />
           New Memory
         </Button>} />
       {error ? <p className="error-text">{error}</p> : null}
+		<div className="row-wrap" role="tablist" aria-label="Memory Center views">
+			{([
+				['active', `有效记忆 ${memories.filter((item) => (item.status || 'active') === 'active' && !item.conflict_flag).length}`],
+				['pending', `待审核 ${candidates.length}`],
+				['conflicts', `冲突 ${memories.filter((item) => item.conflict_flag).length}`],
+				['history', `历史版本 ${memories.filter((item) => item.status === 'superseded' || item.status === 'revoked').length}`],
+			] as const).map(([value, label]) => <Button key={value} tone={activeView === value ? 'primary' : undefined} onClick={() => setActiveView(value)}>{label}</Button>)}
+		</div>
 
-      {memories.length === 0 ? (
+		{activeView === 'pending' ? (
+			candidates.length === 0 ? <EmptyState title="没有待审核候选" description="Agent、Dream 和自动复盘产生的记忆会先出现在这里。" /> :
+			<div className="workflow-library-list memory-library-list">{candidates.map((candidate) => (
+				<article className="workflow-library-item memory-library-item" key={candidate.id}>
+					<div className="workflow-library-copy">
+						<div className="card-title"><h3 className="truncate">{candidate.title || '记忆候选'}</h3><StatusBadge tone="warn">待审核 · {(candidate.confidence * 100).toFixed(0)}%</StatusBadge></div>
+						<p className="muted clamp-2">{candidate.content}</p>
+						<div className="meta-row"><span>SOURCE {String((candidate.payload_json as Record<string, unknown> | undefined)?.source || 'automatic')}</span><span>EVIDENCE {JSON.stringify(candidate.evidence_json ?? [])}</span></div>
+					</div>
+					<div className="workflow-library-actions"><Button tone="primary" onClick={() => void decideCandidate(candidate.id, true)}>批准</Button><Button onClick={() => void decideCandidate(candidate.id, false)}>拒绝</Button></div>
+				</article>
+			))}</div>
+		) : visibleMemories.length === 0 ? (
         <div className="empty">
           <div className="empty-icon"><BrainCircuit size={24} /></div>
           <h3>还没有记忆</h3>
           <p>新增一条记忆后，Agent 就可以在流程中读取它。</p>
-          <Button tone="primary" onClick={() => setMemoryOpen(true)}>新增记忆</Button>
+			<Button tone="primary" onClick={openCreateMemory}>新增记忆</Button>
         </div>
       ) : (
         <div className="workflow-library-list memory-library-list">
-          {memories.map((memory) => (
+			{visibleMemories.map((memory) => (
             <article className="workflow-library-item memory-library-item" key={memory.id}>
               <div className="workflow-miniature memory-miniature" aria-hidden="true">
                 <span><BrainCircuit size={16} /></span>
@@ -116,16 +196,20 @@ export function MemoryPage() {
               <div className="workflow-library-copy">
                 <div className="card-title">
                   <h3 className="truncate">{memory.title || memory.memory_type}</h3>
-                  <StatusBadge tone="info">{memoryTypeLabel(memory.memory_type)}</StatusBadge>
+						<StatusBadge tone={memory.status === 'revoked' ? 'neutral' : memory.conflict_flag ? 'bad' : 'info'}>{memory.status || 'active'} · {memoryTypeLabel(memory.memory_type)}</StatusBadge>
                 </div>
                 <p className="muted clamp-2">{memory.content}</p>
                 <div className="meta-row">
-                  <span>IMPORTANCE {memory.importance.toFixed(1)}</span>
+					<span>SCOPE {memory.scope_type || 'user'}:{memory.scope_id || memory.owner_id}</span>
+					<span>SOURCE {memory.source || 'unknown'}</span>
+					<span>ACCESSES {memory.access_count ?? 0}</span>
                   <span>UPDATED {formatDate(memory.updated_at)}</span>
                 </div>
               </div>
               <div className="workflow-library-actions">
-                <IconButton label="删除记忆" onClick={() => void removeMemory(memory.id)}><Trash2 size={16} /></IconButton>
+				<Button onClick={() => void showRecallReason(memory)}>为什么被召回</Button>
+				{(memory.status || 'active') === 'active' ? <IconButton label="编辑记忆" onClick={() => openEditMemory(memory)}><Pencil size={16} /></IconButton> : null}
+				{(memory.status || 'active') === 'active' ? <IconButton label="撤销记忆" onClick={() => void removeMemory(memory.id)}><Trash2 size={16} /></IconButton> : null}
               </div>
             </article>
           ))}
@@ -134,16 +218,16 @@ export function MemoryPage() {
 
       <Modal
         open={memoryOpen}
-        title="新增记忆"
+		title={editingMemoryId ? '编辑记忆' : '新增记忆'}
         onClose={() => setMemoryOpen(false)}
         footer={
           <>
             <Button type="button" onClick={() => setMemoryOpen(false)}>取消</Button>
-            <Button form="create-memory-page-form" tone="primary">保存</Button>
+			<Button form="memory-page-form" tone="primary">保存</Button>
           </>
         }
       >
-        <form id="create-memory-page-form" className="form-stack" onSubmit={(event) => void createMemory(event)}>
+		<form id="memory-page-form" className="form-stack" onSubmit={(event) => void saveMemory(event)}>
           <Field label="类型">
             <Select value={memoryType} onChange={(event) => setMemoryType(event.target.value)}>
               {memoryTypeOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
@@ -151,8 +235,15 @@ export function MemoryPage() {
           </Field>
           <Field label="标题"><TextInput value={memoryTitle} onChange={(event) => setMemoryTitle(event.target.value)} /></Field>
           <Field label="内容"><TextArea value={memoryContent} onChange={(event) => setMemoryContent(event.target.value)} required /></Field>
+			<Field label="重要度"><TextInput type="number" min={0} max={1} step={0.1} value={memoryImportance} onChange={(event) => setMemoryImportance(Number(event.target.value))} /></Field>
         </form>
       </Modal>
+		<Modal open={Boolean(recallMemory)} title={`召回依据 · ${recallMemory?.title || recallMemory?.memory_type || ''}`} onClose={() => { setRecallMemory(null); setRecallLogs([]); }}>
+			<div className="stack">{recallLogs.length === 0 ? <EmptyState title="暂无召回记录" description="该记忆尚未实际进入 Agent 上下文。" /> : recallLogs.map((log) => {
+				const detail = log.injected_json?.find((item) => item.memory_id === recallMemory?.id);
+				return <article className="card" key={log.id}><div className="card-title"><h3 className="truncate">{log.query || '未记录查询'}</h3><StatusBadge tone="info">score {detail?.score?.toFixed(3) ?? '—'}</StatusBadge></div><p className="muted">{detail?.reason || 'unified_context_index'} · token {detail?.token_cost ?? 0} · run {log.run_id || '—'}</p><div className="row-wrap"><Button onClick={() => void settingsApi.memories.setRecallFeedback(log.id, 'helpful')}>有帮助</Button><Button onClick={() => void settingsApi.memories.setRecallFeedback(log.id, 'irrelevant')}>不相关</Button><Button onClick={() => void settingsApi.memories.setRecallFeedback(log.id, 'incorrect')}>错误记忆</Button></div></article>;
+			})}</div>
+		</Modal>
       <Toast message={message} tone="good" />
     </div>
   );
@@ -165,7 +256,6 @@ function ManagementPage({ view }: { view: ManagementView }) {
   const [catalog, setCatalog] = useState<ProviderCatalog[]>([]);
   const [tokens, setTokens] = useState<ApiToken[]>([]);
   const [audits, setAudits] = useState<AuditLog[]>([]);
-  const [memories] = useState<Memory[]>([]);
   const [tools, setTools] = useState<ToolDefinition[]>([]);
   const [skills, setSkills] = useState<Skill[]>([]);
   const [toolPolicies, setToolPolicies] = useState<ToolPolicy[]>([]);
@@ -175,7 +265,6 @@ function ManagementPage({ view }: { view: ManagementView }) {
   const [mcpTools, setMcpTools] = useState<MCPToolCache[]>([]);
   const [providerOpen, setProviderOpen] = useState(false);
   const [tokenOpen, setTokenOpen] = useState(false);
-  const [memoryOpen, setMemoryOpen] = useState(false);
   const [toolOpen, setToolOpen] = useState(false);
   const [editingToolId, setEditingToolId] = useState(0);
   const [toolTestInput, setToolTestInput] = useState('{}');
@@ -193,9 +282,6 @@ function ManagementPage({ view }: { view: ManagementView }) {
   const [chatModel, setChatModel] = useState('');
   const [embeddingModel, setEmbeddingModel] = useState('');
   const [tokenName, setTokenName] = useState('');
-  const [memoryType, setMemoryType] = useState(memoryTypeOptions[0].value);
-  const [memoryTitle, setMemoryTitle] = useState('');
-  const [memoryContent, setMemoryContent] = useState('');
   const [toolName, setToolName] = useState('');
   const [toolDescription, setToolDescription] = useState('');
   const [toolConfig, setToolConfig] = useState('{\n  "url": "https://api.example.com/search",\n  "method": "GET",\n  "timeout_ms": 5000,\n  "max_response_bytes": 524288\n}');
@@ -417,31 +503,7 @@ function ManagementPage({ view }: { view: ManagementView }) {
     }
   }
 
-  async function createMemory(event: FormEvent) {
-    event.preventDefault();
-    try {
-      await settingsApi.memories.create({ memory_type: memoryType, title: memoryTitle, content: memoryContent, importance: 0.5, source: 'manual' });
-      setMemoryOpen(false);
-      setMemoryTitle('');
-      setMemoryContent('');
-      setMessage('Memory 已创建');
-      await load();
-    } catch (err) {
-      setError(friendlyErrorMessage(err, '创建 Memory 失败'));
-    }
-  }
-
   const visibleTokens = tokens.filter((token) => !token.revoked_at);
-
-  async function removeMemory(id: number) {
-    try {
-      await settingsApi.memories.remove(id);
-      setMessage('Memory 已删除');
-      await load();
-    } catch (err) {
-      setError(friendlyErrorMessage(err, '删除 Memory 失败'));
-    }
-  }
 
   async function createTool(event: FormEvent) {
     event.preventDefault();
@@ -756,26 +818,6 @@ function ManagementPage({ view }: { view: ManagementView }) {
       </div>
 
       <div className="dense-grid management-block management-resource-block">
-        <Panel className="management-panel section-memory" title="长期记忆" eyebrow="Memory" action={<Button tone="primary" onClick={() => setMemoryOpen(true)}><BrainCircuit size={16} />New</Button>}>
-          <div className="stack">
-            {memories.length === 0 ? (
-              <EmptyState title="还没有记忆" description="新增一条记忆后，Agent 就可以在流程中读取它。" />
-            ) : memories.map((memory) => (
-              <article className="card" key={memory.id}>
-                <div className="card-title">
-                  <h3 className="truncate">{memory.title || memory.memory_type}</h3>
-                  <StatusBadge tone="info">{memoryTypeLabel(memory.memory_type)}</StatusBadge>
-                </div>
-                <p className="muted clamp-2">{memory.content}</p>
-                <div className="row-wrap">
-                  <span className="muted">{formatDate(memory.updated_at)}</span>
-                  <IconButton label="删除 Memory" onClick={() => void removeMemory(memory.id)}><Trash2 size={16} /></IconButton>
-                </div>
-              </article>
-            ))}
-          </div>
-        </Panel>
-
         <Panel className="management-panel section-http" title="HTTP 工具" eyebrow="HTTP Tools" action={<Button tone="primary" onClick={() => { setEditingToolId(0); setToolName(''); setToolDescription(''); setToolOpen(true); }}><Globe2 size={16} />New</Button>}>
           <div className="stack">
             {tools.length === 0 ? (
@@ -1041,28 +1083,6 @@ function ManagementPage({ view }: { view: ManagementView }) {
         <form id="create-token-form" className="form-stack" onSubmit={(event) => void createToken(event)}>
           <Field label="Token 名称"><TextInput value={tokenName} onChange={(event) => setTokenName(event.target.value)} required /></Field>
           <div className="row muted"><ShieldCheck size={16} /> 默认授予当前后端支持的通用作用域。</div>
-        </form>
-      </Modal>
-
-      <Modal
-        open={memoryOpen}
-        title="新增 Memory"
-        onClose={() => setMemoryOpen(false)}
-        footer={
-          <>
-            <Button type="button" onClick={() => setMemoryOpen(false)}>取消</Button>
-            <Button form="create-memory-form" tone="primary">保存</Button>
-          </>
-        }
-      >
-        <form id="create-memory-form" className="form-stack" onSubmit={(event) => void createMemory(event)}>
-          <Field label="类型">
-            <Select value={memoryType} onChange={(event) => setMemoryType(event.target.value)}>
-              {memoryTypeOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-            </Select>
-          </Field>
-          <Field label="标题"><TextInput value={memoryTitle} onChange={(event) => setMemoryTitle(event.target.value)} /></Field>
-          <Field label="内容"><TextArea value={memoryContent} onChange={(event) => setMemoryContent(event.target.value)} required /></Field>
         </form>
       </Modal>
 

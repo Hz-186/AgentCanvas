@@ -104,6 +104,11 @@ func NewRouter(deps RouterDeps) *gin.Engine {
 			protected.GET("/audit-logs", deps.AuditHandler.List)
 
 			registerCRUD(protected, "/memories", ":id", deps.MemoryHandler.Create, deps.MemoryHandler.List, deps.MemoryHandler.Get, deps.MemoryHandler.Update, deps.MemoryHandler.Delete)
+			protected.GET("/memory-candidates", deps.MemoryHandler.ListCandidates)
+			protected.POST("/memory-candidates/:id/approve", deps.MemoryHandler.ApproveCandidate)
+			protected.POST("/memory-candidates/:id/reject", deps.MemoryHandler.RejectCandidate)
+			protected.GET("/memory-recall-logs", deps.MemoryHandler.ListRecallLogs)
+			protected.POST("/memory-recall-logs/:id/feedback", deps.MemoryHandler.SetRecallFeedback)
 
 			registerCRUD(protected, "/tool-definitions", ":id", deps.ToolHandler.Create, deps.ToolHandler.List, deps.ToolHandler.Get, deps.ToolHandler.Update, deps.ToolHandler.Delete)
 			protected.POST("/tool-definitions/:id/test", deps.ToolHandler.Test)
