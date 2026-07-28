@@ -395,19 +395,21 @@ CachedChatClient.StreamChat()
 
 ### 记忆系统
 
-三层分级记忆模型：
+V2 将执行状态、会话连续性、事实记忆和经验反思分成四个互不替代的状态域：
 
 | 级别 | 存储 | 生命周期 | 说明 |
 |------|------|---------|------|
-| **Working Memory** | Redis | 单次 Agent Loop | 四维模型：当前任务(ActiveTask) + 近期事实(RecentFacts) + 注意力焦点(AttentionFocus) + 上下文摘要(ContextSummary) |
-| **Short-term** | MySQL + Vector | 对话会话级别 | 当前 session 关键信息提取，置信度 ≥0.7 才输出到上下文 |
-| **Long-term** | MySQL + Vector | 跨会话持久化 | 用户偏好、历史决策，含 `embedding` + `memory_level` + `access_count` + `consolidation_count` |
+| **Checkpoint** | MySQL | Run 生命周期 | 工具调用、计划、审批和恢复状态，不作为事实记忆召回 |
+| **Conversation Compaction** | MySQL | 会话级别 | 唯一的会话连续性摘要；原消息始终保留 |
+| **Short/Long-term Memory** | MySQL + Unified Context Index | 作用域/版本生命周期 | 稳定偏好、事实、决策、任务和事件，显式区分 user/agent/workflow/conversation scope |
 | **Episodic Reflection** | MySQL | 跨 Run/跨会话 | 错误教训与重要策略，含证据、作用域、置信度、状态与 usefulness 演化 |
 
-- **Dream（记忆梦境）**：定时 Job 遍历记忆，LLM 自动提取合并，`conflict_flag` 冲突检测去重
-- **Working Memory** 事件驱动更新，`ToContextBlock()` 自动序列化为 LLM 可读格式
-- **记忆读取**：Agent Runtime 必须携带任务语义查询，只加载向量检索命中的记忆 ID，不再把最近若干条记忆作为默认上下文。
-- **记忆冲突**：写入前对同类语义记忆做冲突检测；冲突会暂停 Run 并创建带多个选项的审批请求，前端选择后通过 Checkpoint → Resume 将选项注入原工具调用。
+- **统一写入**：手工 CRUD、确定性 Workflow MemoryWrite 和候选批准均通过 `MemoryCommandService`，由 MySQL 事务同时登记 `context_resource_index_outbox`。
+- **候选审核**：Agent `write_memory`、Dream 和自动 Turn Review 只创建 `agent_change_proposals(kind=memory)`；模型不能自我批准，Dream 不修改原消息可见性。
+- **统一召回**：自动注入、Memory Tool 和 MemoryRead 节点共用 Context Index 召回，结果携带 memory ID、来源、作用域、分数、原因和 token 成本，并按 ID、来源键和等价内容去重。
+- **Working Memory**：Redis 实现仅保留为运行缓存/兼容层，不再保存“最后回答摘要”并作为独立 LLM 上下文源注入。
+- **生命周期**：只有 `active`、未过期、非冲突记忆可召回；实际注入时原子增加 `access_count`，衰减仅按 `last_decay_at` 之后的增量时间计算。
+- **禁用语义**：`memory_enabled=false` 同时关闭长期记忆召回、Memory Tool 和自动候选创建；Checkpoint、Conversation Compaction 与 Reflection 由各自策略控制。
 
 ---
 
@@ -569,8 +571,9 @@ skill/                      内置 Skill 预设 (explain-knowledge / record-know
 | `workflow_eval_results` | 评估结果 |
 | `approval_requests` | 审批请求 |
 | `workflow_checkpoints` | 运行检查点（暂停/恢复 + 哈希校验） |
-| `memories` | 记忆（含 embedding + importance + dream 合并） |
+| `memories` | V2 记忆（scope/status/supersedes/last_decay_at + 兼容旧字段） |
 | `memory_write_logs` | 记忆写入日志 |
+| `memory_recall_logs` | 召回 query、候选、最终注入、token 与用户反馈 |
 | `memory_merge_logs` | 记忆合并日志 |
 | `memory_extraction_jobs` | 记忆提取任务 |
 | `agent_reflections` | 持久化错误教训/重要策略及证据、状态、usefulness |
@@ -677,7 +680,7 @@ POST   /api/v1/agents/:id/conversations/:conversation_id/fork   分支会话
 POST   /api/v1/agents/:id/conversations/:conversation_id/upgrade 使用当前 Release 创建升级分支
 ```
 
-独立 Agent Chat 直接调用与 `agent_loop` 节点共用的底层 `AgentRuntime`，不会创建 `Begin → Agent → Output` 伪 Workflow。Workflow 只负责把节点输入适配为 Agent Runtime 请求；工具、记忆、Working Memory、审批和 resume 均由底层 Agent 模块统一处理。`run_subagent` 是动态委派入口，旧 `call_agent` / `call_workflow` 仅为历史 DSL 保留兼容。
+独立 Agent Chat 直接调用与 `agent_loop` 节点共用的底层 `AgentRuntime`，不会创建 `Begin → Agent → Output` 伪 Workflow。Workflow 只负责把节点输入适配为 Agent Runtime 请求；工具、记忆候选、审批和 resume 均由底层 Agent 模块统一处理。Redis Working Memory 仅为兼容缓存，不再参与 LLM 上下文组装。`run_subagent` 是动态委派入口，旧 `call_agent` / `call_workflow` 仅为历史 DSL 保留兼容。
 
 ### Legacy RAG Chat（已弃用）
 
@@ -722,6 +725,11 @@ GET    /api/v1/approval-requests                      审批请求
 
 ```text
 GET    /api/v1/memories                              记忆列表
+GET    /api/v1/memory-candidates                     全局记忆候选
+POST   /api/v1/memory-candidates/:id/approve         批准候选并通过统一命令服务生效
+POST   /api/v1/memory-candidates/:id/reject          拒绝候选
+GET    /api/v1/memory-recall-logs                    召回依据与质量日志
+POST   /api/v1/memory-recall-logs/:id/feedback       标记 helpful/irrelevant/incorrect
 GET    /api/v1/tool-definitions                      工具定义
 POST   /api/v1/tool-definitions/:id/test             测试工具
 GET    /api/v1/skills                                Skill 列表
