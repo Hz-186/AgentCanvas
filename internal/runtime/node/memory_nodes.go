@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"agentcanvas/internal/domain/contextresource"
 	"agentcanvas/internal/domain/memory"
 	"agentcanvas/internal/runtime/engine"
 	runtimeevent "agentcanvas/internal/runtime/event"
@@ -14,9 +15,11 @@ import (
 )
 
 type MemoryReadNode struct {
-	Memories  memory.Repository
-	Retriever memory.SemanticRetriever
-	Archival  memory.ArchivalIndex
+	Memories     memory.Repository
+	RecallLogs   memory.RecallLogRepository
+	Retriever    memory.SemanticRetriever
+	Archival     memory.ArchivalIndex
+	ContextIndex contextresource.Index
 }
 
 type memoryReadConfig struct {
@@ -48,15 +51,15 @@ func (n MemoryReadNode) Run(ctx context.Context, rc *engine.RunContext, input en
 	}
 	emitRuntimeEvent(ctx, rc, runtimeevent.Event{Type: runtimeevent.MemoryReadStarted, RunID: rc.RunID})
 
-	result, err := (memory.RuntimeService{Memories: n.Memories, Retriever: n.Retriever, Archival: n.Archival}).Read(ctx, memory.ReadRequest{
-		OwnerID: rc.OwnerID, ConversationID: rc.ConversationID, MemoryTypes: cfg.MemoryTypes,
+	result, err := (memory.RuntimeService{Memories: n.Memories, RecallLogs: n.RecallLogs, Retriever: n.Retriever, Archival: n.Archival, ContextIndex: n.ContextIndex, WorkflowID: rc.WorkflowID}).Read(ctx, memory.ReadRequest{
+		OwnerID: rc.OwnerID, ConversationID: rc.ConversationID, AgentID: rc.AgentID, WorkflowID: rc.WorkflowID, RunID: rc.RunID, MemoryTypes: cfg.MemoryTypes,
 		Query: firstMemoryQuery(cfg.Query, rc), Limit: cfg.Limit, SemanticOnly: true,
 	})
 	if err != nil {
 		return nil, err
 	}
 	emitRuntimeEvent(ctx, rc, runtimeevent.Event{Type: runtimeevent.MemoryReadFinished, RunID: rc.RunID, Payload: map[string]any{"count": result.Count, "query": result.Query}})
-	return engine.NodeOutput{"memories": result.Memories, "memory_context": result.MemoryContext, "count": result.Count, "query": result.Query}, nil
+	return engine.NodeOutput{"memories": result.Memories, "memory_context": result.MemoryContext, "count": result.Count, "query": result.Query, "recall_details": result.RecallDetails}, nil
 }
 
 func firstMemoryQuery(configured string, rc *engine.RunContext) string {
@@ -74,10 +77,7 @@ func firstMemoryQuery(configured string, rc *engine.RunContext) string {
 }
 
 type MemoryWriteNode struct {
-	Memories  memory.Repository
-	Logs      memory.WriteLogRepository
-	Retriever memory.SemanticRetriever
-	Archival  memory.ArchivalIndex
+	Commands memory.Commander
 }
 
 type memoryWriteConfig struct {
@@ -110,8 +110,8 @@ func (MemoryWriteNode) Validate(config json.RawMessage) error {
 }
 
 func (n MemoryWriteNode) Run(ctx context.Context, rc *engine.RunContext, input engine.NodeInput, config json.RawMessage) (engine.NodeOutput, error) {
-	if n.Memories == nil {
-		return nil, fmt.Errorf("memory repository is not configured")
+	if n.Commands == nil {
+		return nil, fmt.Errorf("memory command service is not configured")
 	}
 	var cfg memoryWriteConfig
 	if err := json.Unmarshal(config, &cfg); err != nil {
@@ -122,7 +122,7 @@ func (n MemoryWriteNode) Run(ctx context.Context, rc *engine.RunContext, input e
 		return nil, fmt.Errorf("%w: resolved memory content is empty", agenterrors.ErrInvalidInput)
 	}
 	emitRuntimeEvent(ctx, rc, runtimeevent.Event{Type: runtimeevent.MemoryWriteStarted, RunID: rc.RunID})
-	result, err := (memory.RuntimeService{Memories: n.Memories, Logs: n.Logs, Retriever: n.Retriever, Archival: n.Archival}).Write(ctx, memory.WriteRequest{
+	result, err := n.Commands.Execute(ctx, memory.WriteRequest{
 		OwnerID: rc.OwnerID, ConversationID: rc.ConversationID, RunID: rc.RunID, MemoryID: cfg.MemoryID,
 		MemoryType: cfg.MemoryType, Title: engine.ResolveTemplate(cfg.Title, rc), Content: content, Importance: cfg.Importance,
 		Reason: engine.ResolveTemplate(cfg.Reason, rc), Source: cfg.Source,

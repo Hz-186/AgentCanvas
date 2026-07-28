@@ -138,6 +138,7 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 	workflowTeamRepo := mysqlinfra.NewWorkflowTeamRepository(db)
 	memoryRepo := cacheinfra.NewMemoryRepository(mysqlinfra.NewMemoryRepository(db), resourceInvalidator, memoryCache)
 	memoryWriteLogRepo := mysqlinfra.NewMemoryWriteLogRepository(db)
+	memoryRecallLogRepo := mysqlinfra.NewMemoryRecallLogRepository(db)
 	extractionJobRepo := mysqlinfra.NewExtractionJobRepository(db)
 	mergeLogRepo := mysqlinfra.NewMergeLogRepository(db)
 	workingMemoryRepo := redisinfra.NewWorkingMemoryRepository(redisClient, redisinfra.WorkingMemoryOptions{
@@ -269,6 +270,10 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 	providerService := providerusecase.NewService(providerRepo, auditRepo, secretBox, llm.NewHTTPProviderTester())
 	auditService := auditusecase.NewService(auditRepo)
 	memoryService := memoryusecase.NewServiceWithCacheAndRetriever(memoryRepo, memoryCache, memoryRetrievalStore)
+	memoryCandidateService := memoryusecase.NewCandidateService(agentImprovementRepo)
+	memoryCommandService := memoryusecase.NewMemoryCommandService(memoryRepo, memoryWriteLogRepo)
+	memoryService.ConfigureCommands(memoryCommandService)
+	memoryService.ConfigureRecallLogs(memoryRecallLogRepo)
 	toolService := toolusecase.NewService(toolDefinitionRepo)
 	workspaceRoot, _ := os.Getwd()
 	skillService := skillusecase.NewService(skillRepo, workspaceRoot)
@@ -323,6 +328,8 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 		workflowTeamRepo,
 		memoryRepo,
 		memoryWriteLogRepo,
+		memoryRecallLogRepo,
+		memoryCommandService,
 		memoryRetrievalStore,
 		workingMemoryRepo,
 		extractionJobRepo,
@@ -349,6 +356,7 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 	}
 	workflowService.ConfigureDream(jobQueue, redisClient, dreamCfg)
 	workflowService.ConfigureMemoryReader(memoryService)
+	workflowService.ConfigureMemoryCandidates(memoryCandidateService)
 	workflowService.ConfigureRuleSets(workflowRuleSetRepo)
 	independentAgentService := independentagentusecase.NewService(agentRepo, agentTurnRepo, conversationRepo, messageRepo,
 		runRepo, runEventRepo, runStepRepo, approvalRepo, workflowService, workflowService.AgentRuntime())
@@ -359,6 +367,7 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 	}
 	improvementService := independentagentusecase.NewImprovementService(agentImprovementRepo, agentRepo, agentTurnRepo, messageRepo,
 		runStepRepo, memoryRepo, reflectionRepo, skillRepo, workflowService, toolCallingClient, cfg.AgentRuntime.MemoryReviewMode)
+	improvementService.ConfigureMemoryCommands(memoryCommandService)
 	improvementService.ConfigureReviewModel(cfg.AgentRuntime.ReviewProviderID, cfg.AgentRuntime.ReviewModel)
 	if cfg.AgentRuntime.SelfImprovementEnabled {
 		independentAgentService.ConfigureImprovement(improvementService)
@@ -383,6 +392,7 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 	providerHandler := handler.NewProviderHandler(providerService, providerCatalog)
 	auditHandler := handler.NewAuditHandler(auditService)
 	memoryHandler := handler.NewMemoryHandler(memoryService)
+	memoryHandler.ConfigureCandidates(memoryCandidateService, improvementService)
 	toolHandler := handler.NewToolHandler(toolService, toolPolicyRepo, toolPackRepo, mcpRepo)
 	skillHandler := handler.NewSkillHandler(skillService, auditRepo)
 	knowledgeHandler := handler.NewKnowledgeHandler(knowledgeService)

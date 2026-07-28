@@ -2,7 +2,9 @@ package memory
 
 import (
 	"context"
+	"errors"
 	"testing"
+	"time"
 )
 
 type runtimeArchivalFake struct {
@@ -32,8 +34,29 @@ func (f *runtimeArchivalFake) Search(_ context.Context, _ int64, _ string, _ int
 func (f *runtimeArchivalFake) Delete(_ context.Context, _ int64) error { return nil }
 
 type runtimeRepoFake struct {
-	items  map[int64]*Memory
-	marked []int64
+	items        map[int64]*Memory
+	marked       []int64
+	replacements int
+}
+
+type runtimeRecallLogFake struct {
+	item *RecallLog
+	err  error
+}
+
+func (f *runtimeRecallLogFake) Create(_ context.Context, item *RecallLog) error {
+	if f.err != nil {
+		return f.err
+	}
+	clone := *item
+	f.item = &clone
+	return nil
+}
+func (f *runtimeRecallLogFake) List(context.Context, int64, int64, int) ([]RecallLog, error) {
+	return nil, nil
+}
+func (f *runtimeRecallLogFake) SetFeedback(context.Context, int64, int64, string) error {
+	return nil
 }
 
 func (r *runtimeRepoFake) Create(_ context.Context, item *Memory) error {
@@ -51,6 +74,18 @@ func (r *runtimeRepoFake) Update(_ context.Context, item *Memory) error {
 	clone := *item
 	r.items[item.ID] = &clone
 	return nil
+}
+func (r *runtimeRepoFake) Replace(ctx context.Context, ownerID, supersededID int64, replacement *Memory) error {
+	if err := r.Create(ctx, replacement); err != nil {
+		return err
+	}
+	previous, err := r.FindByID(ctx, ownerID, supersededID)
+	if err != nil {
+		return err
+	}
+	previous.Status = StatusSuperseded
+	r.replacements++
+	return r.Update(ctx, previous)
 }
 func (r *runtimeRepoFake) FindByID(_ context.Context, ownerID, id int64) (*Memory, error) {
 	item := *r.items[id]
@@ -90,7 +125,7 @@ func (r *runtimeRepoFake) UpdateDecayedImportance(context.Context, int64, float6
 }
 func (r *runtimeRepoFake) SetEmbedding(context.Context, int64, int64, []byte) error { return nil }
 
-func TestRuntimeServiceIndexesAndReadsArchivalMemory(t *testing.T) {
+func TestRuntimeServiceKeepsArchivalIndexShadowReadOnly(t *testing.T) {
 	cid := int64(7)
 	repo := &runtimeRepoFake{}
 	archival := &runtimeArchivalFake{}
@@ -99,8 +134,8 @@ func TestRuntimeServiceIndexesAndReadsArchivalMemory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if archival.indexed.ID != written.Memory.ID {
-		t.Fatalf("archival index did not receive memory: %+v", archival.indexed)
+	if archival.indexed.ID != 0 {
+		t.Fatalf("legacy archival index must not receive writes: %+v", archival.indexed)
 	}
 	archival.ids = []int64{written.Memory.ID}
 	read, err := service.Read(context.Background(), ReadRequest{OwnerID: 1, ConversationID: &cid, MemoryTypes: []string{TypeArchival}, Query: "fact", Limit: 5})
@@ -146,6 +181,85 @@ func TestRuntimeServiceExcludesWorkingAndConflictingMemoriesFromSemanticRecall(t
 	}
 }
 
+func TestRuntimeServiceExcludesInactiveExpiredAndCrossScopeMemories(t *testing.T) {
+	conversationID := int64(7)
+	expired := time.Now().Add(-time.Minute)
+	repo := &runtimeRepoFake{items: map[int64]*Memory{
+		1: {ID: 1, OwnerID: 1, ScopeType: ScopeUser, ScopeID: 1, Status: StatusRevoked, MemoryType: TypeProfile, MemoryLevel: LevelLongTerm, Content: "revoked"},
+		2: {ID: 2, OwnerID: 1, ScopeType: ScopeConversation, ScopeID: 8, Status: StatusActive, MemoryType: TypeProfile, MemoryLevel: LevelLongTerm, Content: "other conversation"},
+		3: {ID: 3, OwnerID: 1, ScopeType: ScopeUser, ScopeID: 1, Status: StatusActive, MemoryType: TypeProfile, MemoryLevel: LevelLongTerm, Content: "expired", ExpiresAt: &expired},
+		4: {ID: 4, OwnerID: 1, ScopeType: ScopeConversation, ScopeID: 7, Status: StatusActive, MemoryType: TypeProfile, MemoryLevel: LevelLongTerm, Content: "current"},
+	}}
+	service := RuntimeService{Memories: repo, Retriever: &runtimeSemanticFake{ids: []int64{1, 2, 3, 4}}}
+	result, err := service.Read(context.Background(), ReadRequest{OwnerID: 1, ConversationID: &conversationID, Query: "preference", SemanticOnly: true})
+	if err != nil || result.Count != 1 || result.Memories[0].ID != 4 {
+		t.Fatalf("recall must enforce lifecycle and scope: result=%+v err=%v", result, err)
+	}
+}
+
+func TestMemoryV2DefaultsAndRecallability(t *testing.T) {
+	conversationID := int64(9)
+	item := Memory{OwnerID: 3, ConversationID: &conversationID, MemoryLevel: LevelLongTerm}
+	item.ApplyV2Defaults()
+	if item.Status != StatusActive || item.ScopeType != ScopeConversation || item.ScopeID != conversationID || !item.IsRecallable(time.Now()) {
+		t.Fatalf("unexpected V2 defaults: %+v", item)
+	}
+	item.Status = StatusSuperseded
+	if item.IsRecallable(time.Now()) {
+		t.Fatal("superseded memory must not be recallable")
+	}
+}
+
+func TestMemoryPolicyDefaultsAndValidation(t *testing.T) {
+	policy, err := ParsePolicy(nil)
+	if err != nil || !policy.RecallActive(true) || policy.WriteMode != WriteModeSuggest || policy.TopK != 8 || policy.TokenBudget != 1200 {
+		t.Fatalf("unexpected default memory policy: %+v err=%v", policy, err)
+	}
+	if _, err := ParsePolicy([]byte(`{"top_k":21}`)); err == nil {
+		t.Fatal("expected invalid top_k to be rejected")
+	}
+}
+
+func TestRuntimeServiceDeduplicatesEquivalentRecallContent(t *testing.T) {
+	repo := &runtimeRepoFake{items: map[int64]*Memory{
+		1: {ID: 1, OwnerID: 1, Status: StatusActive, ScopeType: ScopeUser, ScopeID: 1, MemoryType: TypeProfile, MemoryLevel: LevelLongTerm, Content: "User prefers concise answers"},
+		2: {ID: 2, OwnerID: 1, Status: StatusActive, ScopeType: ScopeUser, ScopeID: 1, MemoryType: TypeProfile, MemoryLevel: LevelLongTerm, Content: " user   prefers concise answers "},
+	}}
+	service := RuntimeService{Memories: repo, Retriever: &runtimeSemanticFake{ids: []int64{1, 1, 2}}}
+	result, err := service.Read(context.Background(), ReadRequest{OwnerID: 1, Query: "answer style", SemanticOnly: true})
+	if err != nil || result.Count != 1 || len(repo.marked) != 1 {
+		t.Fatalf("equivalent memories must enter context once: result=%+v marked=%v err=%v", result, repo.marked, err)
+	}
+}
+
+func TestRuntimeServicePersistsRecallProvenanceAfterInjection(t *testing.T) {
+	repo := &runtimeRepoFake{items: map[int64]*Memory{
+		1: {ID: 1, OwnerID: 1, Status: StatusActive, ScopeType: ScopeAgent, ScopeID: 7, MemoryType: TypeProfile, MemoryLevel: LevelLongTerm, Content: "User prefers concise answers", Source: "approved_memory_proposal"},
+	}}
+	logs := &runtimeRecallLogFake{}
+	service := RuntimeService{Memories: repo, Retriever: &runtimeSemanticFake{ids: []int64{1}}, RecallLogs: logs}
+	result, err := service.Read(context.Background(), ReadRequest{OwnerID: 1, AgentID: 7, WorkflowID: 3, RunID: 11, Query: "answer style", SemanticOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Count != 1 || len(result.RecallDetails) != 1 || result.RecallDetails[0].MemoryID != 1 || result.RecallDetails[0].Reason == "" || result.RecallDetails[0].TokenCost <= 0 {
+		t.Fatalf("missing structured recall provenance: %+v", result)
+	}
+	if logs.item == nil || logs.item.OwnerID != 1 || logs.item.AgentID != 7 || logs.item.WorkflowID != 3 || logs.item.RunID != 11 || logs.item.TokenCost <= 0 || len(logs.item.InjectedJSON) == 0 {
+		t.Fatalf("missing persisted recall log: %+v", logs.item)
+	}
+}
+
+func TestRuntimeServicePropagatesRecallLogFailure(t *testing.T) {
+	repo := &runtimeRepoFake{items: map[int64]*Memory{
+		1: {ID: 1, OwnerID: 1, Status: StatusActive, ScopeType: ScopeUser, ScopeID: 1, MemoryType: TypeProfile, MemoryLevel: LevelLongTerm, Content: "User prefers concise answers"},
+	}}
+	service := RuntimeService{Memories: repo, Retriever: &runtimeSemanticFake{ids: []int64{1}}, RecallLogs: &runtimeRecallLogFake{err: errors.New("database unavailable")}}
+	if _, err := service.Read(context.Background(), ReadRequest{OwnerID: 1, Query: "answer style", SemanticOnly: true}); err == nil {
+		t.Fatal("recall log persistence failure must not be silently ignored")
+	}
+}
+
 func TestRuntimeServiceDetectsConflictingMemoryBeforeWrite(t *testing.T) {
 	existing := &Memory{ID: 9, OwnerID: 1, MemoryType: TypeProfile, Title: "response style", Content: "User prefers concise answers"}
 	repo := &runtimeRepoFake{items: map[int64]*Memory{9: existing}}
@@ -176,5 +290,18 @@ func TestRuntimeServiceKeepBothPreservesConflictParent(t *testing.T) {
 	result, err := service.Write(context.Background(), WriteRequest{OwnerID: 1, MemoryType: TypeProfile, Title: "response style", Content: "User prefers detailed answers", ConflictResolution: "keep_both"})
 	if err != nil || result.Action != WriteActionCreate || result.Memory.ParentID == nil || *result.Memory.ParentID != 9 {
 		t.Fatalf("keep_both must preserve parent lineage: result=%+v err=%v", result, err)
+	}
+}
+
+func TestRuntimeServiceAppliesApprovedReplacementAtomically(t *testing.T) {
+	existing := &Memory{ID: 9, OwnerID: 1, Status: StatusActive, ScopeType: ScopeUser, ScopeID: 1, MemoryType: TypeProfile, MemoryLevel: LevelLongTerm, Title: "response style", Content: "User prefers concise answers"}
+	repo := &runtimeRepoFake{items: map[int64]*Memory{9: existing}}
+	service := RuntimeService{Memories: repo, Retriever: &runtimeSemanticFake{ids: []int64{9}}}
+	result, err := service.Write(context.Background(), WriteRequest{OwnerID: 1, MemoryType: TypeProfile, Title: "response style", Content: "User prefers detailed answers", SupersedesID: &existing.ID, ScopeType: ScopeUser, ScopeID: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.ReplacementApplied || repo.replacements != 1 || repo.items[9].Status != StatusSuperseded || result.Memory.SupersedesID == nil || *result.Memory.SupersedesID != 9 {
+		t.Fatalf("approved replacement must atomically create lineage and supersede the old memory: result=%+v repo=%+v", result, repo)
 	}
 }

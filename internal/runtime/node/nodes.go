@@ -63,6 +63,9 @@ type Deps struct {
 	Memories                memory.Repository
 	MemoryReader            MemoryBatchReader
 	MemoryWriteLogs         memory.WriteLogRepository
+	MemoryRecallLogs        memory.RecallLogRepository
+	MemoryCommands          memory.Commander
+	MemoryCandidates        memory.CandidateWriter
 	MemoryRetriever         memory.SemanticRetriever
 	WorkingMemory           memory.WorkingMemoryRepository
 	MemoryExtractionTrigger func(ctx context.Context, ownerID int64, conversationID int64, roundNumber int)
@@ -115,8 +118,8 @@ func DefaultNodes(deps Deps) ([]engine.Node, error) {
 		TeamCallNode{Teams: deps.Teams, Caller: deps.WorkflowCaller},
 		CodeSandboxNode{Runner: deps.Sandbox},
 		MessageNode{Writer: deps.Messages},
-		MemoryReadNode{Memories: deps.Memories, Retriever: deps.MemoryRetriever},
-		MemoryWriteNode{Memories: deps.Memories, Logs: deps.MemoryWriteLogs, Retriever: deps.MemoryRetriever},
+		MemoryReadNode{Memories: deps.Memories, RecallLogs: deps.MemoryRecallLogs, ContextIndex: deps.ContextIndex, Retriever: deps.MemoryRetriever},
+		MemoryWriteNode{Commands: deps.MemoryCommands},
 		HTTPToolNode{Tools: deps.Tools, Invocations: deps.ToolInvocations},
 		MCPToolNode{Servers: deps.MCPServers},
 		SwitchNode{},
@@ -140,6 +143,8 @@ func buildAgentNode(deps Deps) AgentNode {
 		Memories:          deps.Memories,
 		MemoryReader:      deps.MemoryReader,
 		MemoryLogs:        deps.MemoryWriteLogs,
+		MemoryRecallLogs:  deps.MemoryRecallLogs,
+		MemoryCandidates:  deps.MemoryCandidates,
 		WorkingMemory:     deps.WorkingMemory,
 		WorkflowCaller:    deps.WorkflowCaller,
 		InlineAgentCaller: deps.InlineAgentCaller,

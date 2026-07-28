@@ -137,16 +137,50 @@ export interface Memory {
   id: number;
   owner_id: number;
   conversation_id: number | null;
-  memory_type: string;
+	parent_id?: number | null;
+	conflict_flag?: boolean;
+	scope_type: 'user' | 'agent' | 'workflow' | 'conversation';
+	scope_id: number;
+	status: 'active' | 'superseded' | 'revoked';
+	supersedes_id?: number | null;
+	memory_type: string;
+	memory_level?: 'working' | 'short_term' | 'long_term';
   title: string;
   content: string;
   importance: number;
   source: string;
   metadata_json?: unknown;
-  last_used_at: string | null;
+	last_used_at: string | null;
+	last_decay_at?: string | null;
+	access_count?: number;
   expires_at: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface MemoryRecallDetail {
+	memory_id: number;
+	source: string;
+	scope_type: string;
+	scope_id: number;
+	score: number;
+	reason: string;
+	token_cost: number;
+}
+
+export interface MemoryRecallLog {
+	id: number;
+	owner_id: number;
+	agent_id: number;
+	workflow_id: number;
+	conversation_id: number;
+	run_id: number;
+	query: string;
+	candidate_json: Record<string, number>;
+	injected_json: MemoryRecallDetail[];
+	token_cost: number;
+	feedback: '' | 'helpful' | 'irrelevant' | 'incorrect';
+	created_at: string;
 }
 
 export interface ToolDefinition {

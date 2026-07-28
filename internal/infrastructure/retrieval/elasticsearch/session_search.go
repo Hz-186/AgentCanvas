@@ -59,7 +59,11 @@ func (s *SessionSearchStore) EnsureIndex(ctx context.Context) error {
 	if response.StatusCode != http.StatusNotFound {
 		return fmt.Errorf("check message index failed: %s", response.Status())
 	}
-	response, err = s.client.Indices.Create(s.index, s.client.Indices.Create.WithContext(ctx), s.client.Indices.Create.WithBody(strings.NewReader(messageIndexMapping)))
+	response, err = s.client.Indices.Create(
+		s.index,
+		s.client.Indices.Create.WithContext(ctx),
+		s.client.Indices.Create.WithBody(strings.NewReader(messageIndexMapping)),
+	)
 	if err != nil {
 		return err
 	}
@@ -91,7 +95,10 @@ func (s *SessionSearchStore) IndexMessage(ctx context.Context, ownerID, agentID 
 	return nil
 }
 
-func (s *SessionSearchStore) SearchMessages(ctx context.Context, request conversation.MessageSearchRequest) ([]conversation.MessageSearchResult, error) {
+func (s *SessionSearchStore) SearchMessages(
+	ctx context.Context,
+	request conversation.MessageSearchRequest,
+) ([]conversation.MessageSearchResult, error) {
 	if request.OwnerID <= 0 || request.AgentID <= 0 || strings.TrimSpace(request.Query) == "" {
 		return nil, fmt.Errorf("owner_id, agent_id, and query are required")
 	}
@@ -112,9 +119,37 @@ func (s *SessionSearchStore) SearchMessages(ctx context.Context, request convers
 		}
 		filters = append(filters, map[string]any{"range": map[string]any{"created_at": rangeQuery}})
 	}
-	body, _ := json.Marshal(map[string]any{"size": request.Limit, "query": map[string]any{"bool": map[string]any{
-		"filter": filters, "must": []map[string]any{{"simple_query_string": map[string]any{"query": request.Query, "fields": []string{"content"}, "default_operator": "and"}}},
-	}}, "sort": []map[string]any{{"_score": map[string]any{"order": "desc"}}, {"created_at": map[string]any{"order": "desc"}}}})
+	body, _ := json.Marshal(
+		map[string]any{
+			"size": request.Limit,
+			"query": map[string]any{
+				"bool": map[string]any{
+					"filter": filters,
+					"must": []map[string]any{
+						{
+							"simple_query_string": map[string]any{
+								"query":            request.Query,
+								"fields":           []string{"content"},
+								"default_operator": "and",
+							},
+						},
+					},
+				},
+			},
+			"sort": []map[string]any{
+				{
+					"_score": map[string]any{
+						"order": "desc",
+					},
+				},
+				{
+					"created_at": map[string]any{
+						"order": "desc",
+					},
+				},
+			},
+		},
+	)
 	response, err := s.client.Search(s.client.Search.WithContext(ctx), s.client.Search.WithIndex(s.index), s.client.Search.WithBody(bytes.NewReader(body)))
 	if err != nil {
 		return nil, err
@@ -143,17 +178,37 @@ func (s *SessionSearchStore) SearchMessages(ctx context.Context, request convers
 	}
 	results := make([]conversation.MessageSearchResult, 0, len(decoded.Hits.Hits))
 	for _, hit := range decoded.Hits.Hits {
-		results = append(results, conversation.MessageSearchResult{MessageID: hit.Source.MessageID, AgentID: hit.Source.AgentID,
-			ConversationID: hit.Source.ConversationID, Role: hit.Source.Role, Content: hit.Source.Content, Score: hit.Score, CreatedAt: hit.Source.CreatedAt})
+		results = append(results, conversation.MessageSearchResult{
+			MessageID:      hit.Source.MessageID,
+			AgentID:        hit.Source.AgentID,
+			ConversationID: hit.Source.ConversationID,
+			Role:           hit.Source.Role,
+			Content:        hit.Source.Content,
+			Score:          hit.Score,
+			CreatedAt:      hit.Source.CreatedAt,
+		})
 	}
 	return results, nil
 }
 
 func (s *SessionSearchStore) DeleteConversation(ctx context.Context, ownerID, agentID, conversationID int64) error {
-	body, _ := json.Marshal(map[string]any{"query": map[string]any{"bool": map[string]any{"filter": []map[string]any{
-		{"term": map[string]any{"owner_id": ownerID}}, {"term": map[string]any{"agent_id": agentID}}, {"term": map[string]any{"conversation_id": conversationID}},
-	}}}})
-	response, err := s.client.DeleteByQuery([]string{s.index}, bytes.NewReader(body), s.client.DeleteByQuery.WithContext(ctx), s.client.DeleteByQuery.WithRefresh(true), s.client.DeleteByQuery.WithConflicts("proceed"))
+	body, _ := json.Marshal(map[string]any{
+		"query": map[string]any{
+			"bool": map[string]any{
+				"filter": []map[string]any{
+					{"term": map[string]any{"owner_id": ownerID}},
+					{"term": map[string]any{"agent_id": agentID}},
+					{"term": map[string]any{"conversation_id": conversationID}},
+				},
+			},
+		},
+	})
+	response, err := s.client.DeleteByQuery([]string{s.index},
+		bytes.NewReader(body),
+		s.client.DeleteByQuery.WithContext(ctx),
+		s.client.DeleteByQuery.WithRefresh(true),
+		s.client.DeleteByQuery.WithConflicts("proceed"),
+	)
 	if err != nil {
 		return err
 	}

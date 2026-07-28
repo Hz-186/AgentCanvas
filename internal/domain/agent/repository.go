@@ -48,6 +48,7 @@ type ImprovementRepository interface {
 	ClaimNextReview(ctx context.Context, workerID, leaseToken string, leaseUntil time.Time) (*ImprovementReview, error)
 	RenewReviewLease(ctx context.Context, reviewID int64, leaseToken string, leaseUntil time.Time) error
 	CompleteReview(ctx context.Context, review *ImprovementReview, proposals []ChangeProposal) error
+	CreateProposal(ctx context.Context, item *ChangeProposal) error
 	FailReview(ctx context.Context, review *ImprovementReview, cause error, retryAt *time.Time) error
 	ListReviews(ctx context.Context, ownerID, agentID int64, limit int) ([]ImprovementReview, error)
 	ListProposals(ctx context.Context, ownerID, agentID int64, status string, limit int) ([]ChangeProposal, error)

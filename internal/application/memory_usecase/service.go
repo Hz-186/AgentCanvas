@@ -12,25 +12,29 @@ import (
 )
 
 type Service struct {
-	memories  memory.Repository
-	cache     memory.Cache
-	retriever memory.SemanticRetriever
+	memories   memory.Repository
+	cache      memory.Cache
+	retriever  memory.SemanticRetriever
+	commands   *MemoryCommandService
+	recallLogs memory.RecallLogRepository
 }
 
 func NewService(memories memory.Repository) *Service {
-	return &Service{memories: memories}
+	return &Service{memories: memories, commands: NewMemoryCommandService(memories, nil)}
 }
 
 func NewServiceWithCache(memories memory.Repository, cache memory.Cache) *Service {
-	return &Service{memories: memories, cache: cache}
+	return &Service{memories: memories, cache: cache, commands: NewMemoryCommandService(memories, nil)}
 }
 
 func NewServiceWithCacheAndRetriever(memories memory.Repository, cache memory.Cache, retriever memory.SemanticRetriever) *Service {
-	return &Service{memories: memories, cache: cache, retriever: retriever}
+	return &Service{memories: memories, cache: cache, retriever: retriever, commands: NewMemoryCommandService(memories, nil)}
 }
 
 type CreateMemoryRequest struct {
 	ConversationID *int64          `json:"conversation_id"`
+	ScopeType      string          `json:"scope_type"`
+	ScopeID        int64           `json:"scope_id"`
 	MemoryType     string          `json:"memory_type" binding:"required"`
 	Title          string          `json:"title"`
 	Content        string          `json:"content" binding:"required"`
@@ -41,12 +45,50 @@ type CreateMemoryRequest struct {
 
 type UpdateMemoryRequest struct {
 	ConversationID *int64          `json:"conversation_id"`
+	ScopeType      string          `json:"scope_type"`
+	ScopeID        *int64          `json:"scope_id"`
 	MemoryType     string          `json:"memory_type"`
 	Title          string          `json:"title"`
 	Content        string          `json:"content"`
 	Importance     *float64        `json:"importance"`
 	Source         string          `json:"source"`
 	MetadataJSON   json.RawMessage `json:"metadata_json"`
+}
+
+type ListMemoryFilter struct {
+	MemoryTypes    []string
+	ConversationID *int64
+	Statuses       []string
+	ScopeTypes     []string
+	ScopeID        *int64
+	Sources        []string
+	Limit          int
+	Offset         int
+}
+
+func (s *Service) ConfigureCommands(commands *MemoryCommandService) {
+	if commands != nil {
+		s.commands = commands
+	}
+}
+
+func (s *Service) ConfigureRecallLogs(logs memory.RecallLogRepository) {
+	s.recallLogs = logs
+}
+
+func (s *Service) ListRecallLogs(ctx context.Context, ownerID, memoryID int64, limit int) ([]memory.RecallLog, error) {
+	if s.recallLogs == nil {
+		return []memory.RecallLog{}, nil
+	}
+	return s.recallLogs.List(ctx, ownerID, memoryID, limit)
+}
+
+func (s *Service) SetRecallFeedback(ctx context.Context, ownerID, id int64, feedback string) error {
+	feedback = strings.TrimSpace(feedback)
+	if s.recallLogs == nil || (feedback != "helpful" && feedback != "irrelevant" && feedback != "incorrect" && feedback != "") {
+		return agenterrors.ErrInvalidInput
+	}
+	return s.recallLogs.SetFeedback(ctx, ownerID, id, feedback)
 }
 
 func (s *Service) Create(ctx context.Context, ownerID int64, req CreateMemoryRequest) (*memory.Memory, error) {
@@ -60,23 +102,14 @@ func (s *Service) Create(ctx context.Context, ownerID int64, req CreateMemoryReq
 	if importance < 0 || importance > 1 {
 		return nil, agenterrors.ErrInvalidInput
 	}
-	item := &memory.Memory{
-		OwnerID: ownerID, ConversationID: req.ConversationID, MemoryType: strings.TrimSpace(req.MemoryType),
-		MemoryLevel: memory.LevelLongTerm,
-		Title:       strings.TrimSpace(req.Title), Content: strings.TrimSpace(req.Content), Importance: importance,
-		Source: strings.TrimSpace(req.Source), MetadataJSON: req.MetadataJSON,
-	}
-	if item.Source == "" {
-		item.Source = "manual"
-	}
-	if err := s.memories.Create(ctx, item); err != nil {
-		return nil, err
-	}
-	if err := s.indexMemory(ctx, item); err != nil {
+	result, err := s.commands.Execute(ctx, memory.WriteRequest{OwnerID: ownerID, ConversationID: req.ConversationID,
+		MemoryType: strings.TrimSpace(req.MemoryType), Title: strings.TrimSpace(req.Title), Content: strings.TrimSpace(req.Content),
+		Importance: importance, Source: manualMemorySource(req.Source), MetadataJSON: req.MetadataJSON, ScopeType: req.ScopeType, ScopeID: req.ScopeID, Reason: "manual create"})
+	if err != nil {
 		return nil, err
 	}
 	s.invalidateCache(ctx, ownerID)
-	return item, nil
+	return &result.Memory, nil
 }
 
 func (s *Service) List(ctx context.Context, ownerID int64, memoryTypes []string, conversationID *int64, limit, offset int) ([]memory.Memory, error) {
@@ -94,6 +127,42 @@ func (s *Service) List(ctx context.Context, ownerID int64, memoryTypes []string,
 		_ = s.cache.Set(ctx, ownerID, s.listCacheKey(memoryTypes, conversationID, limit, offset), items, 30*time.Second)
 	}
 	return items, nil
+}
+
+func (s *Service) ListFiltered(ctx context.Context, ownerID int64, filter ListMemoryFilter) ([]memory.Memory, error) {
+	if repository, ok := s.memories.(memory.FilteredRepository); ok {
+		return repository.ListFiltered(ctx, ownerID, memory.ListFilter{
+			MemoryTypes: filter.MemoryTypes, ConversationID: filter.ConversationID, Statuses: filter.Statuses,
+			ScopeTypes: filter.ScopeTypes, ScopeID: filter.ScopeID, Sources: filter.Sources, Limit: filter.Limit, Offset: filter.Offset,
+		})
+	}
+	items, err := s.memories.List(ctx, ownerID, filter.MemoryTypes, filter.ConversationID, 100, 0)
+	if err != nil {
+		return nil, err
+	}
+	filtered := make([]memory.Memory, 0, len(items))
+	for i := range items {
+		item := items[i]
+		if !containsMemoryFilter(filter.Statuses, normalizedMemoryStatus(item.Status)) || !containsMemoryFilter(filter.ScopeTypes, normalizedMemoryScope(item.ScopeType)) || !containsMemoryFilter(filter.Sources, item.Source) {
+			continue
+		}
+		if filter.ScopeID != nil && item.ScopeID != *filter.ScopeID {
+			continue
+		}
+		filtered = append(filtered, item)
+	}
+	limit, offset := filter.Limit, filter.Offset
+	if limit <= 0 || limit > 100 {
+		limit = 50
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	if offset >= len(filtered) {
+		return []memory.Memory{}, nil
+	}
+	end := min(len(filtered), offset+limit)
+	return filtered[offset:end], nil
 }
 
 func (s *Service) Get(ctx context.Context, ownerID, id int64) (*memory.Memory, error) {
@@ -164,6 +233,12 @@ func (s *Service) Update(ctx context.Context, ownerID, id int64, req UpdateMemor
 	if req.ConversationID != nil {
 		item.ConversationID = req.ConversationID
 	}
+	if value := strings.TrimSpace(req.ScopeType); value != "" {
+		item.ScopeType = value
+	}
+	if req.ScopeID != nil {
+		item.ScopeID = *req.ScopeID
+	}
 	if value := strings.TrimSpace(req.MemoryType); value != "" {
 		item.MemoryType = value
 	}
@@ -181,37 +256,22 @@ func (s *Service) Update(ctx context.Context, ownerID, id int64, req UpdateMemor
 	if len(req.MetadataJSON) > 0 {
 		item.MetadataJSON = req.MetadataJSON
 	}
-	if err := s.memories.Update(ctx, item); err != nil {
-		return nil, err
-	}
-	if err := s.indexMemory(ctx, item); err != nil {
+	result, err := s.commands.Execute(ctx, memory.WriteRequest{OwnerID: ownerID, ConversationID: item.ConversationID, MemoryID: item.ID,
+		MemoryType: item.MemoryType, Title: item.Title, Content: item.Content, Importance: item.Importance, Source: manualMemorySource(item.Source), MetadataJSON: item.MetadataJSON,
+		ScopeType: item.ScopeType, ScopeID: item.ScopeID, Status: item.Status, SupersedesID: item.SupersedesID, Reason: "manual update"})
+	if err != nil {
 		return nil, err
 	}
 	s.invalidateCache(ctx, ownerID)
-	return item, nil
+	return &result.Memory, nil
 }
 
 func (s *Service) Delete(ctx context.Context, ownerID, id int64) error {
-	if err := s.memories.SoftDelete(ctx, ownerID, id); err != nil {
+	if err := s.commands.Revoke(ctx, ownerID, id, "manual revoke"); err != nil {
 		return err
-	}
-	if s.retriever != nil {
-		if err := s.retriever.Delete(ctx, id); err != nil {
-			return err
-		}
 	}
 	s.invalidateCache(ctx, ownerID)
 	return nil
-}
-
-func (s *Service) indexMemory(ctx context.Context, item *memory.Memory) error {
-	if s.retriever == nil || item == nil {
-		return nil
-	}
-	if item.MemoryLevel == "" {
-		item.MemoryLevel = memory.LevelLongTerm
-	}
-	return s.retriever.Index(ctx, *item)
 }
 
 func (s *Service) listCacheKey(memoryTypes []string, conversationID *int64, limit, offset int) string {
@@ -226,4 +286,37 @@ func (s *Service) invalidateCache(ctx context.Context, ownerID int64) {
 	if s.cache != nil {
 		_ = s.cache.InvalidateOwner(ctx, ownerID)
 	}
+}
+
+func manualMemorySource(value string) string {
+	if value = strings.TrimSpace(value); value != "" {
+		return value
+	}
+	return "manual"
+}
+
+func normalizedMemoryStatus(value string) string {
+	if value = strings.TrimSpace(value); value != "" {
+		return value
+	}
+	return memory.StatusActive
+}
+
+func normalizedMemoryScope(value string) string {
+	if value = strings.TrimSpace(value); value != "" {
+		return value
+	}
+	return memory.ScopeUser
+}
+
+func containsMemoryFilter(values []string, value string) bool {
+	if len(values) == 0 {
+		return true
+	}
+	for _, candidate := range values {
+		if strings.TrimSpace(candidate) == value {
+			return true
+		}
+	}
+	return false
 }

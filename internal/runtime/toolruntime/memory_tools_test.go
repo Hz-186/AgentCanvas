@@ -150,6 +150,19 @@ type fakeMemoryLogRepo struct {
 	items []memory.WriteLog
 }
 
+type fakeMemoryCandidateWriter struct {
+	request memory.CandidateRequest
+	id      int64
+}
+
+func (f *fakeMemoryCandidateWriter) Suggest(_ context.Context, request memory.CandidateRequest) (int64, error) {
+	f.request = request
+	if f.id == 0 {
+		f.id = 11
+	}
+	return f.id, nil
+}
+
 func (r *fakeMemoryLogRepo) Create(ctx context.Context, item *memory.WriteLog) error {
 	r.items = append(r.items, *item)
 	return nil
@@ -191,10 +204,9 @@ func TestMemoryReadToolRequiresUnifiedVectorIndexByDefault(t *testing.T) {
 	}
 }
 
-func TestMemoryWriteToolCreatesMemoryAndLog(t *testing.T) {
-	repo := &fakeMemoryRepo{}
-	logs := &fakeMemoryLogRepo{}
-	tool := MemoryWriteTool{Memories: repo, Logs: logs}
+func TestMemoryWriteToolCreatesReviewCandidate(t *testing.T) {
+	candidates := &fakeMemoryCandidateWriter{}
+	tool := MemoryWriteTool{Candidates: candidates}
 	result, err := tool.Execute(context.Background(), ToolRunContext{OwnerID: 1, RunID: 2}, json.RawMessage(`{
 		"memory_type":"task_memory",
 		"title":"Preference",
@@ -205,17 +217,14 @@ func TestMemoryWriteToolCreatesMemoryAndLog(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(repo.items) != 1 || repo.items[1].Content != "User prefers concise answers" {
-		t.Fatalf("unexpected memory items: %+v", repo.items)
-	}
-	if len(logs.items) != 1 || logs.items[0].RunID != 2 || logs.items[0].Action != memory.WriteActionCreate {
-		t.Fatalf("unexpected logs: %+v", logs.items)
+	if candidates.request.Content != "User prefers concise answers" || candidates.request.RunID != 2 {
+		t.Fatalf("unexpected candidate: %+v", candidates.request)
 	}
 	var output map[string]any
 	if err := json.Unmarshal(result.ContentJSON, &output); err != nil {
 		t.Fatal(err)
 	}
-	if output["action"] != memory.WriteActionCreate {
+	if output["action"] != "suggest" || output["status"] != "pending" {
 		t.Fatalf("unexpected output: %+v", output)
 	}
 }
@@ -294,14 +303,11 @@ func TestMemoryReadToolFallsBackWhenSearchFails(t *testing.T) {
 	}
 }
 
-func TestMemoryWriteToolEmitsChoiceApprovalOnConflict(t *testing.T) {
-	repo := &fakeMemoryRepo{items: map[int64]*memory.Memory{9: {ID: 9, OwnerID: 1, MemoryType: memory.TypeProfile, Title: "response style", Content: "User prefers concise answers"}}}
-	tool := MemoryWriteTool{Memories: repo, Retriever: &fakeSemanticRetriever{ids: []int64{9}}}
+func TestMemoryWriteToolNeverSelfApprovesConflictingFact(t *testing.T) {
+	candidates := &fakeMemoryCandidateWriter{}
+	tool := MemoryWriteTool{Candidates: candidates}
 	result, err := tool.Execute(context.Background(), ToolRunContext{OwnerID: 1, RunID: 2}, json.RawMessage(`{"memory_type":"profile_memory","title":"response style","content":"User prefers detailed answers"}`))
-	if err != nil || result == nil || result.Approval == nil || len(result.Approval.Options) != 3 {
-		t.Fatalf("expected structured conflict approval, result=%+v err=%v", result, err)
-	}
-	if len(repo.items) != 1 {
-		t.Fatalf("conflicting memory must not be persisted before approval: %+v", repo.items)
+	if err != nil || result == nil || result.Approval != nil || candidates.request.Content == "" {
+		t.Fatalf("expected pending proposal without direct memory approval, result=%+v candidate=%+v err=%v", result, candidates.request, err)
 	}
 }

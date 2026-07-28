@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 
+	"agentcanvas/internal/domain/memory"
 	"agentcanvas/internal/domain/reflection"
 	"agentcanvas/internal/domain/tool"
 	"agentcanvas/internal/domain/workflow"
@@ -149,7 +151,7 @@ func TestAgentLoopNodePlanExecuteReturnsPlanTrace(t *testing.T) {
 	}
 }
 
-func TestAgentLoopNodeRepairsStructuredOutputWithReflection(t *testing.T) {
+func TestAgentLoopNodeRepairsStructuredOutputWithoutDuplicatingItIntoWorkingMemory(t *testing.T) {
 	client := &fakeNodeToolClient{responses: []llm.ToolChatResponse{
 		{Message: llm.ChatMessage{Role: "assistant", Content: "not json"}},
 		{Message: llm.ChatMessage{Role: "assistant", Content: `{"answer":"fixed"}`}},
@@ -173,8 +175,8 @@ func TestAgentLoopNodeRepairsStructuredOutputWithReflection(t *testing.T) {
 		t.Fatalf("expected repaired final answer, got %+v", output)
 	}
 	wm, _ := working.Get(context.Background(), 1, conversationID)
-	if wm == nil || wm.ContextSummary != `{"answer":"fixed"}` || wm.RoundNumber != 1 {
-		t.Fatalf("working memory must use repaired final answer: %+v", wm)
+	if wm != nil {
+		t.Fatalf("final answer must not be persisted as a duplicate LLM context source: %+v", wm)
 	}
 	structured, ok := output["structured_output"].(map[string]any)
 	if !ok || structured["answer"] != "fixed" {
@@ -192,6 +194,52 @@ func TestAgentLoopNodeRepairsStructuredOutputWithReflection(t *testing.T) {
 	}
 	if !foundReflection {
 		t.Fatalf("expected reflection step, got %+v", steps)
+	}
+}
+
+func TestAgentLoopNodeNeverInjectsWorkingMemoryCompatibilityCache(t *testing.T) {
+	client := &fakeNodeToolClient{}
+	working := &fakeWMRepo{data: map[int64]*memory.WorkingMemory{9: {OwnerID: 1, ConversationID: 9, ContextSummary: "LEGACY_DUPLICATE_SHOULD_NOT_APPEAR", RoundNumber: 4}}}
+	conversationID := int64(9)
+	dreamTriggers := 0
+	node := AgentLoopNode{AgentNode: AgentNode{LLM: client, Providers: fakeProviderLoader{}, WorkingMemory: working, OnExtractTrigger: func(context.Context, int64, int64, int) { dreamTriggers++ }}}
+	_, err := node.Run(context.Background(), &engine.RunContext{OwnerID: 1, WorkflowID: 2, RunID: 3, ConversationID: &conversationID, CurrentNodeID: "agent"}, engine.NodeInput{"query": "hello"}, json.RawMessage(`{
+		"provider_id":1,"model":"test-model","task_template":"{{sys.query}}","memory_enabled":false,"max_iterations":2,"max_tool_calls":2
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, request := range client.requests {
+		for _, message := range request.Messages {
+			if strings.Contains(message.Content, "LEGACY_DUPLICATE_SHOULD_NOT_APPEAR") {
+				t.Fatalf("working memory compatibility cache leaked into LLM context: %+v", request.Messages)
+			}
+		}
+	}
+	wm, _ := working.Get(context.Background(), 1, conversationID)
+	if wm == nil || wm.RoundNumber != 4 {
+		t.Fatalf("working memory compatibility cache must not be updated: %+v", wm)
+	}
+	if dreamTriggers != 0 {
+		t.Fatalf("memory_enabled=false must suppress Dream candidate creation, triggers=%d", dreamTriggers)
+	}
+}
+
+func TestAgentLoopNodeDreamTriggerRequiresEnabledCompletedTurn(t *testing.T) {
+	conversationID := int64(9)
+	triggers := 0
+	node := AgentNode{OnExtractTrigger: func(_ context.Context, ownerID, gotConversationID int64, roundNumber int) {
+		if ownerID != 1 || gotConversationID != conversationID || roundNumber != 3 {
+			t.Fatalf("unexpected Dream trigger scope: owner=%d conversation=%d round=%d", ownerID, gotConversationID, roundNumber)
+		}
+		triggers++
+	}}
+	rc := &engine.RunContext{OwnerID: 1, ConversationID: &conversationID}
+	node.checkExtractionTrigger(context.Background(), rc, &runtimeagent.RunResult{StopReason: runtimeagent.StopReasonFinalAnswer}, 3, false)
+	node.checkExtractionTrigger(context.Background(), rc, &runtimeagent.RunResult{StopReason: runtimeagent.StopReasonPaused}, 3, true)
+	node.checkExtractionTrigger(context.Background(), rc, &runtimeagent.RunResult{StopReason: runtimeagent.StopReasonFinalAnswer}, 3, true)
+	if triggers != 1 {
+		t.Fatalf("expected exactly one enabled completed-turn Dream trigger, got %d", triggers)
 	}
 }
 
@@ -223,6 +271,17 @@ func TestAgentLoopNodeParsesNestedPolicyConfig(t *testing.T) {
 		"policy":{"max_tool_output_bytes":2097153}
 	}`)); err == nil {
 		t.Fatal("expected oversized policy output limit to fail validation")
+	}
+}
+
+func TestExplicitMemoryDisabledCannotBeReenabledByProfilePolicy(t *testing.T) {
+	cfg, err := parseAgentNodeConfig(json.RawMessage(`{"memory_enabled":false,"provider_id":1,"model":"test-model"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg = applyProfileMemoryPolicy(cfg, json.RawMessage(`{"enabled":true,"recall_enabled":true}`))
+	if cfg.MemoryEnabled || !cfg.MemoryEnabledSet {
+		t.Fatalf("explicit memory_enabled=false must be authoritative: %+v", cfg)
 	}
 }
 

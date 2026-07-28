@@ -1003,6 +1003,14 @@ export function CanvasPage() {
     };
   }, [versionHistoryOpen]);
 
+	const profileMemoryPolicy = profile?.memory_policy_json && typeof profile.memory_policy_json === 'object' && !Array.isArray(profile.memory_policy_json)
+		? profile.memory_policy_json as Record<string, unknown>
+		: {};
+	const updateProfileMemoryPolicy = (patch: Record<string, unknown>) => {
+		if (!profile) return;
+		setProfile({ ...profile, memory_policy_json: { recall_enabled: true, write_mode: 'suggest', top_k: 8, token_budget: 1200, ...profileMemoryPolicy, ...patch } });
+	};
+
   return (
     <div ref={canvasPageRef} className="canvas-page">
       <header className="canvas-toolbar glass">
@@ -1485,19 +1493,10 @@ export function CanvasPage() {
                   }}
                 />
               </Field>
-              <Field label="默认 Memory Policy JSON">
-                <TextArea
-                  value={prettyJson(profile.memory_policy_json ?? {})}
-                  onChange={(event) => {
-                    try {
-                      setProfile({ ...profile, memory_policy_json: JSON.parse(event.target.value) as unknown });
-                      setError('');
-                    } catch {
-                      setError('Memory Policy JSON 格式不正确');
-                    }
-                  }}
-                />
-              </Field>
+			<Field label="默认自动召回"><Select value={profileMemoryPolicy.recall_enabled === false ? 'disabled' : 'enabled'} onChange={(event) => updateProfileMemoryPolicy({ recall_enabled: event.target.value === 'enabled' })}><option value="enabled">Enabled</option><option value="disabled">Disabled</option></Select></Field>
+			<Field label="默认写入模式" hint="Agent 自动写入始终先进入审核候选。"><Select value={String(profileMemoryPolicy.write_mode ?? 'suggest')} onChange={(event) => updateProfileMemoryPolicy({ write_mode: event.target.value })}><option value="suggest">Suggest / Review</option><option value="direct" disabled>Direct（Workflow 节点专用）</option></Select></Field>
+			<Field label="默认召回条数"><TextInput type="number" min={1} max={20} value={Number(profileMemoryPolicy.top_k ?? 8)} onChange={(event) => updateProfileMemoryPolicy({ top_k: Number(event.target.value) })} /></Field>
+			<Field label="默认 Token 预算"><TextInput type="number" min={128} max={8192} value={Number(profileMemoryPolicy.token_budget ?? 1200)} onChange={(event) => updateProfileMemoryPolicy({ token_budget: Number(event.target.value) })} /></Field>
               <Field label="默认 Reflection Policy JSON">
                 <TextArea
                   value={prettyJson(profile.reflection_policy_json ?? DEFAULT_REFLECTION_POLICY)}

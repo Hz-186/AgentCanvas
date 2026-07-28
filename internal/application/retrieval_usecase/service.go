@@ -3,12 +3,12 @@ package retrieval_usecase
 import (
 	"context"
 	"fmt"
-	"sort"
 	"strings"
 
 	"agentcanvas/internal/domain/knowledge"
 	providerdomain "agentcanvas/internal/domain/provider"
 	"agentcanvas/internal/domain/retrieval"
+	"agentcanvas/internal/domain/retrieval/fusion"
 	cryptoinfra "agentcanvas/internal/infrastructure/crypto"
 	"agentcanvas/internal/infrastructure/llm"
 	"agentcanvas/internal/observability"
@@ -216,65 +216,13 @@ func (s *Service) rewriteSearch(ctx context.Context, req retrieval.RetrievalRequ
 		current.Trace = append(current.Trace, retrieval.RetrievalTraceRecord{Stage: "query_rewrite", Mode: req.Mode, Message: "no_effective_rewrite", Metadata: map[string]any{"variant_count": len(variants)}})
 		return nil, nil
 	}
-	fused := reciprocalRankFusion(responses, 60, req.TopK)
+	fused := fusion.RRFRetrievalResults(responses, fusion.DefaultRankConstant, req.CandidateK, req.TopK)
 	return &retrieval.RetrievalResponse{
 		Results:     fused,
 		Diagnostics: analyzeRecall(req, fused),
 		Trace:       append(current.Trace, retrieval.RetrievalTraceRecord{Stage: "rrf_fusion", Mode: req.Mode, Message: "multi_query_fused", Metadata: map[string]any{"query_count": len(responses), "result_count": len(fused), "rrf_k": 60}}),
 		QueryPlan:   plan,
 	}, nil
-}
-
-func reciprocalRankFusion(groups [][]retrieval.RetrievalResult, rrfK, topK int) []retrieval.RetrievalResult {
-	if rrfK <= 0 {
-		rrfK = 60
-	}
-	type fusedItem struct {
-		result retrieval.RetrievalResult
-		score  float64
-	}
-	merged := make(map[string]fusedItem)
-	for _, group := range groups {
-		seen := map[string]bool{}
-		for rank, item := range group {
-			key := retrievalResultKey(item)
-			if seen[key] {
-				continue
-			}
-			seen[key] = true
-			current := merged[key]
-			if current.result.ChunkID == 0 && current.result.DocumentID == 0 && current.result.Content == "" {
-				current.result = item
-			}
-			current.score += 1 / float64(rrfK+rank+1)
-			merged[key] = current
-		}
-	}
-	items := make([]fusedItem, 0, len(merged))
-	for _, item := range merged {
-		item.result.FinalScore = item.score
-		item.result.Score = item.score
-		items = append(items, item)
-	}
-	sort.SliceStable(items, func(i, j int) bool { return items[i].score > items[j].score })
-	if topK > 0 && len(items) > topK {
-		items = items[:topK]
-	}
-	results := make([]retrieval.RetrievalResult, 0, len(items))
-	for _, item := range items {
-		results = append(results, item.result)
-	}
-	return results
-}
-
-func retrievalResultKey(item retrieval.RetrievalResult) string {
-	if item.ChunkID > 0 {
-		return fmt.Sprintf("chunk:%d", item.ChunkID)
-	}
-	if item.DocumentID > 0 {
-		return fmt.Sprintf("document:%d:page:%v", item.DocumentID, item.PageNo)
-	}
-	return "content:" + strings.TrimSpace(item.Content)
 }
 
 func (s *Service) tryFallbackSearch(ctx context.Context, req retrieval.RetrievalRequest, diagnostics *retrieval.RecallDiagnostics, trace []retrieval.RetrievalTraceRecord, reason string) (*retrieval.RetrievalResponse, error) {

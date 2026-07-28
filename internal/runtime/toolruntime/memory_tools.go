@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"agentcanvas/internal/domain/contextresource"
 	"agentcanvas/internal/domain/conversation"
 	"agentcanvas/internal/domain/memory"
 )
@@ -65,9 +66,14 @@ func (t SessionSearchTool) Execute(ctx context.Context, rc ToolRunContext, input
 }
 
 type MemoryReadTool struct {
-	Memories  memory.Repository
-	Retriever memory.SemanticRetriever
-	Archival  memory.ArchivalIndex
+	Memories     memory.Repository
+	RecallLogs   memory.RecallLogRepository
+	Retriever    memory.SemanticRetriever
+	Archival     memory.ArchivalIndex
+	ContextIndex contextresource.Index
+	WorkflowID   int64
+	Profile      contextresource.EmbeddingProfile
+	TokenBudget  int
 	// AllowLegacyListFallback is only for old integrations. New Agent Runtime
 	// wiring leaves it false so memory reads remain semantic-only.
 	AllowLegacyListFallback bool
@@ -97,7 +103,7 @@ func (t MemoryReadTool) Execute(ctx context.Context, rc ToolRunContext, input js
 	if t.Memories == nil {
 		return nil, fmt.Errorf("memory repository is not configured")
 	}
-	if t.Retriever == nil && !t.AllowLegacyListFallback {
+	if t.ContextIndex == nil && t.Retriever == nil && !t.AllowLegacyListFallback {
 		return nil, fmt.Errorf("unified vector memory index is not configured")
 	}
 	var parsed memoryReadInput
@@ -112,22 +118,27 @@ func (t MemoryReadTool) Execute(ctx context.Context, rc ToolRunContext, input js
 	if query == "" {
 		query = strings.TrimSpace(rc.Task)
 	}
-	result, err := (memory.RuntimeService{Memories: t.Memories, Retriever: t.Retriever, Archival: t.Archival}).Read(ctx, memory.ReadRequest{
-		OwnerID: rc.OwnerID, ConversationID: rc.ConversationID, MemoryTypes: parsed.MemoryTypes, Query: query, Limit: parsed.Limit, SemanticOnly: semanticOnly, AllowLegacyListFallback: allowLegacyFallback,
+	workflowID := t.WorkflowID
+	if workflowID == 0 {
+		workflowID = rc.WorkflowID
+	}
+	result, err := (memory.RuntimeService{Memories: t.Memories, RecallLogs: t.RecallLogs, Retriever: t.Retriever, Archival: t.Archival, ContextIndex: t.ContextIndex, WorkflowID: workflowID, Profile: t.Profile}).Read(ctx, memory.ReadRequest{
+		OwnerID: rc.OwnerID, ConversationID: rc.ConversationID, AgentID: rc.AgentID, WorkflowID: workflowID, RunID: rc.RunID, MemoryTypes: parsed.MemoryTypes, Query: query, Limit: parsed.Limit, TokenBudget: t.TokenBudget, SemanticOnly: semanticOnly, AllowLegacyListFallback: allowLegacyFallback,
 	})
 	if err != nil {
 		return &ToolResult{ContentText: err.Error(), IsError: true}, err
 	}
 	return ResultFromValue(map[string]any{
-		"memories": result.Memories, "memory_context": result.MemoryContext, "count": result.Count, "query": result.Query,
+		"memories": result.Memories, "memory_context": result.MemoryContext, "count": result.Count, "query": result.Query, "recall_details": result.RecallDetails,
 	})
 }
 
 type MemoryWriteTool struct {
-	Memories  memory.Repository
-	Logs      memory.WriteLogRepository
-	Retriever memory.SemanticRetriever
-	Archival  memory.ArchivalIndex
+	Memories   memory.Repository
+	Logs       memory.WriteLogRepository
+	Retriever  memory.SemanticRetriever
+	Archival   memory.ArchivalIndex
+	Candidates memory.CandidateWriter
 }
 
 type memoryWriteInput struct {
@@ -147,7 +158,7 @@ func (MemoryWriteTool) Description() string {
 }
 
 func (MemoryWriteTool) Parameters() json.RawMessage {
-	return json.RawMessage(`{"type":"object","properties":{"memory_id":{"type":"number","description":"Existing memory ID to update. Omit or use 0 to create."},"memory_type":{"type":"string","enum":["profile_memory","summary_memory","episodic_memory","task_memory","archival_memory"]},"title":{"type":"string"},"content":{"type":"string","description":"Durable memory content to store."},"importance":{"type":"number","description":"0 to 1. Defaults to 0.5."},"reason":{"type":"string","description":"Why this memory should be stored."},"conflict_resolution":{"type":"string","description":"Injected by the runtime after user approval; do not set proactively."}},"required":["memory_type","content"],"additionalProperties":false}`)
+	return json.RawMessage(`{"type":"object","properties":{"memory_id":{"type":"number","description":"Existing memory ID to update. Omit or use 0 to create."},"memory_type":{"type":"string","enum":["profile_memory","episodic_memory","task_memory","archival_memory"]},"title":{"type":"string"},"content":{"type":"string","description":"Durable memory content to propose for review."},"importance":{"type":"number","description":"0 to 1. Defaults to 0.5."},"reason":{"type":"string","description":"Why this memory should be stored."}},"required":["memory_type","content"],"additionalProperties":false}`)
 }
 
 func (MemoryWriteTool) Metadata() ToolMetadata {
@@ -155,30 +166,29 @@ func (MemoryWriteTool) Metadata() ToolMetadata {
 }
 
 func (t MemoryWriteTool) Execute(ctx context.Context, rc ToolRunContext, input json.RawMessage) (*ToolResult, error) {
-	if t.Memories == nil {
-		return nil, fmt.Errorf("memory repository is not configured")
+	if t.Candidates == nil {
+		return nil, fmt.Errorf("memory candidate service is not configured")
 	}
 	var parsed memoryWriteInput
 	if err := json.Unmarshal(input, &parsed); err != nil {
 		return &ToolResult{ContentText: err.Error(), IsError: true}, err
 	}
-	result, err := (memory.RuntimeService{Memories: t.Memories, Logs: t.Logs, Retriever: t.Retriever, Archival: t.Archival}).Write(ctx, memory.WriteRequest{
-		OwnerID: rc.OwnerID, ConversationID: rc.ConversationID, RunID: rc.RunID, MemoryID: parsed.MemoryID,
-		MemoryType: parsed.MemoryType, Title: parsed.Title, Content: parsed.Content, Importance: parsed.Importance, Reason: parsed.Reason, Source: "agent_tool",
-		ConflictResolution: parsed.ConflictResolution,
-	})
+	conversationID := int64(0)
+	if rc.ConversationID != nil {
+		conversationID = *rc.ConversationID
+	}
+	action := "create"
+	if parsed.MemoryID > 0 {
+		action = "update"
+	}
+	proposalID, err := t.Candidates.Suggest(ctx, memory.CandidateRequest{OwnerID: rc.OwnerID, AgentID: rc.AgentID,
+		ConversationID: conversationID, RunID: rc.RunID, SourceID: fmt.Sprintf("agent-tool:%d:%s", rc.RunID, strings.TrimSpace(parsed.Content)),
+		MemoryID: parsed.MemoryID, MemoryType: parsed.MemoryType, Title: parsed.Title, Content: parsed.Content,
+		Action: action, Importance: parsed.Importance, Evidence: []string{strings.TrimSpace(parsed.Reason)}, Source: "agent_tool"})
 	if err != nil {
 		return &ToolResult{ContentText: err.Error(), IsError: true}, err
 	}
-	if result.Conflict != nil {
-		options := make([]ApprovalOption, 0, len(result.Conflict.Options))
-		for _, option := range result.Conflict.Options {
-			options = append(options, ApprovalOption{ID: option.ID, Label: option.Label, Description: option.Description})
-		}
-		return &ToolResult{Approval: &ToolApproval{Kind: "memory_conflict", Title: "记忆冲突需要确认",
-			Reason: "新记忆与已有记忆表达了不一致的信息，请选择后续采用哪一种。", Options: options}}, nil
-	}
 	return ResultFromValue(map[string]any{
-		"memory_id": result.Memory.ID, "action": result.Action, "content": result.Memory.Content,
+		"proposal_id": proposalID, "status": "pending", "action": "suggest", "content": strings.TrimSpace(parsed.Content),
 	})
 }

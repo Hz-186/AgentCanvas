@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 
+	agentusecase "agentcanvas/internal/application/agent_usecase"
 	memoryusecase "agentcanvas/internal/application/memory_usecase"
 	agenterrors "agentcanvas/internal/pkg/errors"
 	"agentcanvas/internal/pkg/response"
@@ -13,7 +14,13 @@ import (
 )
 
 type MemoryHandler struct {
-	service *memoryusecase.Service
+	service     *memoryusecase.Service
+	candidates  *memoryusecase.CandidateService
+	improvement *agentusecase.ImprovementService
+}
+
+func (h *MemoryHandler) ConfigureCandidates(candidates *memoryusecase.CandidateService, improvement *agentusecase.ImprovementService) {
+	h.candidates, h.improvement = candidates, improvement
 }
 
 func NewMemoryHandler(service *memoryusecase.Service) *MemoryHandler {
@@ -26,12 +33,102 @@ func (h *MemoryHandler) List(c *gin.Context) {
 		response.Error(c, http.StatusUnauthorized, agenterrors.CodeUnauthorized, agenterrors.ErrUnauthorized.Error())
 		return
 	}
-	items, err := h.service.List(c.Request.Context(), ownerID, splitQuery(c.Query("memory_type")), optionalInt64Query(c, "conversation_id"), intQuery(c, "limit", 50), intQuery(c, "offset", 0))
+	items, err := h.service.ListFiltered(c.Request.Context(), ownerID, memoryusecase.ListMemoryFilter{
+		MemoryTypes: splitQuery(c.Query("memory_type")), ConversationID: optionalInt64Query(c, "conversation_id"),
+		Statuses: splitQuery(c.Query("status")), ScopeTypes: splitQuery(c.Query("scope_type")), ScopeID: optionalInt64Query(c, "scope_id"),
+		Sources: splitQuery(c.Query("source")), Limit: intQuery(c, "limit", 50), Offset: intQuery(c, "offset", 0),
+	})
 	if err != nil {
 		writeAppError(c, err)
 		return
 	}
 	response.OK(c, items)
+}
+
+func (h *MemoryHandler) ListCandidates(c *gin.Context) {
+	ownerID, ok := currentUserID(c)
+	if !ok {
+		response.Error(c, http.StatusUnauthorized, agenterrors.CodeUnauthorized, agenterrors.ErrUnauthorized.Error())
+		return
+	}
+	if h.candidates == nil {
+		response.Error(c, http.StatusInternalServerError, agenterrors.CodeInternal, "memory candidate service is not configured")
+		return
+	}
+	items, err := h.candidates.List(c.Request.Context(), ownerID, strings.TrimSpace(c.Query("status")), intQuery(c, "limit", 100))
+	if err != nil {
+		writeAppError(c, err)
+		return
+	}
+	response.OK(c, items)
+}
+
+func (h *MemoryHandler) ApproveCandidate(c *gin.Context) { h.decideCandidate(c, true) }
+func (h *MemoryHandler) RejectCandidate(c *gin.Context)  { h.decideCandidate(c, false) }
+
+func (h *MemoryHandler) ListRecallLogs(c *gin.Context) {
+	ownerID, ok := currentUserID(c)
+	if !ok {
+		response.Error(c, http.StatusUnauthorized, agenterrors.CodeUnauthorized, agenterrors.ErrUnauthorized.Error())
+		return
+	}
+	memoryID := int64(0)
+	if value := optionalInt64Query(c, "memory_id"); value != nil {
+		memoryID = *value
+	}
+	items, err := h.service.ListRecallLogs(c.Request.Context(), ownerID, memoryID, intQuery(c, "limit", 50))
+	if err != nil {
+		writeAppError(c, err)
+		return
+	}
+	response.OK(c, items)
+}
+
+func (h *MemoryHandler) SetRecallFeedback(c *gin.Context) {
+	ownerID, id, ok := h.ownerAndID(c)
+	if !ok {
+		return
+	}
+	var request struct {
+		Feedback string `json:"feedback" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&request); err != nil {
+		writeAppError(c, err)
+		return
+	}
+	if err := h.service.SetRecallFeedback(c.Request.Context(), ownerID, id, request.Feedback); err != nil {
+		writeAppError(c, err)
+		return
+	}
+	response.OK(c, gin.H{"success": true})
+}
+
+func (h *MemoryHandler) decideCandidate(c *gin.Context, approved bool) {
+	ownerID, ok := currentUserID(c)
+	if !ok {
+		response.Error(c, http.StatusUnauthorized, agenterrors.CodeUnauthorized, agenterrors.ErrUnauthorized.Error())
+		return
+	}
+	proposalID, err := parseInt64Param(c, "id")
+	if err != nil || h.improvement == nil {
+		writeAppError(c, agenterrors.ErrInvalidInput)
+		return
+	}
+	var request struct {
+		Note string `json:"note"`
+	}
+	if c.Request.ContentLength > 0 {
+		if err := c.ShouldBindJSON(&request); err != nil {
+			writeAppError(c, err)
+			return
+		}
+	}
+	item, err := h.improvement.DecideMemoryProposal(c.Request.Context(), ownerID, proposalID, approved, request.Note)
+	if err != nil {
+		writeAppError(c, err)
+		return
+	}
+	response.OK(c, item)
 }
 
 func (h *MemoryHandler) Create(c *gin.Context) {

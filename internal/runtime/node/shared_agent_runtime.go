@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"agentcanvas/internal/domain/conversation"
+	"agentcanvas/internal/domain/memory"
 	runtimeagent "agentcanvas/internal/runtime/agent"
 	"agentcanvas/internal/runtime/engine"
 	"agentcanvas/internal/runtime/harness/rules"
@@ -60,6 +61,10 @@ func (r *SharedAgentRuntime) ConfigureSessionSearch(index conversation.MessageSe
 
 func (r *SharedAgentRuntime) ConfigureMemoryReader(reader MemoryBatchReader) {
 	r.node.MemoryReader = reader
+}
+
+func (r *SharedAgentRuntime) ConfigureMemoryCandidates(candidates memory.CandidateWriter) {
+	r.node.MemoryCandidates = candidates
 }
 
 func NewSharedAgentRuntime(deps Deps) (*SharedAgentRuntime, error) {

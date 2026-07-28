@@ -25,9 +25,24 @@ type ContextSemanticIndex struct {
 	HNSW              vectorstore.HNSWConfig
 }
 
-func NewContextSemanticIndex(store vectorstore.Store, embedder llm.EmbeddingClient, providers providerdomain.Repository, secrets *cryptoinfra.SecretBox, defaultProviderID int64, defaultModel string, hnsw vectorstore.HNSWConfig) *ContextSemanticIndex {
-	return &ContextSemanticIndex{Store: store, Embedder: embedder, Providers: providers, Secrets: secrets,
-		DefaultProviderID: defaultProviderID, DefaultModel: strings.TrimSpace(defaultModel), HNSW: vectorstore.NormalizeHNSWConfig(hnsw)}
+func NewContextSemanticIndex(
+	store vectorstore.Store,
+	embedder llm.EmbeddingClient,
+	providers providerdomain.Repository,
+	secrets *cryptoinfra.SecretBox,
+	defaultProviderID int64,
+	defaultModel string,
+	hnsw vectorstore.HNSWConfig,
+) *ContextSemanticIndex {
+	return &ContextSemanticIndex{
+		Store:             store,
+		Embedder:          embedder,
+		Providers:         providers,
+		Secrets:           secrets,
+		DefaultProviderID: defaultProviderID,
+		DefaultModel:      strings.TrimSpace(defaultModel),
+		HNSW:              vectorstore.NormalizeHNSWConfig(hnsw),
+	}
 }
 
 func (s *ContextSemanticIndex) Upsert(ctx context.Context, document contextresource.Document, profile contextresource.EmbeddingProfile) (contextresource.EmbeddingProfile, error) {
@@ -50,7 +65,13 @@ func (s *ContextSemanticIndex) Upsert(ctx context.Context, document contextresou
 	metadata["resource_id"] = document.ResourceID
 	metadata["content_hash"] = document.ContentHash
 	metadata["embedding_profile_hash"] = profile.Hash
-	err = s.Store.Upsert(ctx, collection, []vectorstore.VectorDocument{{ID: contextresource.DocumentID(document.OwnerID, document.ResourceType, document.ResourceID), Vector: vector, Metadata: metadata}})
+	err = s.Store.Upsert(ctx, collection, []vectorstore.VectorDocument{
+		{
+			ID:       contextresource.DocumentID(document.OwnerID, document.ResourceType, document.ResourceID),
+			Vector:   vector,
+			Metadata: metadata,
+		},
+	})
 	return profile, err
 }
 
@@ -85,7 +106,13 @@ func (s *ContextSemanticIndex) Search(ctx context.Context, request contextresour
 	} else if len(request.ResourceTypes) > 1 {
 		filter["resource_type"] = request.ResourceTypes
 	}
-	hits, err := s.Store.Search(ctx, vectorstore.SearchRequest{Collection: contextResourceCollection(profile), Vector: vector, TopK: limit * 4, Filter: filter, HNSW: s.HNSW})
+	hits, err := s.Store.Search(ctx, vectorstore.SearchRequest{
+		Collection: contextResourceCollection(profile),
+		Vector:     vector,
+		TopK:       limit * 4,
+		Filter:     filter,
+		HNSW:       s.HNSW,
+	})
 	if err != nil {
 		return nil, err
 	}

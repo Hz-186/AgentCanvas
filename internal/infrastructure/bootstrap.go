@@ -67,7 +67,7 @@ func InitInfrastructure(ctx context.Context, cfg *config.Config, opts InitOption
 		return nil, fmt.Errorf("init elasticsearch: %w", err)
 	}
 	esStore := esretrieval.NewStore(esClient, cfg.Elasticsearch)
-	var retrievalStore RetrievalStore = esStore
+	var retrievalStore RetrievalStore = compositeretrieval.NewShared(esStore)
 	if cfg.Milvus.Enabled {
 		milvusVector := vectorstore.NewMilvusStore(cfg.Milvus.Address, cfg.Milvus.Token, milvusHNSW(cfg))
 		milvusStore := milvusretrieval.NewStore(milvusVector, cfg.Milvus.Collection, cfg.Milvus.Dimensions, milvusHNSW(cfg))

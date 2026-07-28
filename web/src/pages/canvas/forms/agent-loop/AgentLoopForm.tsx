@@ -136,6 +136,10 @@ export function AgentLoopForm({ config, providers, tools, skills, knowledgeBases
   const reflectionRuntimeMode = config.reflection_enabled === false
     ? 'off'
     : String(reflectionPolicy.runtime_mode ?? 'active');
+	const memoryPolicy = config.memory_policy_json && typeof config.memory_policy_json === 'object' && !Array.isArray(config.memory_policy_json)
+		? config.memory_policy_json as Record<string, unknown>
+		: {};
+	const updateMemoryPolicy = (patch: Record<string, unknown>) => onChange({ memory_policy_json: { recall_enabled: true, write_mode: 'suggest', top_k: 8, token_budget: 1200, ...memoryPolicy, ...patch } });
   const mode = values.mode;
   const modeMeta = modeOptions.find((item) => item.value === mode) ?? modeOptions[0];
   const toolIds = values.toolIds;
@@ -268,9 +272,10 @@ export function AgentLoopForm({ config, providers, tools, skills, knowledgeBases
             <option value="enabled">Enabled</option>
           </Select>
         </Field>
-        <Field label="Memory Policy JSON">
-          <TextArea value={prettyJson(config.memory_policy_json ?? {})} onChange={(event) => updateJSON('memory_policy_json', event.target.value)} />
-        </Field>
+		<Field label="自动召回"><Select value={memoryPolicy.recall_enabled === false ? 'disabled' : 'enabled'} onChange={(event) => updateMemoryPolicy({ recall_enabled: event.target.value === 'enabled' })}><option value="enabled">Enabled</option><option value="disabled">Disabled</option></Select></Field>
+		<Field label="自动写入模式" hint="自动记忆固定进入候选审核；模型不能自行批准。"><Select value={String(memoryPolicy.write_mode ?? 'suggest')} onChange={(event) => updateMemoryPolicy({ write_mode: event.target.value })}><option value="suggest">Suggest / Review</option><option value="direct" disabled>Direct（仅确定性 Workflow）</option></Select></Field>
+		<Field label="召回条数"><TextInput type="number" min={1} max={20} value={Number(memoryPolicy.top_k ?? 8)} onChange={(event) => updateMemoryPolicy({ top_k: Number(event.target.value) })} /></Field>
+		<Field label="Token 预算"><TextInput type="number" min={128} max={8192} value={Number(memoryPolicy.token_budget ?? 1200)} onChange={(event) => updateMemoryPolicy({ token_budget: Number(event.target.value) })} /></Field>
       </ModuleCard>
 
       <ModuleCard id="planning" title="Planning" summary={agentModeFromConfig(config) === 'plan_execute' ? '启用 plan step' : '未启用'} icon={<ListChecks size={16} />} status={<StatusBadge tone={moduleTone(mode === 'plan_execute')}>{mode === 'plan_execute' ? 'on' : 'off'}</StatusBadge>} expanded={moduleOpen.planning} onToggle={toggleModule}>

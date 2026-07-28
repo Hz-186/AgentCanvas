@@ -2,6 +2,32 @@ package memory
 
 import "context"
 
+type CandidateRequest struct {
+	OwnerID        int64
+	AgentID        int64
+	ConversationID int64
+	RunID          int64
+	SourceID       string
+	MemoryID       int64
+	MemoryType     string
+	Title          string
+	Content        string
+	Action         string
+	Importance     float64
+	Evidence       []string
+	Source         string
+}
+
+type CandidateWriter interface {
+	Suggest(ctx context.Context, request CandidateRequest) (int64, error)
+}
+
+type Commander interface {
+	Execute(ctx context.Context, request WriteRequest) (WriteResult, error)
+	Revoke(ctx context.Context, ownerID, memoryID int64, reason string) error
+	Supersede(ctx context.Context, ownerID, memoryID, replacementID int64, reason string) error
+}
+
 type Repository interface {
 	Create(ctx context.Context, item *Memory) error
 	Update(ctx context.Context, item *Memory) error
@@ -20,7 +46,35 @@ type Repository interface {
 	SetEmbedding(ctx context.Context, ownerID, id int64, embedding []byte) error
 }
 
+// AtomicReplacementRepository is implemented by persistent repositories that
+// can create a replacement, supersede the previous version and register both
+// index changes in one transaction.
+type AtomicReplacementRepository interface {
+	Replace(ctx context.Context, ownerID, supersededID int64, replacement *Memory) error
+}
+
+type ListFilter struct {
+	MemoryTypes    []string
+	ConversationID *int64
+	Statuses       []string
+	ScopeTypes     []string
+	ScopeID        *int64
+	Sources        []string
+	Limit          int
+	Offset         int
+}
+
+type FilteredRepository interface {
+	ListFiltered(ctx context.Context, ownerID int64, filter ListFilter) ([]Memory, error)
+}
+
 type WriteLogRepository interface {
 	Create(ctx context.Context, item *WriteLog) error
 	ListByRun(ctx context.Context, ownerID, runID int64) ([]WriteLog, error)
+}
+
+type RecallLogRepository interface {
+	Create(ctx context.Context, item *RecallLog) error
+	List(ctx context.Context, ownerID, memoryID int64, limit int) ([]RecallLog, error)
+	SetFeedback(ctx context.Context, ownerID, id int64, feedback string) error
 }

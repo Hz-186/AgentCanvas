@@ -142,6 +142,8 @@ func NewService(
 	teams workflow.TeamRepository,
 	memories memory.Repository,
 	memoryLogs memory.WriteLogRepository,
+	memoryRecallLogs memory.RecallLogRepository,
+	memoryCommands memory.Commander,
 	memoryRetriever memory.SemanticRetriever,
 	workingMemory memory.WorkingMemoryRepository,
 	extractionJobs memory.ExtractionJobRepository,
@@ -218,6 +220,8 @@ func NewService(
 		Compactions:             compactions,
 		Memories:                memories,
 		MemoryWriteLogs:         memoryLogs,
+		MemoryRecallLogs:        memoryRecallLogs,
+		MemoryCommands:          memoryCommands,
 		MemoryRetriever:         memoryRetriever,
 		WorkingMemory:           workingMemory,
 		MemoryExtractionTrigger: s.triggerMemoryExtraction,
@@ -273,6 +277,15 @@ func (s *Service) ConfigureMemoryReader(reader runtimenode.MemoryBatchReader) {
 	s.memoryReader = reader
 	if runtime, ok := s.agentRuntime.(*runtimenode.SharedAgentRuntime); ok {
 		runtime.ConfigureMemoryReader(reader)
+	}
+}
+
+func (s *Service) ConfigureMemoryCandidates(candidates memory.CandidateWriter) {
+	if s.extractions != nil {
+		s.extractions.ConfigureCandidates(candidates)
+	}
+	if runtime, ok := s.agentRuntime.(*runtimenode.SharedAgentRuntime); ok {
+		runtime.ConfigureMemoryCandidates(candidates)
 	}
 }
 
@@ -604,6 +617,9 @@ func (s *Service) UpdateWorkflowProfile(ctx context.Context, ownerID, workflowID
 		memoryPolicy, err := normalizeOptionalRawJSON(*req.MemoryPolicyJSON, "memory_policy_json")
 		if err != nil {
 			return nil, err
+		}
+		if _, err := memory.ParsePolicy(memoryPolicy); err != nil {
+			return nil, fmt.Errorf("%w: memory_policy_json is invalid: %v", agenterrors.ErrInvalidInput, err)
 		}
 		profile.MemoryPolicyJSON = memoryPolicy
 	}

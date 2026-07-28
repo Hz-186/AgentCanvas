@@ -23,8 +23,6 @@ type DreamPayload struct {
 type DreamMessageRepository interface {
 	ListActiveByConversation(ctx context.Context, ownerID, conversationID int64) ([]conversation.Message, error)
 	ListActiveThrough(ctx context.Context, ownerID, conversationID, throughMessageID int64) ([]conversation.Message, error)
-	ArchiveConversationMessages(ctx context.Context, ownerID, conversationID int64, archivedAt time.Time) (int64, error)
-	ArchiveConversationMessagesThrough(ctx context.Context, ownerID, conversationID, throughMessageID int64, archivedAt time.Time) (int64, error)
 }
 
 type DreamWorker struct {
@@ -38,6 +36,7 @@ type DreamWorker struct {
 	dreamCfg   DreamConfig
 	workerID   string
 	jobs       memory.ExtractionJobRepository
+	candidates memory.CandidateWriter
 }
 
 type dreamLLMResult struct {
@@ -61,6 +60,10 @@ func NewDreamWorker(chatClient llm.ChatClient, embedder llm.EmbeddingClient, mem
 	return worker
 }
 
+func (w *DreamWorker) ConfigureCandidates(candidates memory.CandidateWriter) {
+	w.candidates = candidates
+}
+
 func (w *DreamWorker) HandleDreamJob(ctx context.Context, payload DreamPayload) error {
 	if !w.dreamCfg.Enabled || payload.OwnerID <= 0 || payload.ConversationID <= 0 {
 		return nil
@@ -82,7 +85,7 @@ func (w *DreamWorker) HandleDreamJob(ctx context.Context, payload DreamPayload) 
 		return err
 	}
 	defer unlock()
-	if w.messages == nil || w.memories == nil || w.chatClient == nil {
+	if w.messages == nil || w.memories == nil || w.chatClient == nil || w.candidates == nil {
 		return nil
 	}
 	var messages []conversation.Message
@@ -120,7 +123,10 @@ func (w *DreamWorker) HandleDreamJob(ctx context.Context, payload DreamPayload) 
 		}
 		analysis = *analyzed
 		if job != nil {
-			job.ResultJSON, _ = json.Marshal(analysis)
+			job.ResultJSON, err = json.Marshal(analysis)
+			if err != nil {
+				return fmt.Errorf("marshal dream analysis: %w", err)
+			}
 			job.Status = "analyzed"
 			job.LeaseExpiresAt = nil
 			if err := w.jobs.Update(ctx, job); err != nil {
@@ -132,18 +138,11 @@ func (w *DreamWorker) HandleDreamJob(ctx context.Context, payload DreamPayload) 
 	if job != nil {
 		jobID = job.ID
 	}
-	if err := w.applyCoreUpdates(ctx, payload, &analysis, jobID); err != nil {
-		return err
-	}
-	if err := w.applyArchivalUpdates(ctx, payload, &analysis, jobID); err != nil {
-		return err
-	}
+	throughMessageID := messages[len(messages)-1].ID
 	if job != nil && job.ThroughMessageID > 0 {
-		_, err = w.messages.ArchiveConversationMessagesThrough(ctx, payload.OwnerID, payload.ConversationID, job.ThroughMessageID, time.Now().UTC())
-	} else {
-		_, err = w.messages.ArchiveConversationMessages(ctx, payload.OwnerID, payload.ConversationID, time.Now().UTC())
+		throughMessageID = job.ThroughMessageID
 	}
-	if err != nil {
+	if err := w.createCandidates(ctx, payload, &analysis, jobID, throughMessageID); err != nil {
 		return err
 	}
 	if job != nil {
@@ -151,6 +150,45 @@ func (w *DreamWorker) HandleDreamJob(ctx context.Context, payload DreamPayload) 
 		job.ErrorMessage = ""
 		job.LeaseExpiresAt = nil
 		return w.jobs.Update(ctx, job)
+	}
+	return nil
+}
+
+func (w *DreamWorker) createCandidates(ctx context.Context, payload DreamPayload, analysis *dreamLLMResult, jobID, throughMessageID int64) error {
+	if analysis == nil {
+		return nil
+	}
+	sourcePrefix := fmt.Sprintf("dream:%d:%d", payload.ConversationID, throughMessageID)
+	if jobID > 0 {
+		sourcePrefix = fmt.Sprintf("dream-job:%d", jobID)
+	}
+	for index, item := range analysis.CoreUpdates {
+		content := strings.TrimSpace(item.Content)
+		if content == "" && item.MemoryID > 0 {
+			if existing, findErr := w.memories.FindByID(ctx, payload.OwnerID, item.MemoryID); findErr == nil {
+				content = existing.Content
+			}
+		}
+		if content == "" {
+			continue
+		}
+		if _, err := w.candidates.Suggest(ctx, memory.CandidateRequest{OwnerID: payload.OwnerID, ConversationID: payload.ConversationID,
+			SourceID: fmt.Sprintf("%s:core:%d", sourcePrefix, index), MemoryID: item.MemoryID,
+			MemoryType: strings.TrimSpace(item.MemoryType), Title: strings.TrimSpace(item.Title), Content: content,
+			Action: strings.TrimSpace(item.Action), Importance: .9, Evidence: []string{fmt.Sprintf("conversation:%d through_message:%d", payload.ConversationID, throughMessageID)}, Source: "dream_worker"}); err != nil {
+			return err
+		}
+	}
+	for index, item := range analysis.ArchivalInserts {
+		content := strings.TrimSpace(item.Content)
+		if content == "" {
+			continue
+		}
+		if _, err := w.candidates.Suggest(ctx, memory.CandidateRequest{OwnerID: payload.OwnerID, ConversationID: payload.ConversationID,
+			SourceID: fmt.Sprintf("%s:archival:%d", sourcePrefix, index), MemoryType: memory.TypeArchival,
+			Content: content, Action: "create", Importance: .8, Evidence: []string{fmt.Sprintf("conversation:%d through_message:%d", payload.ConversationID, throughMessageID)}, Source: "dream_worker"}); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -178,80 +216,6 @@ func (w *DreamWorker) analyze(ctx context.Context, payload DreamPayload, message
 		return nil, err
 	}
 	return &parsed, nil
-}
-
-func (w *DreamWorker) applyCoreUpdates(ctx context.Context, payload DreamPayload, analysis *dreamLLMResult, jobID int64) error {
-	if analysis == nil {
-		return nil
-	}
-	for index, item := range analysis.CoreUpdates {
-		memoryType := strings.TrimSpace(item.MemoryType)
-		content := strings.TrimSpace(item.Content)
-		action := strings.TrimSpace(item.Action)
-		switch action {
-		case "delete":
-			if item.MemoryID > 0 {
-				if err := w.memories.SoftDelete(ctx, payload.OwnerID, item.MemoryID); err != nil {
-					return err
-				}
-			}
-		case "update":
-			if item.MemoryID <= 0 {
-				continue
-			}
-			existing, err := w.memories.FindByID(ctx, payload.OwnerID, item.MemoryID)
-			if err != nil {
-				return err
-			}
-			existing.MemoryType = memoryType
-			existing.Title = strings.TrimSpace(item.Title)
-			existing.Content = content
-			existing.Importance = 0.9
-			if err := w.memories.Update(ctx, existing); err != nil {
-				return err
-			}
-		default:
-			if memoryType == "" || content == "" {
-				continue
-			}
-			var sourceKey *string
-			if jobID > 0 {
-				value := fmt.Sprintf("dream:%d:core:%d", jobID, index)
-				sourceKey = &value
-			}
-			if err := w.memories.Create(ctx, &memory.Memory{OwnerID: payload.OwnerID, ConversationID: &payload.ConversationID, MemoryType: memoryType, MemoryLevel: memory.LevelLongTerm, Title: strings.TrimSpace(item.Title), Content: content, Importance: 0.9, Source: "dream_worker", SourceKey: sourceKey}); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-func (w *DreamWorker) applyArchivalUpdates(ctx context.Context, payload DreamPayload, analysis *dreamLLMResult, jobID int64) error {
-	if analysis == nil {
-		return nil
-	}
-	for index, item := range analysis.ArchivalInserts {
-		content := strings.TrimSpace(item.Content)
-		if content == "" {
-			continue
-		}
-		var sourceKey *string
-		if jobID > 0 {
-			value := fmt.Sprintf("dream:%d:archival:%d", jobID, index)
-			sourceKey = &value
-		}
-		// MySQL memory writes enqueue the existing context-index outbox; Dream does
-		// not perform a second, non-transactional vector write here.
-		_, err := (memory.RuntimeService{Memories: w.memories, Logs: w.memoryLogs}).Write(ctx, memory.WriteRequest{
-			OwnerID: payload.OwnerID, ConversationID: &payload.ConversationID, MemoryType: memory.TypeArchival,
-			Content: content, Importance: 0.8, Source: "dream_worker", SourceKey: sourceKey, Reason: "dream archival consolidation",
-		})
-		if err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func buildDreamPrompt(messages []conversation.Message, coreItems []memory.Memory) string {

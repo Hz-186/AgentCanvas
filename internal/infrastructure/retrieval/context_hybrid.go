@@ -3,10 +3,10 @@ package retrieval
 import (
 	"context"
 	"errors"
-	"sort"
 	"strings"
 
 	"agentcanvas/internal/domain/contextresource"
+	"agentcanvas/internal/domain/retrieval/fusion"
 )
 
 type ContextHybridIndex struct {
@@ -67,45 +67,33 @@ func (s ContextHybridIndex) Search(ctx context.Context, request contextresource.
 	if len(groups) == 0 {
 		return nil, joined
 	}
-	rrfK := s.RRFK
-	if rrfK <= 0 {
-		rrfK = 60
-	}
-	type fused struct {
-		result contextresource.SearchResult
-		score  float64
-	}
-	merged := map[string]fused{}
+	lists := make([]fusion.RankedList[contextresource.SearchResult], 0, len(groups))
+	bestByKey := make(map[string]contextresource.SearchResult)
 	for _, group := range groups {
-		seen := map[string]bool{}
-		for rank, item := range group {
-			key := item.ResourceType + "\x1f" + item.ResourceID
-			if seen[key] {
-				continue
+		lists = append(lists, fusion.RankedList[contextresource.SearchResult]{Items: group, Weight: 1})
+		for _, item := range group {
+			key := contextResultKey(item)
+			if current, exists := bestByKey[key]; !exists || item.Score > current.Score {
+				bestByKey[key] = item
 			}
-			seen[key] = true
-			current := merged[key]
-			if current.result.ResourceID == "" || item.Score > current.result.Score {
-				current.result = item
-			}
-			current.score += 1 / float64(rrfK+rank+1)
-			merged[key] = current
 		}
 	}
-	results := make([]contextresource.SearchResult, 0, len(merged))
-	for _, item := range merged {
-		item.result.Score = item.score
-		results = append(results, item.result)
-	}
-	sort.SliceStable(results, func(i, j int) bool { return results[i].Score > results[j].Score })
 	limit := request.TopK
 	if limit <= 0 {
 		limit = 12
 	}
-	if len(results) > limit {
-		results = results[:limit]
+	ranked := fusion.ReciprocalRank(lists, contextResultKey, s.RRFK, 0, limit)
+	results := make([]contextresource.SearchResult, 0, len(ranked))
+	for _, item := range ranked {
+		result := bestByKey[contextResultKey(item.Item)]
+		result.Score = item.Score
+		results = append(results, result)
 	}
 	return results, nil
+}
+
+func contextResultKey(item contextresource.SearchResult) string {
+	return item.ResourceType + "\x1f" + item.ResourceID
 }
 
 var _ contextresource.Index = ContextHybridIndex{}
