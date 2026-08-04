@@ -181,13 +181,7 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 	var contextIndex contextresource.Index
 	if cfg.ContextIndex.Enabled && archivalVecStore != nil {
 		providerID := cfg.ContextIndex.EmbeddingProviderID
-		if providerID <= 0 {
-			providerID = cfg.LLMCache.EmbeddingProviderID
-		}
 		model := strings.TrimSpace(cfg.ContextIndex.EmbeddingModel)
-		if model == "" {
-			model = strings.TrimSpace(cfg.LLMCache.EmbeddingModel)
-		}
 		semanticIndex := contextretrieval.NewContextSemanticIndex(archivalVecStore, embeddingClient, providerRepo, secretBox, providerID, model, vectorstore.HNSWConfig{
 			M: cfg.Milvus.M, EFConstruction: cfg.Milvus.EFConstruction, EFSearch: cfg.Milvus.EFSearch, MetricType: cfg.Milvus.MetricType,
 		})
@@ -207,48 +201,9 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 	}
 	if cfg.LLMCache.Enabled {
 		cacheTTL := time.Duration(cfg.LLMCache.TTLSeconds) * time.Second
-		l2Enabled := cfg.LLMCache.L2Enabled
-		var l2Store vectorstore.Store
-		if l2Enabled {
-			if err := redisinfra.ProbeRediSearch(ctx, redisClient); err != nil {
-				log.Warn("redisearch unavailable, semantic llm cache disabled", "error", err)
-				l2Enabled = false
-			} else {
-				l2Store = vectorstore.NewRedisStackStore(redisClient).WithDefaultTTL(cacheTTL)
-			}
-		}
-		resolveEmbedding := func(ctx context.Context, ownerID int64) (llm.EmbeddingProviderConfig, string, error) {
-			if ownerID <= 0 || cfg.LLMCache.EmbeddingProviderID <= 0 {
-				return llm.EmbeddingProviderConfig{}, "", fmt.Errorf("embedding provider is not configured")
-			}
-			provider, err := providerRepo.FindByID(ctx, ownerID, cfg.LLMCache.EmbeddingProviderID)
-			if err != nil {
-				return llm.EmbeddingProviderConfig{}, "", err
-			}
-			apiKey, err := secretBox.Decrypt(provider.EncryptedAPIKey)
-			if err != nil {
-				return llm.EmbeddingProviderConfig{}, "", err
-			}
-			model := strings.TrimSpace(cfg.LLMCache.EmbeddingModel)
-			if model == "" {
-				model = strings.TrimSpace(provider.DefaultEmbeddingModel)
-			}
-			if model == "" {
-				return llm.EmbeddingProviderConfig{}, "", fmt.Errorf("embedding model is not configured")
-			}
-			return llm.EmbeddingProviderConfig{
-				ProviderType: provider.ProviderType, BaseURL: provider.BaseURL, APIKey: apiKey,
-			}, model, nil
-		}
 		chatClient = llm.NewCachedChatClient(baseChatClient, baseChatClient, llm.CachedChatClientOptions{
-			Redis:        redisClient,
-			L2Store:      l2Store,
-			Embedder:     embeddingClient,
-			ResolveEmbed: resolveEmbedding,
-			TTL:          cacheTTL,
-			L1Enabled:    cfg.LLMCache.L1Enabled,
-			L2Enabled:    l2Enabled,
-			Similarity:   cfg.LLMCache.SimilarityThreshold,
+			Redis: redisClient,
+			TTL:   cacheTTL,
 		})
 	}
 	reranker := llm.NewChatReranker(chatClient)
