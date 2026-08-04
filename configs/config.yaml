@@ -22,12 +22,7 @@ queue:
 
 llm_cache:
   enabled: true
-  l1_enabled: true
-  l2_enabled: true
-  similarity_threshold: 0.96
   ttl_seconds: 86400
-  embedding_provider_id: 1
-  embedding_model: text-embedding-v3
 
 resource_cache:
   enabled: true
@@ -109,8 +104,8 @@ milvus:
 context_index:
   enabled: true
   worker_enabled: true
-  embedding_provider_id: 0
-  embedding_model: ""
+  embedding_provider_id: 1
+  embedding_model: text-embedding-v3
   batch_size: 50
   poll_milliseconds: 1000
   lease_seconds: 60

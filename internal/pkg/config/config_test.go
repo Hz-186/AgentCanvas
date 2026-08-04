@@ -8,7 +8,7 @@ func TestQueueConfigDefaults(t *testing.T) {
 	if cfg.Queue.Backend != "mysql" || cfg.Queue.RedisStream == "" || cfg.Queue.RedisGroup == "" || cfg.Queue.RedisConsumer == "" {
 		t.Fatalf("unexpected queue defaults: %+v", cfg.Queue)
 	}
-	if cfg.LLMCache.SimilarityThreshold != 0.96 || cfg.LLMCache.TTLSeconds != 86400 {
+	if cfg.LLMCache.TTLSeconds != 86400 {
 		t.Fatalf("unexpected llm cache defaults: %+v", cfg.LLMCache)
 	}
 	if cfg.ResourceCache.KeyPrefix != "agentcanvas" || cfg.ResourceCache.TTLSeconds != 60 {

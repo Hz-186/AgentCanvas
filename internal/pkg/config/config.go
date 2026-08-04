@@ -67,13 +67,8 @@ type QueueConfig struct {
 }
 
 type LLMCacheConfig struct {
-	Enabled             bool    `yaml:"enabled"`
-	L1Enabled           bool    `yaml:"l1_enabled"`
-	L2Enabled           bool    `yaml:"l2_enabled"`
-	SimilarityThreshold float64 `yaml:"similarity_threshold"`
-	TTLSeconds          int     `yaml:"ttl_seconds"`
-	EmbeddingProviderID int64   `yaml:"embedding_provider_id"`
-	EmbeddingModel      string  `yaml:"embedding_model"`
+	Enabled    bool `yaml:"enabled"`
+	TTLSeconds int  `yaml:"ttl_seconds"`
 }
 
 type ResourceCacheConfig struct {
@@ -257,17 +252,6 @@ func (c *Config) setDefaults() {
 	}
 	if c.Queue.RedisConsumer == "" {
 		c.Queue.RedisConsumer = "worker"
-	}
-	if !c.LLMCache.L1Enabled && !c.LLMCache.L2Enabled && !c.LLMCache.Enabled {
-		c.LLMCache.Enabled = false
-	}
-	if c.LLMCache.Enabled {
-		if !c.LLMCache.L1Enabled && !c.LLMCache.L2Enabled {
-			c.LLMCache.L1Enabled = true
-		}
-	}
-	if c.LLMCache.SimilarityThreshold == 0 {
-		c.LLMCache.SimilarityThreshold = 0.96
 	}
 	if c.LLMCache.TTLSeconds == 0 {
 		c.LLMCache.TTLSeconds = 86400
