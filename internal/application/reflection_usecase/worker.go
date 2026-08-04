@@ -100,7 +100,7 @@ func (w Worker) analyze(ctx context.Context, job *reflection.Job) ([]reflection.
 	if w.LLM == nil || w.Providers == nil || w.Secrets == nil {
 		return nil, fmt.Errorf("reflection worker dependencies are not configured")
 	}
-	if job == nil || job.OwnerID <= 0 || (job.WorkflowID <= 0 && job.AgentID == nil) || job.RunID <= 0 || !json.Valid(job.PayloadJSON) {
+	if job == nil || job.OwnerID <= 0 || job.AgentID <= 0 || job.RunID <= 0 || !json.Valid(job.PayloadJSON) {
 		return nil, permanentReflectionError{cause: fmt.Errorf("invalid persisted reflection job")}
 	}
 	p, err := w.Providers.FindByID(ctx, job.OwnerID, job.ProviderID)
@@ -155,13 +155,10 @@ func (w Worker) analyze(ctx context.Context, job *reflection.Job) ([]reflection.
 			"user_feedback": payloadUserFeedback(job.PayloadJSON)})
 		tags, _ := json.Marshal(candidate.Tags)
 		scope := candidate.Scope
-		if scope != reflection.ScopeNode && scope != reflection.ScopeWorkflow {
-			scope = reflection.ScopeWorkflow
-		}
-		if job.AgentID != nil && scope == reflection.ScopeWorkflow {
+		if scope != reflection.ScopeGlobal {
 			scope = reflection.ScopeAgent
 		}
-		item := reflection.Reflection{OwnerID: job.OwnerID, WorkflowID: job.WorkflowID, AgentID: job.AgentID, NodeID: job.NodeID,
+		item := reflection.Reflection{OwnerID: job.OwnerID, AgentID: job.AgentID,
 			SourceRunID: job.RunID, Scope: scope, Kind: candidate.Kind, Mode: job.Mode, TriggerType: candidate.TriggerType,
 			EmbeddingProviderID: job.ProviderID,
 			TaskFingerprint:     TaskFingerprint(job.Task), TaskSummary: compactText(job.Task, 1000), RootCauseCategory: candidate.RootCauseCategory,
@@ -240,7 +237,7 @@ Task: %s
 Mode: %s
 Trajectory payload: %s
 
-Return {"candidates":[{"kind":"error_lesson|important_strategy","scope":"node|workflow","trigger_type":"...",
+Return {"candidates":[{"kind":"error_lesson|important_strategy","scope":"agent|global","trigger_type":"...",
 "root_cause_category":"tool_selection|tool_input|plan_order|missing_evidence|reasoning|schema|policy|environment_transient|unknown",
 "root_cause":"...","corrective_action":"...","lesson":"...","applicability":"...","evidence_step_indexes":[1],
 "severity":0.0,"generalizability":0.0,"confidence":0.0,"tags":[]}]}. Return an empty candidates array when nothing qualifies.`,

@@ -86,10 +86,6 @@ func (q *ResourceSummaryQuery) queryForKind(ctx context.Context, ownerID int64, 
 		return base.Table("memories").Select("id, COALESCE(NULLIF(title, ''), memory_type) AS name, 1 AS status, memory_type AS resource_type, updated_at"), true, nil
 	case resource.KindHTTPTools:
 		return base.Table("tool_definitions").Where("tool_type = ?", "http").Select("id, name, description, status, tool_type AS resource_type, updated_at"), true, nil
-	case resource.KindDialogs:
-		return base.Table("dialogs").Select("id, name, description, status, updated_at"), true, nil
-	case resource.KindWorkflows:
-		return base.Table("workflows").Select("id, name, description, status, updated_at, current_version_id"), false, nil
 	case resource.KindKnowledgeBases:
 		return base.Table("knowledge_bases").Select("id, name, description, status, updated_at, document_count, chunk_count"), false, nil
 	default:

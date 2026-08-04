@@ -6,14 +6,6 @@ import (
 	"fmt"
 )
 
-type WorkflowCallHook func(ctx context.Context, rc ToolRunContext, parentRunID int64, workflowID, flowVersionID int64, input map[string]any) error
-
-var callChainChecker WorkflowCallHook
-
-func SetCallChainChecker(hook WorkflowCallHook) {
-	callChainChecker = hook
-}
-
 type HumanApprovalTool struct{}
 
 func (HumanApprovalTool) Name() string { return "request_human_approval" }

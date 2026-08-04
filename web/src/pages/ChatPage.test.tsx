@@ -26,7 +26,7 @@ vi.mock('../api/resources', () => ({
   },
   settingsApi: { providers: { list: apiMocks.listProviders } },
   knowledgeApi: { list: apiMocks.listKnowledge },
-  workflowApi: {},
+  runApi: {},
 }));
 
 const agent: Agent = {

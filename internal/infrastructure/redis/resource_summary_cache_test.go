@@ -71,8 +71,8 @@ func TestResourceSummaryCacheOwnerIsolation(t *testing.T) {
 	cache := NewResourceSummaryCache(client, next, "test", time.Minute, testResourceLogger())
 	ctx := context.Background()
 
-	_, _ = cache.List(ctx, 10, resource.KindDialogs, resource.ListOptions{})
-	_, _ = cache.List(ctx, 20, resource.KindDialogs, resource.ListOptions{})
+	_, _ = cache.List(ctx, 10, resource.KindSkills, resource.ListOptions{})
+	_, _ = cache.List(ctx, 20, resource.KindSkills, resource.ListOptions{})
 	if next.calls != 2 {
 		t.Fatalf("expected isolated owner keys, got %d database calls", next.calls)
 	}
@@ -83,7 +83,7 @@ func TestResourceSummaryCacheFallsBackWhenRedisUnavailable(t *testing.T) {
 	next := &fakeResourceQuery{page: resource.Page{Items: []resource.Summary{{ID: 1}}}}
 	cache := NewResourceSummaryCache(client, next, "test", time.Minute, testResourceLogger())
 
-	page, err := cache.List(context.Background(), 10, resource.KindWorkflows, resource.ListOptions{})
+	page, err := cache.List(context.Background(), 10, resource.KindSkills, resource.ListOptions{})
 	if err != nil || len(page.Items) != 1 || next.calls != 1 {
 		t.Fatalf("expected database fallback, page=%+v calls=%d err=%v", page, next.calls, err)
 	}

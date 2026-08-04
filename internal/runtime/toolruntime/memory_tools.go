@@ -71,7 +71,7 @@ type MemoryReadTool struct {
 	Retriever    memory.SemanticRetriever
 	Archival     memory.ArchivalIndex
 	ContextIndex contextresource.Index
-	WorkflowID   int64
+	AgentID      int64
 	Profile      contextresource.EmbeddingProfile
 	TokenBudget  int
 	// AllowLegacyListFallback is only for old integrations. New Agent Runtime
@@ -118,12 +118,12 @@ func (t MemoryReadTool) Execute(ctx context.Context, rc ToolRunContext, input js
 	if query == "" {
 		query = strings.TrimSpace(rc.Task)
 	}
-	workflowID := t.WorkflowID
-	if workflowID == 0 {
-		workflowID = rc.WorkflowID
+	agentID := t.AgentID
+	if agentID == 0 {
+		agentID = rc.AgentID
 	}
-	result, err := (memory.RuntimeService{Memories: t.Memories, RecallLogs: t.RecallLogs, Retriever: t.Retriever, Archival: t.Archival, ContextIndex: t.ContextIndex, WorkflowID: workflowID, Profile: t.Profile}).Read(ctx, memory.ReadRequest{
-		OwnerID: rc.OwnerID, ConversationID: rc.ConversationID, AgentID: rc.AgentID, WorkflowID: workflowID, RunID: rc.RunID, MemoryTypes: parsed.MemoryTypes, Query: query, Limit: parsed.Limit, TokenBudget: t.TokenBudget, SemanticOnly: semanticOnly, AllowLegacyListFallback: allowLegacyFallback,
+	result, err := (memory.RuntimeService{Memories: t.Memories, RecallLogs: t.RecallLogs, Retriever: t.Retriever, Archival: t.Archival, ContextIndex: t.ContextIndex, AgentID: agentID, Profile: t.Profile}).Read(ctx, memory.ReadRequest{
+		OwnerID: rc.OwnerID, ConversationID: rc.ConversationID, AgentID: agentID, RunID: rc.RunID, MemoryTypes: parsed.MemoryTypes, Query: query, Limit: parsed.Limit, TokenBudget: t.TokenBudget, SemanticOnly: semanticOnly, AllowLegacyListFallback: allowLegacyFallback,
 	})
 	if err != nil {
 		return &ToolResult{ContentText: err.Error(), IsError: true}, err

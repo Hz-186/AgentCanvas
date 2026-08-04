@@ -92,38 +92,6 @@ func (h *HealthHandler) Elasticsearch(c *gin.Context) {
 	response.OK(c, gin.H{"component": "elasticsearch", "status": "healthy"})
 }
 
-func (h *HealthHandler) RuleSystem(c *gin.Context) {
-	type databaseMetrics struct {
-		PublishedRuleSets  int64 `json:"published_rule_sets"`
-		RollbackRuleSets   int64 `json:"rollback_rule_sets"`
-		LegacyRuleProfiles int64 `json:"legacy_rule_profiles_remaining"`
-	}
-	var metrics databaseMetrics
-	ruleSetQuery := `SELECT
-		COALESCE(SUM(status = 'published'), 0) AS published_rule_sets,
-		COALESCE(SUM(rollback_of_rule_set_id IS NOT NULL), 0) AS rollback_rule_sets
-		FROM workflow_rule_sets`
-	if err := h.db.WithContext(c.Request.Context()).Raw(ruleSetQuery).Scan(&metrics).Error; err != nil {
-		response.Error(c, http.StatusServiceUnavailable, errors.CodeDependencyUnavailable, err.Error())
-		return
-	}
-	legacyProfileQuery := `SELECT COUNT(*) AS legacy_rule_profiles
-		FROM workflow_profiles
-		WHERE active_rule_set_id IS NULL AND deleted_at IS NULL
-		AND JSON_LENGTH(JSON_EXTRACT(context_policy_json, '$.rules')) > 0`
-	if err := h.db.WithContext(c.Request.Context()).Raw(legacyProfileQuery).Scan(&metrics).Error; err != nil {
-		response.Error(c, http.StatusServiceUnavailable, errors.CodeDependencyUnavailable, err.Error())
-		return
-	}
-	process := observability.RuleSystemMetrics.Snapshot()
-	alerts := gin.H{
-		"mandatory_overflow":   process.MandatoryOverflow > 0,
-		"snapshot_integrity":   process.SnapshotIntegrityFail > 0,
-		"legacy_rule_profiles": metrics.LegacyRuleProfiles > 0,
-	}
-	response.OK(c, gin.H{"component": "rule_system", "database": metrics, "process": process, "alerts": alerts})
-}
-
 func (h *HealthHandler) ReflectionSystem(c *gin.Context) {
 	const (
 		jobBacklogAlertThreshold = int64(100)

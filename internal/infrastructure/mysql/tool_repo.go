@@ -28,7 +28,7 @@ func (r *ToolDefinitionRepository) Create(ctx context.Context, item *tool.Defini
 		if err := tx.Create(item).Error; err != nil {
 			return err
 		}
-		return enqueueContextResource(ctx, tx, item.OwnerID, 0, contextresource.TypeTool, item.ID, contextresource.OperationUpsert, toolContextText(*item))
+		return enqueueContextResource(ctx, tx, item.OwnerID, 0, 0, contextresource.TypeTool, item.ID, contextresource.OperationUpsert, toolContextText(*item))
 	})
 }
 
@@ -38,7 +38,7 @@ func (r *ToolDefinitionRepository) Update(ctx context.Context, item *tool.Defini
 		if err := tx.Save(item).Error; err != nil {
 			return err
 		}
-		return enqueueContextResource(ctx, tx, item.OwnerID, 0, contextresource.TypeTool, item.ID, contextresource.OperationUpsert, toolContextText(*item))
+		return enqueueContextResource(ctx, tx, item.OwnerID, 0, 0, contextresource.TypeTool, item.ID, contextresource.OperationUpsert, toolContextText(*item))
 	})
 }
 
@@ -72,7 +72,7 @@ func (r *ToolDefinitionRepository) SoftDelete(ctx context.Context, ownerID, id i
 		if result.Error != nil || result.RowsAffected == 0 {
 			return result.Error
 		}
-		return enqueueContextResource(ctx, tx, ownerID, 0, contextresource.TypeTool, id, contextresource.OperationDelete, "")
+		return enqueueContextResource(ctx, tx, ownerID, 0, 0, contextresource.TypeTool, id, contextresource.OperationDelete, "")
 	})
 }
 

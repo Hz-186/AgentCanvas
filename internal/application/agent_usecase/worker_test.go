@@ -8,7 +8,6 @@ import (
 
 	"agentcanvas/internal/domain/agent"
 	"agentcanvas/internal/domain/conversation"
-	"agentcanvas/internal/domain/workflow"
 )
 
 func TestImprovementProposalSecurityRejectsInjectionAndSecrets(t *testing.T) {
@@ -52,10 +51,10 @@ type workerTurnRepo struct {
 }
 
 func (*workerTurnRepo) Create(context.Context, *agent.Turn) error { return nil }
-func (*workerTurnRepo) CreateWithArtifacts(context.Context, *agent.Turn, *conversation.Message, *workflow.Run) error {
+func (*workerTurnRepo) CreateWithArtifacts(context.Context, *agent.Turn, *conversation.Message, *agent.Run) error {
 	return nil
 }
-func (*workerTurnRepo) CompleteWithMessage(context.Context, *agent.Turn, *conversation.Message, *workflow.Run) error {
+func (*workerTurnRepo) CompleteWithMessage(context.Context, *agent.Turn, *conversation.Message, *agent.Run) error {
 	return nil
 }
 func (*workerTurnRepo) FindByID(context.Context, int64, int64) (*agent.Turn, error) {
@@ -91,21 +90,21 @@ func (r *workerTurnRepo) PauseExpired(_ context.Context, id int64, _ string) err
 	return nil
 }
 
-type workerRunRepo struct{ items map[int64]*workflow.Run }
+type workerRunRepo struct{ items map[int64]*agent.Run }
 
-func (*workerRunRepo) Create(context.Context, *workflow.Run) error { return nil }
-func (r *workerRunRepo) FindByID(_ context.Context, _ int64, id int64) (*workflow.Run, error) {
+func (*workerRunRepo) Create(context.Context, *agent.Run) error { return nil }
+func (r *workerRunRepo) FindByID(_ context.Context, _ int64, id int64) (*agent.Run, error) {
 	return r.items[id], nil
 }
-func (*workerRunRepo) ListByParent(context.Context, int64, int64) ([]workflow.Run, error) {
+func (*workerRunRepo) ListByParent(context.Context, int64, int64) ([]agent.Run, error) {
 	return nil, nil
 }
-func (*workerRunRepo) Update(context.Context, *workflow.Run) error { return nil }
+func (*workerRunRepo) Update(context.Context, *agent.Run) error { return nil }
 
-type workerStepRepo struct{ byRun map[int64][]workflow.RunStep }
+type workerStepRepo struct{ byRun map[int64][]agent.RunStep }
 
-func (*workerStepRepo) Create(context.Context, *workflow.RunStep) error { return nil }
-func (r *workerStepRepo) ListByRun(_ context.Context, _ int64, runID int64) ([]workflow.RunStep, error) {
+func (*workerStepRepo) Create(context.Context, *agent.RunStep) error { return nil }
+func (r *workerStepRepo) ListByRun(_ context.Context, _ int64, runID int64) ([]agent.RunStep, error) {
 	return r.byRun[runID], nil
 }
 
@@ -115,8 +114,8 @@ func TestRecoverExpiredRequeuesOnlyBeforeToolSideEffects(t *testing.T) {
 		{ID: 1, OwnerID: 1, RunID: &run1, Status: agent.TurnStatusRunning, AttemptCount: 1, MaxAttempts: 3},
 		{ID: 2, OwnerID: 1, RunID: &run2, Status: agent.TurnStatusRunning, AttemptCount: 1, MaxAttempts: 3},
 	}}
-	runs := &workerRunRepo{items: map[int64]*workflow.Run{run1: {ID: run1}, run2: {ID: run2}}}
-	steps := &workerStepRepo{byRun: map[int64][]workflow.RunStep{run2: {{StepType: "tool_call"}}}}
+	runs := &workerRunRepo{items: map[int64]*agent.Run{run1: {ID: run1}, run2: {ID: run2}}}
+	steps := &workerStepRepo{byRun: map[int64][]agent.RunStep{run2: {{StepType: "tool_call"}}}}
 	service := &Service{turns: turns, runs: runs, steps: steps}
 	if err := service.recoverExpired(context.Background()); err != nil {
 		t.Fatal(err)

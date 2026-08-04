@@ -77,9 +77,7 @@ type Trace struct {
 	TokenBudget     int               `json:"token_budget,omitempty"`
 	MandatoryTokens int               `json:"mandatory_tokens,omitempty"`
 	OptionalBudget  int               `json:"optional_budget,omitempty"`
-	RuleSetID       int64             `json:"rule_set_id,omitempty"`
-	RuleSetVersion  string            `json:"rule_set_version,omitempty"`
-	RuleSetHash     string            `json:"rule_set_hash,omitempty"`
+	RuleHash        string            `json:"rule_hash,omitempty"`
 }
 
 type PolicyBinding struct {

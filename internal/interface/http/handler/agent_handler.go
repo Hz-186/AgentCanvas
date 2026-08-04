@@ -9,6 +9,7 @@ import (
 	"time"
 
 	agentusecase "agentcanvas/internal/application/agent_usecase"
+	agentdomain "agentcanvas/internal/domain/agent"
 	"agentcanvas/internal/domain/conversation"
 	"agentcanvas/internal/interface/http/sse"
 	agenterrors "agentcanvas/internal/pkg/errors"
@@ -20,6 +21,49 @@ import (
 type AgentHandler struct {
 	service     *agentusecase.Service
 	improvement *agentusecase.ImprovementService
+}
+
+// runDTO is the public execution view. Immutable release definitions remain
+// server-side snapshots and are never exposed through run endpoints.
+type runDTO struct {
+	ID              int64           `json:"id"`
+	OwnerID         int64           `json:"owner_id"`
+	AgentID         int64           `json:"agent_id"`
+	AgentReleaseID  *int64          `json:"agent_release_id,omitempty"`
+	ConversationID  *int64          `json:"conversation_id,omitempty"`
+	ParentRunID     *int64          `json:"parent_run_id,omitempty"`
+	RunType         string          `json:"run_type"`
+	DelegationDepth int             `json:"delegation_depth"`
+	DefinitionHash  string          `json:"definition_hash,omitempty"`
+	RuleHash        string          `json:"rule_hash,omitempty"`
+	Status          string          `json:"status"`
+	InputJSON       json.RawMessage `json:"input_json"`
+	OutputJSON      json.RawMessage `json:"output_json"`
+	ErrorMessage    string          `json:"error_message"`
+	TotalTokens     int             `json:"total_tokens"`
+	LatencyMS       int             `json:"latency_ms"`
+	StartedAt       time.Time       `json:"started_at"`
+	FinishedAt      *time.Time      `json:"finished_at,omitempty"`
+	CreatedAt       time.Time       `json:"created_at"`
+	UpdatedAt       time.Time       `json:"updated_at"`
+}
+
+func publicRun(item *agentdomain.Run) *runDTO {
+	if item == nil {
+		return nil
+	}
+	return &runDTO{ID: item.ID, OwnerID: item.OwnerID, AgentID: item.AgentID, AgentReleaseID: item.AgentReleaseID,
+		ConversationID: item.ConversationID, ParentRunID: item.ParentRunID, RunType: item.RunType,
+		DelegationDepth: item.DelegationDepth, DefinitionHash: item.DefinitionHash, RuleHash: item.RuleHash,
+		Status: item.Status, InputJSON: item.InputJSON, OutputJSON: item.OutputJSON, ErrorMessage: item.ErrorMessage,
+		TotalTokens: item.TotalTokens, LatencyMS: item.LatencyMS, StartedAt: item.StartedAt, FinishedAt: item.FinishedAt,
+		CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt}
+}
+
+type turnAcceptedDTO struct {
+	Turn        *agentdomain.Turn     `json:"turn"`
+	Run         *runDTO               `json:"run"`
+	UserMessage *conversation.Message `json:"user_message"`
 }
 
 func NewAgentHandler(service *agentusecase.Service, improvement ...*agentusecase.ImprovementService) *AgentHandler {
@@ -293,7 +337,7 @@ func (h *AgentHandler) StartTurn(c *gin.Context) {
 		writeAppError(c, err)
 		return
 	}
-	c.JSON(http.StatusAccepted, response.Body{Code: 0, Message: http.StatusText(http.StatusAccepted), Data: accepted})
+	c.JSON(http.StatusAccepted, response.Body{Code: 0, Message: http.StatusText(http.StatusAccepted), Data: turnAcceptedDTO{Turn: accepted.Turn, Run: publicRun(accepted.Run), UserMessage: accepted.UserMessage}})
 }
 
 func bindStrictAgentJSON(c *gin.Context, target any) error {
@@ -454,7 +498,7 @@ func (h *AgentHandler) StreamRunEvents(c *gin.Context) {
 			return
 		}
 		if run.Status != "queued" && run.Status != "running" && run.Status != "resuming" {
-			_ = writer.Event("run_status", run)
+			_ = writer.Event("run_status", publicRun(run))
 			return
 		}
 		select {
@@ -463,6 +507,158 @@ func (h *AgentHandler) StreamRunEvents(c *gin.Context) {
 		case <-ticker.C:
 		}
 	}
+}
+
+func (h *AgentHandler) GetRun(c *gin.Context) {
+	ownerID, runID, ok := ownerAndID(c, "id")
+	if !ok {
+		return
+	}
+	item, err := h.service.GetRun(c.Request.Context(), ownerID, runID)
+	if err != nil {
+		writeAppError(c, err)
+		return
+	}
+	response.OK(c, publicRun(item))
+}
+
+func (h *AgentHandler) ListRunEvents(c *gin.Context) {
+	ownerID, runID, ok := ownerAndID(c, "id")
+	if !ok {
+		return
+	}
+	afterID, _ := strconv.ParseInt(strings.TrimSpace(c.Query("after_id")), 10, 64)
+	items, err := h.service.ListRunEvents(c.Request.Context(), ownerID, runID, afterID)
+	if err != nil {
+		writeAppError(c, err)
+		return
+	}
+	response.OK(c, items)
+}
+
+func (h *AgentHandler) ListChildRuns(c *gin.Context) {
+	ownerID, runID, ok := ownerAndID(c, "id")
+	if !ok {
+		return
+	}
+	items, err := h.service.ListChildRuns(c.Request.Context(), ownerID, runID)
+	if err != nil {
+		writeAppError(c, err)
+		return
+	}
+	public := make([]*runDTO, 0, len(items))
+	for index := range items {
+		public = append(public, publicRun(&items[index]))
+	}
+	response.OK(c, public)
+}
+
+func (h *AgentHandler) ListRunSteps(c *gin.Context) {
+	ownerID, runID, ok := ownerAndID(c, "id")
+	if !ok {
+		return
+	}
+	items, err := h.service.ListRunSteps(c.Request.Context(), ownerID, runID)
+	if err != nil {
+		writeAppError(c, err)
+		return
+	}
+	response.OK(c, items)
+}
+
+func (h *AgentHandler) GetRunTrace(c *gin.Context) {
+	ownerID, runID, ok := ownerAndID(c, "id")
+	if !ok {
+		return
+	}
+	run, err := h.service.GetRun(c.Request.Context(), ownerID, runID)
+	if err != nil {
+		writeAppError(c, err)
+		return
+	}
+	events, err := h.service.ListRunEvents(c.Request.Context(), ownerID, runID, 0)
+	if err != nil {
+		writeAppError(c, err)
+		return
+	}
+	steps, err := h.service.ListRunSteps(c.Request.Context(), ownerID, runID)
+	if err != nil {
+		writeAppError(c, err)
+		return
+	}
+	children, err := h.service.ListChildRuns(c.Request.Context(), ownerID, runID)
+	if err != nil {
+		writeAppError(c, err)
+		return
+	}
+	publicChildren := make([]*runDTO, 0, len(children))
+	for index := range children {
+		publicChildren = append(publicChildren, publicRun(&children[index]))
+	}
+	response.OK(c, gin.H{"run": publicRun(run), "events": events, "steps": steps, "children": publicChildren})
+}
+
+func (h *AgentHandler) CancelRun(c *gin.Context) {
+	ownerID, runID, ok := ownerAndID(c, "id")
+	if !ok {
+		return
+	}
+	if err := h.service.CancelRun(c.Request.Context(), ownerID, runID); err != nil {
+		writeAppError(c, err)
+		return
+	}
+	response.OK(c, gin.H{"cancelled": true})
+}
+
+func (h *AgentHandler) ResumeRun(c *gin.Context) {
+	ownerID, runID, ok := ownerAndID(c, "id")
+	if !ok {
+		return
+	}
+	item, err := h.service.ResumeByID(c.Request.Context(), ownerID, runID)
+	if err != nil {
+		writeAppError(c, err)
+		return
+	}
+	response.OK(c, item)
+}
+
+func (h *AgentHandler) ListApprovalRequests(c *gin.Context) {
+	ownerID, ok := requireOwner(c)
+	if !ok {
+		return
+	}
+	items, err := h.service.ListApprovalRequests(c.Request.Context(), ownerID, c.Query("status"))
+	if err != nil {
+		writeAppError(c, err)
+		return
+	}
+	response.OK(c, items)
+}
+
+func (h *AgentHandler) ApproveRequest(c *gin.Context) { h.decideApproval(c, true) }
+func (h *AgentHandler) RejectRequest(c *gin.Context)  { h.decideApproval(c, false) }
+
+func (h *AgentHandler) decideApproval(c *gin.Context, approved bool) {
+	ownerID, requestID, ok := ownerAndID(c, "id")
+	if !ok {
+		return
+	}
+	var body struct {
+		Note string `json:"note"`
+	}
+	if c.Request.Body != nil {
+		if err := c.ShouldBindJSON(&body); err != nil && err != io.EOF {
+			writeAppError(c, agenterrors.ErrInvalidInput)
+			return
+		}
+	}
+	run, err := h.service.DecideApprovalRequest(c.Request.Context(), ownerID, requestID, approved, body.Note)
+	if err != nil {
+		writeAppError(c, err)
+		return
+	}
+	response.OK(c, publicRun(run))
 }
 
 func requireOwner(c *gin.Context) (int64, bool) {

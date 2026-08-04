@@ -16,9 +16,10 @@ import {
   X,
 } from 'lucide-react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { agentApi, knowledgeApi, settingsApi, workflowApi } from '../api/resources';
+import { agentApi, knowledgeApi, runApi, settingsApi } from '../api/resources';
 import { Button, EmptyState, Field, IconButton, Modal, Select, StatusBadge, TextArea, TextInput, Toast } from '../components/ui';
 import { EditorialHeader, ResizableRail, paneStyle, storedWidth } from '../components/editorial';
+import { ApprovalQueue } from '../components/ApprovalQueue';
 import type {
   Agent,
   AgentEditableSettings,
@@ -33,7 +34,6 @@ import type {
   RunEvent,
 } from '../types/api';
 import { formatDate, friendlyErrorMessage } from '../utils/format';
-import { ApprovalQueue } from './canvas/debug/ApprovalQueue';
 
 type AgentMode = NonNullable<Conversation['agent_mode']>;
 
@@ -93,9 +93,8 @@ export function deduplicateSearchResults(items: MessageSearchResult[]): MessageS
 
 export function ChatPage() {
   const navigate = useNavigate();
-  const { agentId: routeAgentID, dialogId: routeDialogID, conversationId: routeConversationID } = useParams();
-  const agentID = routeAgentID ? Number(routeAgentID) : undefined;
-  const legacyDialogID = routeDialogID ? Number(routeDialogID) : undefined;
+	const { agentId: routeAgentID, conversationId: routeConversationID } = useParams();
+	const agentID = routeAgentID ? Number(routeAgentID) : undefined;
   const scoped = Boolean(agentID && !Number.isNaN(agentID));
   const isNewConversation = routeConversationID === 'new';
   const conversationID = routeConversationID && !isNewConversation ? Number(routeConversationID) : undefined;
@@ -157,10 +156,9 @@ export function ChatPage() {
       setProviders(providerList);
       setKnowledgeBases(kbList.filter((item) => item.status === 1));
       setNewProviderID(providerList[0]?.id ?? 0);
-      if (legacyDialogID) setError('旧 Dialog 地址已停用，请从 Agent 列表进入。');
-    }).catch((cause) => !cancelled && setError(friendlyErrorMessage(cause, '加载 Agent 数据失败')));
-    return () => { cancelled = true; pollGeneration.current += 1; streamAbort.current?.abort(); };
-  }, [legacyDialogID]);
+	}).catch((cause) => !cancelled && setError(friendlyErrorMessage(cause, '加载 Agent 数据失败')));
+	return () => { cancelled = true; pollGeneration.current += 1; streamAbort.current?.abort(); };
+	}, []);
 
   useEffect(() => {
     if (!currentAgent) return;
@@ -207,7 +205,7 @@ export function ChatPage() {
       if (cancelled || pollGeneration.current !== generation) return;
       setTurn(latest);
       if (latest.run_id) {
-        Promise.all([workflowApi.getRun(latest.run_id), workflowApi.listRunEvents(latest.run_id), workflowApi.listChildRuns(latest.run_id)]).then(([latestRun, events, children]) => {
+        Promise.all([runApi.getRun(latest.run_id), runApi.listRunEvents(latest.run_id), runApi.listChildRuns(latest.run_id)]).then(([latestRun, events, children]) => {
           if (cancelled || pollGeneration.current !== generation) return;
           setRun(latestRun); setTrace(events); setChildRuns(children);
         }).catch(() => undefined);
@@ -331,11 +329,11 @@ export function ChatPage() {
         setTurn(nextTurn);
         if (terminalTurnStatuses.has(nextTurn.status)) {
           if (nextTurn.status === 'waiting_human') {
-            const pending = await workflowApi.listApprovalRequests('pending');
+            const pending = await runApi.listApprovalRequests('pending');
             setApprovals(pending.filter((item) => item.run_id === runID));
           } else setApprovals([]);
           if (agentID) setMessages(await agentApi.listMessages(agentID, activeConversationID));
-          const [latestRun, children] = await Promise.all([workflowApi.getRun(runID), workflowApi.listChildRuns(runID)]);
+          const [latestRun, children] = await Promise.all([runApi.getRun(runID), runApi.listChildRuns(runID)]);
           setRun(latestRun); setChildRuns(children); setBusy(false);
           if (streamAbort.current === controller) streamAbort.current = null;
           return;
@@ -378,7 +376,7 @@ export function ChatPage() {
   async function stopRun() {
     if (!turn?.run_id) return;
     try {
-      const cancelledRun = await workflowApi.cancelRun(turn.run_id);
+      const cancelledRun = await runApi.cancelRun(turn.run_id);
       streamAbort.current?.abort();
       const nextTurn = await agentApi.getTurn(turn.id);
       setTurn(nextTurn); setRun(cancelledRun);
@@ -391,9 +389,8 @@ export function ChatPage() {
     if (!item.run_id) return;
     setBusy(true); setError('');
     try {
-      if (approved) await workflowApi.approveRequest(item.id, optionID ? `choice:${optionID}` : undefined);
-      else await workflowApi.rejectRequest(item.id, 'Rejected from Agent Chat');
-      await workflowApi.resumeRun(item.run_id);
+      if (approved) await runApi.approveRequest(item.id, optionID ? `choice:${optionID}` : undefined);
+      else await runApi.rejectRequest(item.id, 'Rejected from Agent Chat');
       setApprovals([]);
       if (!turn) return;
       const nextTurn = await agentApi.getTurn(turn.id); setTurn(nextTurn);
@@ -406,7 +403,7 @@ export function ChatPage() {
     if (!turn?.run_id) return;
     setBusy(true); setError('');
     try {
-      await workflowApi.resumeRun(turn.run_id);
+      await runApi.resumeRun(turn.run_id);
       const nextTurn = await agentApi.getTurn(turn.id); setTurn(nextTurn);
       const generation = pollGeneration.current + 1; pollGeneration.current = generation;
       await monitorTurn(nextTurn.id, turn.run_id, generation, nextTurn.conversation_id);
@@ -453,10 +450,10 @@ export function ChatPage() {
       <EditorialHeader word="Agent" script="Chat" kicker="INDEPENDENT AGENTS" description="创建一个 Agent，然后像使用 Codex 一样直接开始任务。" action={<Button tone="primary" onClick={() => setCreateOpen(true)}><Plus size={17} />New Agent</Button>} />
       <div className="stack">
         {agents.length === 0 ? <EmptyState icon={<Bot size={24} />} title="还没有 Agent" description="创建后即可开始多轮对话。" action={<Button tone="primary" onClick={() => setCreateOpen(true)}>创建 Agent</Button>} /> :
-          <div className="workflow-library-list dialog-library-list">{agents.map((item) => <article className="workflow-library-item dialog-library-item" key={item.id}>
-            <div className="workflow-miniature dialog-miniature"><span><Bot size={16} /></span><i /><span className="workflow-miniature-end"><MessageSquareText size={16} /></span></div>
-            <div className="workflow-library-copy"><div className="card-title"><h3 className="truncate">{item.name}</h3><StatusBadge tone={item.status === 'active' ? 'good' : 'neutral'}>{item.status}</StatusBadge></div><p className="muted clamp-2">{item.description || item.settings.system_prompt || '使用服务端默认提示词'}</p><div className="meta-row"><span>RELEASE {item.current_release_id ?? '—'}</span><span>{formatDate(item.updated_at)}</span></div></div>
-            <div className="workflow-library-actions"><Button tone="primary" onClick={() => navigate(`/app/agents/${item.id}/chat`)}>Open Agent<ArrowUpRight size={16} /></Button><IconButton label="归档 Agent" className="icon-btn-danger" onClick={() => void removeAgent(item.id)}><Trash2 size={16} /></IconButton></div>
+          <div className="resource-library-list dialog-library-list">{agents.map((item) => <article className="resource-library-item dialog-library-item" key={item.id}>
+            <div className="resource-miniature dialog-miniature"><span><Bot size={16} /></span><i /><span className="resource-miniature-end"><MessageSquareText size={16} /></span></div>
+            <div className="resource-library-copy"><div className="card-title"><h3 className="truncate">{item.name}</h3><StatusBadge tone={item.status === 'active' ? 'good' : 'neutral'}>{item.status}</StatusBadge></div><p className="muted clamp-2">{item.description || item.settings.system_prompt || '使用服务端默认提示词'}</p><div className="meta-row"><span>RELEASE {item.current_release_id ?? '—'}</span><span>{formatDate(item.updated_at)}</span></div></div>
+            <div className="resource-library-actions"><Button tone="primary" onClick={() => navigate(`/app/agents/${item.id}/chat`)}>Open Agent<ArrowUpRight size={16} /></Button><IconButton label="归档 Agent" className="icon-btn-danger" onClick={() => void removeAgent(item.id)}><Trash2 size={16} /></IconButton></div>
           </article>)}</div>}
       </div>
       <Modal open={createOpen} title="Create Agent" onClose={() => setCreateOpen(false)}><form className="stack" onSubmit={(event) => void createAgent(event)}><Field label="Name"><TextInput value={newName} onChange={(event) => setNewName(event.target.value)} autoFocus /></Field><Field label="Model Provider"><Select value={newProviderID} onChange={(event) => setNewProviderID(Number(event.target.value))}><option value={0}>Select provider</option>{providers.map((providerItem) => <option value={providerItem.id} key={providerItem.id}>{providerItem.name}</option>)}</Select></Field><Button tone="primary" type="submit" disabled={busy}>Create Agent</Button></form></Modal>
@@ -510,7 +507,7 @@ export function ChatPage() {
         {runDetailsVisible ? <details className="chat-run-details">
           <summary><ChevronDown size={14} /><span>执行详情</span>{run ? <StatusBadge tone={run.status === 'succeeded' ? 'good' : run.status === 'failed' ? 'bad' : 'info'}>{run.status}</StatusBadge> : null}</summary>
           <div className="chat-run-details-body stack">
-            {run ? <div className="meta-row"><span>{run.total_tokens ?? 0} tok</span><span>{run.latency_ms ?? 0} ms</span><span>{run.run_kind ?? 'agent'}</span></div> : null}
+            {run ? <div className="meta-row"><span>{run.total_tokens ?? 0} tok</span><span>{run.latency_ms ?? 0} ms</span><span>{run.run_type}</span><span>depth {run.delegation_depth}</span></div> : null}
             {trace.map((item) => { const view = tracePresentation(item); return <article className="chat-trace-row" key={item.id}><strong>{view.title}</strong><p>{view.summary}</p></article>; })}
             {childRuns.map((child) => <article className="chat-trace-row" key={child.id}><strong>Subagent run {child.id}</strong><p>{child.status} · {child.total_tokens} tok</p></article>)}
             <ApprovalQueue items={approvals} onDecide={(item, approve, optionID) => void decideApproval(item, approve, optionID)} />

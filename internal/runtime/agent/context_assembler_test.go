@@ -145,8 +145,7 @@ func TestContextAssemblerModeInstructions(t *testing.T) {
 		{"react", false, false},
 		{"react", true, true},
 		{"plan_execute", false, true},
-		{"reflect", false, true},
-		{"supervisor", false, false},
+		{"unsupported", false, false},
 		{"unknown", false, false},
 	}
 	for _, tc := range cases {

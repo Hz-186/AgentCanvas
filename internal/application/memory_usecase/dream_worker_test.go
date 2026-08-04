@@ -3,10 +3,12 @@ package memory_usecase
 import (
 	"context"
 	"testing"
+	"time"
 
 	"agentcanvas/internal/domain/conversation"
 	"agentcanvas/internal/domain/memory"
 	"agentcanvas/internal/infrastructure/llm"
+	queueinfra "agentcanvas/internal/infrastructure/queue"
 
 	miniredis "github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
@@ -178,5 +180,24 @@ func TestMemoryCandidateSecurityBlocksInjectionAndSecrets(t *testing.T) {
 		if status != "blocked" || reason == "" {
 			t.Fatalf("expected blocked candidate for %q, got status=%s reason=%s", value, status, reason)
 		}
+	}
+}
+
+func TestDreamTriggerCoalescesAgentTurnBursts(t *testing.T) {
+	mr := miniredis.RunT(t)
+	redisClient := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	jobs := queueinfra.NewMemoryQueue()
+	trigger := NewDreamTrigger(jobs, redisClient, DreamConfig{Enabled: true, IdleTimeout: time.Minute})
+	if trigger == nil {
+		t.Fatal("enabled memory extraction must configure a trigger")
+	}
+	trigger(context.Background(), 3, 9, 1)
+	trigger(context.Background(), 3, 9, 2)
+	claimed, err := jobs.Claim(context.Background(), queueinfra.ClaimOptions{WorkerID: "test", Limit: 10, Now: time.Now()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(claimed) != 1 || claimed[0].Type != DreamJobType || claimed[0].Payload["conversation_id"] != int64(9) {
+		t.Fatalf("Agent turn extraction was not coalesced: %+v", claimed)
 	}
 }

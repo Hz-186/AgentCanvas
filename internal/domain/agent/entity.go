@@ -24,9 +24,8 @@ const (
 	TurnStatusRetryWait    = "retry_wait"
 )
 
-// Definition is the complete, workflow-independent configuration used by an
-// Agent release. Keep all resource references here so a release can be pinned
-// and reproduced without consulting a Workflow profile.
+// Definition is the complete, transport-independent configuration used by an
+// Agent release. Resource references live here so a release stays reproducible.
 type Definition struct {
 	ProviderID                int64           `json:"provider_id"`
 	Model                     string          `json:"model"`
@@ -44,11 +43,9 @@ type Definition struct {
 	KnowledgeTopK             int             `json:"knowledge_top_k,omitempty"`
 	KnowledgeMode             string          `json:"knowledge_mode,omitempty"`
 	MCPServerIDs              []int64         `json:"mcp_server_ids,omitempty"`
-	CallableAgentIDs          []int64         `json:"callable_agent_ids,omitempty"`
-	CallableWorkflowIDs       []int64         `json:"call_workflow_ids,omitempty"`
-	AllowInlineAgents         bool            `json:"allow_inline_agents,omitempty"`
+	AllowSubagents            bool            `json:"allow_subagents,omitempty"`
 	MaxParallelSubAgents      int             `json:"max_parallel_sub_agents,omitempty"`
-	MaxWorkflowCallDepth      int             `json:"max_workflow_call_depth,omitempty"`
+	MaxSubagentDepth          int             `json:"max_subagent_depth,omitempty"`
 	MemoryEnabled             bool            `json:"memory_enabled,omitempty"`
 	ReflectionEnabled         bool            `json:"reflection_enabled,omitempty"`
 	MemoryPolicyJSON          json.RawMessage `json:"memory_policy_json,omitempty"`
@@ -70,10 +67,6 @@ type Definition struct {
 	ReservedOutputTokens      int             `json:"reserved_output_tokens,omitempty"`
 	ContextSafetyMarginTokens int             `json:"context_safety_margin_tokens,omitempty"`
 	MaxRuleTokens             int             `json:"max_rule_tokens,omitempty"`
-	PreTurnWorkflowID         *int64          `json:"pre_turn_workflow_id,omitempty"`
-	PreTurnWorkflowVersionID  *int64          `json:"pre_turn_workflow_version_id,omitempty"`
-	PostTurnWorkflowID        *int64          `json:"post_turn_workflow_id,omitempty"`
-	PostTurnWorkflowVersionID *int64          `json:"post_turn_workflow_version_id,omitempty"`
 }
 
 func (d Definition) Normalize() Definition {
@@ -98,8 +91,8 @@ func (d Definition) Normalize() Definition {
 	if d.MaxParallelSubAgents == 0 {
 		d.MaxParallelSubAgents = 4
 	}
-	if d.MaxWorkflowCallDepth == 0 {
-		d.MaxWorkflowCallDepth = 3
+	if d.MaxSubagentDepth == 0 {
+		d.MaxSubagentDepth = 3
 	}
 	if d.KnowledgeTopK == 0 {
 		d.KnowledgeTopK = 5
@@ -145,8 +138,8 @@ func (d Definition) Validate() error {
 	if d.MaxParallelSubAgents < 1 || d.MaxParallelSubAgents > 64 {
 		return fmt.Errorf("max_parallel_sub_agents must be 1..64")
 	}
-	if d.MaxWorkflowCallDepth < 1 || d.MaxWorkflowCallDepth > 5 {
-		return fmt.Errorf("max_workflow_call_depth must be 1..5")
+	if d.MaxSubagentDepth < 1 || d.MaxSubagentDepth > 5 {
+		return fmt.Errorf("max_subagent_depth must be 1..5")
 	}
 	if d.KnowledgeTopK < 1 || d.KnowledgeTopK > 20 {
 		return fmt.Errorf("knowledge_top_k must be 1..20")
@@ -162,12 +155,6 @@ func (d Definition) Validate() error {
 	}
 	if d.MaxInputChars < 0 || d.MaxInputTokens < 0 || d.ContextWindowTokens < 0 || d.ReservedOutputTokens < 0 || d.ContextSafetyMarginTokens < 0 || d.MaxRuleTokens < 0 {
 		return fmt.Errorf("context limits must not be negative")
-	}
-	if (d.PreTurnWorkflowID == nil) != (d.PreTurnWorkflowVersionID == nil) {
-		return fmt.Errorf("pre_turn_workflow_id and pre_turn_workflow_version_id must be configured together")
-	}
-	if (d.PostTurnWorkflowID == nil) != (d.PostTurnWorkflowVersionID == nil) {
-		return fmt.Errorf("post_turn_workflow_id and post_turn_workflow_version_id must be configured together")
 	}
 	return nil
 }
@@ -189,9 +176,6 @@ func (d Definition) ResourceSnapshot() (json.RawMessage, string, string, error) 
 	resources := map[string]any{
 		"tool_pack_ids": d.ToolPackIDs, "tool_ids": d.ToolIDs, "skill_ids": d.SkillIDs,
 		"knowledge_ids": d.KnowledgeIDs, "mcp_server_ids": d.MCPServerIDs,
-		"callable_agent_ids": d.CallableAgentIDs, "call_workflow_ids": d.CallableWorkflowIDs,
-		"pre_turn_workflow_version_id":  d.PreTurnWorkflowVersionID,
-		"post_turn_workflow_version_id": d.PostTurnWorkflowVersionID,
 	}
 	raw, err := json.Marshal(resources)
 	if err != nil {
@@ -215,7 +199,6 @@ type Agent struct {
 	DraftDefinitionJSON json.RawMessage `json:"-" gorm:"column:draft_definition_json"`
 	DraftDefinition     Definition      `json:"definition" gorm:"-"`
 	CurrentReleaseID    *int64          `json:"current_release_id,omitempty" gorm:"column:current_release_id"`
-	LegacyDialogID      *int64          `json:"legacy_dialog_id,omitempty" gorm:"column:legacy_dialog_id"`
 	CreatedAt           time.Time       `json:"created_at" gorm:"column:created_at"`
 	UpdatedAt           time.Time       `json:"updated_at" gorm:"column:updated_at"`
 	DeletedAt           *time.Time      `json:"-" gorm:"column:deleted_at"`
@@ -231,7 +214,7 @@ type Release struct {
 	DefinitionJSON   json.RawMessage `json:"-" gorm:"column:definition_json"`
 	Definition       Definition      `json:"definition" gorm:"-"`
 	Checksum         string          `json:"checksum" gorm:"column:checksum"`
-	RuleSetHash      string          `json:"rule_set_hash" gorm:"column:rule_set_hash"`
+	RuleHash         string          `json:"rule_hash" gorm:"column:rule_hash"`
 	ToolSchemaHash   string          `json:"tool_schema_hash" gorm:"column:tool_schema_hash"`
 	ResourceVersions json.RawMessage `json:"resource_versions" gorm:"column:resource_versions_json"`
 	CreatedBy        int64           `json:"created_by" gorm:"column:created_by"`

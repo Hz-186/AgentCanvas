@@ -3,19 +3,15 @@ package conversation
 import "time"
 
 const (
-	SourceRAGChat  = "rag_chat"
-	SourceWorkflow = "workflow"
-	SourceAgent    = "agent"
+	SourceAgent = "agent"
 )
 
 type Conversation struct {
 	ID                   int64           `json:"id" gorm:"primaryKey;column:id"`
 	OwnerID              int64           `json:"owner_id" gorm:"column:owner_id"`
-	DialogID             *int64          `json:"dialog_id,omitempty" gorm:"column:dialog_id"`
 	Title                string          `json:"title" gorm:"column:title"`
 	Name                 string          `json:"name" gorm:"-"`
 	Source               string          `json:"source" gorm:"column:source"`
-	WorkflowID           *int64          `json:"workflow_id,omitempty" gorm:"column:workflow_id"`
 	AgentID              *int64          `json:"agent_id,omitempty" gorm:"column:agent_id"`
 	AgentReleaseID       *int64          `json:"agent_release_id,omitempty" gorm:"column:agent_release_id"`
 	AgentMode            string          `json:"agent_mode,omitempty" gorm:"column:agent_mode"`

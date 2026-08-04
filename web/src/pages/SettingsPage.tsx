@@ -165,14 +165,14 @@ export function MemoryPage() {
 
 		{activeView === 'pending' ? (
 			candidates.length === 0 ? <EmptyState title="没有待审核候选" description="Agent、Dream 和自动复盘产生的记忆会先出现在这里。" /> :
-			<div className="workflow-library-list memory-library-list">{candidates.map((candidate) => (
-				<article className="workflow-library-item memory-library-item" key={candidate.id}>
-					<div className="workflow-library-copy">
+			<div className="resource-library-list memory-library-list">{candidates.map((candidate) => (
+				<article className="resource-library-item memory-library-item" key={candidate.id}>
+					<div className="resource-library-copy">
 						<div className="card-title"><h3 className="truncate">{candidate.title || '记忆候选'}</h3><StatusBadge tone="warn">待审核 · {(candidate.confidence * 100).toFixed(0)}%</StatusBadge></div>
 						<p className="muted clamp-2">{candidate.content}</p>
 						<div className="meta-row"><span>SOURCE {String((candidate.payload_json as Record<string, unknown> | undefined)?.source || 'automatic')}</span><span>EVIDENCE {JSON.stringify(candidate.evidence_json ?? [])}</span></div>
 					</div>
-					<div className="workflow-library-actions"><Button tone="primary" onClick={() => void decideCandidate(candidate.id, true)}>批准</Button><Button onClick={() => void decideCandidate(candidate.id, false)}>拒绝</Button></div>
+					<div className="resource-library-actions"><Button tone="primary" onClick={() => void decideCandidate(candidate.id, true)}>批准</Button><Button onClick={() => void decideCandidate(candidate.id, false)}>拒绝</Button></div>
 				</article>
 			))}</div>
 		) : visibleMemories.length === 0 ? (
@@ -183,17 +183,17 @@ export function MemoryPage() {
 			<Button tone="primary" onClick={openCreateMemory}>新增记忆</Button>
         </div>
       ) : (
-        <div className="workflow-library-list memory-library-list">
+        <div className="resource-library-list memory-library-list">
 			{visibleMemories.map((memory) => (
-            <article className="workflow-library-item memory-library-item" key={memory.id}>
-              <div className="workflow-miniature memory-miniature" aria-hidden="true">
+            <article className="resource-library-item memory-library-item" key={memory.id}>
+              <div className="resource-miniature memory-miniature" aria-hidden="true">
                 <span><BrainCircuit size={16} /></span>
                 <i />
                 <span><Network size={16} /></span>
                 <i />
-                <span className="workflow-miniature-end"><ArrowUpRight size={16} /></span>
+                <span className="resource-miniature-end"><ArrowUpRight size={16} /></span>
               </div>
-              <div className="workflow-library-copy">
+              <div className="resource-library-copy">
                 <div className="card-title">
                   <h3 className="truncate">{memory.title || memory.memory_type}</h3>
 						<StatusBadge tone={memory.status === 'revoked' ? 'neutral' : memory.conflict_flag ? 'bad' : 'info'}>{memory.status || 'active'} · {memoryTypeLabel(memory.memory_type)}</StatusBadge>
@@ -206,7 +206,7 @@ export function MemoryPage() {
                   <span>UPDATED {formatDate(memory.updated_at)}</span>
                 </div>
               </div>
-              <div className="workflow-library-actions">
+              <div className="resource-library-actions">
 				<Button onClick={() => void showRecallReason(memory)}>为什么被召回</Button>
 				{(memory.status || 'active') === 'active' ? <IconButton label="编辑记忆" onClick={() => openEditMemory(memory)}><Pencil size={16} /></IconButton> : null}
 				{(memory.status || 'active') === 'active' ? <IconButton label="撤销记忆" onClick={() => void removeMemory(memory.id)}><Trash2 size={16} /></IconButton> : null}
@@ -288,7 +288,7 @@ function ManagementPage({ view }: { view: ManagementView }) {
   const [skillName, setSkillName] = useState('');
   const [skillDescription, setSkillDescription] = useState('');
   const [skillSourceType, setSkillSourceType] = useState<'inline' | 'local_path'>('inline');
-  const [skillContent, setSkillContent] = useState('## When To Use\n\nUse this skill when ...\n\n## Steps\n\n1. Inspect the current context.\n2. Decide whether this workflow applies.\n3. Execute the steps using available tools.\n\n## Safety\n\nDo not perform write or external actions without explicit approval.');
+  const [skillContent, setSkillContent] = useState('## When To Use\n\nUse this skill when ...\n\n## Steps\n\n1. Inspect the current context.\n2. Decide whether these instructions apply.\n3. Execute the steps using available tools.\n\n## Safety\n\nDo not perform write or external actions without explicit approval.');
   const [skillBundlePath, setSkillBundlePath] = useState('');
   const [skillTags, setSkillTags] = useState('');
   const [policyName, setPolicyName] = useState('');
@@ -885,7 +885,7 @@ function ManagementPage({ view }: { view: ManagementView }) {
         <Panel className="management-panel section-packs" title="Tool Pack" eyebrow="Collections" action={<Button tone="primary" onClick={() => setPackOpen(true)}><Boxes size={16} />New</Button>}>
           <div className="stack">
             {toolPacks.length === 0 ? (
-              <EmptyState title="还没有 Tool Pack" description="把常用工具组合成工具包，便于后续绑定到 Workflow Profile。" />
+              <EmptyState title="还没有 Tool Pack" description="把常用工具组合成工具包，便于后续绑定到 Agent。" />
             ) : (
               <>
                 <Field label="当前 Pack">

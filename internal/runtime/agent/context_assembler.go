@@ -37,7 +37,7 @@ func (a ContextAssembler) Build(req RunRequest) ([]llm.ChatMessage, ContextTrace
 		MaxChars:       maxChars,
 		MaxInputTokens: maxTokens,
 		RuleTrace:      req.RuleTrace,
-		RuleSetVersion: req.RuleSetVersion,
+		RuleHash:       req.RuleHash,
 		Strategy:       "token_budget:pinned_recent_summary_dedupe",
 	}
 	blocks := make([]ContextBlock, 0, len(req.ContextBlocks)+2)
@@ -405,8 +405,6 @@ func modeInstruction(req RunRequest) string {
 		return "Before producing the final answer, check whether the answer satisfies the task and whether tool errors require correction."
 	case "plan_execute":
 		return "Use a plan-and-execute approach: first outline a concise private execution plan in the response context, then call tools or answer step by step. If a step fails, revise the plan and continue within budget."
-	case "reflect":
-		return "Use reflection: after each tool result or draft answer, verify correctness, schema compliance, and missing evidence before finalizing."
 	default:
 		return ""
 	}

@@ -27,3 +27,5 @@ skill/*
 # doc / study
 study
 test
+.playwright-cli/.playwright-cli
+output/playwright/

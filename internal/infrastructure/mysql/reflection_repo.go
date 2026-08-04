@@ -52,10 +52,10 @@ func (r *ReflectionRepository) FindByID(ctx context.Context, ownerID, id int64) 
 	return &item, err
 }
 
-func (r *ReflectionRepository) FindActiveByHash(ctx context.Context, ownerID, workflowID int64, contentHash string) (*reflection.Reflection, error) {
+func (r *ReflectionRepository) FindActiveByHash(ctx context.Context, ownerID, agentID int64, contentHash string) (*reflection.Reflection, error) {
 	var item reflection.Reflection
 	err := r.db.WithContext(ctx).
-		Where("owner_id = ? AND workflow_id = ? AND content_hash = ? AND deleted_at IS NULL", ownerID, workflowID, contentHash).
+		Where("owner_id = ? AND agent_id = ? AND content_hash = ? AND deleted_at IS NULL", ownerID, agentID, contentHash).
 		Where("status IN ?", []string{reflection.StatusCandidate, reflection.StatusActive, reflection.StatusValidated}).
 		First(&item).Error
 	return &item, err
@@ -80,43 +80,30 @@ func (r *ReflectionRepository) ListCandidates(ctx context.Context, q reflection.
 		Where("owner_id = ? AND deleted_at IS NULL", q.OwnerID).
 		Where("status IN ?", []string{reflection.StatusActive, reflection.StatusValidated}).
 		Where("expires_at IS NULL OR expires_at > ?", now)
-	if q.AgentID > 0 {
-		if q.IncludeGlobal {
-			query = query.Where("agent_id = ? OR (scope = ? AND status = ?)", q.AgentID, reflection.ScopeGlobal, reflection.StatusValidated)
-		} else {
-			query = query.Where("agent_id = ?", q.AgentID)
-		}
+	if q.IncludeGlobal {
+		query = query.Where("agent_id = ? OR (scope = ? AND status = ?)", q.AgentID, reflection.ScopeGlobal, reflection.StatusValidated)
 	} else {
-		if q.IncludeGlobal {
-			query = query.Where("workflow_id = ? OR (scope = ? AND status = ?)", q.WorkflowID, reflection.ScopeGlobal, reflection.StatusValidated)
-		} else {
-			query = query.Where("workflow_id = ?", q.WorkflowID)
-		}
+		query = query.Where("agent_id = ?", q.AgentID)
 	}
 	if q.Mode != "" {
 		query = query.Where("mode = '' OR mode = ?", q.Mode)
 	}
 	var items []reflection.Reflection
-	scopeID := q.WorkflowID
-	scopeColumn := "workflow_id"
-	if q.AgentID > 0 {
-		scopeID, scopeColumn = q.AgentID, "agent_id"
-	}
 	err := query.
-		Order(clause.Expr{SQL: "CASE WHEN " + scopeColumn + " = ? AND node_id = ? THEN 0 WHEN " + scopeColumn + " = ? THEN 1 ELSE 2 END", Vars: []any{scopeID, q.NodeID, scopeID}}).
+		Order(clause.Expr{SQL: "CASE WHEN agent_id = ? THEN 0 ELSE 1 END", Vars: []any{q.AgentID}}).
 		Order("importance DESC, confidence DESC, successful_use_count DESC, updated_at DESC").
 		Limit(limit).Find(&items).Error
 	return items, err
 }
 
-func (r *ReflectionRepository) ListByWorkflow(ctx context.Context, ownerID, workflowID int64, status string, limit, offset int) ([]reflection.Reflection, error) {
+func (r *ReflectionRepository) ListByAgent(ctx context.Context, ownerID, agentID int64, status string, limit, offset int) ([]reflection.Reflection, error) {
 	if limit <= 0 || limit > 100 {
 		limit = 50
 	}
 	if offset < 0 {
 		offset = 0
 	}
-	query := r.db.WithContext(ctx).Where("owner_id = ? AND workflow_id = ? AND deleted_at IS NULL", ownerID, workflowID)
+	query := r.db.WithContext(ctx).Where("owner_id = ? AND agent_id = ? AND deleted_at IS NULL", ownerID, agentID)
 	if status != "" {
 		query = query.Where("status = ?", status)
 	}
@@ -190,7 +177,7 @@ func enqueueReflectionContext(ctx context.Context, tx *gorm.DB, item reflection.
 	if item.DeletedAt != nil || (item.Status != reflection.StatusActive && item.Status != reflection.StatusValidated) {
 		operation = contextresource.OperationDelete
 	}
-	return enqueueContextResource(ctx, tx, item.OwnerID, item.WorkflowID, contextresource.TypeReflection, item.ID, operation, reflectionContextText(item))
+	return enqueueContextResource(ctx, tx, item.OwnerID, item.AgentID, 0, contextresource.TypeReflection, item.ID, operation, reflectionContextText(item))
 }
 
 type ReflectionJobRepository struct{ db *gorm.DB }
@@ -252,7 +239,7 @@ func createReflectionJob(tx *gorm.DB, item *reflection.Job) error {
 	if result.RowsAffected > 0 && item.ID > 0 {
 		return nil
 	}
-	return tx.Where("run_id = ? AND node_id = ? AND trigger_hash = ?", item.RunID, item.NodeID, item.TriggerHash).First(item).Error
+	return tx.Where("run_id = ? AND trigger_hash = ?", item.RunID, item.TriggerHash).First(item).Error
 }
 
 func createReflectionOutbox(tx *gorm.DB, jobID int64, dispatchSeq int, eventType string, availableAt time.Time) error {
@@ -420,7 +407,7 @@ func (r *ReflectionJobRepository) CommitResult(ctx context.Context, jobID int64,
 			}
 			item.UpdatedAt = now
 			if err := tx.Clauses(clause.OnConflict{
-				Columns: []clause.Column{{Name: "owner_id"}, {Name: "workflow_id"}, {Name: "content_hash"}},
+				Columns: []clause.Column{{Name: "owner_id"}, {Name: "agent_id"}, {Name: "content_hash"}},
 				DoUpdates: clause.Assignments(map[string]any{
 					"importance": gorm.Expr("GREATEST(importance, VALUES(importance))"),
 					"confidence": gorm.Expr("GREATEST(confidence, VALUES(confidence))"),
@@ -430,7 +417,7 @@ func (r *ReflectionJobRepository) CommitResult(ctx context.Context, jobID int64,
 				return err
 			}
 			var stored reflection.Reflection
-			if err := tx.Where("owner_id = ? AND workflow_id = ? AND content_hash = ?", item.OwnerID, item.WorkflowID, item.ContentHash).First(&stored).Error; err != nil {
+			if err := tx.Where("owner_id = ? AND agent_id = ? AND content_hash = ?", item.OwnerID, item.AgentID, item.ContentHash).First(&stored).Error; err != nil {
 				return err
 			}
 			if err := enqueueReflectionContext(ctx, tx, stored); err != nil {

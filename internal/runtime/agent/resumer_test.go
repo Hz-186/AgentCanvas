@@ -7,7 +7,6 @@ import (
 
 	"agentcanvas/internal/domain/conversation"
 	"agentcanvas/internal/domain/reflection"
-	domainagent "agentcanvas/internal/domain/workflow"
 	"agentcanvas/internal/infrastructure/llm"
 	"agentcanvas/internal/runtime/harness/rules"
 	"agentcanvas/internal/runtime/toolruntime"
@@ -39,9 +38,8 @@ func TestBuildResumeRequestApproved(t *testing.T) {
 	req := ResumeRequest{
 		RunRequest: RunRequest{
 			OwnerID:       1,
-			WorkflowID:    2,
+			AgentID:       2,
 			RunID:         3,
-			NodeID:        "agent",
 			Model:         "gpt-4",
 			Mode:          "react",
 			MaxIterations: 5,
@@ -89,9 +87,8 @@ func TestBuildResumeRequestRejected(t *testing.T) {
 	req := ResumeRequest{
 		RunRequest: RunRequest{
 			OwnerID:       1,
-			WorkflowID:    2,
+			AgentID:       2,
 			RunID:         3,
-			NodeID:        "agent",
 			Model:         "gpt-4",
 			MaxIterations: 5,
 			MaxToolCalls:  10,
@@ -115,16 +112,15 @@ func TestBuildResumeRequestRejected(t *testing.T) {
 
 func TestBuildResumeRequestUsesCheckpointRuleSnapshot(t *testing.T) {
 	checkpoint := &Checkpoint{
-		Messages:       []llm.ChatMessage{{Role: conversation.RoleSystem, Content: "system"}},
-		Metadata:       map[string]any{},
-		RuleSetVersion: "release-2026-07",
-		Rules:          []rules.Rule{{ID: "tenant.release.check", Strength: rules.RuleOptional, Content: "check rollback", Activation: rules.Activation{Always: true}}},
+		Messages: []llm.ChatMessage{{Role: conversation.RoleSystem, Content: "system"}},
+		Metadata: map[string]any{},
+		Rules:    []rules.Rule{{ID: "tenant.release.check", Strength: rules.RuleOptional, Content: "check rollback", Activation: rules.Activation{Always: true}}},
 	}
-	resumed, err := BuildResumeRequest(ResumeRequest{RunRequest: RunRequest{RuleSetVersion: "current", Rules: []rules.Rule{{ID: "new", Strength: rules.RuleMandatory, Content: "new"}}}, Checkpoint: checkpoint})
+	resumed, err := BuildResumeRequest(ResumeRequest{RunRequest: RunRequest{Rules: []rules.Rule{{ID: "new", Strength: rules.RuleMandatory, Content: "new"}}}, Checkpoint: checkpoint})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resumed.RuleSetVersion != "release-2026-07" || len(resumed.Rules) != 1 || resumed.Rules[0].ID != "tenant.release.check" {
+	if len(resumed.Rules) != 1 || resumed.Rules[0].ID != "tenant.release.check" {
 		t.Fatalf("expected checkpoint rule snapshot, got %+v", resumed)
 	}
 }
@@ -169,18 +165,16 @@ func TestCheckpointCapturesReflectionAndPlanState(t *testing.T) {
 }
 
 func TestBuildResumeRequestRejectsTamperedRuleSnapshot(t *testing.T) {
-	set, err := rules.NewRuleSet([]rules.Rule{{
+	snapshot, err := rules.NewSnapshot([]rules.Rule{{
 		ID: "tenant.audit", Content: "audit", Strength: rules.RuleMandatory,
-	}}, 8, "2")
+	}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	checkpoint := &Checkpoint{
-		Messages:       []llm.ChatMessage{{Role: conversation.RoleSystem, Content: "system"}},
-		RuleSetID:      8,
-		RuleSetVersion: "2",
-		RuleSetHash:    set.Hash,
-		Rules:          append([]rules.Rule(nil), set.Rules...),
+		Messages: []llm.ChatMessage{{Role: conversation.RoleSystem, Content: "system"}},
+		RuleHash: snapshot.Hash,
+		Rules:    append([]rules.Rule(nil), snapshot.Rules...),
 	}
 	checkpoint.Rules[0].Content = "tampered"
 	if _, err := BuildResumeRequest(ResumeRequest{Checkpoint: checkpoint}); err == nil {
@@ -240,7 +234,6 @@ func TestRunnerResumeExecutesPendingTool(t *testing.T) {
 	result, err := runner.Run(context.Background(), RunRequest{
 		OwnerID:         1,
 		RunID:           5,
-		NodeID:          "agent",
 		Model:           "gpt-4",
 		Task:            "task",
 		MaxIterations:   5,
@@ -258,33 +251,5 @@ func TestRunnerResumeExecutesPendingTool(t *testing.T) {
 	}
 	if result.ToolCalls < 1 {
 		t.Fatalf("expected at least 1 tool call after resume, got %d", result.ToolCalls)
-	}
-}
-
-func TestAggregateEvalMetrics(t *testing.T) {
-	results := []domainagent.EvalResult{
-		{Score: 0.8, LatencyMS: 100, MetricsJSON: json.RawMessage(`{"tool_calls":2,"total_tokens":50,"tool_success":true}`)},
-		{Score: 0.3, LatencyMS: 200, MetricsJSON: json.RawMessage(`{"tool_calls":1,"total_tokens":30,"tool_success":false,"max_iter_exceeded":true}`)},
-		{Score: 0.9, LatencyMS: 150, MetricsJSON: json.RawMessage(`{"tool_calls":3,"total_tokens":70,"tool_success":true,"json_compliant":true}`)},
-	}
-	m := AggregateEvalMetrics(results)
-	if m.TotalCases != 3 {
-		t.Fatalf("expected 3 cases, got %d", m.TotalCases)
-	}
-	if m.Passed != 2 {
-		t.Fatalf("expected 2 passed, got %d", m.Passed)
-	}
-	if m.AvgLatencyMS != 150 {
-		t.Fatalf("expected avg latency 150, got %d", m.AvgLatencyMS)
-	}
-	if m.ToolSuccessRate != 2.0/3.0 {
-		t.Fatalf("expected tool success rate 0.66, got %.2f", m.ToolSuccessRate)
-	}
-}
-
-func TestAggregateEvalMetricsEmpty(t *testing.T) {
-	m := AggregateEvalMetrics(nil)
-	if m.TotalCases != 0 {
-		t.Fatalf("expected 0 cases, got %d", m.TotalCases)
 	}
 }

@@ -17,14 +17,14 @@ func TestFallbackToolRulesLoadOnlyAfterToolUse(t *testing.T) {
 	}
 }
 
-func TestActiveRuleSetReplacesFallbackOptionalRules(t *testing.T) {
+func TestAgentRulesReplaceFallbackOptionalRules(t *testing.T) {
 	items, err := RuntimeRules([]Rule{{ID: "tenant.auth", Content: "handle auth", Strength: RuleOptional, Activation: Activation{KeywordsAny: []string{"401"}}}}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	loaded, _ := SelectOptionalRules(items, LoadContext{Task: "AgentCanvas 401", TokenBudget: 1000})
 	if !containsRule(loaded, "tenant.auth") || containsRule(loaded, "scenario.code.change_verification") {
-		t.Fatalf("active RuleSet must replace fallback optional rules: %+v", loaded)
+		t.Fatalf("Agent rules must replace fallback optional rules: %+v", loaded)
 	}
 }
 

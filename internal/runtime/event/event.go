@@ -3,7 +3,6 @@ package event
 import "time"
 
 const (
-	WorkflowStarted       = "workflow_started"
 	NodeStarted           = "node_started"
 	NodeFinished          = "node_finished"
 	NodeFailed            = "node_failed"
@@ -25,12 +24,6 @@ const (
 	AgentFinished         = "agent_finished"
 	AgentFailed           = "agent_failed"
 	ClarificationRequired = "clarification_required"
-	WorkflowCallStarted   = "workflow_call_started"
-	WorkflowCallFinished  = "workflow_call_finished"
-	WorkflowCallFailed    = "workflow_call_failed"
-	LifecycleStarted      = "lifecycle_workflow_started"
-	LifecycleFinished     = "lifecycle_workflow_finished"
-	LifecycleFailed       = "lifecycle_workflow_failed"
 	SandboxStarted        = "sandbox_started"
 	SandboxFinished       = "sandbox_finished"
 	SandboxFailed         = "sandbox_failed"
@@ -38,15 +31,11 @@ const (
 	JSONOutputValidated   = "json_output_validated"
 	GuardrailPassed       = "guardrail_passed"
 	GuardrailBlocked      = "guardrail_blocked"
-	WorkflowFinished      = "workflow_finished"
-	WorkflowFailed        = "workflow_failed"
 )
 
 type Event struct {
 	Type      string         `json:"type"`
 	RunID     int64          `json:"run_id"`
-	NodeID    string         `json:"node_id,omitempty"`
-	NodeType  string         `json:"node_type,omitempty"`
 	Payload   map[string]any `json:"payload,omitempty"`
 	CreatedAt time.Time      `json:"created_at"`
 }

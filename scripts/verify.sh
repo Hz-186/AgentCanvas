@@ -1,54 +1,48 @@
 #!/usr/bin/env bash
 set -e
 
+export LANG=en_US.UTF-8
+export LC_ALL=en_US.UTF-8
+
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 check_migration_tables() {
     echo "==> Checking migration tables against code references..."
 
-    declared_tables=$(grep -h 'CREATE TABLE IF NOT EXISTS ' migrations/*.up.sql 2>/dev/null | sed 's/CREATE TABLE IF NOT EXISTS //' | sed 's/ (.*//' | sort -u)
-    dropped_tables=$(grep -h 'DROP TABLE IF EXISTS ' migrations/*.up.sql 2>/dev/null | sed 's/DROP TABLE IF EXISTS //' | sed 's/;//' | sort -u)
+    declared_tables=$(sed -nE 's/^[[:space:]]*CREATE TABLE( IF NOT EXISTS)?[[:space:]]+`?([[:alnum:]_]+)`?[[:space:]]*\(.*/\2/p' migrations/*.up.sql 2>/dev/null | sort -u)
+    code_tables=$(rg --no-filename 'TableName\(\).*return "[^"]+"' internal -g '*.go' | sed -nE 's/.*TableName\(\).*return "([^"]+)".*/\1/p' | sort -u)
 
-    code_tables=$(grep -rh 'TableName()' internal/ | sed -n 's/.*return "\([^"]*\)".*/\1/p' | sort -u)
-
-    unused=()
-
+    migration_only=""
     for table in $declared_tables; do
-        is_dropped=false
-        for dropped_table in $dropped_tables; do
-            if [ "$table" = "$dropped_table" ]; then
-                is_dropped=true
-                break
-            fi
-        done
-        if [ "$is_dropped" = true ]; then
-            continue
-        fi
-        matched=false
-        for code_table in $code_tables; do
-            if [ "$table" = "$code_table" ]; then
-                matched=true
-                break
-            fi
-        done
-        if [ "$matched" = false ]; then
-            unused+=("$table")
+        [[ -z "$table" ]] && continue
+        if ! printf '%s\n' "$code_tables" | grep -Fxq "$table"; then
+            migration_only="$migration_only $table"
         fi
     done
 
-    if [ ${#unused[@]} -gt 0 ]; then
-        echo ""
-        echo "WARNING: The following migration tables have NO matching TableName() in code:"
-        for table in "${unused[@]}"; do
-            echo "  - $table"
-        done
-        echo ""
-        echo "These may be orphaned tables that should be removed from migrations."
+    code_only=""
+    for table in $code_tables; do
+        [[ -z "$table" ]] && continue
+        if ! printf '%s\n' "$declared_tables" | grep -Fxq "$table"; then
+            code_only="$code_only $table"
+        fi
+    done
+
+    if [ -n "$migration_only" ] || [ -n "$code_only" ]; then
+        echo "Schema/model mismatch detected."
+        if [ -n "$migration_only" ]; then
+            echo "Migration tables without matching TableName():"
+            for table in $migration_only; do printf '  - %s\n' "$table"; done
+        fi
+        if [ -n "$code_only" ]; then
+            echo "Code TableName() values missing from migrations:"
+            for table in $code_only; do printf '  - %s\n' "$table"; done
+        fi
         exit 1
     fi
 
-    echo "All migration tables have matching code references."
+    echo "Migration and code table sets match."
 }
 
 check_migration_tables

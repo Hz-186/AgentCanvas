@@ -59,7 +59,7 @@ func (s *ContextSemanticIndex) Upsert(ctx context.Context, document contextresou
 	}
 	metadata := cloneContextMetadata(document.Metadata)
 	metadata["owner_id"] = document.OwnerID
-	metadata["workflow_id"] = document.WorkflowID
+	metadata["agent_id"] = document.AgentID
 	metadata["conversation_id"] = document.ConversationID
 	metadata["resource_type"] = document.ResourceType
 	metadata["resource_id"] = document.ResourceID
@@ -100,12 +100,7 @@ func (s *ContextSemanticIndex) Search(ctx context.Context, request contextresour
 	if limit <= 0 {
 		limit = 12
 	}
-	filter := map[string]any{"owner_id": request.OwnerID}
-	if len(request.ResourceTypes) == 1 {
-		filter["resource_type"] = request.ResourceTypes[0]
-	} else if len(request.ResourceTypes) > 1 {
-		filter["resource_type"] = request.ResourceTypes
-	}
+	filter := contextScopeFilter(request)
 	hits, err := s.Store.Search(ctx, vectorstore.SearchRequest{
 		Collection: contextResourceCollection(profile),
 		Vector:     vector,
@@ -118,18 +113,24 @@ func (s *ContextSemanticIndex) Search(ctx context.Context, request contextresour
 	}
 	results := make([]contextresource.SearchResult, 0, limit)
 	for _, hit := range hits {
-		workflowID := contextMetadataInt64(hit.Metadata["workflow_id"])
+		agentID := contextMetadataInt64(hit.Metadata["agent_id"])
 		conversationID := contextMetadataInt64(hit.Metadata["conversation_id"])
-		if request.WorkflowID > 0 && workflowID != 0 && workflowID != request.WorkflowID {
-			continue
-		}
-		if request.ConversationID > 0 && conversationID != request.ConversationID {
-			continue
-		}
 		resourceType, _ := hit.Metadata["resource_type"].(string)
 		resourceID := fmt.Sprint(hit.Metadata["resource_id"])
 		if resourceType == "" || resourceID == "" {
 			continue
+		}
+		if resourceType == contextresource.TypeConversationMessage {
+			if request.AgentID <= 0 || request.ConversationID <= 0 || agentID != request.AgentID || conversationID != request.ConversationID {
+				continue
+			}
+		} else {
+			if request.AgentID > 0 && agentID != 0 && agentID != request.AgentID {
+				continue
+			}
+			if request.ConversationID > 0 && conversationID != 0 && conversationID != request.ConversationID {
+				continue
+			}
 		}
 		results = append(results, contextresource.SearchResult{ResourceType: resourceType, ResourceID: resourceID, Score: hit.Score, Metadata: hit.Metadata})
 		if len(results) >= limit {
@@ -137,6 +138,34 @@ func (s *ContextSemanticIndex) Search(ctx context.Context, request contextresour
 		}
 	}
 	return results, nil
+}
+
+// contextScopeFilter is deliberately shared by the semantic and keyword
+// implementations' contract: global resources use the zero sentinel while
+// conversation messages must match both dimensions exactly.
+func contextScopeFilter(request contextresource.SearchRequest) map[string]any {
+	filter := map[string]any{"owner_id": request.OwnerID}
+	if len(request.ResourceTypes) == 1 {
+		filter["resource_type"] = request.ResourceTypes[0]
+	} else if len(request.ResourceTypes) > 1 {
+		filter["resource_type"] = request.ResourceTypes
+	}
+	messageOnly := len(request.ResourceTypes) == 1 && request.ResourceTypes[0] == contextresource.TypeConversationMessage
+	if request.AgentID > 0 {
+		if messageOnly {
+			filter["agent_id"] = request.AgentID
+		} else {
+			filter["agent_id"] = []int64{0, request.AgentID}
+		}
+	}
+	if request.ConversationID > 0 {
+		if messageOnly {
+			filter["conversation_id"] = request.ConversationID
+		} else {
+			filter["conversation_id"] = []int64{0, request.ConversationID}
+		}
+	}
+	return filter
 }
 
 func (s *ContextSemanticIndex) embed(ctx context.Context, ownerID int64, requested contextresource.EmbeddingProfile, text string) ([]float32, contextresource.EmbeddingProfile, error) {

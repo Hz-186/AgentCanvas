@@ -29,10 +29,7 @@ type RouterDeps struct {
 	AuditHandler      *handler.AuditHandler
 	KnowledgeHandler  *handler.KnowledgeHandler
 	DocumentHandler   *handler.DocumentHandler
-	DialogHandler     *handler.DialogHandler
-	ChatHandler       *handler.ChatHandler
 	AgentHandler      *handler.AgentHandler
-	WorkflowHandler   *handler.WorkflowHandler
 	ResourceHandler   *handler.ResourceHandler
 	AuthService       *authusecase.Service
 	APITokens         authdomain.APITokenRepository
@@ -53,7 +50,6 @@ func NewRouter(deps RouterDeps) *gin.Engine {
 		v1.GET("/health/redis", deps.HealthHandler.Redis)
 		v1.GET("/health/minio", deps.HealthHandler.MinIO)
 		v1.GET("/health/es", deps.HealthHandler.Elasticsearch)
-		v1.GET("/health/rule-system", deps.HealthHandler.RuleSystem)
 		v1.GET("/health/reflection-system", deps.HealthHandler.ReflectionSystem)
 		v1.GET("/health/context-system", deps.HealthHandler.ContextSystem)
 
@@ -89,9 +85,22 @@ func NewRouter(deps RouterDeps) *gin.Engine {
 			protected.GET("/agents/:id/session-search", deps.AgentHandler.SearchSessions)
 			protected.GET("/agents/:id/improvement-reviews", deps.AgentHandler.ListImprovementReviews)
 			protected.GET("/agents/:id/change-proposals", deps.AgentHandler.ListChangeProposals)
+			protected.GET("/agents/:id/reflections", deps.ReflectionHandler.List)
+			protected.PATCH("/agents/:id/reflections/:reflection_id", deps.ReflectionHandler.SetStatus)
 			protected.POST("/agent-change-proposals/:id/approve", deps.AgentHandler.ApproveChangeProposal)
 			protected.POST("/agent-change-proposals/:id/reject", deps.AgentHandler.RejectChangeProposal)
+			protected.GET("/runs/:id", deps.AgentHandler.GetRun)
+			protected.GET("/runs/:id/events", deps.AgentHandler.ListRunEvents)
 			protected.GET("/runs/:id/events/stream", deps.AgentHandler.StreamRunEvents)
+			protected.GET("/runs/:id/children", deps.AgentHandler.ListChildRuns)
+			protected.GET("/runs/:id/steps", deps.AgentHandler.ListRunSteps)
+			protected.GET("/runs/:id/trace", deps.AgentHandler.GetRunTrace)
+			protected.POST("/runs/:id/cancel", deps.AgentHandler.CancelRun)
+			protected.POST("/runs/:id/resume", deps.AgentHandler.ResumeRun)
+			protected.POST("/runs/:id/reflections/:reflection_id/feedback", deps.ReflectionHandler.Feedback)
+			protected.GET("/approval-requests", deps.AgentHandler.ListApprovalRequests)
+			protected.POST("/approval-requests/:id/approve", deps.AgentHandler.ApproveRequest)
+			protected.POST("/approval-requests/:id/reject", deps.AgentHandler.RejectRequest)
 
 			protected.GET("/provider-catalog", deps.ProviderHandler.ListCatalog)
 			registerCRUD(protected, "/model-providers", ":id", deps.ProviderHandler.Create, deps.ProviderHandler.List, deps.ProviderHandler.Get, deps.ProviderHandler.Update, deps.ProviderHandler.Delete)
@@ -136,84 +145,12 @@ func NewRouter(deps RouterDeps) *gin.Engine {
 
 			protected.GET("/ingestion-jobs/:id", deps.KnowledgeHandler.GetIngestionJob)
 
-			registerCRUD(protected, "/dialogs", ":dialog_id", deprecatedHandler(deps.DialogHandler.Create), deprecatedHandler(deps.DialogHandler.List), deprecatedHandler(deps.DialogHandler.Get), deprecatedHandler(deps.DialogHandler.Update), deprecatedHandler(deps.DialogHandler.Delete))
-			protected.POST("/dialogs/:dialog_id/rag/chat", deprecatedHandler(deps.ChatHandler.Chat))
-			protected.POST("/dialogs/:dialog_id/rag/chat/stream", deprecatedHandler(deps.ChatHandler.StreamChat))
-			protected.POST("/conversations/:id/compact", deps.ChatHandler.CompactConversation)
-			protected.GET("/dialogs/:dialog_id/conversations", deprecatedHandler(deps.ChatHandler.ListConversations))
-			protected.GET("/dialogs/:dialog_id/conversations/:id", deprecatedHandler(deps.ChatHandler.GetConversation))
-			protected.GET("/dialogs/:dialog_id/conversations/:id/messages", deprecatedHandler(deps.ChatHandler.ListMessages))
-			protected.POST("/dialogs/:dialog_id/conversations/:id/compact", deprecatedHandler(deps.ChatHandler.CompactConversation))
-			protected.DELETE("/dialogs/:dialog_id/conversations/:id", deprecatedHandler(deps.ChatHandler.DeleteConversation))
-
-			registerCRUD(protected, "/workflows", ":id", deps.WorkflowHandler.Create, deps.WorkflowHandler.List, deps.WorkflowHandler.Get, deps.WorkflowHandler.Update, deps.WorkflowHandler.Delete)
-			protected.GET("/workflows/:id/profile", deps.WorkflowHandler.GetProfile)
-			protected.GET("/workflows/:id/reflections", deps.ReflectionHandler.List)
-			protected.PATCH("/workflows/:id/reflections/:reflection_id", deps.ReflectionHandler.SetStatus)
-			protected.PATCH("/workflows/:id/profile", deps.WorkflowHandler.UpdateProfile)
-			protected.GET("/workflows/:id/rule-sets", deps.WorkflowHandler.ListRuleSets)
-			protected.POST("/workflows/:id/rule-sets", deps.WorkflowHandler.CreateRuleSet)
-			protected.GET("/workflows/:id/rule-sets/:rule_set_id", deps.WorkflowHandler.GetRuleSet)
-			protected.PATCH("/workflows/:id/rule-sets/:rule_set_id", deps.WorkflowHandler.UpdateRuleSet)
-			protected.POST("/workflows/:id/rule-sets/:rule_set_id/publish", deps.WorkflowHandler.PublishRuleSet)
-			protected.POST("/workflows/:id/rule-sets/:rule_set_id/rollback", deps.WorkflowHandler.RollbackRuleSet)
-			protected.POST("/workflows/:id/eval-datasets", deps.WorkflowHandler.CreateEvalDataset)
-			protected.GET("/workflows/:id/eval-datasets", deps.WorkflowHandler.ListEvalDatasets)
-			protected.POST("/eval-datasets/:id/cases", deps.WorkflowHandler.CreateEvalCase)
-			protected.GET("/eval-datasets/:id/cases", deps.WorkflowHandler.ListEvalCases)
-			protected.POST("/eval-datasets/:id/runs", deps.WorkflowHandler.RunEvalDataset)
-			protected.GET("/eval-datasets/:id/runs", deps.WorkflowHandler.ListEvalRuns)
-			protected.GET("/eval-datasets/:id/trend", deps.WorkflowHandler.GetEvalTrend)
-			protected.GET("/eval-runs/:id/results", deps.WorkflowHandler.ListEvalResults)
-			protected.POST("/workflow-teams", deps.WorkflowHandler.CreateTeam)
-			protected.GET("/workflow-teams", deps.WorkflowHandler.ListTeams)
-			protected.DELETE("/workflow-teams/:id", deps.WorkflowHandler.DeleteTeam)
-			protected.POST("/workflow-teams/:id/members", deps.WorkflowHandler.AddTeamMember)
-			protected.GET("/workflow-teams/:id/members", deps.WorkflowHandler.ListTeamMembers)
-			protected.DELETE("/workflow-teams/:id/members/:workflow_id", deps.WorkflowHandler.RemoveTeamMember)
-			protected.POST("/workflows/:id/flow-versions", deps.WorkflowHandler.CreateWorkflowVersion)
-			protected.GET("/workflows/:id/flow-versions", deps.WorkflowHandler.ListWorkflowVersions)
-			protected.GET("/flow-versions/:id", deps.WorkflowHandler.GetWorkflowVersion)
-			protected.POST("/flow-versions/:id/publish", deps.WorkflowHandler.PublishWorkflowVersion)
-			protected.POST("/flow-versions/:id/validate", deps.WorkflowHandler.ValidateWorkflowVersion)
-			protected.POST("/workflows/:id/runs", deps.WorkflowHandler.Run)
-			protected.POST("/workflows/:id/runs/stream", deps.WorkflowHandler.StreamRun)
-			protected.POST("/workflows/:id/conversations", deps.WorkflowHandler.CreateConversation)
-			protected.GET("/workflows/:id/conversations", deps.WorkflowHandler.ListConversations)
-			protected.GET("/workflows/:id/conversations/:conversation_id", deps.WorkflowHandler.GetConversation)
-			protected.GET("/workflows/:id/conversations/:conversation_id/messages", deps.WorkflowHandler.ListConversationMessages)
-			protected.POST("/workflows/:id/conversations/:conversation_id/messages/stream", deps.WorkflowHandler.StreamConversationMessage)
-			protected.DELETE("/workflows/:id/conversations/:conversation_id", deps.WorkflowHandler.DeleteConversation)
-			protected.GET("/runs/:id", deps.WorkflowHandler.GetRun)
-			protected.GET("/runs/:id/events", deps.WorkflowHandler.ListRunEvents)
-			protected.GET("/runs/:id/children", deps.WorkflowHandler.ListChildRuns)
-			protected.GET("/runs/:id/node-logs", deps.WorkflowHandler.ListNodeLogs)
-			protected.GET("/runs/:id/steps", deps.WorkflowHandler.ListRunSteps)
-			protected.GET("/runs/:id/memory-write-logs", deps.WorkflowHandler.ListMemoryWriteLogs)
-			protected.GET("/runs/:id/tool-invocations", deps.WorkflowHandler.ListToolInvocations)
-			protected.GET("/runs/:id/trace", deps.WorkflowHandler.GetRunTrace)
-			protected.POST("/runs/:id/cancel", deps.WorkflowHandler.CancelRun)
-			protected.POST("/runs/:id/pause", deps.WorkflowHandler.PauseRun)
-			protected.POST("/runs/:id/resume", deps.WorkflowHandler.ResumeRun)
-			protected.POST("/runs/:id/reflections/:reflection_id/feedback", deps.ReflectionHandler.Feedback)
-			protected.GET("/approval-requests", deps.WorkflowHandler.ListApprovalRequests)
-			protected.POST("/approval-requests/:id/approve", deps.WorkflowHandler.ApproveRequest)
-			protected.POST("/approval-requests/:id/reject", deps.WorkflowHandler.RejectRequest)
 		}
 	}
 
 	registerWebUI(r)
 
 	return r
-}
-
-func deprecatedHandler(next gin.HandlerFunc) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		c.Header("Deprecation", "true")
-		c.Header("Sunset", "Wed, 15 Jan 2027 00:00:00 GMT")
-		c.Header("Link", `</api/v1/agents>; rel="successor-version"`)
-		next(c)
-	}
 }
 
 func registerCRUD(rg *gin.RouterGroup, basePath string, idSegment string, create, list, get, update, delete gin.HandlerFunc) {
@@ -244,6 +181,16 @@ func registerWebUI(r *gin.Engine) {
 			c.JSON(http.StatusNotFound, gin.H{"code": 404, "message": "not found", "data": nil})
 			return
 		}
+		if isLegacyAgentPage(c.Request.URL.Path) {
+			c.Redirect(http.StatusFound, "/app/agents")
+			return
+		}
 		c.Data(http.StatusOK, "text/html; charset=utf-8", index)
 	})
+}
+
+func isLegacyAgentPage(path string) bool {
+	path = strings.ToLower(strings.TrimSpace(path))
+	legacyFlow := "/" + "work" + "flow"
+	return strings.HasPrefix(path, legacyFlow) || strings.HasPrefix(path, "/flow-") || strings.HasPrefix(path, "/eval-") || strings.HasPrefix(path, "/canvas")
 }

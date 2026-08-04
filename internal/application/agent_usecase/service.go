@@ -3,6 +3,7 @@ package agent_usecase
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -16,14 +17,12 @@ import (
 	"agentcanvas/internal/domain/conversation"
 	"agentcanvas/internal/domain/knowledge"
 	"agentcanvas/internal/domain/provider"
-	"agentcanvas/internal/domain/workflow"
 	"agentcanvas/internal/infrastructure/llm"
 	agenterrors "agentcanvas/internal/pkg/errors"
 	runtimeagent "agentcanvas/internal/runtime/agent"
-	"agentcanvas/internal/runtime/engine"
+	agentruntime "agentcanvas/internal/runtime/agentruntime"
 	runtimeevent "agentcanvas/internal/runtime/event"
 	"agentcanvas/internal/runtime/harness/rules"
-	runtimenode "agentcanvas/internal/runtime/node"
 	"agentcanvas/internal/runtime/toolruntime"
 )
 
@@ -32,14 +31,13 @@ type Service struct {
 	turns         agentdomain.TurnRepository
 	conversations conversation.AgentRepository
 	messages      conversation.MessageRepository
-	runs          workflow.RunRepository
-	events        workflow.RunEventRepository
-	steps         workflow.RunStepRepository
-	approvals     workflow.ApprovalRepository
+	runs          agentdomain.RunRepository
+	events        agentdomain.RunEventRepository
+	steps         agentdomain.RunStepRepository
+	approvals     agentdomain.ApprovalRepository
 	improvement   TurnReviewEnqueuer
 	sessionSearch conversation.MessageSearchIndex
-	runtime       runtimenode.AgentRuntime
-	lifecycle     LifecycleWorkflowRuntime
+	runtime       agentruntime.Runtime
 	providers     provider.Repository
 	knowledge     knowledge.BaseRepository
 	cancelMu      sync.Mutex
@@ -47,25 +45,19 @@ type Service struct {
 	leaseDuration time.Duration
 }
 
-type LifecycleWorkflowRuntime interface {
-	toolruntime.WorkflowCaller
-	ValidateLifecycleWorkflow(ctx context.Context, ownerID, workflowID, versionID int64) error
-}
-
 func NewService(
 	agents agentdomain.Repository,
 	turns agentdomain.TurnRepository,
 	conversations conversation.AgentRepository,
 	messages conversation.MessageRepository,
-	runs workflow.RunRepository,
-	events workflow.RunEventRepository,
-	steps workflow.RunStepRepository,
-	approvals workflow.ApprovalRepository,
-	lifecycle LifecycleWorkflowRuntime,
-	runtime runtimenode.AgentRuntime,
+	runs agentdomain.RunRepository,
+	events agentdomain.RunEventRepository,
+	steps agentdomain.RunStepRepository,
+	approvals agentdomain.ApprovalRepository,
+	runtime agentruntime.Runtime,
 ) *Service {
 	return &Service{agents: agents, turns: turns, conversations: conversations, messages: messages, runs: runs,
-		events: events, steps: steps, approvals: approvals, lifecycle: lifecycle, runtime: runtime, cancels: map[int64]context.CancelFunc{}, leaseDuration: 30 * time.Second}
+		events: events, steps: steps, approvals: approvals, runtime: runtime, cancels: map[int64]context.CancelFunc{}, leaseDuration: 30 * time.Second}
 }
 
 type CreateAgentRequest struct {
@@ -109,9 +101,9 @@ func ManagedDefinition(settings AgentEditableSettings) agentdomain.Definition {
 		ProviderID: settings.ProviderID, Model: strings.TrimSpace(settings.Model),
 		SystemPrompt: strings.TrimSpace(settings.SystemPrompt), Temperature: settings.Temperature,
 		Mode: "react", KnowledgeIDs: normalizeIDs(settings.KnowledgeIDs), KnowledgeTopK: 5, KnowledgeMode: "hybrid",
-		SkillLoadingMode: "auto", MemoryEnabled: true, ReflectionEnabled: true, AllowInlineAgents: true,
+		SkillLoadingMode: "auto", MemoryEnabled: true, ReflectionEnabled: true, AllowSubagents: true,
 		MaxIterations: 8, MaxToolCalls: 16, MaxExecutionTimeMS: 120000, MaxToolTimeoutMS: 30000,
-		MaxToolOutputBytes: 512 * 1024, MaxParallelSubAgents: 4, MaxWorkflowCallDepth: 3, OutputMode: "final_answer",
+		MaxToolOutputBytes: 512 * 1024, MaxParallelSubAgents: 4, MaxSubagentDepth: 3, OutputMode: "final_answer",
 	}.Normalize()
 }
 
@@ -291,17 +283,6 @@ func (s *Service) ValidateAgent(ctx context.Context, ownerID, id int64) (*Valida
 		result.Errors = append(result.Errors, validateErr.Error())
 		return result, nil
 	}
-	for _, binding := range lifecycleBindings(item.DraftDefinition) {
-		if s.lifecycle == nil {
-			result.Valid = false
-			result.Errors = append(result.Errors, binding.event+" lifecycle workflow runtime is not configured")
-			continue
-		}
-		if err := s.lifecycle.ValidateLifecycleWorkflow(ctx, ownerID, binding.workflowID, binding.versionID); err != nil {
-			result.Valid = false
-			result.Errors = append(result.Errors, binding.event+": "+err.Error())
-		}
-	}
 	result.Checksum = checksum
 	return result, nil
 }
@@ -330,7 +311,7 @@ func (s *Service) Publish(ctx context.Context, ownerID, id int64) (*agentdomain.
 		return nil, err
 	}
 	release := &agentdomain.Release{OwnerID: ownerID, AgentID: id, VersionNo: version, Definition: item.DraftDefinition,
-		ResourceVersions: resources, RuleSetHash: ruleHash, ToolSchemaHash: toolHash, CreatedBy: ownerID}
+		ResourceVersions: resources, RuleHash: ruleHash, ToolSchemaHash: toolHash, CreatedBy: ownerID}
 	if err := s.agents.CreateRelease(ctx, release); err != nil {
 		return nil, err
 	}
@@ -376,8 +357,8 @@ func (s *Service) Capabilities(ctx context.Context, ownerID, releaseID int64) (m
 		"release_id": release.ID, "checksum": release.Checksum, "mode": d.Mode,
 		"tools": len(d.ToolIDs), "tool_packs": len(d.ToolPackIDs), "skills": len(d.SkillIDs),
 		"knowledge_bases": len(d.KnowledgeIDs), "mcp_servers": len(d.MCPServerIDs),
-		"callable_agents": len(d.CallableAgentIDs), "callable_workflows": len(d.CallableWorkflowIDs),
-		"memory": d.MemoryEnabled, "reflection": d.ReflectionEnabled,
+		"dynamic_subagents": d.AllowSubagents,
+		"memory":            d.MemoryEnabled, "reflection": d.ReflectionEnabled,
 	}, nil
 }
 
@@ -532,7 +513,7 @@ type CreateTurnRequest struct {
 
 type TurnAccepted struct {
 	Turn        *agentdomain.Turn     `json:"turn"`
-	Run         *workflow.Run         `json:"run"`
+	Run         *agentdomain.Run      `json:"run"`
 	UserMessage *conversation.Message `json:"user_message"`
 }
 
@@ -563,7 +544,7 @@ func (s *Service) StartTurn(ctx context.Context, ownerID, agentID, conversationI
 		return nil, err
 	}
 	if existing, existingErr := s.turns.FindByIdempotencyKey(ctx, ownerID, conversationID, key); existingErr == nil {
-		var run *workflow.Run
+		var run *agentdomain.Run
 		if existing.RunID != nil {
 			run, _ = s.runs.FindByID(ctx, ownerID, *existing.RunID)
 		}
@@ -571,6 +552,13 @@ func (s *Service) StartTurn(ctx context.Context, ownerID, agentID, conversationI
 	}
 	if conv.AgentReleaseID == nil || *conv.AgentReleaseID <= 0 {
 		return nil, agenterrors.ErrInvalidInput
+	}
+	release, err := s.agents.FindReleaseByID(ctx, ownerID, *conv.AgentReleaseID)
+	if err != nil {
+		return nil, mapNotFound(err)
+	}
+	if len(release.DefinitionJSON) == 0 || strings.TrimSpace(release.Checksum) == "" {
+		return nil, fmt.Errorf("%w: agent release snapshot is incomplete", agenterrors.ErrInvalidInput)
 	}
 	userMessage := &conversation.Message{OwnerID: ownerID, ConversationID: conversationID, Role: conversation.RoleUser,
 		Content: content, ContentType: conversation.ContentTypeText, MetadataJSON: "{}"}
@@ -580,15 +568,16 @@ func (s *Service) StartTurn(ctx context.Context, ownerID, agentID, conversationI
 		return nil, err
 	}
 	inputJSON, _ := json.Marshal(map[string]any{"query": content, "mode": mode})
-	run := &workflow.Run{OwnerID: ownerID, RunKind: workflow.RunKindAgent, AgentID: &agentID,
-		AgentReleaseID: conv.AgentReleaseID, ConversationID: &conversationID, Status: workflow.RunStatusQueued,
+	run := &agentdomain.Run{OwnerID: ownerID, RunType: agentdomain.RunTypeTurn, AgentID: agentID,
+		AgentReleaseID: conv.AgentReleaseID, ConversationID: &conversationID, Status: agentdomain.RunStatusQueued,
+		DefinitionJSON: append(json.RawMessage(nil), release.DefinitionJSON...), DefinitionHash: release.Checksum, RuleHash: release.RuleHash,
 		InputJSON: inputJSON, StartedAt: now, CreatedAt: now, UpdatedAt: now}
 	turn := &agentdomain.Turn{OwnerID: ownerID, AgentID: agentID, AgentReleaseID: *conv.AgentReleaseID,
 		ConversationID: conversationID, IdempotencyKey: key,
 		Status: agentdomain.TurnStatusQueued, InputJSON: inputJSON}
 	if err := s.turns.CreateWithArtifacts(ctx, turn, userMessage, run); err != nil {
 		if existing, existingErr := s.turns.FindByIdempotencyKey(ctx, ownerID, conversationID, key); existingErr == nil {
-			var existingRun *workflow.Run
+			var existingRun *agentdomain.Run
 			if existing.RunID != nil {
 				existingRun, _ = s.runs.FindByID(ctx, ownerID, *existing.RunID)
 			}
@@ -630,13 +619,17 @@ func (s *Service) executeTurnOwned(ctx context.Context, turn *agentdomain.Turn) 
 		s.failTurn(ctx, turn, nil, err)
 		return
 	}
-	if run.Status == workflow.RunStatusCancelled {
+	if run.Status == agentdomain.RunStatusCancelled {
 		finished := time.Now().UTC()
 		turn.Status, turn.FinishedAt = agentdomain.TurnStatusCancelled, &finished
 		_ = s.turns.Update(ctx, turn)
 		return
 	}
-	run.Status, run.ErrorMessage = workflow.RunStatusRunning, ""
+	if err := run.TransitionStatus(agentdomain.RunStatusRunning); err != nil {
+		s.failTurn(ctx, turn, run, err)
+		return
+	}
+	run.ErrorMessage = ""
 	_ = s.runs.Update(ctx, run)
 	execCtx, cancel := context.WithCancel(ctx)
 	s.registerCancel(run.ID, cancel)
@@ -645,12 +638,7 @@ func (s *Service) executeTurnOwned(ctx context.Context, turn *agentdomain.Turn) 
 		go s.heartbeatLease(execCtx, turn.ID, turn.LeaseToken, cancel)
 	}
 	ctx = execCtx
-	release, err := s.agents.FindReleaseByID(ctx, turn.OwnerID, turn.AgentReleaseID)
-	if err != nil {
-		s.failTurn(ctx, turn, run, err)
-		return
-	}
-	definition, err := runtimenode.DecodeAgentRuntimeDefinition(release.DefinitionJSON)
+	definition, err := agentruntime.DecodeDefinition(run.DefinitionJSON)
 	if err != nil {
 		s.failTurn(ctx, turn, run, err)
 		return
@@ -662,42 +650,12 @@ func (s *Service) executeTurnOwned(ctx context.Context, turn *agentdomain.Turn) 
 		definition.Mode = mode
 	}
 	emitter := &runEventEmitter{repo: s.events, ownerID: turn.OwnerID, runID: run.ID}
-	contextBlocks := []runtimeagent.ContextBlock{}
-	pre, err := s.runLifecycle(ctx, "pre_turn", release.Definition, turn, run, task, nil, emitter)
-	if err != nil {
-		s.failTurn(ctx, turn, run, err)
-		return
-	}
-	if pre != nil {
-		if pre.Action == "block" {
-			s.failTurn(ctx, turn, run, fmt.Errorf("pre-turn workflow blocked the turn: %s", pre.Reason))
-			return
-		}
-		if query, ok := pre.ContextPatch["query"].(string); ok && strings.TrimSpace(query) != "" {
-			task = strings.TrimSpace(query)
-		}
-		if len(pre.ContextPatch) > 0 {
-			raw, _ := json.Marshal(pre.ContextPatch)
-			contextBlocks = append(contextBlocks, runtimeagent.ContextBlock{Name: "pre_turn_context", Role: "system", Content: string(raw), Pinned: true})
-		}
-	}
-	result, execErr := s.runtime.Execute(ctx, runtimenode.AgentRunRequest{OwnerID: turn.OwnerID, AgentID: turn.AgentID,
+	result, execErr := s.runtime.Execute(ctx, agentruntime.RunRequest{OwnerID: turn.OwnerID, AgentID: turn.AgentID,
 		AgentReleaseID: turn.AgentReleaseID, RunID: run.ID, ConversationID: &turn.ConversationID, Task: task,
-		Definition: definition, StepRecorder: &runStepRecorder{repo: s.steps}, ContextBlocks: contextBlocks}, emitter)
+		RuleHash: run.RuleHash, Definition: definition, StepRecorder: &runStepRecorder{repo: s.steps}}, emitter)
 	if execErr != nil {
 		s.failTurn(ctx, turn, run, execErr)
 		return
-	}
-	post, postErr := s.runLifecycle(ctx, "post_turn", release.Definition, turn, run, task, map[string]any(result.Output), emitter)
-	if postErr != nil {
-		_ = emitter.Emit(ctx, runtimeevent.Event{Type: runtimeevent.LifecycleFailed, Payload: map[string]any{"event": "post_turn", "warning": postErr.Error()}})
-	} else if post != nil && post.Action == "replace" {
-		if value, ok := post.OutputPatch["final_answer"].(string); ok {
-			result.Output["final_answer"], result.Output["content"] = value, value
-		}
-		if value, ok := post.OutputPatch["content"].(string); ok {
-			result.Output["content"], result.Output["final_answer"] = value, value
-		}
 	}
 	s.completeTurn(ctx, turn, run, result)
 }
@@ -810,7 +768,11 @@ func (s *Service) recoverExpired(ctx context.Context) error {
 			_ = s.turns.PauseExpired(ctx, turn.ID, reason)
 			if turn.RunID != nil {
 				if run, findErr := s.runs.FindByID(ctx, turn.OwnerID, *turn.RunID); findErr == nil {
-					run.Status, run.ErrorMessage = workflow.RunStatusPaused, reason
+					if err := run.TransitionStatus(agentdomain.RunStatusPaused); err != nil {
+						run.ErrorMessage = err.Error()
+					} else {
+						run.ErrorMessage = reason
+					}
 					_ = s.runs.Update(ctx, run)
 				}
 			}
@@ -820,7 +782,11 @@ func (s *Service) recoverExpired(ctx context.Context) error {
 		_ = s.turns.RequeueExpired(ctx, turn.ID, retryAt, "requeued after expired worker lease before any tool call")
 		if turn.RunID != nil {
 			if run, findErr := s.runs.FindByID(ctx, turn.OwnerID, *turn.RunID); findErr == nil {
-				run.Status, run.ErrorMessage = workflow.RunStatusQueued, ""
+				if err := run.TransitionStatus(agentdomain.RunStatusQueued); err != nil {
+					run.ErrorMessage = err.Error()
+				} else {
+					run.ErrorMessage = ""
+				}
 				_ = s.runs.Update(ctx, run)
 			}
 		}
@@ -836,9 +802,9 @@ func newLeaseToken() string {
 	return hex.EncodeToString(value[:])
 }
 
-func (s *Service) failTurn(ctx context.Context, turn *agentdomain.Turn, run *workflow.Run, cause error) {
+func (s *Service) failTurn(ctx context.Context, turn *agentdomain.Turn, run *agentdomain.Run, cause error) {
 	if run != nil {
-		if current, err := s.runs.FindByID(ctx, turn.OwnerID, run.ID); err == nil && current.Status == workflow.RunStatusCancelled {
+		if current, err := s.runs.FindByID(ctx, turn.OwnerID, run.ID); err == nil && current.Status == agentdomain.RunStatusCancelled {
 			now := time.Now().UTC()
 			turn.Status, turn.FinishedAt = agentdomain.TurnStatusCancelled, &now
 			_ = s.turns.Update(ctx, turn)
@@ -849,14 +815,19 @@ func (s *Service) failTurn(ctx context.Context, turn *agentdomain.Turn, run *wor
 	turn.Status, turn.ErrorMessage, turn.FinishedAt = agentdomain.TurnStatusFailed, cause.Error(), &now
 	_ = s.turns.Update(ctx, turn)
 	if run != nil {
-		run.Status, run.ErrorMessage, run.FinishedAt = workflow.RunStatusFailed, cause.Error(), &now
+		if err := run.TransitionStatus(agentdomain.RunStatusFailed); err != nil {
+			run.ErrorMessage = err.Error()
+		} else {
+			run.ErrorMessage = cause.Error()
+			run.FinishedAt = &now
+		}
 		run.LatencyMS = int(now.Sub(run.StartedAt).Milliseconds())
 		_ = s.runs.Update(ctx, run)
 	}
 }
 
-func (s *Service) completeTurn(ctx context.Context, turn *agentdomain.Turn, run *workflow.Run, result *runtimenode.AgentRunResult) {
-	if current, err := s.runs.FindByID(ctx, turn.OwnerID, run.ID); err == nil && current.Status == workflow.RunStatusCancelled {
+func (s *Service) completeTurn(ctx context.Context, turn *agentdomain.Turn, run *agentdomain.Run, result *agentruntime.RunResult) {
+	if current, err := s.runs.FindByID(ctx, turn.OwnerID, run.ID); err == nil && current.Status == agentdomain.RunStatusCancelled {
 		now := time.Now().UTC()
 		turn.Status, turn.FinishedAt = agentdomain.TurnStatusCancelled, &now
 		_ = s.turns.Update(ctx, turn)
@@ -865,9 +836,17 @@ func (s *Service) completeTurn(ctx context.Context, turn *agentdomain.Turn, run 
 	stopReason, _ := result.Output["stop_reason"].(string)
 	if stopReason == runtimeagent.StopReasonWaitingHuman || stopReason == runtimeagent.StopReasonPaused {
 		if stopReason == runtimeagent.StopReasonWaitingHuman {
-			turn.Status, run.Status = agentdomain.TurnStatusWaitingHuman, workflow.RunStatusWaitingHuman
+			turn.Status = agentdomain.TurnStatusWaitingHuman
+			if err := run.TransitionStatus(agentdomain.RunStatusWaitingHuman); err != nil {
+				s.failTurn(ctx, turn, run, err)
+				return
+			}
 		} else {
-			turn.Status, run.Status = agentdomain.TurnStatusPaused, workflow.RunStatusPaused
+			turn.Status = agentdomain.TurnStatusPaused
+			if err := run.TransitionStatus(agentdomain.RunStatusPaused); err != nil {
+				s.failTurn(ctx, turn, run, err)
+				return
+			}
 		}
 		output, _ := json.Marshal(result.Output)
 		turn.OutputJSON, run.OutputJSON = output, output
@@ -886,7 +865,11 @@ func (s *Service) completeTurn(ctx context.Context, turn *agentdomain.Turn, run 
 	now := time.Now().UTC()
 	output, _ := json.Marshal(result.Output)
 	turn.Status, turn.AssistantMessageID, turn.OutputJSON, turn.FinishedAt = agentdomain.TurnStatusSucceeded, &assistant.ID, output, &now
-	run.Status, run.OutputJSON, run.FinishedAt = workflow.RunStatusSucceeded, output, &now
+	if err := run.TransitionStatus(agentdomain.RunStatusSucceeded); err != nil {
+		s.failTurn(ctx, turn, run, err)
+		return
+	}
+	run.OutputJSON, run.FinishedAt = output, &now
 	if value, ok := result.Output["total_tokens"].(int); ok {
 		run.TotalTokens = value
 	}
@@ -908,7 +891,7 @@ func (s *Service) completeTurn(ctx context.Context, turn *agentdomain.Turn, run 
 	}
 }
 
-func (s *Service) persistCheckpoint(ctx context.Context, run *workflow.Run, output engine.NodeOutput, status string) error {
+func (s *Service) persistCheckpoint(ctx context.Context, run *agentdomain.Run, output agentruntime.RunOutput, status string) error {
 	if s.approvals == nil {
 		return fmt.Errorf("approval repository is not configured")
 	}
@@ -923,39 +906,51 @@ func (s *Service) persistCheckpoint(ctx context.Context, run *workflow.Run, outp
 	var approval runtimeagent.Approval
 	var checkpoint runtimeagent.Checkpoint
 	hasApproval, hasCheckpoint := decode("approval", &approval), decode("checkpoint", &checkpoint)
+	interactionID := ""
+	if checkpoint.Interaction != nil {
+		interactionID = checkpoint.Interaction.ID
+	}
 	if hasApproval {
 		raw, _ := json.Marshal(approval)
-		if err := s.approvals.CreateApprovalRequest(ctx, &workflow.ApprovalRequest{OwnerID: run.OwnerID, WorkflowID: 0,
-			RunID: run.ID, NodeID: "agent", ToolCallID: approval.ToolCallID, ToolName: approval.ToolName,
-			RiskLevel: approval.RiskLevel, Reason: approval.Reason, RequestJSON: raw, Status: workflow.ApprovalStatusPending}); err != nil {
+		if err := s.approvals.CreateApprovalRequest(ctx, &agentdomain.ApprovalRequest{OwnerID: run.OwnerID,
+			RunID: run.ID, ToolCallID: approval.ToolCallID, InteractionID: interactionID, ToolName: approval.ToolName,
+			RiskLevel: approval.RiskLevel, Reason: approval.Reason, RequestJSON: raw, Status: agentdomain.ApprovalStatusPending}); err != nil {
 			return err
 		}
 	}
 	if hasCheckpoint {
+		runtimeCheckpoint, _ := json.Marshal(checkpoint)
 		messages, _ := json.Marshal(checkpoint.Messages)
 		pending, _ := json.Marshal(checkpoint.PendingToolCall)
 		contextJSON, _ := json.Marshal(checkpoint.Context)
-		stepsJSON, _ := json.Marshal(output["steps"])
-		return s.approvals.CreateCheckpoint(ctx, &workflow.WorkflowCheckpoint{OwnerID: run.OwnerID, WorkflowID: 0, RunID: run.ID,
-			NodeID: "agent", Status: status, MessagesJSON: messages, MessagesSummary: checkpoint.MessagesSummary,
-			StepsJSON: stepsJSON, PendingToolCallJSON: pending, ContextJSON: contextJSON})
+		stepsJSON, _ := json.Marshal(checkpoint.Steps)
+		toolRegistryHash, _ := checkpoint.Metadata["tool_registry_hash"].(string)
+		toolPolicyHash, _ := checkpoint.Metadata["tool_policy_hash"].(string)
+		return s.approvals.CreateCheckpoint(ctx, &agentdomain.RunCheckpoint{OwnerID: run.OwnerID, RunID: run.ID,
+			Status: status, SnapshotVersion: checkpoint.SnapshotVersion, InteractionID: interactionID,
+			RuntimeCheckpointJSON: runtimeCheckpoint, MessagesJSON: messages, MessagesSummary: checkpoint.MessagesSummary,
+			StepsJSON: stepsJSON, PendingToolCallJSON: pending, ContextJSON: contextJSON,
+			ToolRegistryHash: toolRegistryHash, ToolPolicyHash: toolPolicyHash})
 	}
 	return nil
 }
 
-func (s *Service) ResumeIndependentRun(ctx context.Context, run *workflow.Run, stored *workflow.WorkflowCheckpoint, decision *workflow.ApprovalRequest) (*workflow.Run, error) {
-	if run == nil || stored == nil || run.AgentID == nil || run.AgentReleaseID == nil {
+func (s *Service) ResumeRun(ctx context.Context, run *agentdomain.Run, stored *agentdomain.RunCheckpoint, decision *agentdomain.ApprovalRequest) (*agentdomain.Run, error) {
+	if run == nil || stored == nil || run.AgentID <= 0 {
 		return nil, agenterrors.ErrInvalidInput
 	}
-	turn, err := s.turns.FindByRunID(ctx, run.OwnerID, run.ID)
-	if err != nil {
-		return nil, mapNotFound(err)
+	var turn *agentdomain.Turn
+	if len(run.DefinitionJSON) == 0 || strings.TrimSpace(run.DefinitionHash) == "" {
+		return nil, agenterrors.ErrInvalidInput
 	}
-	release, err := s.agents.FindReleaseByID(ctx, run.OwnerID, *run.AgentReleaseID)
-	if err != nil {
-		return nil, mapNotFound(err)
+	if run.RunType != agentdomain.RunTypeSubagent {
+		loadedTurn, err := s.turns.FindByRunID(ctx, run.OwnerID, run.ID)
+		if err != nil {
+			return nil, mapNotFound(err)
+		}
+		turn = loadedTurn
 	}
-	definition, err := runtimenode.DecodeAgentRuntimeDefinition(release.DefinitionJSON)
+	definition, err := agentruntime.DecodeDefinition(run.DefinitionJSON)
 	if err != nil {
 		return nil, err
 	}
@@ -963,7 +958,7 @@ func (s *Service) ResumeIndependentRun(ctx context.Context, run *workflow.Run, s
 	if err != nil {
 		return nil, err
 	}
-	approved := decision != nil && decision.Status == workflow.ApprovalStatusApproved
+	approved := decision != nil && decision.Status == agentdomain.ApprovalStatusApproved
 	note := ""
 	if decision != nil {
 		note = decision.DecisionNote
@@ -974,24 +969,103 @@ func (s *Service) ResumeIndependentRun(ctx context.Context, run *workflow.Run, s
 	if mode, modeErr := normalizeAgentMode(fmt.Sprint(input["mode"])); modeErr == nil {
 		definition.Mode = mode
 	}
-	turn.Status = agentdomain.TurnStatusRunning
-	_ = s.turns.Update(ctx, turn)
+	if err := run.TransitionStatus(agentdomain.RunStatusResuming); err != nil {
+		return nil, err
+	}
+	if err := s.runs.Update(ctx, run); err != nil {
+		return nil, err
+	}
+	if turn != nil {
+		turn.Status = agentdomain.TurnStatusRunning
+		_ = s.turns.Update(ctx, turn)
+	}
+	releaseID := int64(0)
+	if run.AgentReleaseID != nil {
+		releaseID = *run.AgentReleaseID
+	}
 	execCtx, cancel := context.WithCancel(ctx)
 	s.registerCancel(run.ID, cancel)
 	defer func() { cancel(); s.unregisterCancel(run.ID) }()
-	result, execErr := s.runtime.Resume(execCtx, runtimenode.AgentResumeRequest{AgentRunRequest: runtimenode.AgentRunRequest{
-		OwnerID: run.OwnerID, AgentID: *run.AgentID, AgentReleaseID: *run.AgentReleaseID, RunID: run.ID,
-		ConversationID: run.ConversationID, Task: task, Definition: definition, StepRecorder: &runStepRecorder{repo: s.steps}},
+	result, execErr := s.runtime.Resume(execCtx, agentruntime.ResumeRequest{RunRequest: agentruntime.RunRequest{
+		OwnerID: run.OwnerID, AgentID: run.AgentID, AgentReleaseID: releaseID, RunID: run.ID,
+		ParentRunID: run.ParentRunID, DelegationDepth: run.DelegationDepth, ConversationID: run.ConversationID,
+		RuleHash: run.RuleHash, Task: task, Definition: definition, StepRecorder: &runStepRecorder{repo: s.steps}},
 		Checkpoint: checkpoint, Approved: approved, RejectionNote: note}, &runEventEmitter{repo: s.events, ownerID: run.OwnerID, runID: run.ID})
 	if execErr != nil {
-		s.failTurn(ctx, turn, run, execErr)
+		if turn != nil {
+			s.failTurn(ctx, turn, run, execErr)
+		} else {
+			now := time.Now().UTC()
+			if transitionErr := run.TransitionStatus(agentdomain.RunStatusFailed); transitionErr != nil {
+				run.ErrorMessage = transitionErr.Error()
+			} else {
+				run.ErrorMessage, run.FinishedAt = execErr.Error(), &now
+			}
+			run.LatencyMS = int(now.Sub(run.StartedAt).Milliseconds())
+			_ = s.runs.Update(ctx, run)
+		}
 		return run, execErr
 	}
-	s.completeTurn(ctx, turn, run, result)
+	if turn != nil {
+		s.completeTurn(ctx, turn, run, result)
+	} else {
+		s.completeSubagentRun(ctx, run, result)
+	}
 	return s.runs.FindByID(ctx, run.OwnerID, run.ID)
 }
 
-func decodeCheckpoint(stored *workflow.WorkflowCheckpoint) (*runtimeagent.Checkpoint, error) {
+func (s *Service) completeSubagentRun(ctx context.Context, run *agentdomain.Run, result *agentruntime.RunResult) {
+	if run == nil || result == nil {
+		return
+	}
+	output, _ := json.Marshal(result.Output)
+	run.OutputJSON = output
+	stopReason, _ := result.Output["stop_reason"].(string)
+	switch stopReason {
+	case runtimeagent.StopReasonWaitingHuman:
+		if err := run.TransitionStatus(agentdomain.RunStatusWaitingHuman); err != nil {
+			run.ErrorMessage = err.Error()
+		}
+	case runtimeagent.StopReasonPaused:
+		if err := run.TransitionStatus(agentdomain.RunStatusPaused); err != nil {
+			run.ErrorMessage = err.Error()
+		}
+	default:
+		if err := run.TransitionStatus(agentdomain.RunStatusSucceeded); err != nil {
+			run.ErrorMessage = err.Error()
+		}
+	}
+	if run.Status == agentdomain.RunStatusWaitingHuman || run.Status == agentdomain.RunStatusPaused {
+		run.FinishedAt = nil
+		if err := s.persistCheckpoint(ctx, run, result.Output, run.Status); err != nil {
+			if transitionErr := run.TransitionStatus(agentdomain.RunStatusFailed); transitionErr != nil {
+				run.ErrorMessage = transitionErr.Error()
+			} else {
+				run.ErrorMessage = err.Error()
+			}
+		}
+	} else {
+		now := time.Now().UTC()
+		run.FinishedAt = &now
+		run.LatencyMS = int(now.Sub(run.StartedAt).Milliseconds())
+	}
+	_ = s.runs.Update(ctx, run)
+}
+
+func decodeCheckpoint(stored *agentdomain.RunCheckpoint) (*runtimeagent.Checkpoint, error) {
+	if len(stored.RuntimeCheckpointJSON) > 0 && string(stored.RuntimeCheckpointJSON) != "null" {
+		var checkpoint runtimeagent.Checkpoint
+		if err := json.Unmarshal(stored.RuntimeCheckpointJSON, &checkpoint); err != nil {
+			return nil, fmt.Errorf("decode runtime checkpoint: %w", err)
+		}
+		if checkpoint.Metadata == nil {
+			checkpoint.Metadata = map[string]any{}
+		}
+		checkpoint.Metadata["checkpoint_id"] = stored.ID
+		checkpoint.Metadata["tool_registry_hash"] = stored.ToolRegistryHash
+		checkpoint.Metadata["tool_policy_hash"] = stored.ToolPolicyHash
+		return &checkpoint, nil
+	}
 	var messages []llm.ChatMessage
 	if err := json.Unmarshal(stored.MessagesJSON, &messages); err != nil {
 		return nil, fmt.Errorf("decode checkpoint messages: %w", err)
@@ -1007,12 +1081,9 @@ func decodeCheckpoint(stored *workflow.WorkflowCheckpoint) (*runtimeagent.Checkp
 	var trace runtimeagent.ContextTrace
 	_ = json.Unmarshal(stored.ContextJSON, &trace)
 	return &runtimeagent.Checkpoint{Messages: messages, MessagesSummary: stored.MessagesSummary, PendingToolCall: pending,
-		Context: trace, Metadata: map[string]any{"node_id": "agent", "checkpoint_id": stored.ID,
+		Context: trace, Metadata: map[string]any{"checkpoint_id": stored.ID,
 			"tool_registry_hash": stored.ToolRegistryHash, "tool_policy_hash": stored.ToolPolicyHash}}, nil
 }
-
-var _ workflow.IndependentRunResumer = (*Service)(nil)
-var _ workflow.IndependentRunCanceller = (*Service)(nil)
 
 func (s *Service) registerCancel(runID int64, cancel context.CancelFunc) {
 	s.cancelMu.Lock()
@@ -1024,16 +1095,34 @@ func (s *Service) unregisterCancel(runID int64) {
 	defer s.cancelMu.Unlock()
 	delete(s.cancels, runID)
 }
-func (s *Service) CancelIndependentRun(ctx context.Context, ownerID, runID int64) error {
-	turn, err := s.turns.FindByRunID(ctx, ownerID, runID)
+func (s *Service) CancelRun(ctx context.Context, ownerID, runID int64) error {
+	run, err := s.runs.FindByID(ctx, ownerID, runID)
 	if err != nil {
 		return mapNotFound(err)
 	}
-	if turn.Status == agentdomain.TurnStatusQueued || turn.Status == agentdomain.TurnStatusRunning || turn.Status == agentdomain.TurnStatusRetryWait {
+	if run.Status == agentdomain.RunStatusQueued || run.Status == agentdomain.RunStatusRunning || run.Status == agentdomain.RunStatusResuming || run.Status == agentdomain.RunStatusWaitingHuman || run.Status == agentdomain.RunStatusPaused {
 		finished := time.Now().UTC()
-		turn.Status, turn.FinishedAt = agentdomain.TurnStatusCancelled, &finished
-		if err := s.turns.Update(ctx, turn); err != nil {
+		if err := run.TransitionStatus(agentdomain.RunStatusCancelled); err != nil {
 			return err
+		}
+		run.FinishedAt = &finished
+		if err := s.runs.Update(ctx, run); err != nil {
+			return err
+		}
+	}
+	if children, listErr := s.runs.ListByParent(ctx, ownerID, runID); listErr == nil {
+		for index := range children {
+			switch children[index].Status {
+			case agentdomain.RunStatusQueued, agentdomain.RunStatusRunning, agentdomain.RunStatusResuming, agentdomain.RunStatusWaitingHuman, agentdomain.RunStatusPaused:
+				_ = s.CancelRun(ctx, ownerID, children[index].ID)
+			}
+		}
+	}
+	if turn, findErr := s.turns.FindByRunID(ctx, ownerID, runID); findErr == nil {
+		if turn.Status == agentdomain.TurnStatusQueued || turn.Status == agentdomain.TurnStatusRunning || turn.Status == agentdomain.TurnStatusRetryWait {
+			finished := time.Now().UTC()
+			turn.Status, turn.FinishedAt = agentdomain.TurnStatusCancelled, &finished
+			_ = s.turns.Update(ctx, turn)
 		}
 	}
 	s.cancelMu.Lock()
@@ -1064,12 +1153,12 @@ func (s *Service) GetLatestTurn(ctx context.Context, ownerID, agentID, conversat
 	return item, mapNotFound(err)
 }
 
-func (s *Service) GetRun(ctx context.Context, ownerID, runID int64) (*workflow.Run, error) {
+func (s *Service) GetRun(ctx context.Context, ownerID, runID int64) (*agentdomain.Run, error) {
 	item, err := s.runs.FindByID(ctx, ownerID, runID)
 	return item, mapNotFound(err)
 }
 
-func (s *Service) ListRunEvents(ctx context.Context, ownerID, runID, afterID int64) ([]workflow.RunEvent, error) {
+func (s *Service) ListRunEvents(ctx context.Context, ownerID, runID, afterID int64) ([]agentdomain.RunEvent, error) {
 	if _, err := s.GetRun(ctx, ownerID, runID); err != nil {
 		return nil, err
 	}
@@ -1077,7 +1166,7 @@ func (s *Service) ListRunEvents(ctx context.Context, ownerID, runID, afterID int
 	if err != nil || afterID <= 0 {
 		return items, err
 	}
-	filtered := make([]workflow.RunEvent, 0, len(items))
+	filtered := make([]agentdomain.RunEvent, 0, len(items))
 	for _, item := range items {
 		if item.ID > afterID {
 			filtered = append(filtered, item)
@@ -1086,68 +1175,196 @@ func (s *Service) ListRunEvents(ctx context.Context, ownerID, runID, afterID int
 	return filtered, nil
 }
 
-func (s *Service) CallAgent(ctx context.Context, req toolruntime.AgentCallRequest) (*toolruntime.AgentCallResult, error) {
+func (s *Service) ListChildRuns(ctx context.Context, ownerID, runID int64) ([]agentdomain.Run, error) {
+	if _, err := s.GetRun(ctx, ownerID, runID); err != nil {
+		return nil, err
+	}
+	return s.runs.ListByParent(ctx, ownerID, runID)
+}
+
+func (s *Service) ListRunSteps(ctx context.Context, ownerID, runID int64) ([]agentdomain.RunStep, error) {
+	if _, err := s.GetRun(ctx, ownerID, runID); err != nil {
+		return nil, err
+	}
+	return s.steps.ListByRun(ctx, ownerID, runID)
+}
+
+func (s *Service) ListApprovalRequests(ctx context.Context, ownerID int64, status string) ([]agentdomain.ApprovalRequest, error) {
+	if ownerID <= 0 || s.approvals == nil {
+		return nil, agenterrors.ErrInvalidInput
+	}
+	return s.approvals.ListApprovalRequests(ctx, ownerID, strings.TrimSpace(status))
+}
+
+func (s *Service) DecideApprovalRequest(ctx context.Context, ownerID, requestID int64, approved bool, note string) (*agentdomain.Run, error) {
+	if ownerID <= 0 || requestID <= 0 || s.approvals == nil {
+		return nil, agenterrors.ErrInvalidInput
+	}
+	request, err := s.approvals.FindApprovalRequestByID(ctx, ownerID, requestID)
+	if err != nil {
+		return nil, mapNotFound(err)
+	}
+	if request.Status != agentdomain.ApprovalStatusPending {
+		return nil, agenterrors.ErrConflict
+	}
+	run, err := s.GetRun(ctx, ownerID, request.RunID)
+	if err != nil {
+		return nil, err
+	}
+	checkpoint, err := s.approvals.FindLatestCheckpointByRun(ctx, ownerID, run.ID)
+	if err != nil {
+		return nil, mapNotFound(err)
+	}
+	decidedAt := time.Now().UTC()
+	request.DecidedAt, request.DecisionNote = &decidedAt, strings.TrimSpace(note)
+	if approved {
+		request.Status = agentdomain.ApprovalStatusApproved
+	} else {
+		request.Status = agentdomain.ApprovalStatusRejected
+	}
+	if err := s.approvals.DecideApprovalAndClaimResume(ctx, request); err != nil {
+		return nil, agenterrors.ErrConflict
+	}
+	return s.ResumeRun(ctx, run, checkpoint, request)
+}
+
+func (s *Service) ResumeByID(ctx context.Context, ownerID, runID int64) (*agentdomain.Run, error) {
+	if s.approvals == nil {
+		return nil, agenterrors.ErrInvalidInput
+	}
+	run, err := s.GetRun(ctx, ownerID, runID)
+	if err != nil {
+		return nil, err
+	}
+	if run.Status != agentdomain.RunStatusPaused {
+		return nil, agenterrors.ErrConflict
+	}
+	pending, pendingErr := s.approvals.FindPendingApprovalByRun(ctx, ownerID, runID)
+	if pendingErr == nil && pending != nil {
+		return nil, agenterrors.ErrForbidden
+	}
+	if pendingErr != nil && !errors.Is(mapNotFound(pendingErr), agenterrors.ErrNotFound) {
+		return nil, pendingErr
+	}
+	checkpoint, err := s.approvals.FindLatestCheckpointByRun(ctx, ownerID, runID)
+	if err != nil {
+		return nil, mapNotFound(err)
+	}
+	if err := s.approvals.ClaimResume(ctx, ownerID, runID); err != nil {
+		return nil, agenterrors.ErrConflict
+	}
+	return s.ResumeRun(ctx, run, checkpoint, nil)
+}
+
+func (s *Service) RunSubagent(ctx context.Context, req toolruntime.SubagentRequest) (*toolruntime.SubagentResult, error) {
 	maxDepth := req.MaxDepth
 	if maxDepth <= 0 {
-		maxDepth = 3
+		maxDepth = 2
 	}
-	if req.OwnerID <= 0 || req.ParentRunID <= 0 || req.CallerAgentID <= 0 || req.AgentID <= 0 || strings.TrimSpace(req.Task) == "" || req.CallDepth >= maxDepth {
-		return nil, fmt.Errorf("%w: independent agent call is not allowed", agenterrors.ErrForbidden)
+	if req.OwnerID <= 0 || req.ParentRunID <= 0 || req.AgentID <= 0 || strings.TrimSpace(req.Definition.Task) == "" || req.DelegationDepth >= maxDepth {
+		return nil, fmt.Errorf("%w: subagent call is not allowed", agenterrors.ErrForbidden)
 	}
 	parent, err := s.runs.FindByID(ctx, req.OwnerID, req.ParentRunID)
 	if err != nil {
 		return nil, mapNotFound(err)
 	}
-	if parent.AgentID == nil || *parent.AgentID != req.CallerAgentID || parent.CallDepth != req.CallDepth {
+	if parent.AgentID != req.AgentID || parent.DelegationDepth != req.DelegationDepth {
 		return nil, fmt.Errorf("%w: agent parent run context does not match", agenterrors.ErrForbidden)
 	}
-	child, err := s.agents.FindByID(ctx, req.OwnerID, req.AgentID)
-	if err != nil {
-		return nil, mapNotFound(err)
+	if parent.Status == agentdomain.RunStatusCancelled || parent.Status == agentdomain.RunStatusFailed {
+		return nil, fmt.Errorf("%w: parent run is not active", agenterrors.ErrForbidden)
 	}
-	if child.Status != agentdomain.StatusActive || child.CurrentReleaseID == nil {
-		return nil, fmt.Errorf("%w: called agent has no active release", agenterrors.ErrInvalidInput)
+	if req.Definition.MaxParallelChildren > 0 {
+		children, listErr := s.runs.ListByParent(ctx, req.OwnerID, req.ParentRunID)
+		if listErr != nil {
+			return nil, listErr
+		}
+		active := 0
+		for index := range children {
+			switch children[index].Status {
+			case agentdomain.RunStatusQueued, agentdomain.RunStatusRunning, agentdomain.RunStatusWaitingHuman, agentdomain.RunStatusPaused, agentdomain.RunStatusResuming:
+				active++
+			}
+		}
+		if active >= req.Definition.MaxParallelChildren {
+			return nil, fmt.Errorf("%w: subagent parallel limit reached", agenterrors.ErrForbidden)
+		}
 	}
-	release, err := s.agents.FindReleaseByID(ctx, req.OwnerID, *child.CurrentReleaseID)
-	if err != nil {
-		return nil, mapNotFound(err)
-	}
-	definition, err := runtimenode.DecodeAgentRuntimeDefinition(release.DefinitionJSON)
+	definition, definitionJSON, err := subagentRuntimeDefinition(req.Definition)
 	if err != nil {
 		return nil, err
 	}
 	now := time.Now().UTC()
-	inputJSON, _ := json.Marshal(map[string]any{"query": strings.TrimSpace(req.Task)})
-	run := &workflow.Run{OwnerID: req.OwnerID, RunKind: workflow.RunKindAgent, AgentID: &child.ID, AgentReleaseID: &release.ID,
-		ParentRunID: &req.ParentRunID, CallerNodeID: "call_agent", CallDepth: req.CallDepth + 1,
-		Status: workflow.RunStatusRunning, InputJSON: inputJSON, StartedAt: now}
+	inputJSON, _ := json.Marshal(map[string]any{"query": strings.TrimSpace(req.Definition.Task)})
+	run := &agentdomain.Run{OwnerID: req.OwnerID, RunType: agentdomain.RunTypeSubagent, AgentID: parent.AgentID,
+		ConversationID: req.ConversationID, ParentRunID: &req.ParentRunID,
+		DelegationDepth: req.DelegationDepth + 1, DefinitionJSON: definitionJSON, DefinitionHash: hashJSON(definitionJSON),
+		Status: agentdomain.RunStatusRunning, InputJSON: inputJSON, StartedAt: now}
 	if err := s.runs.Create(ctx, run); err != nil {
 		return nil, err
 	}
-	result, execErr := s.runtime.Execute(ctx, runtimenode.AgentRunRequest{OwnerID: req.OwnerID, AgentID: child.ID,
-		AgentReleaseID: release.ID, RunID: run.ID, Task: strings.TrimSpace(req.Task), Definition: definition,
+	result, execErr := s.runtime.Execute(ctx, agentruntime.RunRequest{OwnerID: req.OwnerID, AgentID: parent.AgentID,
+		RunID: run.ID, ParentRunID: &req.ParentRunID, DelegationDepth: run.DelegationDepth,
+		ConversationID: req.ConversationID, Task: strings.TrimSpace(req.Definition.Task), Definition: definition,
 		StepRecorder: &runStepRecorder{repo: s.steps}}, &runEventEmitter{repo: s.events, ownerID: req.OwnerID, runID: run.ID})
-	finished := time.Now().UTC()
-	run.FinishedAt, run.LatencyMS = &finished, int(finished.Sub(run.StartedAt).Milliseconds())
 	var output map[string]any
 	if result != nil {
 		output = map[string]any(result.Output)
-		run.OutputJSON, _ = json.Marshal(output)
 	}
 	if execErr != nil {
-		run.Status, run.ErrorMessage = workflow.RunStatusFailed, execErr.Error()
+		finished := time.Now().UTC()
+		if transitionErr := run.TransitionStatus(agentdomain.RunStatusFailed); transitionErr != nil {
+			run.ErrorMessage = transitionErr.Error()
+		} else {
+			run.ErrorMessage = execErr.Error()
+		}
+		run.FinishedAt, run.LatencyMS = &finished, int(finished.Sub(run.StartedAt).Milliseconds())
+		_ = s.runs.Update(ctx, run)
+	} else if result == nil {
+		execErr = fmt.Errorf("agent runtime returned no result")
+		finished := time.Now().UTC()
+		if transitionErr := run.TransitionStatus(agentdomain.RunStatusFailed); transitionErr != nil {
+			run.ErrorMessage = transitionErr.Error()
+		} else {
+			run.ErrorMessage = execErr.Error()
+		}
+		run.FinishedAt, run.LatencyMS = &finished, int(finished.Sub(run.StartedAt).Milliseconds())
+		_ = s.runs.Update(ctx, run)
 	} else {
-		run.Status = workflow.RunStatusSucceeded
+		s.completeSubagentRun(ctx, run, result)
 	}
-	_ = s.runs.Update(ctx, run)
-	return &toolruntime.AgentCallResult{RunID: run.ID, AgentID: child.ID, AgentReleaseID: release.ID,
-		Status: run.Status, Output: output, Error: run.ErrorMessage, LatencyMS: run.LatencyMS}, execErr
+	return &toolruntime.SubagentResult{RunID: run.ID, Status: run.Status, Output: output,
+		Error: run.ErrorMessage, LatencyMS: run.LatencyMS}, execErr
 }
 
-var _ toolruntime.AgentCaller = (*Service)(nil)
+func subagentRuntimeDefinition(source toolruntime.SubagentDefinition) (agentruntime.Definition, json.RawMessage, error) {
+	raw, err := json.Marshal(map[string]any{
+		"provider_id": source.ProviderID, "model": source.Model, "mode": source.Mode,
+		"system_prompt": source.SystemPrompt, "tool_ids": source.ToolIDs, "skill_ids": source.SkillIDs,
+		"knowledge_ids": source.KnowledgeIDs, "mcp_server_ids": source.MCPServerIDs,
+		"max_iterations": source.MaxIterations, "max_tool_calls": source.MaxToolCalls,
+		"max_execution_time_ms": source.MaxExecutionTimeMS, "max_parallel_sub_agents": source.MaxParallelChildren,
+		"allow_subagents": true, "max_subagent_depth": source.MaxDepth,
+		"require_approval_for_risk": source.RequireApprovalForRisk, "max_tool_timeout_ms": source.MaxToolTimeoutMS,
+		"max_tool_output_bytes": source.MaxToolOutputBytes, "allowed_hosts": source.AllowedHosts,
+		"code_execution_enabled": source.CodeExecutionEnabled,
+	})
+	if err != nil {
+		return agentruntime.Definition{}, nil, err
+	}
+	definition, err := agentruntime.DecodeDefinition(raw)
+	return definition, raw, err
+}
+
+func hashJSON(raw json.RawMessage) string {
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:])
+}
+
+var _ toolruntime.SubagentDispatcher = (*Service)(nil)
 
 type runEventEmitter struct {
-	repo           workflow.RunEventRepository
+	repo           agentdomain.RunEventRepository
 	ownerID, runID int64
 }
 
@@ -1159,17 +1376,18 @@ func (e *runEventEmitter) Emit(ctx context.Context, event runtimeevent.Event) er
 		event.CreatedAt = time.Now().UTC()
 	}
 	payload, _ := json.Marshal(event.Payload)
-	return e.repo.Create(ctx, &workflow.RunEvent{OwnerID: e.ownerID, RunID: event.RunID, EventType: event.Type,
-		NodeID: event.NodeID, NodeType: event.NodeType, PayloadJSON: payload, CreatedAt: event.CreatedAt})
+	return e.repo.Create(ctx, &agentdomain.RunEvent{OwnerID: e.ownerID, RunID: event.RunID, EventType: event.Type,
+		PayloadJSON: payload, CreatedAt: event.CreatedAt})
 }
 
-type runStepRecorder struct{ repo workflow.RunStepRepository }
+type runStepRecorder struct{ repo agentdomain.RunStepRepository }
 
-func (r *runStepRecorder) RecordAgentStep(ctx context.Context, rc *engine.RunContext, step engine.AgentStepRecord) error {
-	return r.repo.Create(ctx, &workflow.RunStep{OwnerID: rc.OwnerID, RunID: rc.RunID, NodeID: step.NodeID,
+func (r *runStepRecorder) RecordAgentStep(ctx context.Context, rc *agentruntime.RunContext, step agentruntime.AgentStepRecord) error {
+	return r.repo.Create(ctx, &agentdomain.RunStep{OwnerID: rc.OwnerID, RunID: rc.RunID,
 		StepIndex: step.StepIndex, StepType: step.StepType, Role: step.Role, Content: step.Content,
 		ToolCallID: step.ToolCallID, ToolName: step.ToolName, ArgumentsJSON: step.ArgumentsJSON, OutputJSON: step.OutputJSON,
-		Compressed: step.Compressed, ErrorMessage: step.ErrorMessage, TokenCount: step.TokenCount, LatencyMS: step.LatencyMS, CreatedAt: time.Now().UTC()})
+		Compressed: step.Compressed, ErrorMessage: step.ErrorMessage, TokenCount: step.TokenCount, LatencyMS: step.LatencyMS,
+		ProviderID: step.ProviderID, Model: step.Model, CreatedAt: time.Now().UTC()})
 }
 
 func mapNotFound(err error) error {

@@ -38,7 +38,7 @@ func TestDefinitionLimitsMatchSharedRuntime(t *testing.T) {
 	}{
 		{name: "tool calls", definition: Definition{MaxToolCalls: 101}, field: "max_tool_calls"},
 		{name: "parallel sub agents", definition: Definition{MaxParallelSubAgents: 65}, field: "max_parallel_sub_agents"},
-		{name: "workflow depth", definition: Definition{MaxWorkflowCallDepth: 6}, field: "max_workflow_call_depth"},
+		{name: "subagent depth", definition: Definition{MaxSubagentDepth: 6}, field: "max_subagent_depth"},
 		{name: "tool timeout", definition: Definition{MaxToolTimeoutMS: 600001}, field: "max_tool_timeout_ms"},
 		{name: "tool output", definition: Definition{MaxToolOutputBytes: 2*1024*1024 + 1}, field: "max_tool_output_bytes"},
 	}

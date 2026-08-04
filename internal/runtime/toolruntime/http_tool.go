@@ -78,7 +78,7 @@ func (t HTTPRuntimeTool) Execute(
 		_ = t.invocations.Create(ctx, &tool.Invocation{
 			OwnerID:      rc.OwnerID,
 			RunID:        rc.RunID,
-			NodeID:       rc.NodeID,
+			AgentID:      rc.AgentID,
 			ToolID:       t.def.ID,
 			ToolName:     t.Name(),
 			ToolType:     t.def.ToolType,

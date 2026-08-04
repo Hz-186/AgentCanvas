@@ -6,10 +6,8 @@ import (
 )
 
 const (
-	ScopeNode     = "node"
-	ScopeWorkflow = "workflow"
-	ScopeAgent    = "agent"
-	ScopeGlobal   = "global"
+	ScopeAgent  = "agent"
+	ScopeGlobal = "global"
 
 	KindErrorLesson       = "error_lesson"
 	KindImportantStrategy = "important_strategy"
@@ -42,9 +40,7 @@ const (
 type Reflection struct {
 	ID                  int64           `json:"id" gorm:"primaryKey;column:id"`
 	OwnerID             int64           `json:"owner_id" gorm:"column:owner_id"`
-	WorkflowID          int64           `json:"workflow_id" gorm:"column:workflow_id"`
-	AgentID             *int64          `json:"agent_id,omitempty" gorm:"column:agent_id"`
-	NodeID              string          `json:"node_id" gorm:"column:node_id"`
+	AgentID             int64           `json:"agent_id" gorm:"column:agent_id"`
 	SourceRunID         int64           `json:"source_run_id" gorm:"column:source_run_id"`
 	SupersedesID        *int64          `json:"supersedes_id,omitempty" gorm:"column:supersedes_id"`
 	Scope               string          `json:"scope" gorm:"column:scope"`
@@ -82,10 +78,8 @@ func (Reflection) TableName() string { return "agent_reflections" }
 type Job struct {
 	ID              int64           `json:"id" gorm:"primaryKey;column:id"`
 	OwnerID         int64           `json:"owner_id" gorm:"column:owner_id"`
-	WorkflowID      int64           `json:"workflow_id" gorm:"column:workflow_id"`
-	AgentID         *int64          `json:"agent_id,omitempty" gorm:"column:agent_id"`
+	AgentID         int64           `json:"agent_id" gorm:"column:agent_id"`
 	RunID           int64           `json:"run_id" gorm:"column:run_id"`
-	NodeID          string          `json:"node_id" gorm:"column:node_id"`
 	TriggerHash     string          `json:"trigger_hash" gorm:"column:trigger_hash"`
 	ProviderID      int64           `json:"provider_id" gorm:"column:provider_id"`
 	Model           string          `json:"model" gorm:"column:model"`
@@ -148,7 +142,6 @@ type RecallLog struct {
 	OwnerID        int64      `json:"owner_id" gorm:"column:owner_id"`
 	ReflectionID   int64      `json:"reflection_id" gorm:"column:reflection_id"`
 	RunID          int64      `json:"run_id" gorm:"column:run_id"`
-	NodeID         string     `json:"node_id" gorm:"column:node_id"`
 	Score          float64    `json:"score" gorm:"column:score"`
 	Rank           int        `json:"rank" gorm:"column:rank"`
 	InjectedTokens int        `json:"injected_tokens" gorm:"column:injected_tokens"`
@@ -166,9 +159,8 @@ func (RecallLog) TableName() string { return "agent_reflection_recall_logs" }
 type Event struct {
 	Type       string         `json:"type"`
 	OwnerID    int64          `json:"owner_id"`
-	WorkflowID int64          `json:"workflow_id"`
+	AgentID    int64          `json:"agent_id"`
 	RunID      int64          `json:"run_id"`
-	NodeID     string         `json:"node_id"`
 	Payload    map[string]any `json:"payload,omitempty"`
 	OccurredAt time.Time      `json:"occurred_at"`
 }

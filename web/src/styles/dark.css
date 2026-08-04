@@ -19,7 +19,6 @@
   background: var(--engineering-workspace);
 }
 
-:is(html[data-theme='dark'], html[data-theme='light']) .workspace.workspace-canvas { padding: 12px; }
 
 :is(html[data-theme='dark'], html[data-theme='light']) .sidebar,
 :is(html[data-theme='dark'], html[data-theme='light']) .inspector,
@@ -72,18 +71,6 @@
   background: var(--engineering-main);
 }
 
-:is(html[data-theme='dark'], html[data-theme='light']) .btn,
-:is(html[data-theme='dark'], html[data-theme='light']) .icon-btn,
-:is(html[data-theme='dark'], html[data-theme='light']) .input,
-:is(html[data-theme='dark'], html[data-theme='light']) .textarea,
-:is(html[data-theme='dark'], html[data-theme='light']) .select,
-:is(html[data-theme='dark'], html[data-theme='light']) .segmented,
-:is(html[data-theme='dark'], html[data-theme='light']) .palette-item {
-  border-radius: 7px;
-  -webkit-backdrop-filter: none;
-  backdrop-filter: none;
-  box-shadow: none;
-}
 
 :is(html[data-theme='dark'], html[data-theme='light']) .btn-primary {
   color: var(--accent-contrast);
@@ -168,8 +155,8 @@
   font-size: 14px;
 }
 
-:is(html[data-theme='dark'], html[data-theme='light']) .workflow-library-list { gap: 10px; }
-:is(html[data-theme='dark'], html[data-theme='light']) .workflow-library-item {
+:is(html[data-theme='dark'], html[data-theme='light']) .resource-library-list { gap: 10px; }
+:is(html[data-theme='dark'], html[data-theme='light']) .resource-library-item {
   min-height: 132px;
   grid-template-columns: 170px minmax(0, 1fr) auto;
   gap: 24px;
@@ -181,16 +168,16 @@
   transform: none;
 }
 
-:is(html[data-theme='dark'], html[data-theme='light']) .workflow-library-item::before { display: none; }
-:is(html[data-theme='dark'], html[data-theme='light']) .workflow-library-item:hover {
+:is(html[data-theme='dark'], html[data-theme='light']) .resource-library-item::before { display: none; }
+:is(html[data-theme='dark'], html[data-theme='light']) .resource-library-item:hover {
   border-color: var(--border-strong);
   background: var(--engineering-surface-hover);
   box-shadow: inset 3px 0 0 var(--accent);
   transform: none;
 }
 
-:is(html[data-theme='dark'], html[data-theme='light']) .workflow-miniature { gap: 8px; }
-:is(html[data-theme='dark'], html[data-theme='light']) .workflow-miniature span {
+:is(html[data-theme='dark'], html[data-theme='light']) .resource-miniature { gap: 8px; }
+:is(html[data-theme='dark'], html[data-theme='light']) .resource-miniature span {
   width: 38px;
   height: 38px;
   border: 1px solid var(--border-strong);
@@ -201,27 +188,27 @@
   transform: none;
 }
 
-:is(html[data-theme='dark'], html[data-theme='light']) .workflow-miniature span:nth-of-type(2),
-:is(html[data-theme='dark'], html[data-theme='light']) .workflow-miniature-end { transform: none; }
-:is(html[data-theme='dark'], html[data-theme='light']) .workflow-miniature i {
+:is(html[data-theme='dark'], html[data-theme='light']) .resource-miniature span:nth-of-type(2),
+:is(html[data-theme='dark'], html[data-theme='light']) .resource-miniature-end { transform: none; }
+:is(html[data-theme='dark'], html[data-theme='light']) .resource-miniature i {
   background: color-mix(in srgb, var(--accent) 56%, var(--border-strong));
 }
 
-:is(html[data-theme='dark'], html[data-theme='light']) .workflow-library-copy { gap: 8px; }
-:is(html[data-theme='dark'], html[data-theme='light']) .workflow-library-copy h3 {
+:is(html[data-theme='dark'], html[data-theme='light']) .resource-library-copy { gap: 8px; }
+:is(html[data-theme='dark'], html[data-theme='light']) .resource-library-copy h3 {
   font-family: var(--font-sans);
   font-size: 21px;
   font-weight: 700;
   letter-spacing: -.02em;
 }
 
-:is(html[data-theme='dark'], html[data-theme='light']) .workflow-library-copy .meta-row {
+:is(html[data-theme='dark'], html[data-theme='light']) .resource-library-copy .meta-row {
   color: var(--text-tertiary);
   font: 700 9px var(--font-mono);
   letter-spacing: .1em;
 }
 
-:is(html[data-theme='dark'], html[data-theme='light']) .workflow-library-actions .btn {
+:is(html[data-theme='dark'], html[data-theme='light']) .resource-library-actions .btn {
   min-height: 40px;
   border-radius: 7px;
 }
@@ -334,213 +321,32 @@
   box-shadow: none;
 }
 
-/* Canvas：三块有边界的平面，网格只做定位辅助。 */
-:is(html[data-theme='dark'], html[data-theme='light']) .canvas-page { background: var(--engineering-main); }
 
-:is(html[data-theme='dark'], html[data-theme='light']) .canvas-toolbar {
-  min-height: 68px;
-  padding: 12px 18px;
-  border-bottom: 1px solid var(--border);
-  background: var(--engineering-surface);
-  box-shadow: none;
-}
 
-:is(html[data-theme='dark'], html[data-theme='light']) .canvas-editorial-title {
-  font-family: var(--font-sans);
-  font-size: 19px;
-  font-weight: 700;
-  letter-spacing: -.03em;
-}
 
-:is(html[data-theme='dark'], html[data-theme='light']) .canvas-editorial-title em {
-  color: var(--accent);
-  font-family: var(--font-sans);
-  font-size: inherit;
-  font-style: normal;
-  font-weight: 700;
-}
 
-:is(html[data-theme='dark'], html[data-theme='light']) .canvas-toolbar p {
-  color: var(--text-tertiary);
-  font: 10px var(--font-mono);
-  letter-spacing: .08em;
-}
 
-:is(html[data-theme='dark'], html[data-theme='light']) .canvas-body {
-  grid-template-columns: var(--palette-width, 196px) 12px minmax(420px, 1fr) 12px var(--config-width, 340px);
-  gap: 0;
-  padding: 12px;
-  background: var(--engineering-canvas);
-}
 
-:is(html[data-theme='dark'], html[data-theme='light']) .node-palette,
-:is(html[data-theme='dark'], html[data-theme='light']) .config-panel {
-  padding: 12px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--engineering-surface);
-}
 
-:is(html[data-theme='dark'], html[data-theme='light']) .node-palette { gap: 8px; }
-:is(html[data-theme='dark'], html[data-theme='light']) .palette-item {
-  min-height: 42px;
-  padding: 0 11px;
-  border-color: var(--border);
-  background: var(--engineering-control);
-  color: var(--text-secondary);
-}
 
-:is(html[data-theme='dark'], html[data-theme='light']) .palette-item:hover {
-  border-color: color-mix(in srgb, var(--accent) 34%, var(--border));
-  background: var(--engineering-control-hover);
-  color: var(--text-primary);
-}
 
-:is(html[data-theme='dark'], html[data-theme='light']) .palette-item svg { color: var(--accent); }
-:is(html[data-theme='dark'], html[data-theme='light']) .config-panel { overflow: hidden; }
-:is(html[data-theme='dark'], html[data-theme='light']) .config-panel .panel { padding: 18px; border: 0; background: transparent; }
 
-:is(html[data-theme='dark'], html[data-theme='light']) .canvas-resizer::before,
-:is(html[data-theme='dark'], html[data-theme='light']) .workspace-resizer::before {
-  width: 1px;
-  border-radius: 0;
-  background: var(--engineering-divider);
-  box-shadow: none;
-}
 
-:is(html[data-theme='dark'], html[data-theme='light']) .canvas-resizer:hover::before,
-:is(html[data-theme='dark'], html[data-theme='light']) .workspace-resizer:hover::before,
-:is(html[data-theme='dark'], html[data-theme='light']) .is-resizing-panels .canvas-resizer::before,
-:is(html[data-theme='dark'], html[data-theme='light']) .is-resizing-workspace .workspace-resizer::before {
-  width: 3px;
-  background: var(--accent);
-  box-shadow: 0 0 12px var(--accent-soft);
-}
 
-:is(html[data-theme='dark'], html[data-theme='light']) .flow-surface {
-  margin: 0;
-  border: 1px solid var(--border-strong);
-  border-radius: 10px;
-  background: var(--engineering-canvas-surface);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .018), 0 18px 40px rgba(0, 0, 0, .24);
-}
 
-:is(html[data-theme='dark'], html[data-theme='light']) .flow-surface .react-flow { background: var(--engineering-canvas-surface); }
-:is(html[data-theme='dark'], html[data-theme='light']) .flow-surface .react-flow__background { opacity: .42; }
-:is(html[data-theme='dark'], html[data-theme='light']) .flow-surface .react-flow__background pattern circle { fill: var(--engineering-grid); }
-:is(html[data-theme='dark'], html[data-theme='light']) .flow-surface .react-flow__edge-path {
-  stroke: var(--engineering-edge);
-  stroke-width: 1.8;
-  filter: none;
-}
 
-:is(html[data-theme='dark'], html[data-theme='light']) .flow-surface .react-flow__controls,
-:is(html[data-theme='dark'], html[data-theme='light']) .flow-surface .react-flow__minimap,
-:is(html[data-theme='dark'], html[data-theme='light']) .canvas-navigation {
-  border: 1px solid var(--border-strong);
-  border-radius: 8px;
-  background: var(--bg-elevated);
-  box-shadow: 0 12px 26px rgba(0, 0, 0, .3);
-  -webkit-backdrop-filter: none;
-  backdrop-filter: none;
-}
 
-:is(html[data-theme='dark'], html[data-theme='light']) .flow-surface .react-flow__controls-button {
-  width: 30px;
-  height: 30px;
-  border-bottom-color: var(--border);
-  background: transparent;
-  fill: var(--text-secondary);
-}
 
-:is(html[data-theme='dark'], html[data-theme='light']) .flow-surface .react-flow__controls-button:hover {
-  background: var(--control-bg-hover);
-  fill: var(--accent);
-}
 
-:is(html[data-theme='dark'], html[data-theme='light']) .workflow-node.node-wrapper {
-  width: 218px;
-  min-height: 136px;
-  padding: 13px;
-  border: 1px solid var(--border-strong);
-  border-radius: 10px;
-  background: var(--engineering-node);
-  box-shadow: 0 16px 32px rgba(0, 0, 0, .38), inset 0 1px 0 rgba(255, 255, 255, .055);
-  -webkit-backdrop-filter: none;
-  backdrop-filter: none;
-}
 
-:is(html[data-theme='dark'], html[data-theme='light']) .workflow-node.node-wrapper::before,
-:is(html[data-theme='dark'], html[data-theme='light']) .workflow-node.node-wrapper::after { display: none; }
-:is(html[data-theme='dark'], html[data-theme='light']) .workflow-node.node-wrapper.selected {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-soft), 0 18px 34px rgba(0, 0, 0, .4);
-}
 
-:is(html[data-theme='dark'], html[data-theme='light']) .workflow-node-head::after {
-  width: 26px;
-  height: 3px;
-  border-radius: 0;
-  background: rgb(var(--node-tone));
-  box-shadow: none;
-}
 
-:is(html[data-theme='dark'], html[data-theme='light']) .workflow-node.node-wrapper .node-icon {
-  width: 30px;
-  height: 30px;
-  border: 1px solid rgba(var(--node-tone), .45);
-  border-radius: 7px;
-  background: rgba(var(--node-tone), .14);
-  box-shadow: none;
-}
 
-:is(html[data-theme='dark'], html[data-theme='light']) .workflow-node.node-wrapper .workflow-node-signature,
-:is(html[data-theme='dark'], html[data-theme='light']) .workflow-node.node-wrapper .workflow-node-tags span,
-:is(html[data-theme='dark'], html[data-theme='light']) .agent-loop-node .agent-node-model,
-:is(html[data-theme='dark'], html[data-theme='light']) .agent-loop-node .agent-node-metrics span,
-:is(html[data-theme='dark'], html[data-theme='light']) .agent-loop-node .agent-node-footer span {
-  border-color: rgba(255, 255, 255, .11);
-  border-radius: 6px;
-  background: var(--engineering-node-subtle);
-  box-shadow: none;
-}
 
-:is(html[data-theme='dark'], html[data-theme='light']) .workflow-node.node-wrapper .react-flow__handle {
-  width: 10px;
-  height: 10px;
-  border: 2px solid var(--engineering-canvas-surface);
-  background: rgb(var(--node-tone));
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, .32);
-}
 
-:is(html[data-theme='dark'], html[data-theme='light']) .workflow-node.agent-loop-node {
-  width: 292px;
-  min-height: 220px;
-  border-radius: 10px;
-}
 
-:is(html[data-theme='dark'], html[data-theme='light']) .workflow-node.switch-track-node {
-  width: 460px;
-  min-height: 140px;
-  border-radius: 10px;
-}
 
-:is(html[data-theme='dark'], html[data-theme='light']) .workflow-node.node-kind-begin {
-  width: 180px;
-  min-height: 96px;
-  border-radius: 10px;
-}
 
-:is(html[data-theme='dark'], html[data-theme='light']) .config-section-title,
-:is(html[data-theme='dark'], html[data-theme='light']) .form-sheet-headline,
-:is(html[data-theme='dark'], html[data-theme='light']) .agent-config-panel .field {
-  border-radius: 7px;
-  border-color: var(--border);
-  background: var(--engineering-node-subtle);
-  box-shadow: none;
-  -webkit-backdrop-filter: none;
-  backdrop-filter: none;
-}
 
 :is(html[data-theme='dark'], html[data-theme='light']) .config-section-title { color: var(--accent); }
 
@@ -595,7 +401,7 @@
 
 :is(html[data-theme='dark'], html[data-theme='light']) .chat-main {
   overflow: hidden;
-  background: var(--engineering-canvas-surface);
+  background: var(--engineering-chat-surface);
 }
 
 :is(html[data-theme='dark'], html[data-theme='light']) .chat-session-heading {
@@ -613,7 +419,7 @@
 
 :is(html[data-theme='dark'], html[data-theme='light']) .message-list {
   padding: 24px 28px;
-  background: var(--engineering-canvas-surface);
+  background: var(--engineering-chat-surface);
 }
 
 :is(html[data-theme='dark'], html[data-theme='light']) .message {
@@ -621,7 +427,7 @@
   padding: 12px 14px;
   border: 1px solid var(--border);
   border-radius: 8px;
-  background: var(--engineering-node-subtle);
+  background: var(--engineering-card-subtle);
   color: var(--text-primary);
   line-height: 1.6;
 }
@@ -658,15 +464,11 @@
 :is(html[data-theme='dark'], html[data-theme='light']) .chat-inspector .card {
   border: 1px solid var(--border);
   border-radius: 8px;
-  background: var(--engineering-node-subtle);
+  background: var(--engineering-card-subtle);
   box-shadow: none;
 }
 
 @media (max-width: 1100px) {
-  :is(html[data-theme='dark'], html[data-theme='light']) .canvas-body,
-  :is(html[data-theme='dark'], html[data-theme='light']) .canvas-body.side-panel-closed {
-    grid-template-columns: 58px 8px minmax(0, 1fr) 8px minmax(300px, 34vw);
-  }
 }
 
 /* 2026.07 runtime identity — keep the dark theme on the shared engineering system. */
@@ -678,22 +480,7 @@
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 8%, transparent);
 }
 
-:is(html[data-theme='dark'], html[data-theme='light']) .editorial-title,
-:is(html[data-theme='dark'], html[data-theme='light']) .canvas-editorial-title {
-  font-family: var(--font-sans);
-  font-weight: 760;
-  font-style: normal;
-  letter-spacing: -.065em;
-}
 
-:is(html[data-theme='dark'], html[data-theme='light']) .editorial-title-accent,
-:is(html[data-theme='dark'], html[data-theme='light']) .canvas-editorial-accent {
-  color: var(--accent);
-  font-family: var(--font-mono);
-  font-style: normal;
-  font-weight: 700;
-  transform: none;
-}
 
 :is(html[data-theme='dark'], html[data-theme='light']) .auth-page {
   background:
@@ -768,7 +555,7 @@
 
 :is(html[data-theme='dark'], html[data-theme='light']) .auth-page .auth-brand::before {
   display: block;
-  content: "AGENT / GRAPH / RUNTIME / TRACE / POLICY / TOOL / MEMORY / MODEL";
+  content: "AGENT / LOOP / RUNTIME / TRACE / POLICY / TOOL / MEMORY / RAG";
   inset: auto -58px 118px auto;
   width: 580px;
   border: 0;
@@ -961,8 +748,7 @@
 .editorial-terminal-visual,
 .editorial-action { position: relative; z-index: 1; }
 
-:is(html[data-theme='dark'], html[data-theme='light']) .editorial-title-accent,
-:is(html[data-theme='dark'], html[data-theme='light']) .canvas-editorial-accent {
+:is(html[data-theme='dark'], html[data-theme='light']) .editorial-title-accent {
   color: var(--accent);
   font-family: var(--font-mono);
   font-style: normal;
@@ -1140,32 +926,8 @@
   text-shadow: 0 0 15px color-mix(in srgb, var(--accent) 24%, transparent);
 }
 
-.canvas-terminal-visual {
-  min-width: 0;
-  align-self: stretch;
-  display: grid;
-  place-items: center;
-  overflow: hidden;
-  -webkit-mask-image: linear-gradient(90deg, transparent, #000 12%, #000 88%, transparent);
-  mask-image: linear-gradient(90deg, transparent, #000 12%, #000 88%, transparent);
-}
 
-.canvas-terminal-copy,
-.canvas-terminal-visual,
-.canvas-toolbar > .canvas-tools { position: relative; z-index: 1; }
 
-.canvas-title-ascii {
-  width: min(100%, 250px);
-  height: 100%;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  box-shadow: none;
-  transform: none;
-}
-.canvas-title-ascii figcaption { display: none; }
-.canvas-title-ascii::after { top: 0; }
-.canvas-title-ascii pre { min-height: 100%; padding: 3px 6px; font-size: 8px; line-height: 1.18; }
 
 @keyframes engineering-data-breathe {
   0%, 100% { opacity: .88; transform: translateX(0); }
@@ -1173,36 +935,8 @@
   52% { opacity: .82; transform: translateX(-.5px); }
 }
 
-.canvas-ascii {
-  flex: 0 0 184px;
-  width: 184px;
-}
 
-:is(html[data-theme='dark'], html[data-theme='light']) .canvas-toolbar {
-  position: relative;
-  isolation: isolate;
-  min-height: 92px;
-  display: grid;
-  grid-template-columns: minmax(170px, auto) minmax(100px, 1fr) auto;
-  gap: 16px;
-  padding: 12px 18px;
-  overflow: visible;
-  background:
-    linear-gradient(90deg, transparent 0%, rgba(1, 12, 15, .68) 47%, rgba(2, 19, 22, .42) 66%, transparent 82%),
-    linear-gradient(color-mix(in srgb, var(--accent) 9%, transparent) 1px, transparent 1px),
-    linear-gradient(90deg, color-mix(in srgb, var(--accent) 9%, transparent) 1px, transparent 1px),
-    var(--engineering-surface);
-  background-size: auto, 18px 18px, 18px 18px, auto;
-}
 
-:is(html[data-theme='dark'], html[data-theme='light']) .canvas-toolbar::after {
-  content: "";
-  position: absolute;
-  z-index: -1;
-  inset: 0;
-  pointer-events: none;
-  background: linear-gradient(90deg, rgba(3, 23, 27, .1), transparent 30%, rgba(0, 8, 10, .52) 52%, transparent 78%);
-}
 
 .app-loading-runtime {
   min-height: 100dvh;
@@ -1312,18 +1046,6 @@
     gap: 18px;
   }
 
-  .canvas-terminal-visual { display: none; }
-  :is(html[data-theme='dark'], html[data-theme='light']) .canvas-toolbar {
-    grid-template-columns: minmax(0, 1fr) auto;
-  }
-}
-
-@media (max-width: 1600px) {
-  :is(html[data-theme='dark'], html[data-theme='light']) .canvas-toolbar {
-    grid-template-columns: minmax(0, 1fr) auto;
-  }
-
-  .canvas-terminal-visual { display: none; }
 }
 
 @media (max-width: 900px) {
@@ -1442,14 +1164,14 @@
 
 :is(html[data-theme='dark'], html[data-theme='light']) .message.failed {
   border-color: color-mix(in srgb, var(--danger) 46%, var(--border));
-  background: color-mix(in srgb, var(--danger) 10%, var(--engineering-node-subtle));
+  background: color-mix(in srgb, var(--danger) 10%, var(--engineering-card-subtle));
 }
 
 :is(html[data-theme='dark'], html[data-theme='light']) .chat-run-details {
   width: min(760px, 100%);
   border: 1px solid var(--border);
   border-radius: 8px;
-  background: var(--engineering-node-subtle);
+  background: var(--engineering-card-subtle);
 }
 
 :is(html[data-theme='dark'], html[data-theme='light']) .chat-run-details > summary {

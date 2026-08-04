@@ -6,42 +6,15 @@ import (
 )
 
 type ToolRunContext struct {
-	OwnerID           int64
-	WorkflowID        int64
-	AgentID           int64
-	AgentReleaseID    int64
-	RunID             int64
-	NodeID            string
-	CallDepth         int
-	WorkflowCallChain []int64
-	ConversationID    *int64
+	OwnerID         int64
+	AgentID         int64
+	AgentReleaseID  int64
+	RunID           int64
+	DelegationDepth int
+	ConversationID  *int64
 	// Task is the current run objective. Tools use it as a semantic query
 	// when the model omits an explicit query (for example memory recall).
 	Task string
-}
-
-type AgentCallRequest struct {
-	OwnerID       int64
-	ParentRunID   int64
-	CallerAgentID int64
-	AgentID       int64
-	Task          string
-	CallDepth     int
-	MaxDepth      int
-}
-
-type AgentCallResult struct {
-	RunID          int64          `json:"run_id"`
-	AgentID        int64          `json:"agent_id"`
-	AgentReleaseID int64          `json:"agent_release_id"`
-	Status         string         `json:"status"`
-	Output         map[string]any `json:"output"`
-	Error          string         `json:"error,omitempty"`
-	LatencyMS      int            `json:"latency_ms"`
-}
-
-type AgentCaller interface {
-	CallAgent(context.Context, AgentCallRequest) (*AgentCallResult, error)
 }
 
 type ToolResult struct {
@@ -137,37 +110,6 @@ func MetadataOf(tool RuntimeTool) ToolMetadata {
 
 type Registry interface {
 	LoadForAgent(ctx context.Context, ownerID int64, toolIDs []int64) ([]RuntimeTool, error)
-}
-
-type WorkflowCallRequest struct {
-	OwnerID           int64          `json:"owner_id"`
-	ParentRunID       int64          `json:"parent_run_id"`
-	CallerWorkflowID  int64          `json:"caller_workflow_id"`
-	CallerNodeID      string         `json:"caller_node_id"`
-	WorkflowID        int64          `json:"workflow_id"`
-	FlowVersionID     int64          `json:"flow_version_id"`
-	Input             map[string]any `json:"input"`
-	CallDepth         int            `json:"call_depth"`
-	WorkflowCallChain []int64        `json:"workflow_call_chain"`
-	MaxDepth          int            `json:"max_depth"`
-	RunKind           string         `json:"run_kind,omitempty"`
-	Lifecycle         bool           `json:"lifecycle,omitempty"`
-	CallerAgentID     int64          `json:"caller_agent_id,omitempty"`
-	AgentReleaseID    int64          `json:"agent_release_id,omitempty"`
-}
-
-type WorkflowCallResult struct {
-	RunID         int64          `json:"run_id"`
-	WorkflowID    int64          `json:"workflow_id"`
-	FlowVersionID int64          `json:"flow_version_id"`
-	Status        string         `json:"status"`
-	Output        map[string]any `json:"output"`
-	Error         string         `json:"error,omitempty"`
-	LatencyMS     int            `json:"latency_ms"`
-}
-
-type WorkflowCaller interface {
-	CallWorkflow(ctx context.Context, req WorkflowCallRequest) (*WorkflowCallResult, error)
 }
 
 func ResultFromValue(value any) (*ToolResult, error) {

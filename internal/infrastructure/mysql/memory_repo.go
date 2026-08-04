@@ -121,7 +121,8 @@ func (r *MemoryRepository) Replace(ctx context.Context, ownerID, supersededID in
 			Updates(map[string]any{"status": memory.StatusSuperseded, "updated_at": now}).Error; err != nil {
 			return err
 		}
-		return enqueueContextResource(ctx, tx, ownerID, 0, contextresource.TypeLongTermMemory, supersededID, contextresource.OperationDelete, "")
+		previousAgentID, previousConversationID := memoryIndexScope(&previous)
+		return enqueueContextResource(ctx, tx, ownerID, previousAgentID, previousConversationID, contextresource.TypeLongTermMemory, supersededID, contextresource.OperationDelete, "")
 	})
 }
 
@@ -200,12 +201,17 @@ func (r *MemoryRepository) ListForRead(ctx context.Context, ownerID int64, memor
 func (r *MemoryRepository) SoftDelete(ctx context.Context, ownerID, id int64) error {
 	now := time.Now().UTC()
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var item memory.Memory
+		if err := tx.Where("owner_id = ? AND id = ? AND deleted_at IS NULL", ownerID, id).First(&item).Error; err != nil {
+			return err
+		}
 		result := tx.Model(&memory.Memory{}).Where("owner_id = ? AND id = ? AND deleted_at IS NULL", ownerID, id).
 			Updates(map[string]any{"deleted_at": now, "updated_at": now})
 		if result.Error != nil || result.RowsAffected == 0 {
 			return result.Error
 		}
-		return enqueueContextResource(ctx, tx, ownerID, 0, contextresource.TypeLongTermMemory, id, contextresource.OperationDelete, "")
+		agentID, conversationID := memoryIndexScope(&item)
+		return enqueueContextResource(ctx, tx, ownerID, agentID, conversationID, contextresource.TypeLongTermMemory, id, contextresource.OperationDelete, "")
 	})
 }
 
@@ -288,7 +294,7 @@ func (r *MemoryRepository) MarkExpired(ctx context.Context, ownerID int64, maxAg
 		}
 		count = result.RowsAffected
 		for _, id := range ids {
-			if err := enqueueContextResource(ctx, tx, ownerID, 0, contextresource.TypeLongTermMemory, id, contextresource.OperationDelete, ""); err != nil {
+			if err := enqueueContextResource(ctx, tx, ownerID, 0, 0, contextresource.TypeLongTermMemory, id, contextresource.OperationDelete, ""); err != nil {
 				return err
 			}
 		}
@@ -344,13 +350,30 @@ func filterMemories(query *gorm.DB, memoryTypes []string, conversationID *int64)
 }
 
 func enqueueMemoryContextResource(ctx context.Context, tx *gorm.DB, item *memory.Memory, now time.Time) error {
-	if item != nil && item.IsRecallable(now) {
-		return enqueueContextResource(ctx, tx, item.OwnerID, 0, contextresource.TypeLongTermMemory, item.ID, contextresource.OperationUpsert, memoryContextText(*item))
-	}
 	if item == nil {
 		return nil
 	}
-	return enqueueContextResource(ctx, tx, item.OwnerID, 0, contextresource.TypeLongTermMemory, item.ID, contextresource.OperationDelete, "")
+	agentID, conversationID := memoryIndexScope(item)
+	if item != nil && item.IsRecallable(now) {
+		return enqueueContextResource(ctx, tx, item.OwnerID, agentID, conversationID, contextresource.TypeLongTermMemory, item.ID, contextresource.OperationUpsert, memoryContextText(*item))
+	}
+	return enqueueContextResource(ctx, tx, item.OwnerID, agentID, conversationID, contextresource.TypeLongTermMemory, item.ID, contextresource.OperationDelete, "")
+}
+
+func memoryIndexScope(item *memory.Memory) (agentID, conversationID int64) {
+	if item == nil {
+		return 0, 0
+	}
+	switch item.ScopeType {
+	case memory.ScopeAgent:
+		agentID = item.ScopeID
+	case memory.ScopeConversation:
+		conversationID = item.ScopeID
+	}
+	if conversationID == 0 && item.ConversationID != nil {
+		conversationID = *item.ConversationID
+	}
+	return agentID, conversationID
 }
 
 type MemoryWriteLogRepository struct{ db *gorm.DB }

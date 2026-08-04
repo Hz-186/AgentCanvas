@@ -32,7 +32,7 @@ type SkillSearchTool struct {
 func (SkillLoadTool) Name() string { return "load_skill" }
 
 func (SkillLoadTool) Description() string {
-	return "Load the full SKILL.md instructions for one of the skills explicitly attached to this agent. Use this only when the task matches the skill metadata and the full workflow instructions are needed."
+	return "Load the full SKILL.md instructions for one of the skills explicitly attached to this agent. Use this only when the task matches the skill metadata and the complete instructions are needed."
 }
 
 func (SkillLoadTool) Parameters() json.RawMessage {

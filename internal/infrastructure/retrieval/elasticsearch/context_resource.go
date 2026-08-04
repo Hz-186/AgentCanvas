@@ -21,7 +21,7 @@ const contextResourceMapping = `{
     "dynamic": "strict",
     "properties": {
       "owner_id": {"type": "long"},
-      "workflow_id": {"type": "long"},
+      "agent_id": {"type": "long"},
       "conversation_id": {"type": "long"},
       "resource_type": {"type": "keyword"},
       "resource_id": {"type": "keyword"},
@@ -107,7 +107,7 @@ func (s *ContextKeywordIndex) Upsert(ctx context.Context, document contextresour
 	}
 	payload, err := json.Marshal(map[string]any{
 		"owner_id":        document.OwnerID,
-		"workflow_id":     document.WorkflowID,
+		"agent_id":        document.AgentID,
 		"conversation_id": document.ConversationID,
 		"resource_type":   document.ResourceType,
 		"resource_id":     document.ResourceID,
@@ -164,8 +164,20 @@ func (s *ContextKeywordIndex) Search(ctx context.Context, request contextresourc
 	} else if len(request.ResourceTypes) > 1 {
 		filters = append(filters, map[string]any{"terms": map[string]any{"resource_type": request.ResourceTypes}})
 	}
+	messageOnly := len(request.ResourceTypes) == 1 && request.ResourceTypes[0] == contextresource.TypeConversationMessage
+	if request.AgentID > 0 {
+		if messageOnly {
+			filters = append(filters, map[string]any{"term": map[string]any{"agent_id": request.AgentID}})
+		} else {
+			filters = append(filters, map[string]any{"terms": map[string]any{"agent_id": []int64{0, request.AgentID}}})
+		}
+	}
 	if request.ConversationID > 0 {
-		filters = append(filters, map[string]any{"term": map[string]any{"conversation_id": request.ConversationID}})
+		if messageOnly {
+			filters = append(filters, map[string]any{"term": map[string]any{"conversation_id": request.ConversationID}})
+		} else {
+			filters = append(filters, map[string]any{"terms": map[string]any{"conversation_id": []int64{0, request.ConversationID}}})
+		}
 	}
 	body, _ := json.Marshal(map[string]any{"size": limit * 2, "query": map[string]any{"bool": map[string]any{
 		"filter": filters, "must": []map[string]any{{"simple_query_string": map[string]any{"query": request.Query, "fields": []string{"content"}, "default_operator": "or"}}},
@@ -183,7 +195,7 @@ func (s *ContextKeywordIndex) Search(ctx context.Context, request contextresourc
 			Hits []struct {
 				Score  float64 `json:"_score"`
 				Source struct {
-					WorkflowID     int64  `json:"workflow_id"`
+					AgentID        int64  `json:"agent_id"`
 					ConversationID int64  `json:"conversation_id"`
 					ResourceType   string `json:"resource_type"`
 					ResourceID     string `json:"resource_id"`
@@ -197,11 +209,20 @@ func (s *ContextKeywordIndex) Search(ctx context.Context, request contextresourc
 	}
 	results := make([]contextresource.SearchResult, 0, limit)
 	for _, hit := range decoded.Hits.Hits {
-		if request.WorkflowID > 0 && hit.Source.WorkflowID != 0 && hit.Source.WorkflowID != request.WorkflowID {
-			continue
+		if hit.Source.ResourceType == contextresource.TypeConversationMessage {
+			if request.AgentID <= 0 || request.ConversationID <= 0 || hit.Source.AgentID != request.AgentID || hit.Source.ConversationID != request.ConversationID {
+				continue
+			}
+		} else {
+			if request.AgentID > 0 && hit.Source.AgentID != 0 && hit.Source.AgentID != request.AgentID {
+				continue
+			}
+			if request.ConversationID > 0 && hit.Source.ConversationID != 0 && hit.Source.ConversationID != request.ConversationID {
+				continue
+			}
 		}
 		results = append(results, contextresource.SearchResult{ResourceType: hit.Source.ResourceType, ResourceID: hit.Source.ResourceID, Score: hit.Score,
-			Metadata: map[string]any{"workflow_id": hit.Source.WorkflowID, "conversation_id": hit.Source.ConversationID, "content_hash": hit.Source.ContentHash}})
+			Metadata: map[string]any{"agent_id": hit.Source.AgentID, "conversation_id": hit.Source.ConversationID, "content_hash": hit.Source.ContentHash}})
 		if len(results) >= limit {
 			break
 		}

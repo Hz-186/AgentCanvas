@@ -7,9 +7,8 @@ import (
 	"agentcanvas/internal/infrastructure/llm"
 )
 
-// Runtime is the workflow-independent Agent execution contract. Workflow
-// components may prepare resources and policies, but they must call this
-// module for the loop, tool batches, checkpoints, approvals and resume.
+// Runtime is the Agent execution contract for the loop, tool batches,
+// checkpoints, approvals and resume.
 type Runtime interface {
 	Execute(context.Context, RunRequest) (*RunResult, error)
 	Resume(context.Context, ResumeRequest) (*RunResult, error)

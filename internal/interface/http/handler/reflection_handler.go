@@ -30,12 +30,12 @@ func (h *ReflectionHandler) List(c *gin.Context) {
 		response.Error(c, http.StatusUnauthorized, agenterrors.CodeUnauthorized, agenterrors.ErrUnauthorized.Error())
 		return
 	}
-	workflowID, err := parseInt64Param(c, "id")
+	agentID, err := parseInt64Param(c, "id")
 	if err != nil {
 		writeAppError(c, agenterrors.ErrInvalidInput)
 		return
 	}
-	items, err := h.service.List(c.Request.Context(), ownerID, workflowID, c.Query("status"), intQuery(c, "limit", 50), intQuery(c, "offset", 0))
+	items, err := h.service.List(c.Request.Context(), ownerID, agentID, c.Query("status"), intQuery(c, "limit", 50), intQuery(c, "offset", 0))
 	if err != nil {
 		writeAppError(c, err)
 		return
@@ -49,7 +49,7 @@ func (h *ReflectionHandler) SetStatus(c *gin.Context) {
 		response.Error(c, http.StatusUnauthorized, agenterrors.CodeUnauthorized, agenterrors.ErrUnauthorized.Error())
 		return
 	}
-	workflowID, err := parseInt64Param(c, "id")
+	agentID, err := parseInt64Param(c, "id")
 	if err != nil {
 		writeAppError(c, agenterrors.ErrInvalidInput)
 		return
@@ -64,7 +64,7 @@ func (h *ReflectionHandler) SetStatus(c *gin.Context) {
 		writeAppError(c, agenterrors.ErrInvalidInput)
 		return
 	}
-	if err := h.service.SetStatus(c.Request.Context(), ownerID, workflowID, reflectionID, req); err != nil {
+	if err := h.service.SetStatus(c.Request.Context(), ownerID, agentID, reflectionID, req); err != nil {
 		writeAppError(c, err)
 		return
 	}

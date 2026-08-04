@@ -11,8 +11,6 @@ import (
 	independentagentusecase "agentcanvas/internal/application/agent_usecase"
 	auditusecase "agentcanvas/internal/application/audit_usecase"
 	authusecase "agentcanvas/internal/application/auth_usecase"
-	chatusecase "agentcanvas/internal/application/chat_usecase"
-	dialogusecase "agentcanvas/internal/application/dialog_usecase"
 	knowledgeusecase "agentcanvas/internal/application/knowledge_usecase"
 	memoryusecase "agentcanvas/internal/application/memory_usecase"
 	providerusecase "agentcanvas/internal/application/provider_usecase"
@@ -21,7 +19,6 @@ import (
 	retrievalusecase "agentcanvas/internal/application/retrieval_usecase"
 	skillusecase "agentcanvas/internal/application/skill_usecase"
 	toolusecase "agentcanvas/internal/application/tool_usecase"
-	agentusecase "agentcanvas/internal/application/workflow_usecase"
 	"agentcanvas/internal/domain/contextresource"
 	"agentcanvas/internal/domain/resource"
 	"agentcanvas/internal/infrastructure"
@@ -39,7 +36,9 @@ import (
 	httpserver "agentcanvas/internal/interface/http"
 	"agentcanvas/internal/interface/http/handler"
 	"agentcanvas/internal/pkg/config"
-	"agentcanvas/internal/runtime/conversationcontext"
+	agentruntime "agentcanvas/internal/runtime/agentruntime"
+	"agentcanvas/internal/runtime/sandbox"
+	"agentcanvas/internal/runtime/toolruntime"
 
 	"github.com/gin-gonic/gin"
 )
@@ -113,34 +112,23 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 	chunkRepo := mysqlinfra.NewChunkRepository(db)
 	ingestionJobRepo := mysqlinfra.NewIngestionJobRepository(db)
 	retrievalLogRepo := mysqlinfra.NewRetrievalLogRepository(db)
-	dialogRepo := cacheinfra.NewDialogRepository(mysqlinfra.NewDialogRepository(db), resourceInvalidator)
 	agentRepo := mysqlinfra.NewAgentRepository(db)
 	agentTurnRepo := mysqlinfra.NewAgentTurnRepository(db)
 	agentImprovementRepo := mysqlinfra.NewAgentImprovementRepository(db)
 	conversationRepo := mysqlinfra.NewConversationRepository(db)
 	messageRepo := mysqlinfra.NewMessageRepository(db)
 	compactionRepo := mysqlinfra.NewConversationCompactionRepository(db)
-	usageRepo := mysqlinfra.NewUsageRepository(db)
-	workflowRepo := cacheinfra.NewWorkflowRepository(mysqlinfra.NewWorkflowRepository(db), resourceInvalidator)
-	workflowProfileRepo := mysqlinfra.NewWorkflowProfileRepository(db)
-	workflowRuleSetRepo := mysqlinfra.NewWorkflowRuleSetRepository(db)
 	reflectionRepo := mysqlinfra.NewReflectionRepository(db)
 	reflectionJobRepo := mysqlinfra.NewReflectionJobRepository(db)
 	reflectionRecallLogRepo := mysqlinfra.NewReflectionRecallLogRepository(db)
-	flowVersionRepo := mysqlinfra.NewFlowVersionRepository(db)
 	runRepo := mysqlinfra.NewRunRepository(db)
 	runEventRepo := mysqlinfra.NewRunEventRepository(db)
 	reflectionEventSink := mysqlinfra.NewReflectionEventSink(runEventRepo)
-	nodeLogRepo := mysqlinfra.NewNodeLogRepository(db)
 	runStepRepo := mysqlinfra.NewRunStepRepository(db)
-	workflowEvalRepo := mysqlinfra.NewWorkflowEvalRepository(db)
 	approvalRepo := mysqlinfra.NewApprovalRepository(db)
-	workflowTeamRepo := mysqlinfra.NewWorkflowTeamRepository(db)
 	memoryRepo := cacheinfra.NewMemoryRepository(mysqlinfra.NewMemoryRepository(db), resourceInvalidator, memoryCache)
 	memoryWriteLogRepo := mysqlinfra.NewMemoryWriteLogRepository(db)
 	memoryRecallLogRepo := mysqlinfra.NewMemoryRecallLogRepository(db)
-	extractionJobRepo := mysqlinfra.NewExtractionJobRepository(db)
-	mergeLogRepo := mysqlinfra.NewMergeLogRepository(db)
 	workingMemoryRepo := redisinfra.NewWorkingMemoryRepository(redisClient, redisinfra.WorkingMemoryOptions{
 		TTL:      time.Duration(cfg.WorkingMemory.TTLSeconds) * time.Second,
 		LockTTL:  time.Duration(cfg.WorkingMemory.LockTTLMS) * time.Millisecond,
@@ -293,20 +281,6 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 	if jobQueue != nil {
 		knowledgeService.WithJobQueue(jobQueue)
 	}
-	dialogService := dialogusecase.NewService(dialogRepo)
-	chatService := chatusecase.NewService(
-		providerRepo,
-		dialogRepo,
-		knowledgeRepo,
-		conversationRepo,
-		messageRepo,
-		usageRepo,
-		retrievalService,
-		chatClient,
-		secretBox,
-	)
-	chatService.ConfigureDream(jobQueue, redisClient, dreamCfg)
-	chatService.ConfigureConversationContext(&conversationcontext.Coordinator{History: messageRepo, Snapshots: compactionRepo, Client: chatClient})
 	reflectionService := reflectionusecase.Service{Reflections: reflectionRepo, Jobs: reflectionJobRepo, RecallLogs: reflectionRecallLogRepo, Events: reflectionEventSink,
 		DispatchEnabled: cfg.ReflectionQueue.Backend == "nats"}
 	if archivalVecStore != nil {
@@ -314,73 +288,48 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 			M: cfg.Milvus.M, EFConstruction: cfg.Milvus.EFConstruction, EFSearch: cfg.Milvus.EFSearch, MetricType: cfg.Milvus.MetricType,
 		})
 	}
-	workflowService, err := agentusecase.NewService(
-		workflowRepo,
-		workflowProfileRepo,
-		flowVersionRepo,
-		runRepo,
-		runEventRepo,
-		nodeLogRepo,
-		runStepRepo,
-		workflowEvalRepo,
-		approvalRepo,
-		auditRepo,
-		workflowTeamRepo,
-		memoryRepo,
-		memoryWriteLogRepo,
-		memoryRecallLogRepo,
-		memoryCommandService,
-		memoryRetrievalStore,
-		workingMemoryRepo,
-		extractionJobRepo,
-		mergeLogRepo,
-		toolDefinitionRepo,
-		toolPackRepo,
-		skillRepo,
-		mcpRepo,
-		toolInvocationRepo,
-		providerRepo,
-		conversationRepo,
-		messageRepo,
-		retrievalService,
-		chatClient,
-		embeddingClient,
-		archivalVecStore,
-		contextIndex,
-		compactionRepo,
-		secretBox,
-		reflectionService,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("init workflow service: %w", err)
-	}
-	workflowService.ConfigureDream(jobQueue, redisClient, dreamCfg)
-	workflowService.ConfigureMemoryReader(memoryService)
-	workflowService.ConfigureMemoryCandidates(memoryCandidateService)
-	workflowService.ConfigureRuleSets(workflowRuleSetRepo)
-	independentAgentService := independentagentusecase.NewService(agentRepo, agentTurnRepo, conversationRepo, messageRepo,
-		runRepo, runEventRepo, runStepRepo, approvalRepo, workflowService, workflowService.AgentRuntime())
-	independentAgentService.ConfigureEditableResources(providerRepo, knowledgeRepo)
 	toolCallingClient, ok := chatClient.(llm.ToolCallingClient)
 	if !ok {
-		return nil, fmt.Errorf("init self-improvement service: tool calling client is required")
+		return nil, fmt.Errorf("init agent runtime: tool calling client is required")
 	}
+	providerLoader := agentruntime.ProviderLoader{Providers: providerRepo, Secrets: secretBox}
+	toolRegistry := toolruntime.BasicRegistry{Tools: toolDefinitionRepo, Invocations: toolInvocationRepo}
+	agentRuntime, err := agentruntime.New(agentruntime.Deps{
+		Retriever: retrievalService, LLM: chatClient, Providers: providerLoader,
+		Messages: agentruntime.ConversationMessageWriter{Messages: messageRepo}, MessageHistory: messageRepo,
+		Compactions: compactionRepo, SessionSearch: sessionSearch,
+		Memories: memoryRepo, MemoryReader: memoryService, MemoryWriteLogs: memoryWriteLogRepo,
+		MemoryRecallLogs: memoryRecallLogRepo, MemoryCommands: memoryCommandService,
+		MemoryCandidates: memoryCandidateService, MemoryRetriever: memoryRetrievalStore,
+		MemoryExtractionTrigger: memoryusecase.NewDreamTrigger(jobQueue, redisClient, dreamCfg),
+		WorkingMemory:           workingMemoryRepo, Tools: toolDefinitionRepo, ToolPacks: toolPackRepo,
+		Skills: skillRepo, Audits: auditRepo, MCPServers: mcpRepo, ToolInvocations: toolInvocationRepo,
+		ToolCalling: toolCallingClient, ToolRegistry: toolRegistry, Reflections: reflectionService,
+		Sandbox: sandbox.NewDockerRunner(), ArchivalVecStore: archivalVecStore, ContextIndex: contextIndex,
+		Embedder: embeddingClient,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("init agent runtime: %w", err)
+	}
+	agentService := independentagentusecase.NewService(agentRepo, agentTurnRepo, conversationRepo, messageRepo,
+		runRepo, runEventRepo, runStepRepo, approvalRepo, agentRuntime)
+	agentService.ConfigureEditableResources(providerRepo, knowledgeRepo)
+	agentService.ConfigureSessionSearch(sessionSearch)
+	agentRuntime.ConfigureSubagentDispatcher(agentService)
+	agentRuntime.ConfigureMemoryReader(memoryService)
+	agentRuntime.ConfigureMemoryCandidates(memoryCandidateService)
+	agentRuntime.ConfigureSessionSearch(sessionSearch)
 	improvementService := independentagentusecase.NewImprovementService(agentImprovementRepo, agentRepo, agentTurnRepo, messageRepo,
-		runStepRepo, memoryRepo, reflectionRepo, skillRepo, workflowService, toolCallingClient, cfg.AgentRuntime.MemoryReviewMode)
+		runStepRepo, memoryRepo, reflectionRepo, skillRepo, providerLoader, toolCallingClient, cfg.AgentRuntime.MemoryReviewMode)
 	improvementService.ConfigureMemoryCommands(memoryCommandService)
 	improvementService.ConfigureReviewModel(cfg.AgentRuntime.ReviewProviderID, cfg.AgentRuntime.ReviewModel)
 	if cfg.AgentRuntime.SelfImprovementEnabled {
-		independentAgentService.ConfigureImprovement(improvementService)
+		agentService.ConfigureImprovement(improvementService)
 	}
-	workflowService.ConfigureAgentCaller(independentAgentService)
-	workflowService.ConfigureSessionSearch(sessionSearch)
-	independentAgentService.ConfigureSessionSearch(sessionSearch)
-	workflowService.ConfigureIndependentRunResumer(independentAgentService)
-	workflowService.ConfigureIndependentRunCanceller(independentAgentService)
-	independentAgentService.ConfigureWorker(time.Duration(cfg.AgentRuntime.LeaseSeconds) * time.Second)
+	agentService.ConfigureWorker(time.Duration(cfg.AgentRuntime.LeaseSeconds) * time.Second)
 	if cfg.AgentRuntime.WorkerEnabled {
 		hostname, _ := os.Hostname()
-		independentAgentService.RunWorker(ctx, fmt.Sprintf("agent-api-%s-%d", hostname, os.Getpid()), cfg.AgentRuntime.WorkerConcurrency)
+		agentService.RunWorker(ctx, fmt.Sprintf("agent-api-%s-%d", hostname, os.Getpid()), cfg.AgentRuntime.WorkerConcurrency)
 		if cfg.AgentRuntime.SelfImprovementEnabled {
 			improvementService.RunWorker(ctx, fmt.Sprintf("review-api-%s-%d", hostname, os.Getpid()), cfg.AgentRuntime.ReviewWorkerConcurrency)
 		}
@@ -397,10 +346,7 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 	skillHandler := handler.NewSkillHandler(skillService, auditRepo)
 	knowledgeHandler := handler.NewKnowledgeHandler(knowledgeService)
 	documentHandler := handler.NewDocumentHandler(knowledgeService)
-	dialogHandler := handler.NewDialogHandler(dialogService)
-	chatHandler := handler.NewChatHandler(chatService)
-	agentHandler := handler.NewAgentHandler(independentAgentService, improvementService)
-	workflowHandler := handler.NewWorkflowHandler(workflowService)
+	agentHandler := handler.NewAgentHandler(agentService, improvementService)
 	reflectionHandler := handler.NewReflectionHandler(reflectionService)
 	resourceHandler := handler.NewResourceHandler(resourceusecase.NewService(resourceQuery))
 
@@ -422,10 +368,7 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 		AuditHandler:      auditHandler,
 		KnowledgeHandler:  knowledgeHandler,
 		DocumentHandler:   documentHandler,
-		DialogHandler:     dialogHandler,
-		ChatHandler:       chatHandler,
 		AgentHandler:      agentHandler,
-		WorkflowHandler:   workflowHandler,
 		ReflectionHandler: reflectionHandler,
 		ResourceHandler:   resourceHandler,
 		AuthService:       authService,

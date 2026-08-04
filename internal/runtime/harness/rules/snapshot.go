@@ -29,22 +29,20 @@ type BoundPolicyBinding struct {
 	Params    json.RawMessage `json:"params,omitempty"`
 }
 
-// RuleSet is an immutable copy of the rules as published. It is not a compiled form.
-type RuleSet struct {
-	ID      int64  `json:"id,omitempty"`
-	Version string `json:"version,omitempty"`
-	Hash    string `json:"hash"`
-	Rules   []Rule `json:"rules"`
+// Snapshot is an immutable copy of the rules embedded in an Agent release.
+type Snapshot struct {
+	Hash  string `json:"hash"`
+	Rules []Rule `json:"rules"`
 }
 
-func NewRuleSet(items []Rule, id int64, version string) (*RuleSet, error) {
+func NewSnapshot(items []Rule) (*Snapshot, error) {
 	normalized, err := ValidateRules(items)
 	if err != nil {
 		return nil, err
 	}
-	set := &RuleSet{ID: id, Version: strings.TrimSpace(version), Rules: normalized}
-	set.Hash, err = hashRuleSet(set)
-	return set, err
+	snapshot := &Snapshot{Rules: normalized}
+	snapshot.Hash, err = hashSnapshot(snapshot)
+	return snapshot, err
 }
 
 func ValidateRules(items []Rule) ([]Rule, error) {
@@ -104,47 +102,55 @@ func validateRules(items []Rule) ([]Rule, error) {
 	return normalized, nil
 }
 
-func VerifyRuleSet(set *RuleSet) error {
-	if set == nil {
-		return fmt.Errorf("rule set is nil")
+func VerifySnapshot(snapshot *Snapshot) error {
+	if snapshot == nil {
+		return fmt.Errorf("rule snapshot is nil")
 	}
-	expected := strings.TrimSpace(set.Hash)
+	expected := strings.TrimSpace(snapshot.Hash)
 	if expected == "" {
-		return fmt.Errorf("rule set hash is empty")
+		return fmt.Errorf("rule snapshot hash is empty")
 	}
-	actual, err := hashRuleSet(set)
+	actual, err := hashSnapshot(snapshot)
 	if err != nil {
 		return err
 	}
 	if actual != expected {
-		return fmt.Errorf("rule set hash mismatch")
+		return fmt.Errorf("rule snapshot hash mismatch")
 	}
-	_, err = validateRules(set.Rules)
+	_, err = validateRules(snapshot.Rules)
 	return err
 }
 
-func DecodeRuleSet(data json.RawMessage) (*RuleSet, error) {
-	var set RuleSet
+func DecodeSnapshot(data json.RawMessage) (*Snapshot, error) {
+	var snapshot Snapshot
 	decoder := json.NewDecoder(strings.NewReader(string(data)))
 	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&set); err != nil {
+	if err := decoder.Decode(&snapshot); err != nil {
 		return nil, err
 	}
 	if err := decoder.Decode(&struct{}{}); err != io.EOF {
-		return nil, fmt.Errorf("rule set contains trailing JSON content")
+		return nil, fmt.Errorf("rule snapshot contains trailing JSON content")
 	}
-	if err := VerifyRuleSet(&set); err != nil {
+	if err := VerifySnapshot(&snapshot); err != nil {
 		return nil, err
 	}
-	return &set, nil
+	return &snapshot, nil
 }
 
-func hashRuleSet(set *RuleSet) (string, error) {
-	canonical := *set
+func HashLoadedRules(items []Rule) (string, error) {
+	normalized, err := ValidateLoadedRules(items)
+	if err != nil {
+		return "", err
+	}
+	return hashSnapshot(&Snapshot{Rules: normalized})
+}
+
+func hashSnapshot(snapshot *Snapshot) (string, error) {
+	canonical := *snapshot
 	canonical.Hash = ""
 	data, err := json.Marshal(&canonical)
 	if err != nil {
-		return "", fmt.Errorf("marshal rule set: %w", err)
+		return "", fmt.Errorf("marshal rule snapshot: %w", err)
 	}
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:]), nil

@@ -37,19 +37,19 @@ type FeedbackRequest struct {
 	Note    string `json:"note"`
 }
 
-func (s Service) List(ctx context.Context, ownerID, workflowID int64, status string, limit, offset int) ([]reflection.Reflection, error) {
-	if s.Reflections == nil || ownerID <= 0 || workflowID <= 0 {
+func (s Service) List(ctx context.Context, ownerID, agentID int64, status string, limit, offset int) ([]reflection.Reflection, error) {
+	if s.Reflections == nil || ownerID <= 0 || agentID <= 0 {
 		return nil, agenterrors.ErrInvalidInput
 	}
 	status = strings.TrimSpace(status)
 	if status != "" && !validReflectionStatus(status) {
 		return nil, agenterrors.ErrInvalidInput
 	}
-	return s.Reflections.ListByWorkflow(ctx, ownerID, workflowID, status, limit, offset)
+	return s.Reflections.ListByAgent(ctx, ownerID, agentID, status, limit, offset)
 }
 
-func (s Service) SetStatus(ctx context.Context, ownerID, workflowID, id int64, req UpdateStatusRequest) error {
-	if s.Reflections == nil || ownerID <= 0 || workflowID <= 0 || id <= 0 {
+func (s Service) SetStatus(ctx context.Context, ownerID, agentID, id int64, req UpdateStatusRequest) error {
+	if s.Reflections == nil || ownerID <= 0 || agentID <= 0 || id <= 0 {
 		return agenterrors.ErrInvalidInput
 	}
 	status := strings.TrimSpace(req.Status)
@@ -62,7 +62,7 @@ func (s Service) SetStatus(ctx context.Context, ownerID, workflowID, id int64, r
 	if err != nil {
 		return mapReflectionNotFound(err)
 	}
-	if item.WorkflowID != workflowID {
+	if item.AgentID != agentID {
 		return agenterrors.ErrForbidden
 	}
 	if err := s.Reflections.SetStatus(ctx, ownerID, id, status); err != nil {
@@ -70,8 +70,8 @@ func (s Service) SetStatus(ctx context.Context, ownerID, workflowID, id int64, r
 	}
 	item.Status = status
 	s.syncIndex(ctx, *item)
-	s.emit(ctx, reflection.Event{Type: "reflection.status_changed", OwnerID: ownerID, WorkflowID: workflowID,
-		RunID: item.SourceRunID, NodeID: item.NodeID, Payload: map[string]any{"reflection_id": id, "status": status}})
+	s.emit(ctx, reflection.Event{Type: "reflection.status_changed", OwnerID: ownerID, AgentID: agentID,
+		RunID: item.SourceRunID, Payload: map[string]any{"reflection_id": id, "status": status}})
 	return nil
 }
 
@@ -119,18 +119,18 @@ func (s Service) Feedback(ctx context.Context, ownerID, runID, reflectionID int6
 		item = refreshed
 	}
 	s.syncIndex(ctx, *item)
-	s.emit(ctx, reflection.Event{Type: "reflection.feedback_recorded", OwnerID: ownerID, WorkflowID: item.WorkflowID,
-		RunID: runID, NodeID: item.NodeID, Payload: map[string]any{"reflection_id": reflectionID, "verdict": verdict}})
+	s.emit(ctx, reflection.Event{Type: "reflection.feedback_recorded", OwnerID: ownerID, AgentID: item.AgentID,
+		RunID: runID, Payload: map[string]any{"reflection_id": reflectionID, "verdict": verdict}})
 	return nil
 }
 
 func (s Service) Recall(ctx context.Context, req reflection.RecallRequest) (reflection.RecallResult, error) {
 	policy := req.Policy.Normalize()
-	if !policy.Active() || s.Reflections == nil || req.OwnerID <= 0 || (req.WorkflowID <= 0 && req.AgentID <= 0) {
+	if !policy.Active() || s.Reflections == nil || req.OwnerID <= 0 || req.AgentID <= 0 {
 		return reflection.RecallResult{}, nil
 	}
 	fingerprint := TaskFingerprint(req.Task)
-	query := reflection.CandidateQuery{OwnerID: req.OwnerID, WorkflowID: req.WorkflowID, AgentID: req.AgentID, NodeID: req.NodeID, Mode: req.Mode,
+	query := reflection.CandidateQuery{OwnerID: req.OwnerID, AgentID: req.AgentID, Mode: req.Mode,
 		IncludeGlobal: policy.AllowValidatedGlobalFallback, Limit: 50}
 	var ranked []reflection.SearchResult
 	if s.Index != nil {
@@ -145,7 +145,7 @@ func (s Service) Recall(ctx context.Context, req reflection.RecallRequest) (refl
 			observability.ReflectionSystemMetrics.RecordRecallFailure()
 			return reflection.RecallResult{}, err
 		}
-		ranked = rankCandidates(items, req.Task, fingerprint, req.NodeID, req.Mode)
+		ranked = rankCandidates(items, req.Task, fingerprint, req.Mode)
 	}
 	filtered := ranked[:0]
 	for _, item := range ranked {
@@ -175,7 +175,7 @@ func (s Service) Recall(ctx context.Context, req reflection.RecallRequest) (refl
 			CorrectiveAction: item.Reflection.CorrectiveAction, Applicability: item.Reflection.Applicability, Score: item.Score})
 		if s.RecallLogs != nil {
 			_ = s.RecallLogs.Create(ctx, &reflection.RecallLog{OwnerID: req.OwnerID, ReflectionID: item.Reflection.ID, RunID: req.RunID,
-				NodeID: req.NodeID, Score: item.Score, Rank: len(result.Lessons), InjectedTokens: lineTokens})
+				Score: item.Score, Rank: len(result.Lessons), InjectedTokens: lineTokens})
 		}
 	}
 	if len(result.Lessons) == 0 {
@@ -184,8 +184,8 @@ func (s Service) Recall(ctx context.Context, req reflection.RecallRequest) (refl
 	}
 	result.Context = b.String()
 	_ = s.Reflections.MarkRecalled(ctx, req.OwnerID, ids)
-	s.emit(ctx, reflection.Event{Type: "reflection.recalled", OwnerID: req.OwnerID, WorkflowID: req.WorkflowID, RunID: req.RunID,
-		NodeID: req.NodeID, Payload: map[string]any{"reflection_ids": ids, "tokens": result.Tokens}})
+	s.emit(ctx, reflection.Event{Type: "reflection.recalled", OwnerID: req.OwnerID, AgentID: req.AgentID, RunID: req.RunID,
+		Payload: map[string]any{"reflection_ids": ids, "tokens": result.Tokens}})
 	observability.ReflectionSystemMetrics.RecordRecall(true, len(result.Lessons), result.Tokens, policy.RuntimeMode == reflection.RuntimeShadow)
 	return result, nil
 }
@@ -197,15 +197,11 @@ func (s Service) Store(ctx context.Context, item *reflection.Reflection) (*refle
 		return nil, fmt.Errorf("reflection repository is not configured")
 	}
 	item.Lesson, item.CorrectiveAction = strings.TrimSpace(item.Lesson), strings.TrimSpace(item.CorrectiveAction)
-	if item.OwnerID <= 0 || (item.WorkflowID <= 0 && item.AgentID == nil) || item.Lesson == "" || item.CorrectiveAction == "" {
-		return nil, fmt.Errorf("owner_id, workflow_id or agent_id, lesson and corrective_action are required")
+	if item.OwnerID <= 0 || item.AgentID <= 0 || item.Lesson == "" || item.CorrectiveAction == "" {
+		return nil, fmt.Errorf("owner_id, agent_id, lesson and corrective_action are required")
 	}
 	if item.Scope == "" {
-		if item.AgentID != nil {
-			item.Scope = reflection.ScopeAgent
-		} else {
-			item.Scope = reflection.ScopeWorkflow
-		}
+		item.Scope = reflection.ScopeAgent
 	}
 	if item.Status == "" {
 		if item.Kind == reflection.KindErrorLesson {
@@ -219,12 +215,10 @@ func (s Service) Store(ctx context.Context, item *reflection.Reflection) (*refle
 	item.ContentHash = ContentHash(item.RootCauseCategory, item.Lesson, item.CorrectiveAction, item.Applicability)
 	var existing *reflection.Reflection
 	var err error
-	if item.AgentID != nil && *item.AgentID > 0 {
-		if scoped, ok := s.Reflections.(reflection.ScopedRepository); ok {
-			existing, err = scoped.FindActiveByAgentHash(ctx, item.OwnerID, *item.AgentID, item.ContentHash)
-		}
+	if scoped, ok := s.Reflections.(reflection.ScopedRepository); ok {
+		existing, err = scoped.FindActiveByAgentHash(ctx, item.OwnerID, item.AgentID, item.ContentHash)
 	} else {
-		existing, err = s.Reflections.FindActiveByHash(ctx, item.OwnerID, item.WorkflowID, item.ContentHash)
+		existing, err = s.Reflections.FindActiveByHash(ctx, item.OwnerID, item.AgentID, item.ContentHash)
 	}
 	if err == nil && existing != nil {
 		if item.Importance > existing.Importance {
@@ -247,8 +241,8 @@ func (s Service) Store(ctx context.Context, item *reflection.Reflection) (*refle
 	if s.Index != nil {
 		_ = s.Index.Index(ctx, *item)
 	}
-	s.emit(ctx, reflection.Event{Type: "reflection.stored", OwnerID: item.OwnerID, WorkflowID: item.WorkflowID,
-		RunID: item.SourceRunID, NodeID: item.NodeID, Payload: map[string]any{"reflection_id": item.ID, "status": item.Status}})
+	s.emit(ctx, reflection.Event{Type: "reflection.stored", OwnerID: item.OwnerID, AgentID: item.AgentID,
+		RunID: item.SourceRunID, Payload: map[string]any{"reflection_id": item.ID, "status": item.Status}})
 	observability.ReflectionSystemMetrics.RecordStored(false)
 	return item, nil
 }
@@ -258,11 +252,11 @@ func (s Service) Enqueue(ctx context.Context, job *reflection.Job) error {
 		return nil
 	}
 	if job.TriggerHash == "" {
-		job.TriggerHash = ContentHash(fmt.Sprint(job.RunID), job.NodeID, string(job.PayloadJSON))
+		job.TriggerHash = ContentHash(fmt.Sprint(job.RunID), string(job.PayloadJSON))
 	}
 	if err := s.createJob(ctx, job); err != nil {
 		observability.ReflectionSystemMetrics.RecordJobEnqueueFailure()
-		slog.Default().Error("reflection job enqueue failed", "run_id", job.RunID, "node_id", job.NodeID, "error", err)
+		slog.Default().Error("reflection job enqueue failed", "run_id", job.RunID, "error", err)
 		return err
 	}
 	observability.ReflectionSystemMetrics.RecordJobEnqueued()
@@ -367,7 +361,7 @@ func (s Service) enqueueRunEvidence(ctx context.Context, ownerID, runID int64, e
 		return
 	}
 	job := &reflection.Job{
-		OwnerID: source.OwnerID, WorkflowID: source.WorkflowID, RunID: source.RunID, NodeID: source.NodeID,
+		OwnerID: source.OwnerID, AgentID: source.AgentID, RunID: source.RunID,
 		ProviderID: source.ProviderID, Model: source.Model, Mode: source.Mode, Task: source.Task,
 		PayloadJSON: payloadJSON, Status: reflection.JobPending, MaxAttempts: source.MaxAttempts,
 		TriggerHash: ContentHash(append([]string{evidenceKey, fmt.Sprint(runID)}, triggerParts...)...),
@@ -384,7 +378,7 @@ func hashText(value string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func rankCandidates(items []reflection.Reflection, task, fingerprint, nodeID, mode string) []reflection.SearchResult {
+func rankCandidates(items []reflection.Reflection, task, fingerprint, mode string) []reflection.SearchResult {
 	results := make([]reflection.SearchResult, 0, len(items))
 	for _, item := range items {
 		content := strings.Join([]string{item.TaskSummary, item.Lesson, item.CorrectiveAction, item.Applicability}, " ")
@@ -392,9 +386,6 @@ func rankCandidates(items []reflection.Reflection, task, fingerprint, nodeID, mo
 		match := 0.0
 		if fingerprint != "" && item.TaskFingerprint == fingerprint {
 			match += .08
-		}
-		if nodeID != "" && item.NodeID == nodeID {
-			match += .04
 		}
 		if mode != "" && (item.Mode == "" || item.Mode == mode) {
 			match += .03

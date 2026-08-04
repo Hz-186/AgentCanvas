@@ -8,7 +8,6 @@ import (
 
 	agentdomain "agentcanvas/internal/domain/agent"
 	"agentcanvas/internal/domain/conversation"
-	"agentcanvas/internal/domain/workflow"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -181,7 +180,7 @@ func (r *AgentTurnRepository) Create(ctx context.Context, item *agentdomain.Turn
 	return r.db.WithContext(ctx).Create(item).Error
 }
 
-func (r *AgentTurnRepository) CreateWithArtifacts(ctx context.Context, item *agentdomain.Turn, userMessage *conversation.Message, run *workflow.Run) error {
+func (r *AgentTurnRepository) CreateWithArtifacts(ctx context.Context, item *agentdomain.Turn, userMessage *conversation.Message, run *agentdomain.Run) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		now := time.Now().UTC()
 		userMessage.CreatedAt = now
@@ -214,7 +213,7 @@ func (r *AgentTurnRepository) CreateWithArtifacts(ctx context.Context, item *age
 	})
 }
 
-func (r *AgentTurnRepository) CompleteWithMessage(ctx context.Context, item *agentdomain.Turn, assistantMessage *conversation.Message, run *workflow.Run) error {
+func (r *AgentTurnRepository) CompleteWithMessage(ctx context.Context, item *agentdomain.Turn, assistantMessage *conversation.Message, run *agentdomain.Run) error {
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var owned agentdomain.Turn
 		query := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND owner_id = ?", item.ID, item.OwnerID)

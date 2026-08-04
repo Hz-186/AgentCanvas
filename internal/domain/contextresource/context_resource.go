@@ -71,7 +71,8 @@ func (p EmbeddingProfile) Normalized() EmbeddingProfile {
 type OutboxItem struct {
 	ID                   int64      `gorm:"primaryKey;column:id"`
 	OwnerID              int64      `gorm:"column:owner_id"`
-	WorkflowID           int64      `gorm:"column:workflow_id"`
+	AgentID              int64      `gorm:"column:agent_id"`
+	ConversationID       int64      `gorm:"column:conversation_id"`
 	ResourceType         string     `gorm:"column:resource_type"`
 	ResourceID           string     `gorm:"column:resource_id"`
 	Operation            string     `gorm:"column:operation"`
@@ -97,7 +98,7 @@ func (OutboxItem) TableName() string { return "context_resource_index_outbox" }
 
 type Document struct {
 	OwnerID        int64
-	WorkflowID     int64
+	AgentID        int64
 	ResourceType   string
 	ResourceID     string
 	Content        string
@@ -108,7 +109,7 @@ type Document struct {
 
 type SearchRequest struct {
 	OwnerID        int64
-	WorkflowID     int64
+	AgentID        int64
 	ConversationID int64
 	ResourceTypes  []string
 	Query          string
