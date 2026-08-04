@@ -3,7 +3,7 @@ package mysql
 import (
 	"context"
 	"os"
-	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -34,10 +34,10 @@ func TestAgentRuntimeRunPersistenceIntegration(t *testing.T) {
 	cleanup()
 	t.Cleanup(cleanup)
 	expectedColumns := map[string][]string{
-		"agent_runs": {"id", "owner_id", "agent_id", "agent_release_id", "conversation_id", "parent_run_id", "run_type", "delegation_depth", "definition_json", "definition_hash", "rule_hash", "status", "input_json", "output_json", "error_message", "total_tokens", "latency_ms", "started_at", "finished_at", "created_at", "updated_at"},
-		"agent_run_events": {"id", "owner_id", "run_id", "event_type", "payload_json", "created_at"},
-		"agent_run_steps": {"id", "owner_id", "run_id", "step_index", "step_type", "role", "content", "tool_call_id", "tool_name", "arguments_json", "output_json", "compressed", "error_message", "token_count", "latency_ms", "provider_id", "model", "created_at"},
-		"agent_run_checkpoints": {"id", "owner_id", "run_id", "status", "snapshot_version", "interaction_id", "runtime_checkpoint_json", "messages_json", "messages_summary", "steps_json", "pending_tool_call_json", "context_json", "tool_registry_hash", "tool_policy_hash", "created_at", "updated_at"},
+		"agent_runs":              {"id", "owner_id", "agent_id", "agent_release_id", "conversation_id", "parent_run_id", "run_type", "delegation_depth", "definition_json", "definition_hash", "rule_hash", "status", "input_json", "output_json", "error_message", "total_tokens", "latency_ms", "started_at", "finished_at", "created_at", "updated_at"},
+		"agent_run_events":        {"id", "owner_id", "run_id", "event_type", "payload_json", "created_at"},
+		"agent_run_steps":         {"id", "owner_id", "run_id", "step_index", "step_type", "role", "content", "tool_call_id", "tool_name", "arguments_json", "output_json", "compressed", "error_message", "token_count", "latency_ms", "provider_id", "model", "created_at"},
+		"agent_run_checkpoints":   {"id", "owner_id", "run_id", "status", "snapshot_version", "interaction_id", "runtime_checkpoint_json", "messages_json", "messages_summary", "steps_json", "pending_tool_call_json", "context_json", "tool_registry_hash", "tool_policy_hash", "created_at", "updated_at"},
 		"agent_approval_requests": {"id", "owner_id", "run_id", "tool_call_id", "interaction_id", "tool_name", "risk_level", "reason", "request_json", "status", "decision_note", "decided_at", "created_at", "updated_at"},
 	}
 	for table, expected := range expectedColumns {
@@ -58,7 +58,7 @@ func TestAgentRuntimeRunPersistenceIntegration(t *testing.T) {
 		if err := rows.Err(); err != nil {
 			t.Fatalf("read columns for %s: %v", table, err)
 		}
-		if !reflect.DeepEqual(actual, expected) {
+		if !slices.Equal(actual, expected) {
 			t.Fatalf("unexpected columns for %s: got %v want %v", table, actual, expected)
 		}
 	}
