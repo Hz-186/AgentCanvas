@@ -125,7 +125,6 @@ func TestRunnerExecutesToolAndReturnsFinalAnswer(t *testing.T) {
 	result, err := runner.Run(context.Background(), RunRequest{
 		OwnerID:       1,
 		RunID:         2,
-		NodeID:        "agent",
 		Model:         "gpt-4",
 		Task:          "answer",
 		MaxIterations: 4,
@@ -439,7 +438,6 @@ func TestRunnerStopsForHumanApprovalBeforeHighRiskTool(t *testing.T) {
 	result, err := runner.Run(context.Background(), RunRequest{
 		OwnerID:       1,
 		RunID:         2,
-		NodeID:        "agent",
 		Model:         "test-model",
 		Task:          "call tool",
 		MaxIterations: 4,
@@ -554,9 +552,8 @@ func TestRunnerDoesNotCreateCheckpointWhenContextIsCanceled(t *testing.T) {
 
 	result, err := runner.Run(ctx, RunRequest{
 		OwnerID:       1,
-		WorkflowID:    2,
+		AgentID:       2,
 		RunID:         3,
-		NodeID:        "agent_loop",
 		Model:         "test-model",
 		Task:          "pause me",
 		MaxIterations: 2,
@@ -573,7 +570,7 @@ func TestRunnerCreatesV2CheckpointWhenPaused(t *testing.T) {
 	ctx, cancel := context.WithCancelCause(context.Background())
 	cancel(ErrRunPaused)
 	result, err := NewRunner(&fakeToolClient{}).Run(ctx, RunRequest{
-		OwnerID: 1, WorkflowID: 2, RunID: 3, NodeID: "agent_loop",
+		OwnerID: 1, AgentID: 2, RunID: 3,
 		Model: "test-model", Task: "pause me", MaxIterations: 2,
 	})
 	if err != nil {
@@ -1135,11 +1132,11 @@ func TestPlanExecuteModeInstruction(t *testing.T) {
 	}
 }
 
-func TestReflectModeInstruction(t *testing.T) {
-	req := RunRequest{Mode: "reflect"}
+func TestUnsupportedModeHasNoInstruction(t *testing.T) {
+	req := RunRequest{Mode: "unsupported"}
 	instr := modeInstruction(req)
-	if instr == "" {
-		t.Fatal("expected reflect instruction")
+	if instr != "" {
+		t.Fatalf("unsupported mode must not add instructions: %q", instr)
 	}
 }
 

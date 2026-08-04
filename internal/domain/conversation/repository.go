@@ -8,8 +8,6 @@ import (
 type Repository interface {
 	Create(ctx context.Context, item *Conversation) error
 	ListByOwner(ctx context.Context, ownerID int64) ([]Conversation, error)
-	ListByDialog(ctx context.Context, ownerID, dialogID int64) ([]Conversation, error)
-	ListByWorkflow(ctx context.Context, ownerID, workflowID int64) ([]Conversation, error)
 	FindByID(ctx context.Context, ownerID, id int64) (*Conversation, error)
 	Update(ctx context.Context, item *Conversation) error
 	UpdateLastMessageAt(ctx context.Context, ownerID, id int64) error

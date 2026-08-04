@@ -61,7 +61,7 @@ func validMemoryScope(scopeType string, scopeID, ownerID int64) bool {
 	switch scopeType {
 	case memory.ScopeUser:
 		return scopeID == 0 || scopeID == ownerID
-	case memory.ScopeAgent, memory.ScopeWorkflow, memory.ScopeConversation:
+	case memory.ScopeAgent, memory.ScopeConversation:
 		return scopeID > 0
 	default:
 		return false

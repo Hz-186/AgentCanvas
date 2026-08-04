@@ -5,13 +5,11 @@ import (
 	"fmt"
 	"time"
 
-	"agentcanvas/internal/domain/dialog"
 	"agentcanvas/internal/domain/knowledge"
 	"agentcanvas/internal/domain/memory"
 	"agentcanvas/internal/domain/resource"
 	"agentcanvas/internal/domain/skill"
 	"agentcanvas/internal/domain/tool"
-	"agentcanvas/internal/domain/workflow"
 )
 
 func invalidate(ctx context.Context, invalidator resource.Invalidator, ownerID int64, kind resource.Kind) {
@@ -78,66 +76,6 @@ func (r *ToolDefinitionRepository) SoftDelete(ctx context.Context, ownerID, id i
 		return err
 	}
 	invalidate(ctx, r.invalidator, ownerID, resource.KindHTTPTools)
-	return nil
-}
-
-type WorkflowRepository struct {
-	workflow.Repository
-	invalidator resource.Invalidator
-}
-
-func NewWorkflowRepository(next workflow.Repository, invalidator resource.Invalidator) *WorkflowRepository {
-	return &WorkflowRepository{Repository: next, invalidator: invalidator}
-}
-func (r *WorkflowRepository) Create(ctx context.Context, item *workflow.Workflow) error {
-	if err := r.Repository.Create(ctx, item); err != nil {
-		return err
-	}
-	invalidate(ctx, r.invalidator, item.OwnerID, resource.KindWorkflows)
-	return nil
-}
-func (r *WorkflowRepository) Update(ctx context.Context, item *workflow.Workflow) error {
-	if err := r.Repository.Update(ctx, item); err != nil {
-		return err
-	}
-	invalidate(ctx, r.invalidator, item.OwnerID, resource.KindWorkflows)
-	return nil
-}
-func (r *WorkflowRepository) SoftDelete(ctx context.Context, ownerID, id int64) error {
-	if err := r.Repository.SoftDelete(ctx, ownerID, id); err != nil {
-		return err
-	}
-	invalidate(ctx, r.invalidator, ownerID, resource.KindWorkflows)
-	return nil
-}
-
-type DialogRepository struct {
-	dialog.Repository
-	invalidator resource.Invalidator
-}
-
-func NewDialogRepository(next dialog.Repository, invalidator resource.Invalidator) *DialogRepository {
-	return &DialogRepository{Repository: next, invalidator: invalidator}
-}
-func (r *DialogRepository) Create(ctx context.Context, item *dialog.Dialog) error {
-	if err := r.Repository.Create(ctx, item); err != nil {
-		return err
-	}
-	invalidate(ctx, r.invalidator, item.OwnerID, resource.KindDialogs)
-	return nil
-}
-func (r *DialogRepository) Update(ctx context.Context, item *dialog.Dialog) error {
-	if err := r.Repository.Update(ctx, item); err != nil {
-		return err
-	}
-	invalidate(ctx, r.invalidator, item.OwnerID, resource.KindDialogs)
-	return nil
-}
-func (r *DialogRepository) SoftDelete(ctx context.Context, ownerID, id int64) error {
-	if err := r.Repository.SoftDelete(ctx, ownerID, id); err != nil {
-		return err
-	}
-	invalidate(ctx, r.invalidator, ownerID, resource.KindDialogs)
 	return nil
 }
 

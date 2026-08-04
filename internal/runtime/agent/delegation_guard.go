@@ -8,9 +8,8 @@ import (
 	"agentcanvas/internal/runtime/harness/hooks"
 )
 
-// CheckCallChain protects the legacy workflow caller and the dynamic
-// run_subagent bridge from cycles and excessive nesting. It is a guardrail,
-// not a Supervisor or a role registry.
+// CheckCallChain protects dynamic sub-Agent delegation from cycles and
+// excessive nesting. It is a guardrail, not a Supervisor or role registry.
 func CheckCallChain(callChain []int64, targetID int64, maxDepth int, currentDepth int) error {
 	for _, id := range callChain {
 		if id == targetID {
@@ -18,19 +17,17 @@ func CheckCallChain(callChain []int64, targetID int64, maxDepth int, currentDept
 		}
 	}
 	if maxDepth > 0 && currentDepth >= maxDepth {
-		return fmt.Errorf("max workflow call depth exceeded: current=%d max=%d", currentDepth, maxDepth)
+		return fmt.Errorf("max subagent depth exceeded: current=%d max=%d", currentDepth, maxDepth)
 	}
 	return nil
 }
 
-// CompactToolOutput remains a small compatibility helper for historical
-// workflow traces; tool execution itself is owned by toolruntime.
+// CompactToolOutput bounds tool payloads before they are stored in run traces.
 func CompactToolOutput(content string, maxBytes int) string {
 	return strutil.TruncateWithSuffix(content, maxBytes, "...[compressed]")
 }
 
-// RedactSensitiveFields is shared by legacy trace paths and the current hook
-// chain. It does not imply any Supervisor behavior.
+// RedactSensitiveFields is shared by trace paths and the current hook chain.
 func RedactSensitiveFields(raw json.RawMessage, fields []string) json.RawMessage {
 	return hooks.RedactSensitiveFields(raw, fields)
 }

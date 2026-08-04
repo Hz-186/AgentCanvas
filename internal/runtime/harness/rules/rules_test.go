@@ -28,14 +28,14 @@ func TestValidateRulesRequiresOptionalActivation(t *testing.T) {
 	}
 }
 
-func TestRuleSetHashRejectsTampering(t *testing.T) {
-	set, err := NewRuleSet([]Rule{{ID: "tenant.audit", Content: "keep an audit trail", Strength: RuleMandatory}}, 7, "3")
+func TestRuleSnapshotHashRejectsTampering(t *testing.T) {
+	snapshot, err := NewSnapshot([]Rule{{ID: "tenant.audit", Content: "keep an audit trail", Strength: RuleMandatory}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	set.Rules[0].Content = "tampered"
-	if err := VerifyRuleSet(set); err == nil || !strings.Contains(err.Error(), "mismatch") {
-		t.Fatalf("expected tampered rule set to fail verification, got %v", err)
+	snapshot.Rules[0].Content = "tampered"
+	if err := VerifySnapshot(snapshot); err == nil || !strings.Contains(err.Error(), "mismatch") {
+		t.Fatalf("expected tampered rule snapshot to fail verification, got %v", err)
 	}
 }
 

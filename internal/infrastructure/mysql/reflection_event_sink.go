@@ -5,18 +5,18 @@ import (
 	"encoding/json"
 	"time"
 
+	agentdomain "agentcanvas/internal/domain/agent"
 	"agentcanvas/internal/domain/reflection"
-	"agentcanvas/internal/domain/workflow"
 )
 
-// ReflectionEventSink projects Reflexion lifecycle events into the existing
-// workflow run event stream. The reflection domain only depends on EventSink,
+// ReflectionEventSink projects reflection lifecycle events into the Agent run
+// event stream. The reflection domain only depends on EventSink,
 // so a future event store can replace this projection without changing runtime code.
 type ReflectionEventSink struct {
-	events workflow.RunEventRepository
+	events agentdomain.RunEventRepository
 }
 
-func NewReflectionEventSink(events workflow.RunEventRepository) *ReflectionEventSink {
+func NewReflectionEventSink(events agentdomain.RunEventRepository) *ReflectionEventSink {
 	return &ReflectionEventSink{events: events}
 }
 
@@ -28,7 +28,7 @@ func (s *ReflectionEventSink) PublishReflectionEvent(ctx context.Context, event 
 	for key, value := range event.Payload {
 		payload[key] = value
 	}
-	payload["workflow_id"] = event.WorkflowID
+	payload["agent_id"] = event.AgentID
 	if !event.OccurredAt.IsZero() {
 		payload["occurred_at"] = event.OccurredAt
 	}
@@ -40,10 +40,8 @@ func (s *ReflectionEventSink) PublishReflectionEvent(ctx context.Context, event 
 	if createdAt.IsZero() {
 		createdAt = time.Now().UTC()
 	}
-	return s.events.Create(ctx, &workflow.RunEvent{
-		OwnerID: event.OwnerID, RunID: event.RunID, EventType: event.Type,
-		NodeID: event.NodeID, NodeType: "reflection", PayloadJSON: payloadJSON, CreatedAt: createdAt,
-	})
+	return s.events.Create(ctx, &agentdomain.RunEvent{OwnerID: event.OwnerID, RunID: event.RunID,
+		EventType: event.Type, PayloadJSON: payloadJSON, CreatedAt: createdAt})
 }
 
 var _ reflection.EventSink = (*ReflectionEventSink)(nil)

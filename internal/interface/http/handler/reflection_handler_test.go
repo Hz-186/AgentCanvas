@@ -18,7 +18,7 @@ type fakeReflectionHTTPService struct {
 	items        []reflection.Reflection
 	err          error
 	ownerID      int64
-	workflowID   int64
+	agentID      int64
 	runID        int64
 	reflectionID int64
 	status       string
@@ -27,13 +27,13 @@ type fakeReflectionHTTPService struct {
 	offset       int
 }
 
-func (f *fakeReflectionHTTPService) List(_ context.Context, ownerID, workflowID int64, status string, limit, offset int) ([]reflection.Reflection, error) {
-	f.ownerID, f.workflowID, f.status, f.limit, f.offset = ownerID, workflowID, status, limit, offset
+func (f *fakeReflectionHTTPService) List(_ context.Context, ownerID, agentID int64, status string, limit, offset int) ([]reflection.Reflection, error) {
+	f.ownerID, f.agentID, f.status, f.limit, f.offset = ownerID, agentID, status, limit, offset
 	return f.items, f.err
 }
 
-func (f *fakeReflectionHTTPService) SetStatus(_ context.Context, ownerID, workflowID, reflectionID int64, req reflectionusecase.UpdateStatusRequest) error {
-	f.ownerID, f.workflowID, f.reflectionID, f.status = ownerID, workflowID, reflectionID, req.Status
+func (f *fakeReflectionHTTPService) SetStatus(_ context.Context, ownerID, agentID, reflectionID int64, req reflectionusecase.UpdateStatusRequest) error {
+	f.ownerID, f.agentID, f.reflectionID, f.status = ownerID, agentID, reflectionID, req.Status
 	return f.err
 }
 
@@ -45,7 +45,7 @@ func (f *fakeReflectionHTTPService) Feedback(_ context.Context, ownerID, runID, 
 func TestReflectionHandlerRequiresAuthentication(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodGet, "/api/v1/workflows/20/reflections", nil)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/api/v1/agents/20/reflections", nil)
 	ctx.Params = gin.Params{{Key: "id", Value: "20"}}
 
 	NewReflectionHandler(&fakeReflectionHTTPService{}).List(ctx)
@@ -55,26 +55,26 @@ func TestReflectionHandlerRequiresAuthentication(t *testing.T) {
 	}
 }
 
-func TestReflectionHandlerListsOwnerScopedWorkflowItems(t *testing.T) {
-	service := &fakeReflectionHTTPService{items: []reflection.Reflection{{ID: 7, OwnerID: 1, WorkflowID: 20}}}
+func TestReflectionHandlerListsOwnerScopedAgentItems(t *testing.T) {
+	service := &fakeReflectionHTTPService{items: []reflection.Reflection{{ID: 7, OwnerID: 1, AgentID: 20}}}
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodGet, "/api/v1/workflows/20/reflections?status=active&limit=10&offset=2", nil)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/api/v1/agents/20/reflections?status=active&limit=10&offset=2", nil)
 	ctx.Params = gin.Params{{Key: "id", Value: "20"}}
 	ctx.Set("user_id", int64(1))
 
 	NewReflectionHandler(service).List(ctx)
 
-	if recorder.Code != http.StatusOK || service.ownerID != 1 || service.workflowID != 20 || service.status != "active" || service.limit != 10 || service.offset != 2 {
+	if recorder.Code != http.StatusOK || service.ownerID != 1 || service.agentID != 20 || service.status != "active" || service.limit != 10 || service.offset != 2 {
 		t.Fatalf("unexpected list forwarding: code=%d service=%+v body=%s", recorder.Code, service, recorder.Body.String())
 	}
 }
 
-func TestReflectionHandlerMapsCrossWorkflowStatusUpdateToForbidden(t *testing.T) {
+func TestReflectionHandlerMapsCrossAgentStatusUpdateToForbidden(t *testing.T) {
 	service := &fakeReflectionHTTPService{err: agenterrors.ErrForbidden}
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodPatch, "/api/v1/workflows/20/reflections/7", strings.NewReader(`{"status":"archived"}`))
+	ctx.Request = httptest.NewRequest(http.MethodPatch, "/api/v1/agents/20/reflections/7", strings.NewReader(`{"status":"archived"}`))
 	ctx.Request.Header.Set("Content-Type", "application/json")
 	ctx.Params = gin.Params{{Key: "id", Value: "20"}, {Key: "reflection_id", Value: "7"}}
 	ctx.Set("user_id", int64(1))

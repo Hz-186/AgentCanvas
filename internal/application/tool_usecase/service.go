@@ -6,7 +6,7 @@ import (
 	"strings"
 
 	"agentcanvas/internal/domain/tool"
-	runtimenode "agentcanvas/internal/runtime/node"
+	"agentcanvas/internal/runtime/toolruntime"
 
 	agenterrors "agentcanvas/internal/pkg/errors"
 )
@@ -112,7 +112,7 @@ func (s *Service) Test(ctx context.Context, ownerID, id int64, input map[string]
 		return nil, agenterrors.ErrInvalidInput
 	}
 	inputJSON, _ := json.Marshal(input)
-	output, err := runtimenode.ExecuteHTTPToolDefinition(ctx, item, inputJSON)
+	output, err := toolruntime.ExecuteHTTPDefinition(ctx, item, inputJSON)
 	if err != nil {
 		return nil, err
 	}

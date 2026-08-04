@@ -11,14 +11,12 @@ const (
 	KindSkills         Kind = "skills"
 	KindMemories       Kind = "memories"
 	KindHTTPTools      Kind = "http-tools"
-	KindWorkflows      Kind = "workflows"
-	KindDialogs        Kind = "dialogs"
 	KindKnowledgeBases Kind = "knowledge-bases"
 )
 
 func (k Kind) Valid() bool {
 	switch k {
-	case KindSkills, KindMemories, KindHTTPTools, KindWorkflows, KindDialogs, KindKnowledgeBases:
+	case KindSkills, KindMemories, KindHTTPTools, KindKnowledgeBases:
 		return true
 	default:
 		return false

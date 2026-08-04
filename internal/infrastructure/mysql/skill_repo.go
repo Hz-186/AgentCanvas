@@ -28,7 +28,7 @@ func (r *SkillRepository) Create(ctx context.Context, item *skill.Skill) error {
 		if err := tx.Create(item).Error; err != nil {
 			return err
 		}
-		return enqueueContextResource(ctx, tx, item.OwnerID, 0, contextresource.TypeSkill, item.ID, contextresource.OperationUpsert, skillContextText(*item))
+		return enqueueContextResource(ctx, tx, item.OwnerID, 0, 0, contextresource.TypeSkill, item.ID, contextresource.OperationUpsert, skillContextText(*item))
 	})
 }
 
@@ -38,7 +38,7 @@ func (r *SkillRepository) Update(ctx context.Context, item *skill.Skill) error {
 		if err := tx.Save(item).Error; err != nil {
 			return err
 		}
-		return enqueueContextResource(ctx, tx, item.OwnerID, 0, contextresource.TypeSkill, item.ID, contextresource.OperationUpsert, skillContextText(*item))
+		return enqueueContextResource(ctx, tx, item.OwnerID, 0, 0, contextresource.TypeSkill, item.ID, contextresource.OperationUpsert, skillContextText(*item))
 	})
 }
 
@@ -82,6 +82,6 @@ func (r *SkillRepository) SoftDelete(ctx context.Context, ownerID, id int64) err
 		if result.Error != nil || result.RowsAffected == 0 {
 			return result.Error
 		}
-		return enqueueContextResource(ctx, tx, ownerID, 0, contextresource.TypeSkill, id, contextresource.OperationDelete, "")
+		return enqueueContextResource(ctx, tx, ownerID, 0, 0, contextresource.TypeSkill, id, contextresource.OperationDelete, "")
 	})
 }

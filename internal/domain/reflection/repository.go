@@ -18,9 +18,7 @@ const (
 
 type CandidateQuery struct {
 	OwnerID       int64
-	WorkflowID    int64
 	AgentID       int64
-	NodeID        string
 	Mode          string
 	IncludeGlobal bool
 	Limit         int
@@ -36,7 +34,7 @@ type Repository interface {
 	FindByID(context.Context, int64, int64) (*Reflection, error)
 	FindActiveByHash(context.Context, int64, int64, string) (*Reflection, error)
 	ListCandidates(context.Context, CandidateQuery) ([]Reflection, error)
-	ListByWorkflow(context.Context, int64, int64, string, int, int) ([]Reflection, error)
+	ListByAgent(context.Context, int64, int64, string, int, int) ([]Reflection, error)
 	MarkRecalled(context.Context, int64, []int64) error
 	UpdateUsefulness(context.Context, int64, int64, string) error
 	SetStatus(context.Context, int64, int64, string) error
@@ -109,10 +107,8 @@ type EventSink interface {
 
 type RecallRequest struct {
 	OwnerID             int64
-	WorkflowID          int64
 	AgentID             int64
 	RunID               int64
-	NodeID              string
 	Mode                string
 	Task                string
 	EmbeddingProviderID int64

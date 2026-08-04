@@ -41,24 +41,21 @@ const (
 )
 
 type RunRequest struct {
-	OwnerID           int64
-	WorkflowID        int64
-	AgentID           int64
-	AgentReleaseID    int64
-	RunID             int64
-	NodeID            string
-	CallDepth         int
-	WorkflowCallChain []int64
-	ConversationID    *int64
-	Provider          llm.ChatProviderConfig
-	Model             string
-	Mode              string
-	Plan              *Plan
-	SystemPrompt      string
-	Task              string
+	OwnerID         int64
+	AgentID         int64
+	AgentReleaseID  int64
+	RunID           int64
+	DelegationDepth int
+	ConversationID  *int64
+	Provider        llm.ChatProviderConfig
+	Model           string
+	Mode            string
+	Plan            *Plan
+	SystemPrompt    string
+	Task            string
 	// EnforceContextPrecedence adds the runtime guardrail that treats the
 	// latest user request/transcript as authoritative over advisory memory.
-	// It is enabled by the workflow-independent Runtime; low-level assembler
+	// It is enabled by the Agent Runtime; low-level assembler
 	// callers may leave it disabled for backwards-compatible composition.
 	EnforceContextPrecedence   bool
 	ReflectionEnabled          bool
@@ -79,9 +76,7 @@ type RunRequest struct {
 	MaxRuleTokens              int
 	RuleTags                   []string
 	RuleRiskLevel              string
-	RuleSetVersion             string
-	RuleSetID                  int64
-	RuleSetHash                string
+	RuleHash                   string
 	Rules                      []rules.Rule
 	RuleTrace                  rules.Trace
 	ContextBlocks              []ContextBlock
@@ -196,9 +191,7 @@ type Checkpoint struct {
 	Plan                  *Plan             `json:"plan,omitempty"`
 	ReflectionPolicy      reflection.Policy `json:"reflection_policy,omitempty"`
 	RecalledReflectionIDs []int64           `json:"recalled_reflection_ids,omitempty"`
-	RuleSetVersion        string            `json:"rule_set_version,omitempty"`
-	RuleSetID             int64             `json:"rule_set_id,omitempty"`
-	RuleSetHash           string            `json:"rule_set_hash,omitempty"`
+	RuleHash              string            `json:"rule_hash,omitempty"`
 	Rules                 []rules.Rule      `json:"rules,omitempty"`
 	Interaction           *Interaction      `json:"interaction,omitempty"`
 }
@@ -227,9 +220,7 @@ type ContextTrace struct {
 	Blocks                 []ContextBlockTrace `json:"blocks,omitempty"`
 	RuleRounds             []RuleRoundTrace    `json:"rule_rounds,omitempty"`
 	RuleBudget             RuleBudget          `json:"rule_budget,omitempty"`
-	RuleSetVersion         string              `json:"rule_set_version,omitempty"`
-	RuleSetID              int64               `json:"rule_set_id,omitempty"`
-	RuleSetHash            string              `json:"rule_set_hash,omitempty"`
+	RuleHash               string              `json:"rule_hash,omitempty"`
 	CoreOverflow           bool                `json:"core_overflow,omitempty"`
 	MandatoryTokens        int                 `json:"mandatory_tokens,omitempty"`
 	MandatoryBudgetTokens  int                 `json:"mandatory_budget_tokens,omitempty"`

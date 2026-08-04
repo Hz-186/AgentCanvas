@@ -22,7 +22,6 @@ const (
 const (
 	ScopeUser         = "user"
 	ScopeAgent        = "agent"
-	ScopeWorkflow     = "workflow"
 	ScopeConversation = "conversation"
 
 	StatusActive     = "active"
@@ -117,7 +116,6 @@ type RecallLog struct {
 	ID             int64           `json:"id" gorm:"primaryKey;column:id"`
 	OwnerID        int64           `json:"owner_id" gorm:"column:owner_id"`
 	AgentID        int64           `json:"agent_id" gorm:"column:agent_id"`
-	WorkflowID     int64           `json:"workflow_id" gorm:"column:workflow_id"`
 	ConversationID int64           `json:"conversation_id" gorm:"column:conversation_id"`
 	RunID          int64           `json:"run_id" gorm:"column:run_id"`
 	Query          string          `json:"query" gorm:"column:query"`

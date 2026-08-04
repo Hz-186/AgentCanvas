@@ -1,36 +1,16 @@
 import { api, request } from './client';
-import { streamGet, streamPost, type SSEMessage } from './sse';
+import { streamGet, type SSEMessage } from './sse';
 import type {
   AgentReflection,
-  Workflow,
-  WorkflowProfile,
   ReflectionStatus,
-  WorkflowRule,
-  WorkflowRuleSet,
-  WorkflowTeam,
-  WorkflowTeamMember,
   ApprovalRequest,
   AgentDocument,
   ApiToken,
   ApiTokenCreated,
   AuditLog,
-  ChatRequest,
-  ChatResponse,
-  Conversation,
-  ConversationCompaction,
-  Dialog,
-  EvalCase,
-  EvalDataset,
-  EvalResult,
-  EvalRun,
-  EvalTrend,
-  CreateWorkflowRequest,
-  CreateEvalCaseRequest,
-  CreateEvalDatasetRequest,
-  CreateFlowVersionRequest,
+	Conversation,
   CreateProviderRequest,
   DocumentChunk,
-  FlowVersion,
   IngestionJob,
   KnowledgeBase,
   Message,
@@ -41,18 +21,12 @@ import type {
   ProviderCatalog,
   RetrievalResponse,
   Run,
-  RunWorkflowRequest,
-  RunEvalDatasetRequest,
-  RunEvalDatasetResponse,
   RunEvent,
   RunTrace,
   RunStep,
-  NodeLog,
   Memory,
 	MemoryRecallLog,
-  MemoryWriteLog,
   ToolDefinition,
-  ToolInvocation,
   ToolPack,
   ToolPackItem,
   ToolPolicy,
@@ -60,8 +34,6 @@ import type {
   CreateSkillRequest,
   UpdateSkillRequest,
   SkillValidationResult,
-  UpdateWorkflowRequest,
-  UpdateWorkflowProfileRequest,
   UpdateProviderRequest,
   UploadDocumentResponse,
   ResourceSummaryKind,
@@ -98,6 +70,13 @@ export const agentApi = {
   listChangeProposals: (id: number, status?: ChangeProposal['status']) => api.get<ChangeProposal[]>(`/agents/${id}/change-proposals`, status ? { status } : undefined),
   approveChangeProposal: (id: number, note?: string) => api.post<ChangeProposal>(`/agent-change-proposals/${id}/approve`, { note }),
   rejectChangeProposal: (id: number, note?: string) => api.post<ChangeProposal>(`/agent-change-proposals/${id}/reject`, { note }),
+  listReflections: (id: number, status?: ReflectionStatus) =>
+    api.get<AgentReflection[]>(`/agents/${id}/reflections`, status ? { status } : undefined),
+  setReflectionStatus: (
+    id: number,
+    reflectionId: number,
+    status: Extract<ReflectionStatus, 'active' | 'validated' | 'disputed' | 'archived'>,
+  ) => api.patch<{ success: boolean }>(`/agents/${id}/reflections/${reflectionId}`, { status }),
 };
 
 export const resourceSummaryApi = {
@@ -105,87 +84,20 @@ export const resourceSummaryApi = {
     api.get<ResourceSummaryPage>(`/resource-summaries/${kind}`, params),
 };
 
-export const workflowApi = {
-  list: () => api.get<Workflow[]>('/workflows'),
-  get: (id: number) => api.get<Workflow>(`/workflows/${id}`),
-  getProfile: (id: number) => api.get<WorkflowProfile>(`/workflows/${id}/profile`),
-  updateProfile: (id: number, body: UpdateWorkflowProfileRequest) => api.patch<WorkflowProfile>(`/workflows/${id}/profile`, body),
-  listReflections: (id: number, status?: ReflectionStatus) =>
-    api.get<AgentReflection[]>(`/workflows/${id}/reflections`, status ? { status } : undefined),
-  setReflectionStatus: (
-    id: number,
-    reflectionId: number,
-    status: Extract<ReflectionStatus, 'active' | 'validated' | 'disputed' | 'archived'>,
-  ) => api.patch<{ success: boolean }>(`/workflows/${id}/reflections/${reflectionId}`, { status }),
-  feedbackReflection: (id: number, reflectionId: number, verdict: 'helpful' | 'harmful', note?: string) =>
-    api.post<{ success: boolean }>(`/runs/${id}/reflections/${reflectionId}/feedback`, { verdict, note }),
-  listRuleSets: (id: number) => api.get<WorkflowRuleSet[]>(`/workflows/${id}/rule-sets`),
-  getRuleSet: (id: number, ruleSetId: number) => api.get<WorkflowRuleSet>(`/workflows/${id}/rule-sets/${ruleSetId}`),
-  createRuleSet: (id: number, body: { clone_from_rule_set_id?: number; rules?: WorkflowRule[] }) => api.post<WorkflowRuleSet>(`/workflows/${id}/rule-sets`, body),
-  updateRuleSet: (id: number, ruleSetId: number, body: { expected_revision: number; rules: WorkflowRule[] }) => api.patch<WorkflowRuleSet>(`/workflows/${id}/rule-sets/${ruleSetId}`, body),
-	publishRuleSet: (id: number, ruleSetId: number, expectedRevision: number) => api.post<WorkflowRuleSet>(`/workflows/${id}/rule-sets/${ruleSetId}/publish`, { expected_revision: expectedRevision }),
-	rollbackRuleSet: (id: number, ruleSetId: number) => api.post<WorkflowRuleSet>(`/workflows/${id}/rule-sets/${ruleSetId}/rollback`),
-  create: (body: CreateWorkflowRequest) => api.post<Workflow>('/workflows', body),
-  update: (id: number, body: UpdateWorkflowRequest) => api.patch<Workflow>(`/workflows/${id}`, body),
-  remove: (id: number) => api.delete<{ success: boolean }>(`/workflows/${id}`),
-  createConversation: (id: number, title?: string) => api.post<Conversation>(`/workflows/${id}/conversations`, { title }),
-  listConversations: (id: number) => api.get<Conversation[]>(`/workflows/${id}/conversations`),
-  getConversation: (id: number, conversationId: number) => api.get<Conversation>(`/workflows/${id}/conversations/${conversationId}`),
-  listConversationMessages: (id: number, conversationId: number) => api.get<Message[]>(`/workflows/${id}/conversations/${conversationId}/messages`),
-  removeConversation: (id: number, conversationId: number) => api.delete<{ success: boolean }>(`/workflows/${id}/conversations/${conversationId}`),
-  streamConversationMessage: (
-    id: number,
-    conversationId: number,
-    body: { question: string; flow_version_id?: number; input?: Record<string, unknown> },
-    handlers: { onMessage: (msg: SSEMessage) => void; onError?: (err: Error) => void; signal?: AbortSignal },
-  ) => streamPost(`/workflows/${id}/conversations/${conversationId}/messages/stream`, { body, ...handlers }) as Promise<void>,
-  createEvalDataset: (agentId: number, body: CreateEvalDatasetRequest) =>
-    api.post<EvalDataset>(`/workflows/${agentId}/eval-datasets`, body),
-  listEvalDatasets: (agentId: number) => api.get<EvalDataset[]>(`/workflows/${agentId}/eval-datasets`),
-  createEvalCase: (datasetId: number, body: CreateEvalCaseRequest) =>
-    api.post<EvalCase>(`/eval-datasets/${datasetId}/cases`, body),
-  listEvalCases: (datasetId: number) => api.get<EvalCase[]>(`/eval-datasets/${datasetId}/cases`),
-  runEvalDataset: (datasetId: number, body: RunEvalDatasetRequest = {}) =>
-    api.post<RunEvalDatasetResponse>(`/eval-datasets/${datasetId}/runs`, body),
-  listEvalRuns: (datasetId: number) => api.get<EvalRun[]>(`/eval-datasets/${datasetId}/runs`),
-  getEvalTrend: (datasetId: number) => api.get<EvalTrend>(`/eval-datasets/${datasetId}/trend`),
-  listEvalResults: (evalRunId: number) => api.get<EvalResult[]>(`/eval-runs/${evalRunId}/results`),
-  createFlowVersion: (agentId: number, body: CreateFlowVersionRequest) =>
-    api.post<FlowVersion>(`/workflows/${agentId}/flow-versions`, body),
-  listFlowVersions: (agentId: number) => api.get<FlowVersion[]>(`/workflows/${agentId}/flow-versions`),
-  getFlowVersion: (id: number) => api.get<FlowVersion>(`/flow-versions/${id}`),
-  publishFlowVersion: (id: number) => api.post<FlowVersion>(`/flow-versions/${id}/publish`),
-  validateFlowVersion: (id: number) => api.post<{ valid: boolean }>(`/flow-versions/${id}/validate`),
-  run: (agentId: number, body: RunWorkflowRequest) => api.post<{ run: Run; output: Record<string, unknown> }>(`/workflows/${agentId}/runs`, body),
-  streamRun: (
-    agentId: number,
-    body: RunWorkflowRequest,
-    handlers: { onMessage: (msg: SSEMessage) => void; onError?: (err: Error) => void; signal?: AbortSignal },
-  ) => streamPost(`/workflows/${agentId}/runs/stream`, { body, ...handlers }),
+export const runApi = {
   getRun: (id: number) => api.get<Run>(`/runs/${id}`),
   listRunEvents: (id: number) => api.get<RunEvent[]>(`/runs/${id}/events`),
   listChildRuns: (id: number) => api.get<Run[]>(`/runs/${id}/children`),
-  listNodeLogs: (id: number) => api.get<NodeLog[]>(`/runs/${id}/node-logs`),
   listRunSteps: (id: number) => api.get<RunStep[]>(`/runs/${id}/steps`),
-  listMemoryWriteLogs: (id: number) => api.get<MemoryWriteLog[]>(`/runs/${id}/memory-write-logs`),
-  listToolInvocations: (id: number) => api.get<ToolInvocation[]>(`/runs/${id}/tool-invocations`),
   getRunTrace: (id: number) => api.get<RunTrace>(`/runs/${id}/trace`),
   cancelRun: (id: number) => api.post<Run>(`/runs/${id}/cancel`),
-  pauseRun: (id: number) => api.post<Run>(`/runs/${id}/pause`),
   resumeRun: (id: number) => api.post<Run>(`/runs/${id}/resume`),
+  feedbackReflection: (runId: number, reflectionId: number, verdict: 'helpful' | 'harmful', note?: string) =>
+    api.post<{ success: boolean }>(`/runs/${runId}/reflections/${reflectionId}/feedback`, { verdict, note }),
   listApprovalRequests: (status?: 'pending' | 'approved' | 'rejected') =>
     api.get<ApprovalRequest[]>('/approval-requests', status ? { status } : undefined),
   approveRequest: (id: number, note?: string) => api.post<ApprovalRequest>(`/approval-requests/${id}/approve`, { note }),
   rejectRequest: (id: number, note?: string) => api.post<ApprovalRequest>(`/approval-requests/${id}/reject`, { note }),
-  listTeams: () => api.get<WorkflowTeam[]>('/workflow-teams'),
-  createTeam: (body: { name: string; supervisor_workflow_id: number; handoff_strategy?: string; max_depth?: number }) =>
-    api.post<WorkflowTeam>('/workflow-teams', body),
-  removeTeam: (id: number) => api.delete<{ success: boolean }>(`/workflow-teams/${id}`),
-  listTeamMembers: (teamId: number) => api.get<WorkflowTeamMember[]>(`/workflow-teams/${teamId}/members`),
-  addTeamMember: (teamId: number, body: { workflow_id: number; role?: string }) =>
-    api.post<WorkflowTeamMember>(`/workflow-teams/${teamId}/members`, body),
-  removeTeamMember: (teamId: number, agentId: number) =>
-    api.delete<{ success: boolean }>(`/workflow-teams/${teamId}/members/${agentId}`),
 };
 
 export const knowledgeApi = {
@@ -242,42 +154,6 @@ export const knowledgeApi = {
   deleteDocument: (documentId: number) => api.delete<{ success: boolean }>(`/documents/${documentId}`),
   search: (kbId: number, body: { query: string; top_k?: number; mode?: string }) =>
     api.post<RetrievalResponse>(`/knowledge-bases/${kbId}/search`, body),
-};
-
-export const chatApi = {
-  chat: (dialogId: number, body: ChatRequest) => api.post<ChatResponse>(`/dialogs/${dialogId}/rag/chat`, body),
-  stream: (
-    dialogId: number,
-    body: ChatRequest,
-    handlers: { onMessage: (msg: SSEMessage) => void; onError?: (err: Error) => void; signal?: AbortSignal },
-  ) => streamPost(`/dialogs/${dialogId}/rag/chat/stream`, { body, ...handlers }),
-};
-
-export const dialogApi = {
-  list: () => api.get<Dialog[]>('/dialogs'),
-  get: (id: number) => api.get<Dialog>(`/dialogs/${id}`),
-  create: (body: {
-    name: string;
-    description?: string;
-    provider_id?: number;
-    model?: string;
-    system_prompt?: string;
-    prologue?: string;
-    kb_ids?: number[];
-    top_k?: number;
-    retrieval_mode?: string;
-    history_round_limit?: number;
-  }) => api.post<Dialog>('/dialogs', body),
-  update: (id: number, body: Partial<Dialog>) => api.patch<Dialog>(`/dialogs/${id}`, body),
-  remove: (id: number) => api.delete<{ success: boolean }>(`/dialogs/${id}`),
-};
-
-export const conversationApi = {
-  list: (dialogId: number) => api.get<Conversation[]>(`/dialogs/${dialogId}/conversations`),
-  get: (dialogId: number, id: number) => api.get<Conversation>(`/dialogs/${dialogId}/conversations/${id}`),
-  listMessages: (dialogId: number, id: number) => api.get<Message[]>(`/dialogs/${dialogId}/conversations/${id}/messages`),
-  remove: (dialogId: number, id: number) => api.delete<{ success: boolean }>(`/dialogs/${dialogId}/conversations/${id}`),
-  compact: (id: number, body: { provider_id: number; model?: string; compact_prompt?: string; through_message_id?: number }) => api.post<ConversationCompaction>(`/conversations/${id}/compact`, body),
 };
 
 export const settingsApi = {

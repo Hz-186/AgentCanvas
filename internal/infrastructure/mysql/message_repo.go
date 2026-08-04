@@ -30,11 +30,11 @@ func (r *MessageRepository) Create(ctx context.Context, message *conversation.Me
 		if err := tx.Create(message).Error; err != nil {
 			return err
 		}
-		workflowID := int64(0)
-		if err := tx.Raw("SELECT COALESCE(workflow_id, 0) FROM conversations WHERE owner_id = ? AND id = ?", message.OwnerID, message.ConversationID).Scan(&workflowID).Error; err != nil {
+		agentID := int64(0)
+		if err := tx.Raw("SELECT COALESCE(agent_id, 0) FROM conversations WHERE owner_id = ? AND id = ?", message.OwnerID, message.ConversationID).Scan(&agentID).Error; err != nil {
 			return err
 		}
-		if err := enqueueContextResource(ctx, tx, message.OwnerID, workflowID, contextresource.TypeConversationMessage, message.ID, contextresource.OperationUpsert, messageContextText(*message)); err != nil {
+		if err := enqueueContextResource(ctx, tx, message.OwnerID, agentID, message.ConversationID, contextresource.TypeConversationMessage, message.ID, contextresource.OperationUpsert, messageContextText(*message)); err != nil {
 			return err
 		}
 		return syncConversationMessageJSON(ctx, tx, message.OwnerID, message.ConversationID, message.CreatedAt)
@@ -97,7 +97,7 @@ func (r *MessageRepository) ArchiveConversationMessagesThrough(ctx context.Conte
 		}
 		affected = result.RowsAffected
 		for i := range messages {
-			if err := enqueueContextResource(ctx, tx, ownerID, 0, contextresource.TypeConversationMessage, messages[i].ID, contextresource.OperationDelete, ""); err != nil {
+			if err := enqueueContextResource(ctx, tx, ownerID, 0, messages[i].ConversationID, contextresource.TypeConversationMessage, messages[i].ID, contextresource.OperationDelete, ""); err != nil {
 				return err
 			}
 		}

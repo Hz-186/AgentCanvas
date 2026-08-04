@@ -108,7 +108,6 @@ html[data-theme='light'] {
   --glass-highlight: rgba(255, 255, 255, 0.8);
   --tech-line: rgba(82, 91, 130, 0.065);
   --tech-line-strong: rgba(82, 91, 130, 0.11);
-  --canvas-grid: rgba(91, 103, 151, 0.22);
 
   /* 文本 */
   --text-primary: #102a34;
@@ -136,10 +135,9 @@ html[data-theme='light'] {
   --engineering-surface-hover: #e7f3f5;
   --engineering-control: #e1eff2;
   --engineering-control-hover: #d4e9ed;
-  --engineering-canvas: #e9f5f7;
-  --engineering-canvas-surface: #f2fafb;
-  --engineering-node: #dceef2;
-  --engineering-node-subtle: #e8f5f7;
+  --engineering-chat-surface: #f2fafb;
+  --engineering-card: #dceef2;
+  --engineering-card-subtle: #e8f5f7;
   --engineering-divider: #88aab3;
   --engineering-edge: #5d8590;
   --engineering-grid: #789ba4;
@@ -178,7 +176,6 @@ html[data-theme='dark'] {
   --glass-highlight: rgba(255, 255, 255, 0.08);
   --tech-line: rgba(188, 201, 210, 0.055);
   --tech-line-strong: rgba(188, 201, 210, 0.1);
-  --canvas-grid: rgba(181, 195, 204, 0.14);
 
   --text-primary: #e9fbff;
   --text-secondary: #a1bbc4;
@@ -202,10 +199,9 @@ html[data-theme='dark'] {
   --engineering-surface-hover: #102732;
   --engineering-control: #14303a;
   --engineering-control-hover: #1b3a46;
-  --engineering-canvas: #071820;
-  --engineering-canvas-surface: #081a22;
-  --engineering-node: #173541;
-  --engineering-node-subtle: #102932;
+  --engineering-chat-surface: #081a22;
+  --engineering-card: #173541;
+  --engineering-card-subtle: #102932;
   --engineering-divider: #354f5a;
   --engineering-edge: #6f9ba6;
   --engineering-grid: #587985;

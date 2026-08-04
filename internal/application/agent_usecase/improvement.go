@@ -16,9 +16,8 @@ import (
 	"agentcanvas/internal/domain/memory"
 	"agentcanvas/internal/domain/reflection"
 	"agentcanvas/internal/domain/skill"
-	"agentcanvas/internal/domain/workflow"
 	"agentcanvas/internal/infrastructure/llm"
-	runtimenode "agentcanvas/internal/runtime/node"
+	agentruntime "agentcanvas/internal/runtime/agentruntime"
 )
 
 const (
@@ -32,7 +31,7 @@ type TurnReviewEnqueuer interface {
 }
 
 type ImprovementProviderLoader interface {
-	LoadChatProviderConfig(ctx context.Context, ownerID, providerID int64, model string) (*runtimenode.LoadedProvider, error)
+	LoadChatProviderConfig(ctx context.Context, ownerID, providerID int64, model string) (*agentruntime.LoadedProvider, error)
 }
 
 type ImprovementService struct {
@@ -40,7 +39,7 @@ type ImprovementService struct {
 	agents           agentdomain.Repository
 	turns            agentdomain.TurnRepository
 	messages         conversation.MessageRepository
-	steps            workflow.RunStepRepository
+	steps            agentdomain.RunStepRepository
 	memories         memory.Repository
 	memoryCommands   memory.Commander
 	reflections      reflection.Repository
@@ -62,7 +61,7 @@ func (s *ImprovementService) ConfigureMemoryCommands(commands memory.Commander) 
 }
 
 func NewImprovementService(repository agentdomain.ImprovementRepository, agents agentdomain.Repository, turns agentdomain.TurnRepository,
-	messages conversation.MessageRepository, steps workflow.RunStepRepository, memories memory.Repository, reflections reflection.Repository,
+	messages conversation.MessageRepository, steps agentdomain.RunStepRepository, memories memory.Repository, reflections reflection.Repository,
 	skills skill.Repository, providers ImprovementProviderLoader, client llm.ToolCallingClient, memoryMode string) *ImprovementService {
 	mode := strings.ToLower(strings.TrimSpace(memoryMode))
 	if mode != MemoryReviewOff && mode != MemoryReviewAuto {
@@ -352,8 +351,8 @@ func (s *ImprovementService) applyProposal(ctx context.Context, proposal *agentd
 		return err
 	case agentdomain.ProposalKindReflection:
 		agentID := proposal.AgentID
-		return s.reflections.Create(ctx, &reflection.Reflection{OwnerID: proposal.OwnerID, WorkflowID: -proposal.AgentID, AgentID: &agentID,
-			NodeID: "agent", SourceRunID: proposal.RunID, Scope: reflection.ScopeAgent, Kind: reflection.KindImportantStrategy,
+		return s.reflections.Create(ctx, &reflection.Reflection{OwnerID: proposal.OwnerID, AgentID: agentID,
+			SourceRunID: proposal.RunID, Scope: reflection.ScopeAgent, Kind: reflection.KindImportantStrategy,
 			Status: reflection.StatusCandidate, Mode: "react", TriggerType: "self_improvement_review", TaskSummary: proposal.Title,
 			CorrectiveAction: proposal.Content, Lesson: proposal.Content, Applicability: "agent", EvidenceJSON: proposal.EvidenceJSON,
 			Importance: proposal.Confidence, Confidence: proposal.Confidence, ContentHash: proposal.Checksum})

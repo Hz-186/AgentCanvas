@@ -1,4 +1,4 @@
-.PHONY: dev dev-v1 dev-v2 run worker backfill-agents backfill-context-index build build-web typecheck-web test-web docker-up docker-down tidy test migrate lint fmt verify clean
+.PHONY: dev dev-v1 dev-v2 run worker backfill-context-index build build-web typecheck-web test-web docker-up docker-down tidy test migrate lint fmt verify clean
 
 dev:
 	./scripts/dev.sh
@@ -23,9 +23,6 @@ test-web:
 
 worker: migrate
 	go run ./cmd/worker
-
-backfill-agents: migrate
-	go run ./cmd/backfill-agents
 
 backfill-context-index: migrate
 	go run ./cmd/backfill-context-index
@@ -55,7 +52,7 @@ verify:
 	./scripts/verify.sh
 
 verify-tables:
-	@declared=$$(grep -h 'CREATE TABLE IF NOT EXISTS ' migrations/*.up.sql 2>/dev/null | sed 's/CREATE TABLE IF NOT EXISTS //' | sed 's/ (.*//' | sort -u); \
+	@declared=$$(grep -h '^CREATE TABLE ' migrations/*.up.sql 2>/dev/null | sed 's/^CREATE TABLE //' | sed 's/ (.*//' | tr -d '\140' | sort -u); \
 	dropped=$$(grep -h 'DROP TABLE IF EXISTS ' migrations/*.up.sql 2>/dev/null | sed 's/DROP TABLE IF EXISTS //' | sed 's/;//' | sort -u); \
 	active_declared=""; \
 	for table in $$declared; do \

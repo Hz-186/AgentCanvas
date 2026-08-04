@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"agentcanvas/internal/domain/conversation"
-	"agentcanvas/internal/domain/workflow"
 )
 
 var ErrNoTurnAvailable = errors.New("no agent turn available")
@@ -28,8 +27,8 @@ type Repository interface {
 
 type TurnRepository interface {
 	Create(ctx context.Context, item *Turn) error
-	CreateWithArtifacts(ctx context.Context, item *Turn, userMessage *conversation.Message, run *workflow.Run) error
-	CompleteWithMessage(ctx context.Context, item *Turn, assistantMessage *conversation.Message, run *workflow.Run) error
+	CreateWithArtifacts(ctx context.Context, item *Turn, userMessage *conversation.Message, run *Run) error
+	CompleteWithMessage(ctx context.Context, item *Turn, assistantMessage *conversation.Message, run *Run) error
 	FindByID(ctx context.Context, ownerID, id int64) (*Turn, error)
 	FindByIdempotencyKey(ctx context.Context, ownerID, conversationID int64, key string) (*Turn, error)
 	FindByRunID(ctx context.Context, ownerID, runID int64) (*Turn, error)
@@ -41,6 +40,34 @@ type TurnRepository interface {
 	ListExpiredRunning(ctx context.Context, before time.Time, limit int) ([]Turn, error)
 	RequeueExpired(ctx context.Context, turnID int64, retryAt time.Time, reason string) error
 	PauseExpired(ctx context.Context, turnID int64, reason string) error
+}
+
+type RunRepository interface {
+	Create(context.Context, *Run) error
+	FindByID(context.Context, int64, int64) (*Run, error)
+	ListByParent(context.Context, int64, int64) ([]Run, error)
+	Update(context.Context, *Run) error
+}
+
+type RunEventRepository interface {
+	Create(context.Context, *RunEvent) error
+	ListByRun(context.Context, int64, int64) ([]RunEvent, error)
+}
+
+type RunStepRepository interface {
+	Create(context.Context, *RunStep) error
+	ListByRun(context.Context, int64, int64) ([]RunStep, error)
+}
+
+type ApprovalRepository interface {
+	CreateApprovalRequest(context.Context, *ApprovalRequest) error
+	FindApprovalRequestByID(context.Context, int64, int64) (*ApprovalRequest, error)
+	FindPendingApprovalByRun(context.Context, int64, int64) (*ApprovalRequest, error)
+	ListApprovalRequests(context.Context, int64, string) ([]ApprovalRequest, error)
+	DecideApprovalAndClaimResume(context.Context, *ApprovalRequest) error
+	CreateCheckpoint(context.Context, *RunCheckpoint) error
+	FindLatestCheckpointByRun(context.Context, int64, int64) (*RunCheckpoint, error)
+	ClaimResume(context.Context, int64, int64) error
 }
 
 type ImprovementRepository interface {

@@ -2,7 +2,6 @@ package handler
 
 import (
 	authusecase "agentcanvas/internal/application/auth_usecase"
-	"agentcanvas/internal/domain/workflow"
 	agenterrors "agentcanvas/internal/pkg/errors"
 	"agentcanvas/internal/pkg/response"
 	"errors"
@@ -200,8 +199,6 @@ func writeAppError(c *gin.Context, err error) {
 	case errors.Is(err, agenterrors.ErrNotFound):
 		response.Error(c, http.StatusNotFound, agenterrors.CodeNotFound, err.Error())
 	case errors.Is(err, agenterrors.ErrConflict):
-		response.Error(c, http.StatusConflict, agenterrors.CodeBadRequest, err.Error())
-	case errors.Is(err, workflow.ErrRuleSetConflict), errors.Is(err, workflow.ErrRuleSetImmutable):
 		response.Error(c, http.StatusConflict, agenterrors.CodeBadRequest, err.Error())
 	default:
 		response.Error(c, http.StatusInternalServerError, agenterrors.CodeInternal, err.Error())

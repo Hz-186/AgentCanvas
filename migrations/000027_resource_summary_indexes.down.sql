@@ -1,6 +1,0 @@
-DROP INDEX idx_skills_owner_deleted_updated_id ON skills;
-DROP INDEX idx_memories_owner_deleted_updated_id ON memories;
-DROP INDEX idx_tool_definitions_owner_deleted_updated_id ON tool_definitions;
-DROP INDEX idx_dialogs_owner_deleted_updated_id ON dialogs;
-DROP INDEX idx_workflows_owner_deleted_id ON workflows;
-DROP INDEX idx_knowledge_bases_owner_deleted_id ON knowledge_bases;

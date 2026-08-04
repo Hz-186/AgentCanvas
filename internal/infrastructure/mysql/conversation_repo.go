@@ -24,7 +24,7 @@ func (r *ConversationRepository) Create(ctx context.Context, item *conversation.
 	item.UpdatedAt = now
 	normalizeConversation(item)
 	if item.Source == "" {
-		item.Source = conversation.SourceRAGChat
+		item.Source = conversation.SourceAgent
 	}
 	if err := r.db.WithContext(ctx).Create(item).Error; err != nil {
 		return err
@@ -37,30 +37,6 @@ func (r *ConversationRepository) ListByOwner(ctx context.Context, ownerID int64)
 	var items []conversation.Conversation
 	err := r.db.WithContext(ctx).
 		Where("owner_id = ? AND deleted_at IS NULL", ownerID).
-		Order("last_message_at DESC, id DESC").
-		Find(&items).Error
-	for i := range items {
-		hydrateConversation(&items[i])
-	}
-	return items, err
-}
-
-func (r *ConversationRepository) ListByDialog(ctx context.Context, ownerID, dialogID int64) ([]conversation.Conversation, error) {
-	var items []conversation.Conversation
-	err := r.db.WithContext(ctx).
-		Where("owner_id = ? AND dialog_id = ? AND deleted_at IS NULL", ownerID, dialogID).
-		Order("last_message_at DESC, id DESC").
-		Find(&items).Error
-	for i := range items {
-		hydrateConversation(&items[i])
-	}
-	return items, err
-}
-
-func (r *ConversationRepository) ListByWorkflow(ctx context.Context, ownerID, workflowID int64) ([]conversation.Conversation, error) {
-	var items []conversation.Conversation
-	err := r.db.WithContext(ctx).
-		Where("owner_id = ? AND workflow_id = ? AND source = ? AND deleted_at IS NULL", ownerID, workflowID, conversation.SourceWorkflow).
 		Order("last_message_at DESC, id DESC").
 		Find(&items).Error
 	for i := range items {

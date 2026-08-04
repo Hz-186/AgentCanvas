@@ -348,17 +348,17 @@ export function KnowledgePage() {
       ) : null}
 
       {!isDetail && items.length > 0 ? (
-        <div className="workflow-library-list knowledge-library-list">
+        <div className="resource-library-list knowledge-library-list">
           {items.map((kb) => (
-            <article className="workflow-library-item knowledge-library-item" key={kb.id}>
-              <div className="workflow-miniature knowledge-miniature" aria-hidden="true">
+            <article className="resource-library-item knowledge-library-item" key={kb.id}>
+              <div className="resource-miniature knowledge-miniature" aria-hidden="true">
                 <span><Database size={16} /></span>
                 <i />
                 <span><FileText size={16} /></span>
                 <i />
-                <span className="workflow-miniature-end"><Search size={16} /></span>
+                <span className="resource-miniature-end"><Search size={16} /></span>
               </div>
-              <div className="workflow-library-copy">
+              <div className="resource-library-copy">
                 <div className="card-title">
                   <h3 className="truncate">{kb.name}</h3>
                   <StatusBadge tone="good">Active</StatusBadge>
@@ -370,7 +370,7 @@ export function KnowledgePage() {
                   <span>更新 {formatDate(kb.updated_at)}</span>
                 </div>
               </div>
-              <div className="workflow-library-actions">
+              <div className="resource-library-actions">
                 <Button tone="primary" onClick={() => navigate(`/app/knowledge/${kb.id}`)}>
                   Open Library
                   <ArrowUpRight size={16} />

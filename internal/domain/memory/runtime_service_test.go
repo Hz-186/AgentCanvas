@@ -238,14 +238,14 @@ func TestRuntimeServicePersistsRecallProvenanceAfterInjection(t *testing.T) {
 	}}
 	logs := &runtimeRecallLogFake{}
 	service := RuntimeService{Memories: repo, Retriever: &runtimeSemanticFake{ids: []int64{1}}, RecallLogs: logs}
-	result, err := service.Read(context.Background(), ReadRequest{OwnerID: 1, AgentID: 7, WorkflowID: 3, RunID: 11, Query: "answer style", SemanticOnly: true})
+	result, err := service.Read(context.Background(), ReadRequest{OwnerID: 1, AgentID: 7, RunID: 11, Query: "answer style", SemanticOnly: true})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if result.Count != 1 || len(result.RecallDetails) != 1 || result.RecallDetails[0].MemoryID != 1 || result.RecallDetails[0].Reason == "" || result.RecallDetails[0].TokenCost <= 0 {
 		t.Fatalf("missing structured recall provenance: %+v", result)
 	}
-	if logs.item == nil || logs.item.OwnerID != 1 || logs.item.AgentID != 7 || logs.item.WorkflowID != 3 || logs.item.RunID != 11 || logs.item.TokenCost <= 0 || len(logs.item.InjectedJSON) == 0 {
+	if logs.item == nil || logs.item.OwnerID != 1 || logs.item.AgentID != 7 || logs.item.RunID != 11 || logs.item.TokenCost <= 0 || len(logs.item.InjectedJSON) == 0 {
 		t.Fatalf("missing persisted recall log: %+v", logs.item)
 	}
 }

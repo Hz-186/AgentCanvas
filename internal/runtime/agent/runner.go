@@ -132,13 +132,11 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 			contextTrace.Compactions = append(contextTrace.Compactions, *initialCompaction)
 			contextTrace.SavedTokens += initialCompaction.SavedTokens
 		}
-		contextTrace.RuleSetVersion = req.RuleSetVersion
-		contextTrace.RuleSetID = req.RuleSetID
-		contextTrace.RuleSetHash = req.RuleSetHash
+		contextTrace.RuleHash = req.RuleHash
 		if contextTrace.CoreOverflow {
 			observability.RuleSystemMetrics.RecordMandatoryOverflow()
-			return nil, fmt.Errorf("%w: rule_set_id=%d version=%s mandatory_tokens=%d budget_tokens=%d deficit_tokens=%d",
-				ErrMandatoryRuleBudgetExceeded, req.RuleSetID, req.RuleSetVersion, contextTrace.MandatoryTokens, contextTrace.MandatoryBudgetTokens, contextTrace.MandatoryDeficitTokens)
+			return nil, fmt.Errorf("%w: mandatory_tokens=%d budget_tokens=%d deficit_tokens=%d",
+				ErrMandatoryRuleBudgetExceeded, contextTrace.MandatoryTokens, contextTrace.MandatoryBudgetTokens, contextTrace.MandatoryDeficitTokens)
 		}
 	}
 	messages := baseMessages
@@ -724,15 +722,12 @@ func (r *Runner) executeToolBatch(
 	execute := func(item *preparedToolCall) {
 		started := r.now()
 		item.result, item.err = item.tool.Execute(item.execCtx, toolruntime.ToolRunContext{
-			OwnerID:           req.OwnerID,
-			WorkflowID:        req.WorkflowID,
-			AgentID:           req.AgentID,
-			AgentReleaseID:    req.AgentReleaseID,
-			RunID:             req.RunID,
-			NodeID:            req.NodeID,
-			CallDepth:         req.CallDepth,
-			WorkflowCallChain: append([]int64(nil), req.WorkflowCallChain...),
-			ConversationID:    req.ConversationID,
+			OwnerID:         req.OwnerID,
+			AgentID:         req.AgentID,
+			AgentReleaseID:  req.AgentReleaseID,
+			RunID:           req.RunID,
+			DelegationDepth: req.DelegationDepth,
+			ConversationID:  req.ConversationID,
 		}, item.call.Arguments)
 		if item.execCancel != nil {
 			item.execCancel()
@@ -830,22 +825,16 @@ func checkpointFromMessages(
 		ReflectionPolicy:      req.ReflectionPolicy,
 		RecalledReflectionIDs: append([]int64(nil), req.RecalledReflectionIDs...),
 		Metadata: map[string]any{
-			"run_id":              req.RunID,
-			"workflow_id":         req.WorkflowID,
-			"node_id":             req.NodeID,
-			"call_depth":          req.CallDepth,
-			"workflow_call_chain": append([]int64(nil), req.WorkflowCallChain...),
-			"stop_reason":         stopReason,
-			"iteration":           iteration,
-			"tool_calls":          toolCalls,
-			"rule_set_version":    req.RuleSetVersion,
-			"rule_set_id":         req.RuleSetID,
-			"rule_set_hash":       req.RuleSetHash,
+			"run_id":           req.RunID,
+			"agent_id":         req.AgentID,
+			"delegation_depth": req.DelegationDepth,
+			"stop_reason":      stopReason,
+			"iteration":        iteration,
+			"tool_calls":       toolCalls,
+			"rule_hash":        req.RuleHash,
 		},
-		RuleSetVersion: req.RuleSetVersion,
-		RuleSetID:      req.RuleSetID,
-		RuleSetHash:    req.RuleSetHash,
-		Rules:          append([]rules.Rule(nil), req.Rules...),
+		RuleHash: req.RuleHash,
+		Rules:    append([]rules.Rule(nil), req.Rules...),
 	}
 }
 

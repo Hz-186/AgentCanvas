@@ -20,7 +20,7 @@ func DefaultPlatformMandatoryRules() []Rule {
 	}
 }
 
-// DefaultFallbackOptionalRules are used only when no versioned RuleSet is active.
+// DefaultFallbackOptionalRules are used only when an Agent release has no custom rules.
 func DefaultFallbackOptionalRules() []Rule {
 	return []Rule{
 		{
@@ -66,7 +66,7 @@ func DefaultFallbackOptionalRules() []Rule {
 			Content:  "For high-risk or side-effecting tools, confirm policy and explain operational impact before relying on the tool result in the final answer.",
 			Activation: Activation{
 				RiskAny: []string{"high", "medium"},
-				ToolAny: []string{"bash", "http_request", "call_workflow", "run_code"},
+				ToolAny: []string{"bash", "http_request", "run_subagent", "run_code"},
 				TagAll:  []string{"tool_used"},
 			},
 		},
@@ -77,7 +77,7 @@ func DefaultFallbackOptionalRules() []Rule {
 			Priority: 65,
 			Content:  "In plan-execute mode, keep steps explicit, revise the plan after failures, and avoid drifting into hidden execution state.",
 			Activation: Activation{
-				ModeAny: []string{"plan_execute", "reflect", "supervisor"},
+				ModeAny: []string{"plan_execute"},
 				TagAll:  []string{"tool_used"},
 			},
 		},

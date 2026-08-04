@@ -57,14 +57,14 @@ function AgentRuntimeTerminal() {
   }, []);
 
   return (
-    <div className={`auth-terminal auth-terminal-frame-${frame}`} aria-label="Animated Agent runtime topology">
+    <div className={`auth-terminal auth-terminal-frame-${frame}`} aria-label="Animated Agent runtime trace">
       <div className="auth-terminal-bar">
-        <span>AC://RUNTIME/GRAPH</span>
+        <span>AC://RUNTIME/LOOP</span>
         <span className="auth-terminal-state"><i /> LIVE</span>
       </div>
       <pre aria-hidden="true"><code>{TERMINAL_FRAMES[frame].join('\n')}</code></pre>
       <div className="auth-terminal-command">
-        <span>$</span> agentcanvas run workflow.ac <b>_</b>
+        <span>$</span> agentcanvas run agent <b>_</b>
       </div>
     </div>
   );
@@ -82,13 +82,13 @@ function AuthBrandPanel() {
         <div className="auth-brand-copy">
           <span className="auth-brand-kicker">SYSTEMS / NOT SLIDES</span>
           <h1><span>BUILD AGENTS.</span><span>SEE THE SYSTEM.</span></h1>
-          <p>Design the graph. Route the models.<br />Trace every decision.</p>
+          <p>Run the Agent Loop. Equip every tool.<br />Trace every decision.</p>
         </div>
         <AgentRuntimeTerminal />
         <div className="auth-feature-grid">
-          <span><b>01</b>FLOW GRAPH</span>
-          <span><b>02</b>MODEL ROUTING</span>
-          <span><b>03</b>LIVE TRACING</span>
+          <span><b>01</b>AGENT LOOP</span>
+          <span><b>02</b>TOOLS + MEMORY</span>
+          <span><b>03</b>LIVE TRACE</span>
         </div>
       </div>
     </aside>
@@ -174,7 +174,7 @@ export function LoginPage() {
         tokenStorage.setTokens(resp.tokens);
         tokenStorage.setUser(resp.user);
         useAuthStore.setState({ user: resp.user, error: '' });
-		navigate('/app/workflows', { replace: true });
+		navigate('/app/agents', { replace: true });
       }).catch((err) => {
         setLocalError(friendlyErrorMessage(err, 'GitHub sign-in failed. Please try again.'));
       });
@@ -187,7 +187,7 @@ export function LoginPage() {
       });
       setSearchParams({}, { replace: true });
       void useAuthStore.getState().initialize().then(() => {
-		navigate('/app/workflows', { replace: true });
+		navigate('/app/agents', { replace: true });
       });
     }
   }, [searchParams, setSearchParams, navigate]);
@@ -202,7 +202,7 @@ export function LoginPage() {
     setLocalError('');
     try {
       await login(email, password);
-		navigate('/app/workflows');
+		navigate('/app/agents');
     } catch {
       // Error copy is normalized by authStore.
     }
@@ -269,7 +269,7 @@ export function RegisterPage() {
     setLocalError('');
     try {
       await register({ username, email, password });
-		navigate('/app/workflows');
+		navigate('/app/agents');
     } catch {
       // Error copy is normalized by authStore.
     }

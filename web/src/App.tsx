@@ -3,7 +3,6 @@ import {
   Bot,
   Database,
   LogOut,
-  MessageSquareText,
   Network,
   LibraryBig,
   Settings,
@@ -23,12 +22,12 @@ import { IconButton } from './components/ui';
 import { AgentCanvasMark, AmbientLiquidField, EngineeringAscii } from './components/editorial';
 import { ThemeControl } from './components/ThemeControl';
 import { LoginPage, RegisterPage } from './pages/AuthPages';
-import { WorkflowsPage } from './pages/WorkflowsPage';
-import { CanvasPage } from './pages/CanvasPage';
 import { ChatPage } from './pages/ChatPage';
 import { KnowledgePage } from './pages/KnowledgePage';
 import { MemoryPage, SettingsPage, SkillsPage, ToolsPage } from './pages/SettingsPage';
 import { useAuthStore } from './stores/authStore';
+
+export const AGENT_HOME_PATH = '/app/agents';
 
 function RequireAuth() {
   const user = useAuthStore((state) => state.user);
@@ -39,14 +38,13 @@ function RequireAuth() {
 
 function PublicOnly({ children }: { children: React.ReactNode }) {
   const user = useAuthStore((state) => state.user);
-  if (user) return <Navigate to="/app/workflows" replace />;
+  if (user) return <Navigate to={AGENT_HOME_PATH} replace />;
   return children;
 }
 
 const nav = [
-  { to: '/app/workflows', label: 'Workflows', icon: Bot },
+  { to: AGENT_HOME_PATH, label: 'Agents', icon: Bot },
   { to: '/app/knowledge', label: 'Knowledge', icon: Database },
-  { to: '/app/agents', label: 'Agent Chat', icon: MessageSquareText },
   { to: '/app/memory', label: 'Memory', icon: Network },
   { to: '/app/tools', label: 'Tools', icon: Wrench },
   { to: '/app/skills', label: 'Skills', icon: LibraryBig },
@@ -74,8 +72,6 @@ function AppShell() {
   const user = useAuthStore((state) => state.user);
   const logout = useAuthStore((state) => state.logout);
   const navigate = useNavigate();
-  const location = useLocation();
-  const isCanvas = location.pathname.includes('/canvas');
   const [sidebarWidth, setSidebarWidth] = useState(() => normalizeSidebarWidth(storedPanelWidth('agentcanvas-sidebar-width', 232)));
   const workspaceRef = useRef<HTMLDivElement | null>(null);
   const sidebarCompact = sidebarWidth > 0 && sidebarWidth < SIDEBAR_MIN_WIDTH;
@@ -131,7 +127,7 @@ function AppShell() {
     <div className="app-shell">
       <div
         ref={workspaceRef}
-        className={`workspace ${isCanvas ? 'workspace-canvas' : ''} ${sidebarCompact ? 'sidebar-compact' : ''}`}
+        className={`workspace ${sidebarCompact ? 'sidebar-compact' : ''}`}
         style={{ '--sidebar-width': `${sidebarWidth}px` } as CSSProperties}
       >
         <aside className="sidebar glass">
@@ -160,7 +156,7 @@ function AppShell() {
             <div className="user-chip">
               <div className="avatar">{user?.username?.slice(0, 1).toUpperCase() ?? 'A'}</div>
               <div className="min-w-0">
-                <strong className="truncate">{user?.username ?? 'Workflow Builder'}</strong>
+                <strong className="truncate">{user?.username ?? 'Agent Operator'}</strong>
                 <p className="truncate muted">{user?.email ?? 'Local session'}</p>
               </div>
             </div>
@@ -209,31 +205,26 @@ function Boot() {
 
   return (
     <Routes>
-      <Route path="/" element={<Navigate to="/app/workflows" replace />} />
+      <Route path="/" element={<Navigate to={AGENT_HOME_PATH} replace />} />
       <Route path="/login" element={<PublicOnly><LoginPage /></PublicOnly>} />
       <Route path="/register" element={<PublicOnly><RegisterPage /></PublicOnly>} />
       <Route element={<RequireAuth />}>
         <Route path="/app" element={<AppShell />}>
-          <Route index element={<Navigate to="/app/workflows" replace />} />
-          <Route path="workflows" element={<WorkflowsPage />} />
-          <Route path="workflows/:id/canvas" element={<CanvasPage />} />
+          <Route index element={<Navigate to={AGENT_HOME_PATH} replace />} />
           <Route path="knowledge" element={<KnowledgePage />} />
           <Route path="knowledge/:id" element={<KnowledgePage />} />
-          <Route path="chat" element={<Navigate to="/app/agents" replace />} />
-          <Route path="chat/:conversationId" element={<Navigate to="/app/agents" replace />} />
+          <Route path="chat" element={<Navigate to={AGENT_HOME_PATH} replace />} />
+          <Route path="chat/:conversationId" element={<Navigate to={AGENT_HOME_PATH} replace />} />
           <Route path="agents" element={<ChatPage />} />
           <Route path="agents/:agentId/chat" element={<ChatPage />} />
           <Route path="agents/:agentId/chat/:conversationId" element={<ChatPage />} />
-          <Route path="dialogs" element={<Navigate to="/app/agents" replace />} />
-          <Route path="dialogs/:dialogId/chat" element={<ChatPage />} />
-          <Route path="dialogs/:dialogId/chat/:conversationId" element={<ChatPage />} />
           <Route path="memory" element={<MemoryPage />} />
           <Route path="tools" element={<ToolsPage />} />
           <Route path="skills" element={<SkillsPage />} />
           <Route path="settings" element={<SettingsPage />} />
         </Route>
       </Route>
-      <Route path="*" element={<Navigate to="/app/workflows" replace />} />
+      <Route path="*" element={<Navigate to={AGENT_HOME_PATH} replace />} />
     </Routes>
   );
 }

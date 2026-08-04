@@ -70,10 +70,10 @@ func BuildResumeRequest(req ResumeRequest) (*RunRequest, error) {
 	if _, err := rules.ValidateLoadedRules(ruleItems); err != nil {
 		return nil, fmt.Errorf("checkpoint rules are invalid: %w", err)
 	}
-	if req.Checkpoint.RuleSetHash != "" {
-		set, err := rules.NewRuleSet(customRules(ruleItems), req.Checkpoint.RuleSetID, req.Checkpoint.RuleSetVersion)
-		if err != nil || set.Hash != req.Checkpoint.RuleSetHash {
-			return nil, fmt.Errorf("checkpoint rule set integrity check failed")
+	if req.Checkpoint.RuleHash != "" {
+		hash, err := rules.HashLoadedRules(ruleItems)
+		if err != nil || hash != req.Checkpoint.RuleHash {
+			return nil, fmt.Errorf("checkpoint rule snapshot integrity check failed")
 		}
 	}
 	reflectionPolicy := req.ReflectionPolicy
@@ -88,8 +88,8 @@ func BuildResumeRequest(req ResumeRequest) (*RunRequest, error) {
 		plan = &cloned
 	}
 	return &RunRequest{
-		OwnerID: req.OwnerID, WorkflowID: req.WorkflowID, RunID: req.RunID, NodeID: req.NodeID,
-		CallDepth: req.CallDepth, WorkflowCallChain: req.WorkflowCallChain, ConversationID: req.ConversationID,
+		OwnerID: req.OwnerID, AgentID: req.AgentID, AgentReleaseID: req.AgentReleaseID, RunID: req.RunID,
+		DelegationDepth: req.DelegationDepth, ConversationID: req.ConversationID,
 		Provider: req.Provider, Model: req.Model, Mode: req.Mode, Plan: plan, SystemPrompt: req.SystemPrompt, Task: req.Task,
 		ReflectionEnabled: req.ReflectionEnabled, ReflectionPolicy: reflectionPolicy, RecalledReflectionIDs: recalledReflectionIDs,
 		Temperature: req.Temperature, MaxIterations: req.MaxIterations, MaxToolCalls: req.MaxToolCalls,
@@ -98,22 +98,11 @@ func BuildResumeRequest(req ResumeRequest) (*RunRequest, error) {
 		ContextSafetyMarginTokens: req.ContextSafetyMarginTokens, ModelAutoCompactTokenLimit: req.ModelAutoCompactTokenLimit,
 		CompactPrompt: req.CompactPrompt,
 		MaxRuleTokens: req.MaxRuleTokens, RuleTags: append([]string(nil), req.RuleTags...), RuleRiskLevel: req.RuleRiskLevel,
-		RuleSetVersion: firstNonEmpty(req.Checkpoint.RuleSetVersion, req.RuleSetVersion), RuleSetID: firstPositive(req.Checkpoint.RuleSetID, req.RuleSetID),
-		RuleSetHash: firstNonEmpty(req.Checkpoint.RuleSetHash, req.RuleSetHash), Rules: ruleItems, RuleTrace: req.RuleTrace,
+		RuleHash: firstNonEmpty(req.Checkpoint.RuleHash, req.RuleHash), Rules: ruleItems, RuleTrace: req.RuleTrace,
 		ContextBlocks: req.ContextBlocks, ToolPolicy: req.ToolPolicy, ToolHookChain: req.ToolHookChain, Tools: req.Tools,
 		ResumeMessages: messages, ResumeBaseMessages: baseMessages, ResumeTranscript: transcript, ResumeSteps: resumeSteps,
 		ResumeContext: req.Checkpoint.Context, ResumeIteration: iteration, ResumeToolCalls: toolCalls, ResumeApprovedToolCallIDs: approvedToolCallIDs,
 	}, nil
-}
-
-func customRules(items []rules.Rule) []rules.Rule {
-	custom := make([]rules.Rule, 0, len(items))
-	for _, rule := range items {
-		if rule.ID != "safety.output.boundary" && rule.ID != "core.task.completion" {
-			custom = append(custom, rule)
-		}
-	}
-	return custom
 }
 
 func firstNonEmpty(values ...string) string {
@@ -123,14 +112,6 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
-}
-func firstPositive(values ...int64) int64 {
-	for _, value := range values {
-		if value > 0 {
-			return value
-		}
-	}
-	return 0
 }
 
 func metadataStringSlice(value any) []string {

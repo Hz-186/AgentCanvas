@@ -44,12 +44,8 @@ func (s *ReflectionSemanticIndex) Index(ctx context.Context, item reflection.Ref
 		return err
 	}
 	s.collections.Store(collection, struct{}{})
-	agentID := int64(0)
-	if item.AgentID != nil {
-		agentID = *item.AgentID
-	}
 	return s.Store.Upsert(ctx, collection, []vectorstore.VectorDocument{{ID: strconv.FormatInt(item.ID, 10), Vector: vector, Metadata: map[string]any{
-		"owner_id": item.OwnerID, "workflow_id": item.WorkflowID, "agent_id": agentID, "scope": item.Scope,
+		"owner_id": item.OwnerID, "agent_id": item.AgentID, "scope": item.Scope,
 		"mode": item.Mode, "status": item.Status, "embedding_model": model, "embedding_dimensions": len(vector),
 	}}})
 }
@@ -67,7 +63,15 @@ func (s *ReflectionSemanticIndex) Search(ctx context.Context, req reflection.Sea
 	if limit <= 0 {
 		limit = 12
 	}
-	items, err := s.Store.Search(ctx, vectorstore.SearchRequest{Collection: collection, Vector: vector, TopK: limit * 5, Filter: map[string]any{"owner_id": req.OwnerID}, HNSW: s.HNSW})
+	filter := map[string]any{"owner_id": req.OwnerID}
+	if req.AgentID > 0 {
+		if req.IncludeGlobal {
+			filter["agent_id"] = []int64{0, req.AgentID}
+		} else {
+			filter["agent_id"] = req.AgentID
+		}
+	}
+	items, err := s.Store.Search(ctx, vectorstore.SearchRequest{Collection: collection, Vector: vector, TopK: limit * 5, Filter: filter, HNSW: s.HNSW})
 	if err != nil {
 		return nil, err
 	}
@@ -156,13 +160,10 @@ func reflectionMatches(item reflection.Reflection, query reflection.CandidateQue
 		return false
 	}
 	if query.AgentID > 0 {
-		if item.AgentID != nil && *item.AgentID == query.AgentID {
+		if item.AgentID == query.AgentID {
 			return true
 		}
 		return query.IncludeGlobal && item.Scope == reflection.ScopeGlobal && item.Status == reflection.StatusValidated
-	}
-	if item.WorkflowID == query.WorkflowID {
-		return true
 	}
 	return query.IncludeGlobal && item.Scope == reflection.ScopeGlobal && item.Status == reflection.StatusValidated
 }

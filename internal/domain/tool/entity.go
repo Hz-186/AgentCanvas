@@ -45,7 +45,7 @@ type Invocation struct { // log of using tool
 	ID           int64           `json:"id" gorm:"primaryKey;column:id"`
 	OwnerID      int64           `json:"owner_id" gorm:"column:owner_id"`
 	RunID        int64           `json:"run_id" gorm:"column:run_id"`
-	NodeID       string          `json:"node_id" gorm:"column:node_id"`
+	AgentID      int64           `json:"agent_id" gorm:"column:agent_id"`
 	ToolID       int64           `json:"tool_id" gorm:"column:tool_id"`
 	ToolName     string          `json:"tool_name" gorm:"column:tool_name"`
 	ToolType     string          `json:"tool_type" gorm:"column:tool_type"`

@@ -2,7 +2,6 @@ package mysql
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -42,10 +41,11 @@ func (r *ContextResourceRepository) Backfill(ctx context.Context, resourceType s
 	}
 	result := ContextBackfillResult{ResourceType: resourceType, NextID: afterID}
 	type candidate struct {
-		ID         int64
-		OwnerID    int64
-		WorkflowID int64
-		Content    string
+		ID             int64
+		OwnerID        int64
+		AgentID        int64
+		ConversationID int64
+		Content        string
 	}
 	candidates := make([]candidate, 0, limit)
 	switch resourceType {
@@ -55,7 +55,7 @@ func (r *ContextResourceRepository) Backfill(ctx context.Context, resourceType s
 			return result, err
 		}
 		for i := range items {
-			candidates = append(candidates, candidate{items[i].ID, items[i].OwnerID, items[i].WorkflowID, reflectionContextText(items[i])})
+			candidates = append(candidates, candidate{ID: items[i].ID, OwnerID: items[i].OwnerID, AgentID: items[i].AgentID, Content: reflectionContextText(items[i])})
 		}
 	case contextresource.TypeLongTermMemory:
 		var items []memory.Memory
@@ -63,7 +63,14 @@ func (r *ContextResourceRepository) Backfill(ctx context.Context, resourceType s
 			return result, err
 		}
 		for i := range items {
-			candidates = append(candidates, candidate{items[i].ID, items[i].OwnerID, 0, memoryContextText(items[i])})
+			agentID, conversationID := int64(0), int64(0)
+			if items[i].ScopeType == memory.ScopeAgent {
+				agentID = items[i].ScopeID
+			}
+			if items[i].ConversationID != nil {
+				conversationID = *items[i].ConversationID
+			}
+			candidates = append(candidates, candidate{ID: items[i].ID, OwnerID: items[i].OwnerID, AgentID: agentID, ConversationID: conversationID, Content: memoryContextText(items[i])})
 		}
 	case contextresource.TypeSkill:
 		var items []skill.Skill
@@ -71,7 +78,7 @@ func (r *ContextResourceRepository) Backfill(ctx context.Context, resourceType s
 			return result, err
 		}
 		for i := range items {
-			candidates = append(candidates, candidate{items[i].ID, items[i].OwnerID, 0, skillContextText(items[i])})
+			candidates = append(candidates, candidate{ID: items[i].ID, OwnerID: items[i].OwnerID, Content: skillContextText(items[i])})
 		}
 	case contextresource.TypeTool:
 		var items []tool.Definition
@@ -79,7 +86,7 @@ func (r *ContextResourceRepository) Backfill(ctx context.Context, resourceType s
 			return result, err
 		}
 		for i := range items {
-			candidates = append(candidates, candidate{items[i].ID, items[i].OwnerID, 0, toolContextText(items[i])})
+			candidates = append(candidates, candidate{ID: items[i].ID, OwnerID: items[i].OwnerID, Content: toolContextText(items[i])})
 		}
 	case contextresource.TypeConversationMessage:
 		var items []conversation.Message
@@ -87,11 +94,11 @@ func (r *ContextResourceRepository) Backfill(ctx context.Context, resourceType s
 			return result, err
 		}
 		for i := range items {
-			workflowID := int64(0)
-			if err := r.db.WithContext(ctx).Raw("SELECT COALESCE(workflow_id, 0) FROM conversations WHERE owner_id = ? AND id = ?", items[i].OwnerID, items[i].ConversationID).Scan(&workflowID).Error; err != nil {
+			agentID := int64(0)
+			if err := r.db.WithContext(ctx).Raw("SELECT COALESCE(agent_id, 0) FROM conversations WHERE owner_id = ? AND id = ?", items[i].OwnerID, items[i].ConversationID).Scan(&agentID).Error; err != nil {
 				return result, err
 			}
-			candidates = append(candidates, candidate{items[i].ID, items[i].OwnerID, workflowID, messageContextText(items[i])})
+			candidates = append(candidates, candidate{ID: items[i].ID, OwnerID: items[i].OwnerID, AgentID: agentID, ConversationID: items[i].ConversationID, Content: messageContextText(items[i])})
 		}
 	default:
 		return result, fmt.Errorf("unsupported context resource type %q", resourceType)
@@ -108,7 +115,7 @@ func (r *ContextResourceRepository) Backfill(ctx context.Context, resourceType s
 	}
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		for i := range candidates {
-			if err := enqueueContextResource(ctx, tx, candidates[i].OwnerID, candidates[i].WorkflowID, resourceType, candidates[i].ID, contextresource.OperationUpsert, candidates[i].Content); err != nil {
+			if err := enqueueContextResource(ctx, tx, candidates[i].OwnerID, candidates[i].AgentID, candidates[i].ConversationID, resourceType, candidates[i].ID, contextresource.OperationUpsert, candidates[i].Content); err != nil {
 				return err
 			}
 			result.Enqueued++
@@ -118,38 +125,11 @@ func (r *ContextResourceRepository) Backfill(ctx context.Context, resourceType s
 	return result, err
 }
 
-func enqueueContextResource(ctx context.Context, tx *gorm.DB, ownerID, workflowID int64, resourceType string, resourceID int64, operation, content string) error {
+func enqueueContextResource(ctx context.Context, tx *gorm.DB, ownerID, agentID, conversationID int64, resourceType string, resourceID int64, operation, content string) error {
 	if tx == nil || ownerID <= 0 || resourceID <= 0 || strings.TrimSpace(resourceType) == "" {
 		return nil
 	}
 	profile := contextresource.EmbeddingProfileFromContext(ctx)
-	if profile.ProviderID <= 0 && workflowID > 0 {
-		var stored struct {
-			DefaultProviderID *int64          `gorm:"column:default_provider_id"`
-			ContextPolicyJSON json.RawMessage `gorm:"column:context_policy_json"`
-		}
-		err := tx.Table("workflow_profiles").Select("default_provider_id, context_policy_json").
-			Where("owner_id = ? AND workflow_id = ? AND deleted_at IS NULL", ownerID, workflowID).Scan(&stored).Error
-		if err != nil {
-			return err
-		}
-		var policy struct {
-			Retrieval struct {
-				EmbeddingProviderID int64  `json:"embedding_provider_id"`
-				EmbeddingModel      string `json:"embedding_model"`
-				EmbeddingDimensions int    `json:"embedding_dimensions"`
-			} `json:"retrieval"`
-		}
-		_ = json.Unmarshal(stored.ContextPolicyJSON, &policy)
-		if policy.Retrieval.EmbeddingProviderID > 0 {
-			profile.ProviderID = policy.Retrieval.EmbeddingProviderID
-			profile.Model = policy.Retrieval.EmbeddingModel
-			profile.Dimensions = policy.Retrieval.EmbeddingDimensions
-		} else if stored.DefaultProviderID != nil && *stored.DefaultProviderID > 0 {
-			profile.ProviderID = *stored.DefaultProviderID
-		}
-		profile = profile.Normalized()
-	}
 	contentHash := contextresource.HashContent(content)
 	if operation == contextresource.OperationDelete && profile.Hash == "" {
 		var prior contextresource.OutboxItem
@@ -163,7 +143,7 @@ func enqueueContextResource(ctx context.Context, tx *gorm.DB, ownerID, workflowI
 	}
 	now := time.Now().UTC()
 	item := contextresource.OutboxItem{
-		OwnerID: ownerID, WorkflowID: workflowID, ResourceType: resourceType, ResourceID: strconv.FormatInt(resourceID, 10),
+		OwnerID: ownerID, AgentID: agentID, ConversationID: conversationID, ResourceType: resourceType, ResourceID: strconv.FormatInt(resourceID, 10),
 		Operation: operation, ContentHash: contentHash, EmbeddingProviderID: profile.ProviderID, EmbeddingModel: profile.Model,
 		EmbeddingDimensions: profile.Dimensions, EmbeddingProfileHash: profile.Hash, Status: contextresource.StatusPending,
 		MaxAttempts: defaultContextOutboxMaxAttempts, AvailableAt: now, CreatedAt: now, UpdatedAt: now,
@@ -315,7 +295,7 @@ func nilOrLoadError(err error) (*contextresource.Document, error) {
 }
 
 func document(item contextresource.OutboxItem, content string, conversationID int64, metadata map[string]any) *contextresource.Document {
-	return &contextresource.Document{OwnerID: item.OwnerID, WorkflowID: item.WorkflowID, ResourceType: item.ResourceType,
+	return &contextresource.Document{OwnerID: item.OwnerID, AgentID: item.AgentID, ResourceType: item.ResourceType,
 		ResourceID: item.ResourceID, Content: content, ContentHash: contextresource.HashContent(content), ConversationID: conversationID, Metadata: metadata}
 }
 

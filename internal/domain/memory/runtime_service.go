@@ -23,7 +23,7 @@ type RuntimeService struct {
 	Retriever    SemanticRetriever
 	Archival     ArchivalIndex
 	ContextIndex contextresource.Index
-	WorkflowID   int64
+	AgentID      int64
 	Profile      contextresource.EmbeddingProfile
 	RecallLogs   RecallLogRepository
 }
@@ -32,7 +32,6 @@ type ReadRequest struct {
 	OwnerID        int64
 	ConversationID *int64
 	AgentID        int64
-	WorkflowID     int64
 	RunID          int64
 	MemoryTypes    []string
 	Query          string
@@ -66,6 +65,7 @@ type RecallDetail struct {
 
 type WriteRequest struct {
 	OwnerID        int64
+	AgentID        int64
 	ConversationID *int64
 	RunID          int64
 	MemoryID       int64
@@ -130,7 +130,11 @@ func (s RuntimeService) Read(ctx context.Context, req ReadRequest) (ReadResult, 
 			if req.ConversationID != nil {
 				conversationID = *req.ConversationID
 			}
-			hits, searchErr := s.ContextIndex.Search(ctx, contextresource.SearchRequest{OwnerID: req.OwnerID, WorkflowID: s.WorkflowID,
+			agentID := req.AgentID
+			if agentID <= 0 {
+				agentID = s.AgentID
+			}
+			hits, searchErr := s.ContextIndex.Search(ctx, contextresource.SearchRequest{OwnerID: req.OwnerID, AgentID: agentID,
 				ConversationID: conversationID, ResourceTypes: []string{contextresource.TypeLongTermMemory}, Query: query,
 				Mode: "hybrid", TopK: limit * 2, Profile: s.Profile})
 			err = searchErr
@@ -323,7 +327,7 @@ func (s RuntimeService) findConflict(ctx context.Context, req WriteRequest, memo
 		// A failed semantic lookup must not degrade into a broad database scan.
 		return nil, nil, err
 	}
-	items := s.fetchValid(ctx, ReadRequest{OwnerID: req.OwnerID, ConversationID: req.ConversationID, MemoryTypes: []string{memoryType}}, ids, 5)
+	items := s.fetchValid(ctx, ReadRequest{OwnerID: req.OwnerID, AgentID: req.AgentID, ConversationID: req.ConversationID, MemoryTypes: []string{memoryType}}, ids, 5)
 	incoming := Memory{OwnerID: req.OwnerID, ConversationID: req.ConversationID, MemoryType: memoryType, MemoryLevel: LevelLongTerm,
 		Title: strings.TrimSpace(req.Title), Content: content, Importance: req.Importance, Source: strings.TrimSpace(req.Source)}
 	for i := range items {
@@ -466,7 +470,7 @@ func (s RuntimeService) readResult(ctx context.Context, request ReadRequest, ite
 		for i := range details {
 			tokens += details[i].TokenCost
 		}
-		if err := s.RecallLogs.Create(ctx, &RecallLog{OwnerID: request.OwnerID, AgentID: request.AgentID, WorkflowID: request.WorkflowID,
+		if err := s.RecallLogs.Create(ctx, &RecallLog{OwnerID: request.OwnerID, AgentID: request.AgentID,
 			ConversationID: conversationID, RunID: request.RunID, Query: query, CandidateJSON: candidateJSON,
 			InjectedJSON: injectedJSON, TokenCost: tokens}); err != nil {
 			return ReadResult{}, fmt.Errorf("record memory recall: %w", err)
@@ -526,8 +530,6 @@ func matchesScope(item Memory, request ReadRequest) bool {
 		return request.ConversationID != nil && item.ScopeID == *request.ConversationID
 	case ScopeAgent:
 		return request.AgentID > 0 && item.ScopeID == request.AgentID
-	case ScopeWorkflow:
-		return request.WorkflowID > 0 && item.ScopeID == request.WorkflowID
 	default:
 		return false
 	}

@@ -75,8 +75,8 @@ func TestWorkerStoresQualifiedTerminalReflection(t *testing.T) {
 	repo := &fakeRepo{}
 	worker := Worker{Service: Service{Reflections: repo}, Providers: workerProviders{item: providerdomain.ModelProvider{ID: 1, OwnerID: 2,
 		Status: providerdomain.StatusActive, ProviderType: providerdomain.TypeOpenAICompatible, BaseURL: "https://example.test", EncryptedAPIKey: encrypted, DefaultChatModel: "m"}},
-		Secrets: box, LLM: workerChat{response: `{"candidates":[{"kind":"error_lesson","scope":"workflow","trigger_type":"tool_error","root_cause_category":"tool_input","root_cause":"wrong input","corrective_action":"validate input first","lesson":"validate tool input before calling","applicability":"tool calls","evidence_step_indexes":[2],"severity":0.9,"generalizability":0.9,"confidence":0.9,"tags":["tool"]}]}`}}
-	job := &reflection.Job{OwnerID: 2, WorkflowID: 3, RunID: 4, NodeID: "n", ProviderID: 1, Model: "m", Mode: "react", Task: "task", PayloadJSON: []byte(`{"stop_reason":"max_iterations_exceeded"}`)}
+		Secrets: box, LLM: workerChat{response: `{"candidates":[{"kind":"error_lesson","scope":"agent","trigger_type":"tool_error","root_cause_category":"tool_input","root_cause":"wrong input","corrective_action":"validate input first","lesson":"validate tool input before calling","applicability":"tool calls","evidence_step_indexes":[2],"severity":0.9,"generalizability":0.9,"confidence":0.9,"tags":["tool"]}]}`}}
+	job := &reflection.Job{OwnerID: 2, AgentID: 3, RunID: 4, ProviderID: 1, Model: "m", Mode: "react", Task: "task", PayloadJSON: []byte(`{"stop_reason":"max_iterations_exceeded"}`)}
 	if err := worker.process(context.Background(), job); err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +113,7 @@ func TestWorkerRetriesMalformedAnalysisAndCompletesQualifiedJob(t *testing.T) {
 	encrypted, _ := box.Encrypt("key")
 	provider := workerProviders{item: providerdomain.ModelProvider{ID: 1, OwnerID: 2, Status: providerdomain.StatusActive,
 		ProviderType: providerdomain.TypeOpenAICompatible, BaseURL: "https://example.test", EncryptedAPIKey: encrypted, DefaultChatModel: "m"}}
-	badJobs := &workerJobRepo{next: &reflection.Job{OwnerID: 2, WorkflowID: 3, RunID: 4, ProviderID: 1, Model: "m", MaxAttempts: 3,
+	badJobs := &workerJobRepo{next: &reflection.Job{OwnerID: 2, AgentID: 3, RunID: 4, ProviderID: 1, Model: "m", MaxAttempts: 3,
 		PayloadJSON: json.RawMessage(`{"stop_reason":"max_iterations_exceeded"}`)}}
 	badWorker := Worker{Service: Service{Reflections: &fakeRepo{}}, Jobs: badJobs, Providers: provider, Secrets: box, LLM: workerChat{response: `not-json`}}
 	processed, processErr := badWorker.ProcessNext(context.Background(), "worker")
@@ -121,7 +121,7 @@ func TestWorkerRetriesMalformedAnalysisAndCompletesQualifiedJob(t *testing.T) {
 		t.Fatalf("malformed analysis should be retried: processed=%v err=%v jobs=%+v", processed, processErr, badJobs)
 	}
 
-	goodJobs := &workerJobRepo{next: &reflection.Job{OwnerID: 2, WorkflowID: 3, RunID: 5, ProviderID: 1, Model: "m", MaxAttempts: 3,
+	goodJobs := &workerJobRepo{next: &reflection.Job{OwnerID: 2, AgentID: 3, RunID: 5, ProviderID: 1, Model: "m", MaxAttempts: 3,
 		PayloadJSON: json.RawMessage(`{"stop_reason":"max_iterations_exceeded"}`)}}
 	goodWorker := Worker{Service: Service{Reflections: &fakeRepo{}}, Jobs: goodJobs, Providers: provider, Secrets: box,
 		LLM: workerChat{response: `{"candidates":[]}`}}
@@ -192,7 +192,7 @@ func TestQueueRuntimeCommitsBeforeAck(t *testing.T) {
 		t.Fatal(err)
 	}
 	encrypted, _ := box.Encrypt("key")
-	repo := &reliableWorkerRepo{job: &reflection.Job{ID: 9, OwnerID: 2, WorkflowID: 3, RunID: 4, ProviderID: 1, Model: "m", MaxAttempts: 3,
+	repo := &reliableWorkerRepo{job: &reflection.Job{ID: 9, OwnerID: 2, AgentID: 3, RunID: 4, ProviderID: 1, Model: "m", MaxAttempts: 3,
 		PayloadJSON: json.RawMessage(`{"stop_reason":"max_iterations_exceeded"}`)}, state: reflection.ClaimAcquired}
 	worker := Worker{Jobs: repo, DispatchEnabled: true, Providers: workerProviders{item: providerdomain.ModelProvider{ID: 1, OwnerID: 2,
 		Status: providerdomain.StatusActive, ProviderType: providerdomain.TypeOpenAICompatible, EncryptedAPIKey: encrypted, DefaultChatModel: "m"}},

@@ -57,7 +57,7 @@ export function EngineeringAscii({
   const compactGraphs = [
     ['+--[AC]--+\n|  / \\  |\n+-(IO)--+\n|  \\ /  |\n+--{TOOL}+', '+==[AC]==+\n|  / \\  |\n+=(IO)===+\n|  \\ /  |\n+=={TOOL}='],
     ['+--{IN}--+\n|   |    |\n+>[CORE]-+\n|   |    |\n+-->{OUT}+', '+=={IN}==+\n|   :    |\n+=>[CORE]=+\n|   |    |\n+==>{OUT}='],
-    ['+--[PLAN]+\n|  /     |\n+>(FLOW)-+\n|  \\    |\n+--[MEM]-+', '+==[PLAN]+\n|  /     |\n+>(FLOW)=+\n|  \\    |\n+==[MEM]=-'],
+    ['+--[PLAN]+\n|  /     |\n+>(LOOP)-+\n|  \\    |\n+--[MEM]-+', '+==[PLAN]+\n|  /     |\n+>(LOOP)=+\n|  \\    |\n+==[MEM]=-'],
     ['+--{CTX}-+\n|  +--+  |\n+-(MCP)-+\n|  +--+  |\n+--{OUT}-+', '+=={CTX}=+\n|  +==+  |\n+=(MCP)=+\n|  +==+  |\n+=={OUT}='],
   ] as const;
   const [frame, setFrame] = useState(0);
