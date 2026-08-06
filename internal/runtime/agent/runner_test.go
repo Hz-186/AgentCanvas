@@ -46,10 +46,19 @@ type concurrentDelegationTool struct {
 	state *concurrencyState
 }
 
+type classifiedConcurrencyTool struct {
+	name       string
+	delay      time.Duration
+	sideEffect string
+	riskLevel  string
+	state      *concurrencyState
+}
+
 type concurrencyState struct {
 	mu         sync.Mutex
 	running    int
 	maxRunning int
+	executions int
 }
 
 func (t concurrentDelegationTool) Name() string        { return t.name }
@@ -58,10 +67,43 @@ func (t concurrentDelegationTool) Parameters() json.RawMessage {
 	return json.RawMessage(`{"type":"object"}`)
 }
 func (t concurrentDelegationTool) Metadata() toolruntime.ToolMetadata {
-	return toolruntime.ToolMetadata{ExecutionClass: toolruntime.ExecutionDelegation}
+	return toolruntime.ToolMetadata{
+		RiskLevel:      toolruntime.RiskMedium,
+		SideEffect:     toolruntime.SideEffectExternalAction,
+		ExecutionClass: toolruntime.ExecutionDelegation,
+	}
 }
 func (t concurrentDelegationTool) Execute(ctx context.Context, _ toolruntime.ToolRunContext, _ json.RawMessage) (*toolruntime.ToolResult, error) {
 	t.state.mu.Lock()
+	t.state.running++
+	if t.state.running > t.state.maxRunning {
+		t.state.maxRunning = t.state.running
+	}
+	t.state.mu.Unlock()
+	defer func() {
+		t.state.mu.Lock()
+		t.state.running--
+		t.state.mu.Unlock()
+	}()
+	select {
+	case <-time.After(t.delay):
+		return &toolruntime.ToolResult{ContentText: t.name}, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func (t classifiedConcurrencyTool) Name() string        { return t.name }
+func (t classifiedConcurrencyTool) Description() string { return "classified tool" }
+func (t classifiedConcurrencyTool) Parameters() json.RawMessage {
+	return json.RawMessage(`{"type":"object"}`)
+}
+func (t classifiedConcurrencyTool) Metadata() toolruntime.ToolMetadata {
+	return toolruntime.ToolMetadata{RiskLevel: t.riskLevel, SideEffect: t.sideEffect}
+}
+func (t classifiedConcurrencyTool) Execute(ctx context.Context, _ toolruntime.ToolRunContext, _ json.RawMessage) (*toolruntime.ToolResult, error) {
+	t.state.mu.Lock()
+	t.state.executions++
 	t.state.running++
 	if t.state.running > t.state.maxRunning {
 		t.state.maxRunning = t.state.running
@@ -788,6 +830,85 @@ func TestRunnerRunsDelegationsConcurrentlyWithStableResults(t *testing.T) {
 		if toolMessages[i].Content != expected {
 			t.Fatalf("tool results lost model order: %+v", toolMessages)
 		}
+	}
+}
+
+func TestRunnerRunsReadOnlyBatchConcurrentlyAndKeepsResultOrder(t *testing.T) {
+	client := &fakeToolClient{responses: []llm.ToolChatResponse{
+		{Message: llm.ChatMessage{Role: conversation.RoleAssistant, ToolCalls: []llm.ToolCall{
+			{ID: "call_1", Name: "slow_read", Arguments: json.RawMessage(`{}`)},
+			{ID: "call_2", Name: "fast_read", Arguments: json.RawMessage(`{}`)},
+		}}},
+		{Message: llm.ChatMessage{Role: conversation.RoleAssistant, Content: "done"}},
+	}}
+	state := &concurrencyState{}
+	tools := []toolruntime.RuntimeTool{
+		classifiedConcurrencyTool{name: "slow_read", delay: 60 * time.Millisecond, sideEffect: toolruntime.SideEffectRead, state: state},
+		classifiedConcurrencyTool{name: "fast_read", delay: 10 * time.Millisecond, sideEffect: toolruntime.SideEffectRead, state: state},
+	}
+	result, err := NewRunner(client).Run(context.Background(), RunRequest{Model: "test-model", Task: "read", MaxIterations: 3, MaxToolCalls: 4, MaxParallelTools: 2, Tools: tools})
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.mu.Lock()
+	maxRunning := state.maxRunning
+	state.mu.Unlock()
+	if maxRunning != 2 || result.ToolCalls != 2 {
+		t.Fatalf("read-only tools did not use bounded concurrency: max=%d result=%+v", maxRunning, result)
+	}
+	toolMessages := client.requests[1].Messages[len(client.requests[1].Messages)-2:]
+	if toolMessages[0].ToolCallID != "call_1" || toolMessages[0].Content != "slow_read" || toolMessages[1].ToolCallID != "call_2" || toolMessages[1].Content != "fast_read" {
+		t.Fatalf("concurrent results lost provider order: %+v", toolMessages)
+	}
+}
+
+func TestRunnerRunsWriteBatchSerially(t *testing.T) {
+	client := &fakeToolClient{responses: []llm.ToolChatResponse{
+		{Message: llm.ChatMessage{Role: conversation.RoleAssistant, ToolCalls: []llm.ToolCall{
+			{ID: "call_1", Name: "write_a", Arguments: json.RawMessage(`{}`)},
+			{ID: "call_2", Name: "write_b", Arguments: json.RawMessage(`{}`)},
+		}}},
+		{Message: llm.ChatMessage{Role: conversation.RoleAssistant, Content: "done"}},
+	}}
+	state := &concurrencyState{}
+	tools := []toolruntime.RuntimeTool{
+		classifiedConcurrencyTool{name: "write_a", delay: 20 * time.Millisecond, sideEffect: toolruntime.SideEffectWrite, state: state},
+		classifiedConcurrencyTool{name: "write_b", delay: 20 * time.Millisecond, sideEffect: toolruntime.SideEffectWrite, state: state},
+	}
+	result, err := NewRunner(client).Run(context.Background(), RunRequest{Model: "test-model", Task: "write", MaxIterations: 3, MaxToolCalls: 4, MaxParallelTools: 4, Tools: tools})
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.mu.Lock()
+	maxRunning := state.maxRunning
+	state.mu.Unlock()
+	if maxRunning != 1 || result.ToolCalls != 2 {
+		t.Fatalf("write tools must remain serial: max=%d result=%+v", maxRunning, result)
+	}
+}
+
+func TestRunnerApprovalBarrierPreventsEntirePlannedBatch(t *testing.T) {
+	client := &fakeToolClient{responses: []llm.ToolChatResponse{{Message: llm.ChatMessage{Role: conversation.RoleAssistant, ToolCalls: []llm.ToolCall{
+		{ID: "call_1", Name: "safe_read", Arguments: json.RawMessage(`{}`)},
+		{ID: "call_2", Name: "dangerous_write", Arguments: json.RawMessage(`{}`)},
+	}}}}}
+	state := &concurrencyState{}
+	tools := []toolruntime.RuntimeTool{
+		classifiedConcurrencyTool{name: "safe_read", sideEffect: toolruntime.SideEffectRead, riskLevel: toolruntime.RiskLow, state: state},
+		classifiedConcurrencyTool{name: "dangerous_write", sideEffect: toolruntime.SideEffectWrite, riskLevel: toolruntime.RiskHigh, state: state},
+	}
+	result, err := NewRunner(client).Run(context.Background(), RunRequest{
+		Model: "test-model", Task: "mixed batch", MaxIterations: 2, MaxToolCalls: 4, MaxParallelTools: 2,
+		Tools: tools, ToolPolicy: ToolPolicy{RequireApprovalForRisk: []string{toolruntime.RiskHigh}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.mu.Lock()
+	executions := state.executions
+	state.mu.Unlock()
+	if result.StopReason != StopReasonWaitingHuman || result.Approval == nil || executions != 0 {
+		t.Fatalf("approval must block the complete batch before side effects: executions=%d result=%+v", executions, result)
 	}
 }
 

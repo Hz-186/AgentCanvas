@@ -21,7 +21,6 @@ import (
 	agenterrors "agentcanvas/internal/pkg/errors"
 	runtimeagent "agentcanvas/internal/runtime/agent"
 	agentruntime "agentcanvas/internal/runtime/agentruntime"
-	runtimeevent "agentcanvas/internal/runtime/event"
 	"agentcanvas/internal/runtime/harness/rules"
 	"agentcanvas/internal/runtime/toolruntime"
 )
@@ -43,6 +42,7 @@ type Service struct {
 	cancelMu      sync.Mutex
 	cancels       map[int64]context.CancelFunc
 	leaseDuration time.Duration
+	streamHub     runStreamHub
 }
 
 func NewService(
@@ -176,8 +176,14 @@ func (s *Service) CreateAgent(ctx context.Context, ownerID int64, req CreateAgen
 	if definition.SystemPrompt == "" {
 		definition.SystemPrompt = defaultAgentSystemPrompt
 	}
-	item := &agentdomain.Agent{OwnerID: ownerID, Name: strings.TrimSpace(req.Name), Description: strings.TrimSpace(req.Description),
-		AvatarURL: strings.TrimSpace(req.AvatarURL), Status: agentdomain.StatusDraft, DraftDefinition: definition}
+	item := &agentdomain.Agent{
+		OwnerID:         ownerID,
+		Name:            strings.TrimSpace(req.Name),
+		Description:     strings.TrimSpace(req.Description),
+		AvatarURL:       strings.TrimSpace(req.AvatarURL),
+		Status:          agentdomain.StatusDraft,
+		DraftDefinition: definition,
+	}
 	if err := s.agents.Create(ctx, item); err != nil {
 		return nil, err
 	}
@@ -485,8 +491,16 @@ func (s *Service) ForkConversation(ctx context.Context, ownerID, agentID, conver
 		releaseID = agentItem.CurrentReleaseID
 	}
 	title := source.Title + " (fork)"
-	fork := &conversation.Conversation{OwnerID: ownerID, AgentID: &agentID, AgentReleaseID: releaseID,
-		ParentConversationID: &source.ID, Title: title, Name: title, Source: conversation.SourceAgent, AgentMode: source.AgentMode}
+	fork := &conversation.Conversation{
+		OwnerID:              ownerID,
+		AgentID:              &agentID,
+		AgentReleaseID:       releaseID,
+		ParentConversationID: &source.ID,
+		Title:                title,
+		Name:                 title,
+		Source:               conversation.SourceAgent,
+		AgentMode:            source.AgentMode,
+	}
 	if err := s.conversations.Create(ctx, fork); err != nil {
 		return nil, err
 	}
@@ -495,8 +509,15 @@ func (s *Service) ForkConversation(ctx context.Context, ownerID, agentID, conver
 		return nil, err
 	}
 	for _, message := range messages {
-		copyMessage := &conversation.Message{OwnerID: ownerID, ConversationID: fork.ID, Role: message.Role,
-			Content: message.Content, ContentType: message.ContentType, TokenCount: message.TokenCount, MetadataJSON: message.MetadataJSON}
+		copyMessage := &conversation.Message{
+			OwnerID:        ownerID,
+			ConversationID: fork.ID,
+			Role:           message.Role,
+			Content:        message.Content,
+			ContentType:    message.ContentType,
+			TokenCount:     message.TokenCount,
+			MetadataJSON:   message.MetadataJSON,
+		}
 		if err := s.messages.Create(ctx, copyMessage); err != nil {
 			return nil, err
 		}
@@ -560,21 +581,44 @@ func (s *Service) StartTurn(ctx context.Context, ownerID, agentID, conversationI
 	if len(release.DefinitionJSON) == 0 || strings.TrimSpace(release.Checksum) == "" {
 		return nil, fmt.Errorf("%w: agent release snapshot is incomplete", agenterrors.ErrInvalidInput)
 	}
-	userMessage := &conversation.Message{OwnerID: ownerID, ConversationID: conversationID, Role: conversation.RoleUser,
-		Content: content, ContentType: conversation.ContentTypeText, MetadataJSON: "{}"}
+	userMessage := &conversation.Message{
+		OwnerID:        ownerID,
+		ConversationID: conversationID,
+		Role:           conversation.RoleUser,
+		Content:        content,
+		ContentType:    conversation.ContentTypeText,
+		MetadataJSON:   "{}",
+	}
 	now := time.Now().UTC()
 	mode, err := normalizeAgentMode(conv.AgentMode)
 	if err != nil {
 		return nil, err
 	}
 	inputJSON, _ := json.Marshal(map[string]any{"query": content, "mode": mode})
-	run := &agentdomain.Run{OwnerID: ownerID, RunType: agentdomain.RunTypeTurn, AgentID: agentID,
-		AgentReleaseID: conv.AgentReleaseID, ConversationID: &conversationID, Status: agentdomain.RunStatusQueued,
-		DefinitionJSON: append(json.RawMessage(nil), release.DefinitionJSON...), DefinitionHash: release.Checksum, RuleHash: release.RuleHash,
-		InputJSON: inputJSON, StartedAt: now, CreatedAt: now, UpdatedAt: now}
-	turn := &agentdomain.Turn{OwnerID: ownerID, AgentID: agentID, AgentReleaseID: *conv.AgentReleaseID,
-		ConversationID: conversationID, IdempotencyKey: key,
-		Status: agentdomain.TurnStatusQueued, InputJSON: inputJSON}
+	run := &agentdomain.Run{
+		OwnerID:        ownerID,
+		RunType:        agentdomain.RunTypeTurn,
+		AgentID:        agentID,
+		AgentReleaseID: conv.AgentReleaseID,
+		ConversationID: &conversationID,
+		Status:         agentdomain.RunStatusQueued,
+		DefinitionJSON: append(json.RawMessage(nil), release.DefinitionJSON...),
+		DefinitionHash: release.Checksum,
+		RuleHash:       release.RuleHash,
+		InputJSON:      inputJSON,
+		StartedAt:      now,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+	turn := &agentdomain.Turn{
+		OwnerID:        ownerID,
+		AgentID:        agentID,
+		AgentReleaseID: *conv.AgentReleaseID,
+		ConversationID: conversationID,
+		IdempotencyKey: key,
+		Status:         agentdomain.TurnStatusQueued,
+		InputJSON:      inputJSON,
+	}
 	if err := s.turns.CreateWithArtifacts(ctx, turn, userMessage, run); err != nil {
 		if existing, existingErr := s.turns.FindByIdempotencyKey(ctx, ownerID, conversationID, key); existingErr == nil {
 			var existingRun *agentdomain.Run
@@ -600,14 +644,6 @@ func (s *Service) SearchSessions(ctx context.Context, ownerID, agentID int64, re
 	}
 	request.OwnerID, request.AgentID = ownerID, agentID
 	return s.sessionSearch.SearchMessages(ctx, request)
-}
-
-func (s *Service) executeTurn(ctx context.Context, ownerID, turnID int64) {
-	turn, err := s.turns.FindByID(ctx, ownerID, turnID)
-	if err != nil {
-		return
-	}
-	s.executeTurnOwned(ctx, turn)
 }
 
 func (s *Service) executeTurnOwned(ctx context.Context, turn *agentdomain.Turn) {
@@ -649,10 +685,19 @@ func (s *Service) executeTurnOwned(ctx context.Context, turn *agentdomain.Turn) 
 	if mode, modeErr := normalizeAgentMode(fmt.Sprint(input["mode"])); modeErr == nil {
 		definition.Mode = mode
 	}
-	emitter := &runEventEmitter{repo: s.events, ownerID: turn.OwnerID, runID: run.ID}
-	result, execErr := s.runtime.Execute(ctx, agentruntime.RunRequest{OwnerID: turn.OwnerID, AgentID: turn.AgentID,
-		AgentReleaseID: turn.AgentReleaseID, RunID: run.ID, ConversationID: &turn.ConversationID, Task: task,
-		RuleHash: run.RuleHash, Definition: definition, StepRecorder: &runStepRecorder{repo: s.steps}}, emitter)
+	emitter := s.newRunEventEmitter(turn.OwnerID, run.ID, &turn.ConversationID)
+	result, execErr := s.runtime.Execute(ctx,
+		agentruntime.RunRequest{
+			OwnerID:        turn.OwnerID,
+			AgentID:        turn.AgentID,
+			AgentReleaseID: turn.AgentReleaseID,
+			RunID:          run.ID,
+			ConversationID: &turn.ConversationID,
+			Task:           task,
+			RuleHash:       run.RuleHash,
+			Definition:     definition,
+			StepRecorder:   &runStepRecorder{repo: s.steps},
+		}, emitter)
 	if execErr != nil {
 		s.failTurn(ctx, turn, run, execErr)
 		return
@@ -807,13 +852,15 @@ func (s *Service) failTurn(ctx context.Context, turn *agentdomain.Turn, run *age
 		if current, err := s.runs.FindByID(ctx, turn.OwnerID, run.ID); err == nil && current.Status == agentdomain.RunStatusCancelled {
 			now := time.Now().UTC()
 			turn.Status, turn.FinishedAt = agentdomain.TurnStatusCancelled, &now
-			_ = s.turns.Update(ctx, turn)
+			if err := s.turns.Update(ctx, turn); err == nil {
+				s.publishRunSnapshot(current, turn, nil, llm.Usage{})
+			}
 			return
 		}
 	}
 	now := time.Now().UTC()
 	turn.Status, turn.ErrorMessage, turn.FinishedAt = agentdomain.TurnStatusFailed, cause.Error(), &now
-	_ = s.turns.Update(ctx, turn)
+	turnErr := s.turns.Update(ctx, turn)
 	if run != nil {
 		if err := run.TransitionStatus(agentdomain.RunStatusFailed); err != nil {
 			run.ErrorMessage = err.Error()
@@ -822,7 +869,9 @@ func (s *Service) failTurn(ctx context.Context, turn *agentdomain.Turn, run *age
 			run.FinishedAt = &now
 		}
 		run.LatencyMS = int(now.Sub(run.StartedAt).Milliseconds())
-		_ = s.runs.Update(ctx, run)
+		if runErr := s.runs.Update(ctx, run); turnErr == nil && runErr == nil {
+			s.publishRunSnapshot(run, turn, nil, llm.Usage{})
+		}
 	}
 }
 
@@ -830,7 +879,9 @@ func (s *Service) completeTurn(ctx context.Context, turn *agentdomain.Turn, run 
 	if current, err := s.runs.FindByID(ctx, turn.OwnerID, run.ID); err == nil && current.Status == agentdomain.RunStatusCancelled {
 		now := time.Now().UTC()
 		turn.Status, turn.FinishedAt = agentdomain.TurnStatusCancelled, &now
-		_ = s.turns.Update(ctx, turn)
+		if err := s.turns.Update(ctx, turn); err == nil {
+			s.publishRunSnapshot(current, turn, nil, llm.Usage{})
+		}
 		return
 	}
 	stopReason, _ := result.Output["stop_reason"].(string)
@@ -854,14 +905,33 @@ func (s *Service) completeTurn(ctx context.Context, turn *agentdomain.Turn, run 
 			s.failTurn(ctx, turn, run, err)
 			return
 		}
-		_ = s.turns.Update(ctx, turn)
-		_ = s.runs.Update(ctx, run)
+		if err := s.turns.Update(ctx, turn); err != nil {
+			s.failTurn(ctx, turn, run, err)
+			return
+		}
+		if err := s.runs.Update(ctx, run); err != nil {
+			s.failTurn(ctx, turn, run, err)
+			return
+		}
+		if run.Status == agentdomain.RunStatusWaitingHuman {
+			if approval, err := s.approvals.FindPendingApprovalByRun(ctx, run.OwnerID, run.ID); err == nil {
+				s.publishApprovalRequired(run, approval)
+			}
+		}
+		s.publishRunSnapshot(run, turn, nil, usageFromOutput(result.Output))
 		return
 	}
 	content, _ := result.Output["final_answer"].(string)
 	totalTokens, _ := result.Output["total_tokens"].(int)
-	assistant := &conversation.Message{OwnerID: turn.OwnerID, ConversationID: turn.ConversationID, Role: conversation.RoleAssistant,
-		Content: content, ContentType: conversation.ContentTypeText, RunID: &run.ID, TokenCount: totalTokens, MetadataJSON: "{}"}
+	assistant := &conversation.Message{
+		OwnerID:        turn.OwnerID,
+		ConversationID: turn.ConversationID,
+		Role:           conversation.RoleAssistant,
+		Content:        content,
+		ContentType:    conversation.ContentTypeText,
+		RunID:          &run.ID,
+		TokenCount:     totalTokens, MetadataJSON: "{}",
+	}
 	now := time.Now().UTC()
 	output, _ := json.Marshal(result.Output)
 	turn.Status, turn.AssistantMessageID, turn.OutputJSON, turn.FinishedAt = agentdomain.TurnStatusSucceeded, &assistant.ID, output, &now
@@ -889,6 +959,7 @@ func (s *Service) completeTurn(ctx context.Context, turn *agentdomain.Turn, run 
 	if s.sessionSearch != nil {
 		_ = s.sessionSearch.IndexMessage(ctx, turn.OwnerID, turn.AgentID, assistant)
 	}
+	s.publishRunSnapshot(run, turn, assistant, usageFromOutput(result.Output))
 }
 
 func (s *Service) persistCheckpoint(ctx context.Context, run *agentdomain.Run, output agentruntime.RunOutput, status string) error {
@@ -912,9 +983,17 @@ func (s *Service) persistCheckpoint(ctx context.Context, run *agentdomain.Run, o
 	}
 	if hasApproval {
 		raw, _ := json.Marshal(approval)
-		if err := s.approvals.CreateApprovalRequest(ctx, &agentdomain.ApprovalRequest{OwnerID: run.OwnerID,
-			RunID: run.ID, ToolCallID: approval.ToolCallID, InteractionID: interactionID, ToolName: approval.ToolName,
-			RiskLevel: approval.RiskLevel, Reason: approval.Reason, RequestJSON: raw, Status: agentdomain.ApprovalStatusPending}); err != nil {
+		if err := s.approvals.CreateApprovalRequest(ctx, &agentdomain.ApprovalRequest{
+			OwnerID:       run.OwnerID,
+			RunID:         run.ID,
+			ToolCallID:    approval.ToolCallID,
+			InteractionID: interactionID,
+			ToolName:      approval.ToolName,
+			RiskLevel:     approval.RiskLevel,
+			Reason:        approval.Reason,
+			RequestJSON:   raw,
+			Status:        agentdomain.ApprovalStatusPending,
+		}); err != nil {
 			return err
 		}
 	}
@@ -926,11 +1005,22 @@ func (s *Service) persistCheckpoint(ctx context.Context, run *agentdomain.Run, o
 		stepsJSON, _ := json.Marshal(checkpoint.Steps)
 		toolRegistryHash, _ := checkpoint.Metadata["tool_registry_hash"].(string)
 		toolPolicyHash, _ := checkpoint.Metadata["tool_policy_hash"].(string)
-		return s.approvals.CreateCheckpoint(ctx, &agentdomain.RunCheckpoint{OwnerID: run.OwnerID, RunID: run.ID,
-			Status: status, SnapshotVersion: checkpoint.SnapshotVersion, InteractionID: interactionID,
-			RuntimeCheckpointJSON: runtimeCheckpoint, MessagesJSON: messages, MessagesSummary: checkpoint.MessagesSummary,
-			StepsJSON: stepsJSON, PendingToolCallJSON: pending, ContextJSON: contextJSON,
-			ToolRegistryHash: toolRegistryHash, ToolPolicyHash: toolPolicyHash})
+		return s.approvals.CreateCheckpoint(ctx,
+			&agentdomain.RunCheckpoint{
+				OwnerID:               run.OwnerID,
+				RunID:                 run.ID,
+				Status:                status,
+				SnapshotVersion:       checkpoint.SnapshotVersion,
+				InteractionID:         interactionID,
+				RuntimeCheckpointJSON: runtimeCheckpoint,
+				MessagesJSON:          messages,
+				MessagesSummary:       checkpoint.MessagesSummary,
+				StepsJSON:             stepsJSON,
+				PendingToolCallJSON:   pending,
+				ContextJSON:           contextJSON,
+				ToolRegistryHash:      toolRegistryHash,
+				ToolPolicyHash:        toolPolicyHash,
+			})
 	}
 	return nil
 }
@@ -986,11 +1076,25 @@ func (s *Service) ResumeRun(ctx context.Context, run *agentdomain.Run, stored *a
 	execCtx, cancel := context.WithCancel(ctx)
 	s.registerCancel(run.ID, cancel)
 	defer func() { cancel(); s.unregisterCancel(run.ID) }()
-	result, execErr := s.runtime.Resume(execCtx, agentruntime.ResumeRequest{RunRequest: agentruntime.RunRequest{
-		OwnerID: run.OwnerID, AgentID: run.AgentID, AgentReleaseID: releaseID, RunID: run.ID,
-		ParentRunID: run.ParentRunID, DelegationDepth: run.DelegationDepth, ConversationID: run.ConversationID,
-		RuleHash: run.RuleHash, Task: task, Definition: definition, StepRecorder: &runStepRecorder{repo: s.steps}},
-		Checkpoint: checkpoint, Approved: approved, RejectionNote: note}, &runEventEmitter{repo: s.events, ownerID: run.OwnerID, runID: run.ID})
+	result, execErr := s.runtime.Resume(execCtx,
+		agentruntime.ResumeRequest{
+			RunRequest: agentruntime.RunRequest{
+				OwnerID:         run.OwnerID,
+				AgentID:         run.AgentID,
+				AgentReleaseID:  releaseID,
+				RunID:           run.ID,
+				ParentRunID:     run.ParentRunID,
+				DelegationDepth: run.DelegationDepth,
+				ConversationID:  run.ConversationID,
+				RuleHash:        run.RuleHash,
+				Task:            task,
+				Definition:      definition,
+				StepRecorder:    &runStepRecorder{repo: s.steps},
+			},
+			Checkpoint:    checkpoint,
+			Approved:      approved,
+			RejectionNote: note,
+		}, s.newRunEventEmitter(run.OwnerID, run.ID, run.ConversationID))
 	if execErr != nil {
 		if turn != nil {
 			s.failTurn(ctx, turn, run, execErr)
@@ -1050,6 +1154,7 @@ func (s *Service) completeSubagentRun(ctx context.Context, run *agentdomain.Run,
 		run.LatencyMS = int(now.Sub(run.StartedAt).Milliseconds())
 	}
 	_ = s.runs.Update(ctx, run)
+	s.publishRunSnapshot(run, nil, nil, usageFromOutput(result.Output))
 }
 
 func decodeCheckpoint(stored *agentdomain.RunCheckpoint) (*runtimeagent.Checkpoint, error) {
@@ -1100,7 +1205,11 @@ func (s *Service) CancelRun(ctx context.Context, ownerID, runID int64) error {
 	if err != nil {
 		return mapNotFound(err)
 	}
-	if run.Status == agentdomain.RunStatusQueued || run.Status == agentdomain.RunStatusRunning || run.Status == agentdomain.RunStatusResuming || run.Status == agentdomain.RunStatusWaitingHuman || run.Status == agentdomain.RunStatusPaused {
+	if run.Status == agentdomain.RunStatusQueued ||
+		run.Status == agentdomain.RunStatusRunning ||
+		run.Status == agentdomain.RunStatusResuming ||
+		run.Status == agentdomain.RunStatusWaitingHuman ||
+		run.Status == agentdomain.RunStatusPaused {
 		finished := time.Now().UTC()
 		if err := run.TransitionStatus(agentdomain.RunStatusCancelled); err != nil {
 			return err
@@ -1118,11 +1227,14 @@ func (s *Service) CancelRun(ctx context.Context, ownerID, runID int64) error {
 			}
 		}
 	}
+	var snapshotTurn *agentdomain.Turn
 	if turn, findErr := s.turns.FindByRunID(ctx, ownerID, runID); findErr == nil {
 		if turn.Status == agentdomain.TurnStatusQueued || turn.Status == agentdomain.TurnStatusRunning || turn.Status == agentdomain.TurnStatusRetryWait {
 			finished := time.Now().UTC()
 			turn.Status, turn.FinishedAt = agentdomain.TurnStatusCancelled, &finished
-			_ = s.turns.Update(ctx, turn)
+			if err := s.turns.Update(ctx, turn); err == nil {
+				snapshotTurn = turn
+			}
 		}
 	}
 	s.cancelMu.Lock()
@@ -1131,6 +1243,7 @@ func (s *Service) CancelRun(ctx context.Context, ownerID, runID int64) error {
 	if cancel != nil {
 		cancel()
 	}
+	s.publishRunSnapshot(run, snapshotTurn, nil, llm.Usage{})
 	return nil
 }
 
@@ -1296,17 +1409,34 @@ func (s *Service) RunSubagent(ctx context.Context, req toolruntime.SubagentReque
 	}
 	now := time.Now().UTC()
 	inputJSON, _ := json.Marshal(map[string]any{"query": strings.TrimSpace(req.Definition.Task)})
-	run := &agentdomain.Run{OwnerID: req.OwnerID, RunType: agentdomain.RunTypeSubagent, AgentID: parent.AgentID,
-		ConversationID: req.ConversationID, ParentRunID: &req.ParentRunID,
-		DelegationDepth: req.DelegationDepth + 1, DefinitionJSON: definitionJSON, DefinitionHash: hashJSON(definitionJSON),
-		Status: agentdomain.RunStatusRunning, InputJSON: inputJSON, StartedAt: now}
+	run := &agentdomain.Run{
+		OwnerID:         req.OwnerID,
+		RunType:         agentdomain.RunTypeSubagent,
+		AgentID:         parent.AgentID,
+		ConversationID:  req.ConversationID,
+		ParentRunID:     &req.ParentRunID,
+		DelegationDepth: req.DelegationDepth + 1,
+		DefinitionJSON:  definitionJSON,
+		DefinitionHash:  hashJSON(definitionJSON),
+		Status:          agentdomain.RunStatusRunning,
+		InputJSON:       inputJSON,
+		StartedAt:       now,
+	}
 	if err := s.runs.Create(ctx, run); err != nil {
 		return nil, err
 	}
-	result, execErr := s.runtime.Execute(ctx, agentruntime.RunRequest{OwnerID: req.OwnerID, AgentID: parent.AgentID,
-		RunID: run.ID, ParentRunID: &req.ParentRunID, DelegationDepth: run.DelegationDepth,
-		ConversationID: req.ConversationID, Task: strings.TrimSpace(req.Definition.Task), Definition: definition,
-		StepRecorder: &runStepRecorder{repo: s.steps}}, &runEventEmitter{repo: s.events, ownerID: req.OwnerID, runID: run.ID})
+	result, execErr := s.runtime.Execute(ctx,
+		agentruntime.RunRequest{
+			OwnerID:         req.OwnerID,
+			AgentID:         parent.AgentID,
+			RunID:           run.ID,
+			ParentRunID:     &req.ParentRunID,
+			DelegationDepth: run.DelegationDepth,
+			ConversationID:  req.ConversationID,
+			Task:            strings.TrimSpace(req.Definition.Task),
+			Definition:      definition,
+			StepRecorder:    &runStepRecorder{repo: s.steps},
+		}, s.newRunEventEmitter(req.OwnerID, run.ID, req.ConversationID))
 	var output map[string]any
 	if result != nil {
 		output = map[string]any(result.Output)
@@ -1319,7 +1449,9 @@ func (s *Service) RunSubagent(ctx context.Context, req toolruntime.SubagentReque
 			run.ErrorMessage = execErr.Error()
 		}
 		run.FinishedAt, run.LatencyMS = &finished, int(finished.Sub(run.StartedAt).Milliseconds())
-		_ = s.runs.Update(ctx, run)
+		if updateErr := s.runs.Update(ctx, run); updateErr == nil {
+			s.publishRunSnapshot(run, nil, nil, llm.Usage{})
+		}
 	} else if result == nil {
 		execErr = fmt.Errorf("agent runtime returned no result")
 		finished := time.Now().UTC()
@@ -1329,7 +1461,9 @@ func (s *Service) RunSubagent(ctx context.Context, req toolruntime.SubagentReque
 			run.ErrorMessage = execErr.Error()
 		}
 		run.FinishedAt, run.LatencyMS = &finished, int(finished.Sub(run.StartedAt).Milliseconds())
-		_ = s.runs.Update(ctx, run)
+		if updateErr := s.runs.Update(ctx, run); updateErr == nil {
+			s.publishRunSnapshot(run, nil, nil, llm.Usage{})
+		}
 	} else {
 		s.completeSubagentRun(ctx, run, result)
 	}
@@ -1363,31 +1497,28 @@ func hashJSON(raw json.RawMessage) string {
 
 var _ toolruntime.SubagentDispatcher = (*Service)(nil)
 
-type runEventEmitter struct {
-	repo           agentdomain.RunEventRepository
-	ownerID, runID int64
-}
-
-func (e *runEventEmitter) Emit(ctx context.Context, event runtimeevent.Event) error {
-	if event.RunID == 0 {
-		event.RunID = e.runID
-	}
-	if event.CreatedAt.IsZero() {
-		event.CreatedAt = time.Now().UTC()
-	}
-	payload, _ := json.Marshal(event.Payload)
-	return e.repo.Create(ctx, &agentdomain.RunEvent{OwnerID: e.ownerID, RunID: event.RunID, EventType: event.Type,
-		PayloadJSON: payload, CreatedAt: event.CreatedAt})
-}
-
 type runStepRecorder struct{ repo agentdomain.RunStepRepository }
 
 func (r *runStepRecorder) RecordAgentStep(ctx context.Context, rc *agentruntime.RunContext, step agentruntime.AgentStepRecord) error {
-	return r.repo.Create(ctx, &agentdomain.RunStep{OwnerID: rc.OwnerID, RunID: rc.RunID,
-		StepIndex: step.StepIndex, StepType: step.StepType, Role: step.Role, Content: step.Content,
-		ToolCallID: step.ToolCallID, ToolName: step.ToolName, ArgumentsJSON: step.ArgumentsJSON, OutputJSON: step.OutputJSON,
-		Compressed: step.Compressed, ErrorMessage: step.ErrorMessage, TokenCount: step.TokenCount, LatencyMS: step.LatencyMS,
-		ProviderID: step.ProviderID, Model: step.Model, CreatedAt: time.Now().UTC()})
+	return r.repo.Create(ctx, &agentdomain.RunStep{
+		OwnerID:       rc.OwnerID,
+		RunID:         rc.RunID,
+		StepIndex:     step.StepIndex,
+		StepType:      step.StepType,
+		Role:          step.Role,
+		Content:       step.Content,
+		ToolCallID:    step.ToolCallID,
+		ToolName:      step.ToolName,
+		ArgumentsJSON: step.ArgumentsJSON,
+		OutputJSON:    step.OutputJSON,
+		Compressed:    step.Compressed,
+		ErrorMessage:  step.ErrorMessage,
+		TokenCount:    step.TokenCount,
+		LatencyMS:     step.LatencyMS,
+		ProviderID:    step.ProviderID,
+		Model:         step.Model,
+		CreatedAt:     time.Now().UTC(),
+	})
 }
 
 func mapNotFound(err error) error {

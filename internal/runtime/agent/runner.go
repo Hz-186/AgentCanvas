@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"slices"
 	"strings"
-	"sync"
 	"time"
 
 	"agentcanvas/internal/domain/conversation"
@@ -28,11 +27,12 @@ var ErrRunPaused = errors.New("run paused")
 type StepEmitter func(ctx context.Context, step RunStep) error
 
 type Runner struct {
-	LLM        llm.ToolCallingClient
-	OnStep     StepEmitter
-	Now        func() time.Time
-	ProviderID int64
-	ModelName  string
+	LLM          llm.ToolCallingClient
+	OnStep       StepEmitter
+	OnModelEvent ModelEventEmitter
+	Now          func() time.Time
+	ProviderID   int64
+	ModelName    string
 }
 
 func NewRunner(client llm.ToolCallingClient) *Runner {
@@ -195,7 +195,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 		if len(unresolved) > 0 {
 			messageCountBeforeTools := len(messages)
 			stepStart := len(result.Steps)
-			stop, updatedMessages := r.executeToolBatch(ctx, req, result, messages, unresolved, toolByName, toolHooks, contextTrace, toolNames, req.ResumeApprovedToolCallIDs)
+			stop, updatedMessages := r.executeToolBatch(ctx, req, result, messages, unresolved, toolHooks, contextTrace, toolNames, req.ResumeApprovedToolCallIDs)
 			messages = updatedMessages
 			if len(updatedMessages) > messageCountBeforeTools {
 				transcript = append(transcript, updatedMessages[messageCountBeforeTools:]...)
@@ -302,7 +302,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 		//// ***
 
 		llmStarted := r.now()
-		resp, err := r.LLM.ChatWithTools(ctx, req.Provider, llm.ToolChatRequest{
+		resp, err := r.executeModelTurn(ctx, req.Provider, llm.ToolChatRequest{
 			Model:       req.Model,
 			Messages:    messages,
 			Tools:       tools,
@@ -311,7 +311,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 		})
 		latencyMS := int(r.now().Sub(llmStarted).Milliseconds())
 		if err != nil {
-			if errors.Is(err, context.Canceled) {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				result = finishWithContext(result, err, r.now())
 				if errors.Is(context.Cause(ctx), ErrRunPaused) {
 					result.StopReason = StopReasonPaused
@@ -379,7 +379,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 		messages = append(messages, assistant)
 		messageCountBeforeTools := len(messages)
 		stepStart := len(result.Steps)
-		stop, updatedMessages := r.executeToolBatch(ctx, req, result, messages, assistant.ToolCalls, toolByName, toolHooks, contextTrace, toolNames, nil)
+		stop, updatedMessages := r.executeToolBatch(ctx, req, result, messages, assistant.ToolCalls, toolHooks, contextTrace, toolNames, nil)
 		messages = updatedMessages
 		transcript = append(transcript, assistant)
 		if len(updatedMessages) > messageCountBeforeTools {
@@ -578,7 +578,6 @@ type preparedToolCall struct {
 	metadata   toolruntime.ToolMetadata
 	execCtx    context.Context
 	execCancel context.CancelFunc
-	preTraces  []hooks.Trace
 	result     *toolruntime.ToolResult
 	err        error
 	latencyMS  int
@@ -590,14 +589,26 @@ func (r *Runner) executeToolBatch(
 	result *RunResult,
 	messages []llm.ChatMessage,
 	calls []llm.ToolCall,
-	toolByName map[string]toolruntime.RuntimeTool,
 	toolHooks hooks.ToolHookChain,
 	contextTrace ContextTrace,
 	toolNames []string,
 	approvedToolCallIDs []string,
 ) (bool, []llm.ChatMessage) {
+	normalizer, normalizeErr := NewToolCallNormalizer(req.Tools, nil)
 	prepared := make([]preparedToolCall, 0, len(calls))
-	for _, call := range calls {
+	normalizedCalls := make([]NormalizedToolCall, len(calls))
+	if normalizeErr == nil {
+		normalizedCalls = normalizer.NormalizeBatch(calls)
+	} else {
+		// The request was already checked for duplicate names above. Keep a
+		// defensive fallback so malformed callers still receive a tool result
+		// instead of bypassing the execution boundary.
+		for index, call := range calls {
+			normalizedCalls[index] = NormalizedToolCall{Call: call, Issue: &ToolCallIssue{Code: ToolCallIssueInvalidAlias, Message: normalizeErr.Error()}}
+		}
+	}
+	for _, normalized := range normalizedCalls {
+		call := normalized.Call
 		if result.ToolCalls+len(prepared) >= req.MaxToolCalls {
 			result.StopReason = StopReasonMaxToolCalls
 			result.FinalAnswer = "Agent stopped because max_tool_calls was exceeded."
@@ -620,10 +631,13 @@ func (r *Runner) executeToolBatch(
 			Model:         r.ModelName,
 		})
 		_ = r.emit(ctx, toolStep)
-		toolImpl, ok := toolByName[call.Name]
-		if !ok {
+		toolImpl := normalized.Tool
+		if normalized.Issue != nil || toolImpl == nil {
 			result.StopReason = StopReasonToolNameNotFound
 			errMessage := fmt.Sprintf("tool %s is not available", call.Name)
+			if normalized.Issue != nil {
+				errMessage = normalized.Issue.Message
+			}
 			messages = append(messages, toolMessage(call.ID, errMessage))
 			step := r.appendStep(result, RunStep{
 				Type:       StepTypeToolResult,
@@ -715,13 +729,20 @@ func (r *Runner) executeToolBatch(
 		})
 	}
 
-	allDelegation := len(prepared) > 1
-	for i := range prepared {
-		allDelegation = allDelegation && prepared[i].metadata.ExecutionClass == toolruntime.ExecutionDelegation
+	plannedCalls := make([]NormalizedToolCall, len(prepared))
+	for index := range prepared {
+		item := &prepared[index]
+		plannedCalls[index] = NormalizedToolCall{
+			Call:     item.call,
+			Tool:     item.tool,
+			Metadata: item.metadata,
+		}
 	}
-	execute := func(item *preparedToolCall) {
+	segments := PlanToolBatch(plannedCalls, nil)
+	executions := ExecuteToolBatch(ctx, segments, req.MaxParallelTools, func(_ context.Context, batchItem ToolBatchItem) (*toolruntime.ToolResult, error) {
+		item := &prepared[batchItem.Index]
 		started := r.now()
-		item.result, item.err = item.tool.Execute(item.execCtx, toolruntime.ToolRunContext{
+		toolResult, toolErr := item.tool.Execute(item.execCtx, toolruntime.ToolRunContext{
 			OwnerID:         req.OwnerID,
 			AgentID:         req.AgentID,
 			AgentReleaseID:  req.AgentReleaseID,
@@ -731,36 +752,17 @@ func (r *Runner) executeToolBatch(
 		}, item.call.Arguments)
 		if item.execCancel != nil {
 			item.execCancel()
+			item.execCancel = nil
 		}
 		item.latencyMS = int(r.now().Sub(started).Milliseconds())
-		if item.result == nil {
-			item.result = &toolruntime.ToolResult{}
-		}
-		if item.err != nil {
-			item.result.IsError = true
-		}
-	}
-	if allDelegation {
-		sem := make(chan struct{}, req.MaxParallelTools)
-		var wg sync.WaitGroup
-		for i := range prepared {
-			wg.Add(1)
-			go func(item *preparedToolCall) {
-				defer wg.Done()
-				select {
-				case sem <- struct{}{}:
-					defer func() { <-sem }()
-					execute(item)
-				case <-ctx.Done():
-					item.result = &toolruntime.ToolResult{ContentText: ctx.Err().Error(), IsError: true}
-					item.err = ctx.Err()
-				}
-			}(&prepared[i])
-		}
-		wg.Wait()
-	} else {
-		for i := range prepared {
-			execute(&prepared[i])
+		return toolResult, toolErr
+	})
+	for _, execution := range executions {
+		item := &prepared[execution.Index]
+		item.result = execution.Result
+		item.err = execution.Err
+		if item.execCancel != nil {
+			item.execCancel()
 		}
 	}
 	result.ToolCalls += len(prepared)

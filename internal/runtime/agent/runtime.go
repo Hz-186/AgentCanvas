@@ -15,17 +15,18 @@ type Runtime interface {
 }
 
 type RuntimeOptions struct {
-	LLM        llm.ToolCallingClient
-	OnStep     StepEmitter
-	Now        func() time.Time
-	ProviderID int64
-	ModelName  string
+	LLM          llm.ToolCallingClient
+	OnStep       StepEmitter
+	OnModelEvent ModelEventEmitter
+	Now          func() time.Time
+	ProviderID   int64
+	ModelName    string
 }
 
 type runtimeModule struct{ runner *Runner }
 
 func NewRuntime(options RuntimeOptions) Runtime {
-	runner := &Runner{LLM: options.LLM, OnStep: options.OnStep, Now: options.Now, ProviderID: options.ProviderID, ModelName: options.ModelName}
+	runner := &Runner{LLM: options.LLM, OnStep: options.OnStep, OnModelEvent: options.OnModelEvent, Now: options.Now, ProviderID: options.ProviderID, ModelName: options.ModelName}
 	return &runtimeModule{runner: runner}
 }
 
