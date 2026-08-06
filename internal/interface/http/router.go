@@ -92,6 +92,7 @@ func NewRouter(deps RouterDeps) *gin.Engine {
 			protected.GET("/runs/:id", deps.AgentHandler.GetRun)
 			protected.GET("/runs/:id/events", deps.AgentHandler.ListRunEvents)
 			protected.GET("/runs/:id/events/stream", deps.AgentHandler.StreamRunEvents)
+			protected.GET("/runs/:id/events/stream/v1", deps.AgentHandler.StreamRunEventsV1)
 			protected.GET("/runs/:id/children", deps.AgentHandler.ListChildRuns)
 			protected.GET("/runs/:id/steps", deps.AgentHandler.ListRunSteps)
 			protected.GET("/runs/:id/trace", deps.AgentHandler.GetRunTrace)
