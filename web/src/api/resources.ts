@@ -63,8 +63,8 @@ export const agentApi = {
   startTurn: (id: number, conversationId: number, content: string, idempotencyKey: string) => api.post<AgentTurnAccepted>(`/agents/${id}/conversations/${conversationId}/turns`, { content }, { headers: { 'Idempotency-Key': idempotencyKey } }),
   getTurn: (id: number) => api.get<AgentTurn>(`/agent-turns/${id}`),
   getLatestTurn: (id: number, conversationId: number) => api.get<AgentTurn>(`/agents/${id}/conversations/${conversationId}/turns/latest`),
-  streamRunEvents: (runId: number, lastEventId: string | undefined, handlers: { onMessage: (msg: SSEMessage) => void; onError?: (err: Error) => void; signal?: AbortSignal }) =>
-    streamGet(`/runs/${runId}/events/stream`, { lastEventId, ...handlers }),
+  streamRunEventsV1: (runId: number, lastEventId: string | undefined, handlers: { onMessage: (msg: SSEMessage) => void; onError?: (err: Error) => void; signal?: AbortSignal }) =>
+    streamGet(`/runs/${runId}/events/stream/v1`, { lastEventId, ...handlers }),
   searchSessions: (id: number, query: string, limit = 10) => api.get<MessageSearchResult[]>(`/agents/${id}/session-search`, { q: query, limit }),
   listImprovementReviews: (id: number) => api.get<ImprovementReview[]>(`/agents/${id}/improvement-reviews`),
   listChangeProposals: (id: number, status?: ChangeProposal['status']) => api.get<ChangeProposal[]>(`/agents/${id}/change-proposals`, status ? { status } : undefined),
