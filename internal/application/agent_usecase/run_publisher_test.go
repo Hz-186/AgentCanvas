@@ -1,0 +1,190 @@
+package agent_usecase
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	agentdomain "agentcanvas/internal/domain/agent"
+	"agentcanvas/internal/domain/conversation"
+	"agentcanvas/internal/infrastructure/llm"
+	runtimeevent "agentcanvas/internal/runtime/event"
+	"agentcanvas/internal/runtime/eventhub"
+)
+
+type publisherEventRepo struct {
+	items []agentdomain.RunEvent
+	err   error
+}
+
+func (r *publisherEventRepo) Create(_ context.Context, item *agentdomain.RunEvent) error {
+	if r.err != nil {
+		return r.err
+	}
+	r.items = append(r.items, *item)
+	return nil
+}
+
+func (r *publisherEventRepo) ListByRun(context.Context, int64, int64) ([]agentdomain.RunEvent, error) {
+	return append([]agentdomain.RunEvent(nil), r.items...), nil
+}
+
+type blockingPublisherEventRepo struct {
+	calls        atomic.Int32
+	entered      chan int32
+	releaseFirst chan struct{}
+}
+
+func (r *blockingPublisherEventRepo) Create(_ context.Context, _ *agentdomain.RunEvent) error {
+	call := r.calls.Add(1)
+	r.entered <- call
+	if call == 1 {
+		<-r.releaseFirst
+	}
+	return nil
+}
+
+func (*blockingPublisherEventRepo) ListByRun(context.Context, int64, int64) ([]agentdomain.RunEvent, error) {
+	return nil, nil
+}
+
+func receiveStreamEvent(t *testing.T, live <-chan eventhub.StreamEvent) eventhub.StreamEvent {
+	t.Helper()
+	select {
+	case event := <-live:
+		return event
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for stream event")
+		return eventhub.StreamEvent{}
+	}
+}
+
+func TestRunEventEmitterPublishesOnlyAfterAuditWrite(t *testing.T) {
+	hub := eventhub.NewMemoryHub(eventhub.Config{SubscriberBuffer: 4})
+	_, live, cancel := hub.Subscribe(9, 0)
+	defer cancel()
+	repo := &publisherEventRepo{err: errors.New("audit failed")}
+	emitter := &runEventEmitter{repo: repo, hub: hub, ownerID: 1, runID: 9}
+	if err := emitter.Emit(context.Background(), runtimeevent.Event{Type: runtimeevent.AgentStarted}); err == nil {
+		t.Fatal("expected audit failure")
+	}
+	select {
+	case event := <-live:
+		t.Fatalf("failed audit became visible: %+v", event)
+	default:
+	}
+	repo.err = nil
+	if err := emitter.Emit(context.Background(), runtimeevent.Event{Type: runtimeevent.AgentStarted}); err != nil {
+		t.Fatal(err)
+	}
+	if got := receiveStreamEvent(t, live); got.Seq != 2 || got.Kind != "status.update" {
+		t.Fatalf("unexpected projected event: %+v", got)
+	}
+}
+
+func TestRunEventEmitterSerializesPrepareAuditAndPublishPerRun(t *testing.T) {
+	repo := &blockingPublisherEventRepo{entered: make(chan int32, 2), releaseFirst: make(chan struct{})}
+	hub := eventhub.NewMemoryHub(eventhub.Config{SubscriberBuffer: 4})
+	emitter := &runEventEmitter{repo: repo, hub: hub, ownerID: 1, runID: 13}
+	errors := make(chan error, 2)
+
+	go func() {
+		errors <- emitter.Emit(context.Background(), runtimeevent.Event{Type: runtimeevent.AgentStarted})
+	}()
+	if call := <-repo.entered; call != 1 {
+		t.Fatalf("first audit call = %d", call)
+	}
+	go func() {
+		errors <- emitter.Emit(context.Background(), runtimeevent.Event{Type: runtimeevent.AgentFinished})
+	}()
+	select {
+	case call := <-repo.entered:
+		t.Fatalf("audit call %d entered before the previous event was published", call)
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(repo.releaseFirst)
+	if call := <-repo.entered; call != 2 {
+		t.Fatalf("second audit call = %d", call)
+	}
+	for index := 0; index < 2; index++ {
+		if err := <-errors; err != nil {
+			t.Fatal(err)
+		}
+	}
+	replay, _, cancel := hub.Subscribe(13, 0)
+	defer cancel()
+	if len(replay) != 2 || replay[0].Seq != 1 || replay[1].Seq != 2 {
+		t.Fatalf("published sequence = %+v", replay)
+	}
+}
+
+func TestRunEventEmitterKeepsReasoningLiveOnly(t *testing.T) {
+	hub := eventhub.NewMemoryHub(eventhub.Config{SubscriberBuffer: 8})
+	_, live, cancel := hub.Subscribe(10, 0)
+	defer cancel()
+	repo := &publisherEventRepo{}
+	emitter := &runEventEmitter{repo: repo, hub: hub, ownerID: 1, runID: 10}
+	for _, event := range []llm.ModelStreamEvent{{Kind: llm.ModelReasoningStart}, {Kind: llm.ModelReasoningDelta, Text: "secret"}, {Kind: llm.ModelReasoningEnd}} {
+		if err := emitter.EmitModelEvent(context.Background(), event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, kind := range []string{"reasoning.start", "reasoning.delta", "reasoning.end"} {
+		if got := receiveStreamEvent(t, live); got.Kind != kind {
+			t.Fatalf("event kind = %q, want %q", got.Kind, kind)
+		}
+	}
+	if len(repo.items) != 0 {
+		t.Fatalf("reasoning was persisted: %+v", repo.items)
+	}
+}
+
+func TestTerminalSnapshotIsAuthoritativeAndClosesCompletedRun(t *testing.T) {
+	hub := eventhub.NewMemoryHub(eventhub.Config{SubscriberBuffer: 4})
+	_, live, cancel := hub.Subscribe(11, 0)
+	defer cancel()
+	service := &Service{streamHub: hub}
+	now := time.Now().UTC()
+	run := &agentdomain.Run{ID: 11, OwnerID: 1, AgentID: 2, RunType: agentdomain.RunTypeTurn, Status: agentdomain.RunStatusSucceeded,
+		DefinitionJSON: json.RawMessage(`{"system_prompt":"private"}`), OutputJSON: json.RawMessage(`{"final_answer":"final"}`), StartedAt: now, FinishedAt: &now}
+	message := &conversation.Message{ID: 12, OwnerID: 1, ConversationID: 3, Role: conversation.RoleAssistant, Content: "final"}
+	service.publishRunSnapshot(run, nil, message, llm.Usage{TotalTokens: 7})
+	event := receiveStreamEvent(t, live)
+	if event.Kind != eventhub.RunComplete {
+		t.Fatalf("terminal event kind = %q", event.Kind)
+	}
+	if strings.Contains(string(event.Data), "system_prompt") || !strings.Contains(string(event.Data), `"content":"final"`) {
+		t.Fatalf("terminal snapshot is unsafe or incomplete: %s", event.Data)
+	}
+	select {
+	case _, open := <-live:
+		if open {
+			t.Fatal("completed run stream remained open")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("completed run stream did not close")
+	}
+}
+
+func TestPausedSnapshotKeepsStreamOpenForResume(t *testing.T) {
+	hub := eventhub.NewMemoryHub(eventhub.Config{SubscriberBuffer: 4})
+	_, live, cancel := hub.Subscribe(12, 0)
+	defer cancel()
+	service := &Service{streamHub: hub}
+	run := &agentdomain.Run{ID: 12, OwnerID: 1, AgentID: 2, RunType: agentdomain.RunTypeTurn, Status: agentdomain.RunStatusPaused}
+	service.publishRunSnapshot(run, nil, nil, llm.Usage{})
+	if got := receiveStreamEvent(t, live); got.Kind != eventhub.RunPaused {
+		t.Fatalf("pause event = %+v", got)
+	}
+	emitter := &runEventEmitter{hub: hub, runID: 12}
+	if err := emitter.EmitModelEvent(context.Background(), llm.ModelStreamEvent{Kind: llm.ModelTextStart}); err != nil {
+		t.Fatal(err)
+	}
+	if got := receiveStreamEvent(t, live); got.Kind != "assistant.start" {
+		t.Fatalf("resume event = %+v", got)
+	}
+}

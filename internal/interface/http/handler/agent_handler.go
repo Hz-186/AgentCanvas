@@ -509,6 +509,45 @@ func (h *AgentHandler) StreamRunEvents(c *gin.Context) {
 	}
 }
 
+// StreamRunEventsV1 consumes the per-run in-memory hub. The legacy polling
+// endpoint remains available while the frontend migrates to the typed v1
+// reducer and terminal snapshot protocol.
+func (h *AgentHandler) StreamRunEventsV1(c *gin.Context) {
+	ownerID, runID, ok := ownerAndID(c, "id")
+	if !ok {
+		return
+	}
+	afterSeq, _ := strconv.ParseUint(strings.TrimSpace(c.Query("after_seq")), 10, 64)
+	if headerSeq, err := strconv.ParseUint(strings.TrimSpace(c.GetHeader("Last-Event-ID")), 10, 64); err == nil && headerSeq > afterSeq {
+		afterSeq = headerSeq
+	}
+	replay, live, cancel, err := h.service.SubscribeRunStream(c.Request.Context(), ownerID, runID, afterSeq)
+	if err != nil {
+		writeAppError(c, err)
+		return
+	}
+	defer cancel()
+	writer := sse.NewWriter(c)
+	for _, event := range replay {
+		if err := writer.EventWithID(int64(event.Seq), event.Kind, event); err != nil {
+			return
+		}
+	}
+	for {
+		select {
+		case <-c.Request.Context().Done():
+			return
+		case event, open := <-live:
+			if !open {
+				return
+			}
+			if err := writer.EventWithID(int64(event.Seq), event.Kind, event); err != nil {
+				return
+			}
+		}
+	}
+}
+
 func (h *AgentHandler) GetRun(c *gin.Context) {
 	ownerID, runID, ok := ownerAndID(c, "id")
 	if !ok {

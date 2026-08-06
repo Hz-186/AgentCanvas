@@ -37,6 +37,7 @@ import (
 	"agentcanvas/internal/interface/http/handler"
 	"agentcanvas/internal/pkg/config"
 	agentruntime "agentcanvas/internal/runtime/agentruntime"
+	"agentcanvas/internal/runtime/eventhub"
 	"agentcanvas/internal/runtime/sandbox"
 	"agentcanvas/internal/runtime/toolruntime"
 
@@ -268,6 +269,12 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 	}
 	agentService := independentagentusecase.NewService(agentRepo, agentTurnRepo, conversationRepo, messageRepo,
 		runRepo, runEventRepo, runStepRepo, approvalRepo, agentRuntime)
+	runStreamHub := eventhub.NewMemoryHub()
+	agentService.ConfigureEventHub(runStreamHub)
+	go func() {
+		<-ctx.Done()
+		runStreamHub.Close()
+	}()
 	agentService.ConfigureEditableResources(providerRepo, knowledgeRepo)
 	agentService.ConfigureSessionSearch(sessionSearch)
 	agentRuntime.ConfigureSubagentDispatcher(agentService)
