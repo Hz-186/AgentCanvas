@@ -1,7 +1,8 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { Agent, Conversation, Message, MessageSearchResult } from '../types/api';
+import type { Agent, AgentTurn, Conversation, Message, MessageSearchResult, Run } from '../types/api';
+import type { RunStreamEvent } from '../types/events';
 import { ChatPage, deduplicateSearchResults, mergeMessages, visibleChatMessages } from './ChatPage';
 
 const apiMocks = vi.hoisted(() => ({
@@ -11,8 +12,15 @@ const apiMocks = vi.hoisted(() => ({
   listConversations: vi.fn(),
   listMessages: vi.fn(),
   latestTurn: vi.fn(),
+  getTurn: vi.fn(),
+  streamRunEvents: vi.fn(),
+  streamRunEventsV1: vi.fn(),
   searchSessions: vi.fn(),
   updateConversationMode: vi.fn(),
+  getRun: vi.fn(),
+  listRunEvents: vi.fn(),
+  listChildRuns: vi.fn(),
+  listApprovalRequests: vi.fn(),
 }));
 
 vi.mock('../api/resources', () => ({
@@ -20,13 +28,21 @@ vi.mock('../api/resources', () => ({
     list: apiMocks.listAgents,
     listConversations: apiMocks.listConversations,
     listMessages: apiMocks.listMessages,
+    getTurn: apiMocks.getTurn,
     getLatestTurn: apiMocks.latestTurn,
+    streamRunEvents: apiMocks.streamRunEvents,
+    streamRunEventsV1: apiMocks.streamRunEventsV1,
     searchSessions: apiMocks.searchSessions,
     updateConversationMode: apiMocks.updateConversationMode,
   },
   settingsApi: { providers: { list: apiMocks.listProviders } },
   knowledgeApi: { list: apiMocks.listKnowledge },
-  runApi: {},
+  runApi: {
+    getRun: apiMocks.getRun,
+    listRunEvents: apiMocks.listRunEvents,
+    listChildRuns: apiMocks.listChildRuns,
+    listApprovalRequests: apiMocks.listApprovalRequests,
+  },
 }));
 
 const agent: Agent = {
@@ -61,6 +77,53 @@ const messages: Message[] = [
   { id: 12, owner_id: 7, conversation_id: 2, role: 'assistant', content: 'hello human', content_type: 'text', token_count: 2, created_at: '2026-07-26T00:00:02Z' },
 ];
 
+const activeRun: Run = {
+  id: 20,
+  owner_id: 7,
+  agent_id: 1,
+  agent_release_id: 9,
+  conversation_id: 2,
+  run_type: 'turn',
+  delegation_depth: 0,
+  status: 'running',
+  input_json: '{}',
+  output_json: '',
+  error_message: '',
+  total_tokens: 0,
+  latency_ms: 0,
+  started_at: '2026-07-26T00:00:03Z',
+  created_at: '2026-07-26T00:00:03Z',
+  updated_at: '2026-07-26T00:00:03Z',
+};
+
+const activeTurn: AgentTurn = {
+  id: 30,
+  owner_id: 7,
+  agent_id: 1,
+  agent_release_id: 9,
+  conversation_id: 2,
+  run_id: activeRun.id,
+  user_message_id: 11,
+  idempotency_key: 'turn-30',
+  status: 'running',
+  error_message: '',
+  started_at: '2026-07-26T00:00:03Z',
+  created_at: '2026-07-26T00:00:03Z',
+  updated_at: '2026-07-26T00:00:03Z',
+};
+
+function runStreamEvent(runID: number, seq: number, kind: RunStreamEvent['kind'], data: unknown): RunStreamEvent {
+  return {
+    version: 1,
+    run_id: runID,
+    conversation_id: 2,
+    seq,
+    kind,
+    created_at: `2026-07-26T00:00:${String(seq).padStart(2, '0')}Z`,
+    data,
+  } as RunStreamEvent;
+}
+
 function renderChat() {
   return render(
     <MemoryRouter initialEntries={['/app/agents/1/chat/2']}>
@@ -70,6 +133,7 @@ function renderChat() {
 }
 
 beforeEach(() => {
+  vi.clearAllMocks();
   localStorage.clear();
   apiMocks.listAgents.mockResolvedValue([agent]);
   apiMocks.listProviders.mockResolvedValue([{ id: 4, name: 'OpenAI', default_chat_model: 'gpt-test', status: 1 }]);
@@ -77,8 +141,15 @@ beforeEach(() => {
   apiMocks.listConversations.mockResolvedValue([conversation]);
   apiMocks.listMessages.mockResolvedValue(messages);
   apiMocks.latestTurn.mockRejectedValue(new Error('no turn'));
+  apiMocks.getTurn.mockResolvedValue(activeTurn);
+  apiMocks.streamRunEvents.mockImplementation(() => new Promise<void>(() => undefined));
+  apiMocks.streamRunEventsV1.mockImplementation(() => new Promise<void>(() => undefined));
   apiMocks.searchSessions.mockResolvedValue([]);
   apiMocks.updateConversationMode.mockResolvedValue({ ...conversation, agent_mode: 'plan_execute' });
+  apiMocks.getRun.mockResolvedValue(activeRun);
+  apiMocks.listRunEvents.mockResolvedValue([]);
+  apiMocks.listChildRuns.mockResolvedValue([]);
+  apiMocks.listApprovalRequests.mockResolvedValue([]);
   Object.defineProperty(HTMLElement.prototype, 'scrollTo', { configurable: true, value: vi.fn() });
 });
 
@@ -156,5 +227,81 @@ describe('Agent chat page', () => {
     expect(localStorage.getItem('agentcanvas-agent-inspector-width')).toBe('0');
     fireEvent.click(screen.getByLabelText('打开全局设置'));
     expect(container.querySelector('.chat-shell')).toHaveStyle({ '--dialog-inspector-width': '380px' });
+  });
+
+  it('renders ordered v1 segments and reconciles the terminal snapshot without duplicating the answer', async () => {
+    apiMocks.latestTurn.mockResolvedValue(activeTurn);
+    let animationFrame: FrameRequestCallback | null = null;
+    let animationFrameID = 0;
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+      animationFrame = callback;
+      animationFrameID += 1;
+      return animationFrameID;
+    });
+    const { container } = renderChat();
+    await screen.findByText('hello agent');
+    await waitFor(() => expect(apiMocks.streamRunEventsV1).toHaveBeenCalledWith(activeRun.id, undefined, expect.any(Object)));
+    const handlers = apiMocks.streamRunEventsV1.mock.calls[0][2] as {
+      onMessage: (message: { id?: string; event: string; data: string }) => void;
+    };
+    const emit = (event: RunStreamEvent) => handlers.onMessage({
+      id: String(event.seq),
+      event: event.kind,
+      data: JSON.stringify(event),
+    });
+    const flushStreamFrame = () => {
+      const callback = animationFrame;
+      animationFrame = null;
+      if (!callback) throw new Error('expected a pending animation frame');
+      callback(performance.now());
+    };
+
+    act(() => {
+      emit(runStreamEvent(activeRun.id, 1, 'assistant.start', { segment_id: 'answer-before' }));
+      emit(runStreamEvent(activeRun.id, 2, 'assistant.delta', { segment_id: 'answer-before', text: 'before tool' }));
+      emit(runStreamEvent(activeRun.id, 3, 'tool.start', { call_id: 'call-1', segment_id: 'tool-1', name: 'search', status: 'running' }));
+      emit(runStreamEvent(activeRun.id, 4, 'tool.complete', { call_id: 'call-1', segment_id: 'tool-1', name: 'search', status: 'succeeded', output: 'tool result' }));
+      emit(runStreamEvent(activeRun.id, 5, 'assistant.start', { segment_id: 'answer-after' }));
+      emit(runStreamEvent(activeRun.id, 6, 'assistant.delta', { segment_id: 'answer-after', text: 'after tool' }));
+      flushStreamFrame();
+    });
+
+    const streamed = Array.from(container.querySelectorAll<HTMLElement>('[data-run-segment]'));
+    expect(streamed).toHaveLength(3);
+    expect(streamed.map((item) => item.className)).toEqual([
+      expect.stringContaining('message assistant pending'),
+      expect.stringContaining('chat-trace-row'),
+      expect.stringContaining('message assistant pending'),
+    ]);
+    expect(streamed.map((item) => item.querySelector('p')?.textContent)).toEqual(['before tool', 'tool result', 'after tool']);
+
+    const finalMessage: Message = {
+      id: 13,
+      owner_id: 7,
+      conversation_id: 2,
+      role: 'assistant',
+      content: 'final answer',
+      content_type: 'text',
+      token_count: 3,
+      created_at: '2026-07-26T00:00:10Z',
+    };
+    const finalRun: Run = { ...activeRun, status: 'succeeded', output_json: '{"answer":"final answer"}', total_tokens: 3 };
+    const finalTurn: AgentTurn = { ...activeTurn, status: 'succeeded', assistant_message_id: finalMessage.id };
+    act(() => {
+      emit(runStreamEvent(activeRun.id, 7, 'run.complete', {
+        run: finalRun,
+        turn: finalTurn,
+        message: finalMessage,
+        usage: { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 },
+      }));
+      flushStreamFrame();
+    });
+
+    await waitFor(() => expect(screen.getAllByText('final answer')).toHaveLength(1));
+    expect(screen.getByText('hello agent')).toBeInTheDocument();
+    expect(screen.getByText('hello human')).toBeInTheDocument();
+    expect(container.querySelectorAll('[data-run-segment]')).toHaveLength(0);
+    expect(apiMocks.streamRunEventsV1).toHaveBeenCalled();
+    expect(apiMocks.streamRunEvents).not.toHaveBeenCalled();
   });
 });
