@@ -392,6 +392,12 @@ func (n runtimeCore) runAgent(
 		LLM:        n.LLM,
 		ProviderID: loaded.ProviderID,
 		ModelName:  loaded.Model,
+		OnModelEvent: func(ctx context.Context, event llm.ModelStreamEvent) error {
+			if emitter, ok := rc.Events.(ModelStreamEmitter); ok {
+				return emitter.EmitModelEvent(ctx, event)
+			}
+			return nil
+		},
 		OnStep: func(ctx context.Context, step runtimeagent.RunStep) error {
 			if rc.AgentSteps != nil {
 				_ = rc.AgentSteps.RecordAgentStep(ctx, rc, agentStepRecord(step))
@@ -456,44 +462,7 @@ func (n runtimeCore) runAgent(
 			return pausedForCheckpointMismatch(resume.Checkpoint, mismatch), nil
 		}
 		resumeRequest, buildErr := runtimeagent.BuildResumeRequest(runtimeagent.ResumeRequest{
-			RunRequest: runtimeagent.RunRequest{
-				OwnerID:                    rc.OwnerID,
-				AgentID:                    rc.AgentID,
-				AgentReleaseID:             rc.AgentReleaseID,
-				RunID:                      rc.RunID,
-				DelegationDepth:            rc.DelegationDepth,
-				ConversationID:             rc.ConversationID,
-				Provider:                   loaded.Config,
-				Model:                      loaded.Model,
-				Mode:                       mode,
-				Plan:                       plan,
-				SystemPrompt:               systemPrompt,
-				Task:                       task,
-				ReflectionEnabled:          cfg.ReflectionEnabled,
-				ReflectionPolicy:           reflectionPolicy,
-				RecalledReflectionIDs:      reflectionLessonIDs(reflectionRecall.Lessons),
-				Temperature:                cfg.Temperature,
-				MaxIterations:              cfg.MaxIterations,
-				MaxToolCalls:               cfg.MaxToolCalls,
-				MaxExecutionTimeMS:         cfg.MaxExecutionTimeMS,
-				MaxParallelTools:           cfg.MaxParallelSubAgents,
-				MaxInputChars:              cfg.MaxInputChars,
-				MaxInputTokens:             cfg.MaxInputTokens,
-				ContextWindowTokens:        cfg.ContextWindowTokens,
-				ReservedOutputTokens:       cfg.ReservedOutputTokens,
-				ContextSafetyMarginTokens:  cfg.ContextSafetyMarginTokens,
-				ModelAutoCompactTokenLimit: cfg.ModelAutoCompactTokenLimit,
-				CompactPrompt:              cfg.CompactPrompt,
-				MaxRuleTokens:              cfg.MaxRuleTokens,
-				RuleTags:                   ruleTags,
-				RuleRiskLevel:              ruleRisk,
-				RuleHash:                   cfg.RuleHash,
-				Rules:                      append([]rules.Rule(nil), cfg.Rules...),
-				RuleTrace:                  ruleTrace,
-				ContextBlocks:              contextBlocks,
-				ToolPolicy:                 runRequest.ToolPolicy,
-				Tools:                      tools,
-			},
+			RunRequest:    runRequest,
 			Checkpoint:    resume.Checkpoint,
 			Approved:      resume.Approved,
 			RejectionNote: resume.RejectionNote,
@@ -505,27 +474,14 @@ func (n runtimeCore) runAgent(
 	}
 	result, err := runner.Run(ctx, runRequest)
 	n.persistAgentCompactions(ctx, rc, loaded, result)
-	if result != nil && (result.StopReason == runtimeagent.StopReasonWaitingHuman || result.StopReason == runtimeagent.StopReasonPaused) {
-	}
-	if result != nil {
-		eventType := runtimeevent.AgentFinished
-		if err != nil {
-			eventType = runtimeevent.AgentFailed
-		}
-		emitRuntimeEvent(ctx, rc, runtimeevent.Event{
-			Type:  eventType,
-			RunID: rc.RunID,
-			Payload: map[string]any{
-				"stop_reason":  result.StopReason,
-				"iterations":   result.Iterations,
-				"tool_calls":   result.ToolCalls,
-				"latency_ms":   result.LatencyMS,
-				"total_tokens": result.Usage.TotalTokens,
-			},
-		})
-	}
 	if err != nil {
 		n.finalizeReflection(ctx, rc, cfg, loaded, task, result, reflectionPolicy)
+		emitAgentResultEvent(ctx, rc, result, err)
+		return nil, err
+	}
+	if result == nil {
+		err = fmt.Errorf("agent runtime returned no result")
+		emitAgentResultEvent(ctx, rc, nil, err)
 		return nil, err
 	}
 	output := RunOutput{
@@ -576,7 +532,9 @@ func (n runtimeCore) runAgent(
 		if schemaErr != nil {
 			result.StopReason = runtimeagent.StopReasonReflectionFailed
 			n.finalizeReflection(ctx, rc, cfg, loaded, task, result, reflectionPolicy)
-			return nil, fmt.Errorf("%w: agent runtime final_answer does not match output_schema_json: %v", agenterrors.ErrInvalidInput, schemaErr)
+			err = fmt.Errorf("%w: agent runtime final_answer does not match output_schema_json: %v", agenterrors.ErrInvalidInput, schemaErr)
+			emitAgentResultEvent(ctx, rc, result, err)
+			return nil, err
 		}
 		output["structured_output"] = parsed
 	}
@@ -615,7 +573,34 @@ func (n runtimeCore) runAgent(
 	}
 	n.checkExtractionTrigger(ctx, rc, result, result.Iterations, cfg.MemoryEnabled)
 	n.finalizeReflection(ctx, rc, cfg, loaded, task, result, reflectionPolicy)
+	emitAgentResultEvent(ctx, rc, result, nil)
 	return output, nil
+}
+
+// emitAgentResultEvent runs after output validation/repair and reflection
+// finalization, so the durable audit event always describes the outcome that
+// the application layer will persist and expose in its terminal snapshot.
+func emitAgentResultEvent(ctx context.Context, rc *RunContext, result *runtimeagent.RunResult, runErr error) {
+	eventType := runtimeevent.AgentFinished
+	payload := map[string]any{
+		"stop_reason":  "",
+		"iterations":   0,
+		"tool_calls":   0,
+		"latency_ms":   0,
+		"total_tokens": 0,
+	}
+	if result != nil {
+		payload["stop_reason"] = result.StopReason
+		payload["iterations"] = result.Iterations
+		payload["tool_calls"] = result.ToolCalls
+		payload["latency_ms"] = result.LatencyMS
+		payload["total_tokens"] = result.Usage.TotalTokens
+	}
+	if runErr != nil {
+		eventType = runtimeevent.AgentFailed
+		payload["error"] = runErr.Error()
+	}
+	emitRuntimeEvent(ctx, rc, runtimeevent.Event{Type: eventType, RunID: rc.RunID, Payload: payload})
 }
 
 func (n runtimeCore) persistAgentCompactions(ctx context.Context, rc *RunContext, loaded *LoadedProvider, result *runtimeagent.RunResult) {

@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -9,9 +10,16 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+type fakeToolCallingOnly struct{}
+
+func (fakeToolCallingOnly) ChatWithTools(context.Context, ChatProviderConfig, ToolChatRequest) (*ToolChatResponse, error) {
+	return &ToolChatResponse{Message: ChatMessage{Role: "assistant", Content: "fallback"}}, nil
+}
+
 type fakeToolAwareChatClient struct {
 	chatCount       int
 	toolCount       int
+	toolStreamCount int
 	response        ChatResponse
 	toolResponse    ToolChatResponse
 	streamResponse  ChatResponse
@@ -39,6 +47,26 @@ func (f *fakeToolAwareChatClient) StreamChat(_ context.Context, _ ChatProviderCo
 func (f *fakeToolAwareChatClient) ChatWithTools(_ context.Context, _ ChatProviderConfig, req ToolChatRequest) (*ToolChatResponse, error) {
 	f.toolCount++
 	f.lastToolRequest = req
+	resp := f.toolResponse
+	return &resp, nil
+}
+
+func (f *fakeToolAwareChatClient) StreamChatWithTools(_ context.Context, _ ChatProviderConfig, _ ToolChatRequest, onEvent func(ModelStreamEvent) error) (*ToolChatResponse, error) {
+	f.toolStreamCount++
+	if err := onEvent(ModelStreamEvent{Kind: ModelTextStart}); err != nil {
+		return nil, err
+	}
+	if f.toolResponse.Message.Content != "" {
+		if err := onEvent(ModelStreamEvent{Kind: ModelTextDelta, Text: f.toolResponse.Message.Content}); err != nil {
+			return nil, err
+		}
+	}
+	if err := onEvent(ModelStreamEvent{Kind: ModelTextEnd}); err != nil {
+		return nil, err
+	}
+	if err := onEvent(ModelStreamEvent{Kind: ModelDone}); err != nil {
+		return nil, err
+	}
 	resp := f.toolResponse
 	return &resp, nil
 }
@@ -90,5 +118,29 @@ func TestCachedChatClientChatWithToolsPassThrough(t *testing.T) {
 	}
 	if resp.Message.Content != "ok" || inner.toolCount != 1 {
 		t.Fatalf("unexpected tool pass through: resp=%+v toolCount=%d", resp, inner.toolCount)
+	}
+}
+
+func TestCachedChatClientStreamChatWithToolsPassThrough(t *testing.T) {
+	inner := &fakeToolAwareChatClient{toolResponse: ToolChatResponse{Message: ChatMessage{Role: "assistant", Content: "streamed"}}}
+	client := NewCachedChatClient(inner, inner, CachedChatClientOptions{})
+	eventCount := 0
+	resp, err := client.StreamChatWithTools(context.Background(), ChatProviderConfig{}, ToolChatRequest{Model: "gpt"}, func(event ModelStreamEvent) error {
+		eventCount++
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Message.Content != "streamed" || inner.toolStreamCount != 1 || eventCount != 4 {
+		t.Fatalf("unexpected tool stream pass through: resp=%+v calls=%d events=%d", resp, inner.toolStreamCount, eventCount)
+	}
+}
+
+func TestCachedChatClientReportsStreamingUnsupportedForNonStreamingInner(t *testing.T) {
+	client := NewCachedChatClient(nil, fakeToolCallingOnly{}, CachedChatClientOptions{})
+	_, err := client.StreamChatWithTools(context.Background(), ChatProviderConfig{}, ToolChatRequest{}, func(ModelStreamEvent) error { return nil })
+	if !errors.Is(err, ErrToolStreamingUnsupported) {
+		t.Fatalf("expected streaming unsupported sentinel, got %v", err)
 	}
 }

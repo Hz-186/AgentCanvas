@@ -13,10 +13,11 @@ import (
 )
 
 type CachedChatClient struct {
-	chatInner ChatClient
-	toolInner ToolCallingClient
-	redis     *redis.Client
-	ttl       time.Duration
+	chatInner       ChatClient
+	toolInner       ToolCallingClient
+	toolStreamInner ToolStreamingClient
+	redis           *redis.Client
+	ttl             time.Duration
 }
 
 type CachedChatClientOptions struct {
@@ -30,16 +31,24 @@ type cachedChatPayload struct {
 }
 
 func NewCachedChatClient(chatInner ChatClient, toolInner ToolCallingClient, opts CachedChatClientOptions) *CachedChatClient {
+	var toolStreamInner ToolStreamingClient
+	if client, ok := chatInner.(ToolStreamingClient); ok {
+		toolStreamInner = client
+	} else if client, ok := toolInner.(ToolStreamingClient); ok {
+		toolStreamInner = client
+	}
 	return &CachedChatClient{
-		chatInner: chatInner,
-		toolInner: toolInner,
-		redis:     opts.Redis,
-		ttl:       opts.TTL,
+		chatInner:       chatInner,
+		toolInner:       toolInner,
+		toolStreamInner: toolStreamInner,
+		redis:           opts.Redis,
+		ttl:             opts.TTL,
 	}
 }
 
 var _ ChatClient = (*CachedChatClient)(nil)
 var _ ToolCallingClient = (*CachedChatClient)(nil)
+var _ ToolStreamingClient = (*CachedChatClient)(nil)
 
 func (c *CachedChatClient) Chat(ctx context.Context, cfg ChatProviderConfig, req ChatRequest) (*ChatResponse, error) {
 	if c.chatInner == nil {
@@ -97,6 +106,17 @@ func (c *CachedChatClient) ChatWithTools(ctx context.Context, cfg ChatProviderCo
 		return nil, fmt.Errorf("tool calling client is not configured")
 	}
 	return c.toolInner.ChatWithTools(ctx, cfg, req)
+}
+
+// StreamChatWithTools is intentionally a transparent wrapper.  A partially
+// received tool call is not a useful cache value, and caching it would also
+// make event ordering dependent on whether a request hit Redis.  Completed
+// non-streaming chat responses keep using the existing cache path above.
+func (c *CachedChatClient) StreamChatWithTools(ctx context.Context, cfg ChatProviderConfig, req ToolChatRequest, onEvent func(ModelStreamEvent) error) (*ToolChatResponse, error) {
+	if c.toolStreamInner == nil {
+		return nil, fmt.Errorf("%w: cached client inner does not implement ToolStreamingClient", ErrToolStreamingUnsupported)
+	}
+	return c.toolStreamInner.StreamChatWithTools(ctx, cfg, req, onEvent)
 }
 
 func (c *CachedChatClient) get(ctx context.Context, ownerID int64, cfg ChatProviderConfig, req ChatRequest) (*cachedChatPayload, bool, error) {

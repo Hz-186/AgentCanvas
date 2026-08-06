@@ -4,12 +4,19 @@ import (
 	"context"
 	"encoding/json"
 
+	"agentcanvas/internal/infrastructure/llm"
 	runtimeevent "agentcanvas/internal/runtime/event"
 	"agentcanvas/internal/runtime/harness/rules"
 )
 
 type EventEmitter interface {
 	Emit(ctx context.Context, event runtimeevent.Event) error
+}
+
+// ModelStreamEmitter is an optional live-only channel. Implementations must
+// not persist reasoning events in the durable RunEvent/Message stores.
+type ModelStreamEmitter interface {
+	EmitModelEvent(ctx context.Context, event llm.ModelStreamEvent) error
 }
 
 type AgentStepRecord struct {

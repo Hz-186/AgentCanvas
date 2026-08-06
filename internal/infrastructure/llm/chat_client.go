@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -219,6 +220,119 @@ func (c *OpenAICompatibleChatClient) StreamChat(ctx context.Context, cfg ChatPro
 	return onEvent(StreamEvent{Done: true})
 }
 
+// StreamChatWithTools streams an OpenAI-compatible tool-calling response and
+// translates provider fields into ModelStreamEvent values.  Tool arguments
+// are deliberately kept as raw fragments until the provider stream finishes;
+// this allows callers to observe deltas without ever receiving partial JSON
+// as a completed ToolCall.
+func (c *OpenAICompatibleChatClient) StreamChatWithTools(ctx context.Context, cfg ChatProviderConfig, req ToolChatRequest, onEvent func(ModelStreamEvent) error) (*ToolChatResponse, error) {
+	if onEvent == nil {
+		return nil, fmt.Errorf("stream event callback is required")
+	}
+	endpoint, err := openAIChatEndpoint(cfg)
+	if err != nil {
+		return nil, emitModelStreamError(onEvent, err)
+	}
+	payload := openAIToolChatRequest{
+		Model:       req.Model,
+		Messages:    toOpenAIToolMessages(req.Messages),
+		Tools:       req.Tools,
+		ToolChoice:  req.ToolChoice,
+		Temperature: req.Temperature,
+		Stream:      true,
+		StreamOptions: map[string]bool{
+			"include_usage": true,
+		},
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, emitModelStreamError(onEvent, err)
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return nil, emitModelStreamError(onEvent, err)
+	}
+	setOpenAIHeaders(httpReq, cfg.APIKey)
+	resp, err := c.streamClient().Do(httpReq)
+	if err != nil {
+		if errors.Is(err, ErrToolStreamingUnsupported) {
+			return nil, err
+		}
+		return nil, emitModelStreamError(onEvent, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		streamErr := fmt.Errorf("chat tool stream failed: %s: %s", resp.Status, strings.TrimSpace(string(data)))
+		if isToolStreamingUnsupportedResponse(resp.StatusCode, data) {
+			return nil, fmt.Errorf("%w: %v", ErrToolStreamingUnsupported, streamErr)
+		}
+		return nil, emitModelStreamError(onEvent, streamErr)
+	}
+
+	parser := newToolStreamParser(NewToolStreamAccumulator(), onEvent)
+	scanner := bufio.NewScanner(resp.Body)
+	buf := make([]byte, 0, 1024*1024)
+	scanner.Buffer(buf, 4*1024*1024)
+	sawDone := false
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, ":") {
+			continue
+		}
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if data == "" {
+			continue
+		}
+		if data == "[DONE]" {
+			sawDone = true
+			if err := parser.finish(); err != nil {
+				return nil, err
+			}
+			break
+		}
+		var chunk openAIToolStreamChunk
+		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+			return nil, parser.fail(err)
+		}
+		if err := parser.accept(chunk); err != nil {
+			return nil, err
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		if contextErr := ctx.Err(); contextErr != nil {
+			err = contextErr
+		}
+		return nil, parser.fail(err)
+	}
+	if !sawDone {
+		if err := ctx.Err(); err != nil {
+			return nil, parser.fail(err)
+		}
+		return nil, parser.fail(io.ErrUnexpectedEOF)
+	}
+	return parser.acc.Response()
+}
+
+func isToolStreamingUnsupportedResponse(statusCode int, body []byte) bool {
+	if statusCode == http.StatusNotImplemented {
+		return true
+	}
+	if statusCode < http.StatusBadRequest || statusCode >= http.StatusInternalServerError {
+		return false
+	}
+	message := strings.ToLower(string(body))
+	if !strings.Contains(message, "stream") {
+		return false
+	}
+	return strings.Contains(message, "not supported") ||
+		strings.Contains(message, "unsupported") ||
+		strings.Contains(message, "not implemented")
+}
+
 func (c *OpenAICompatibleChatClient) doJSON(ctx context.Context, endpoint, apiKey string, payload any, out any) error {
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -314,11 +428,13 @@ type openAIStreamChunk struct {
 }
 
 type openAIToolChatRequest struct {
-	Model       string                  `json:"model"`
-	Messages    []openAIToolChatMessage `json:"messages"`
-	Tools       []ToolDefinition        `json:"tools,omitempty"`
-	ToolChoice  any                     `json:"tool_choice,omitempty"`
-	Temperature *float64                `json:"temperature,omitempty"`
+	Model         string                  `json:"model"`
+	Messages      []openAIToolChatMessage `json:"messages"`
+	Tools         []ToolDefinition        `json:"tools,omitempty"`
+	ToolChoice    any                     `json:"tool_choice,omitempty"`
+	Temperature   *float64                `json:"temperature,omitempty"`
+	Stream        bool                    `json:"stream,omitempty"`
+	StreamOptions map[string]bool         `json:"stream_options,omitempty"`
 }
 
 type openAIToolChatResponse struct {
@@ -344,6 +460,264 @@ type openAIToolCall struct {
 type openAIToolFunction struct {
 	Name      string `json:"name"`
 	Arguments string `json:"arguments"`
+}
+
+// openAIToolStreamChunk keeps the stream-only representation separate from
+// the non-streaming response types above.  Usage is a pointer so a usage-only
+// chunk with all zero values can still be distinguished from a chunk that does
+// not carry usage at all.
+type openAIToolStreamChunk struct {
+	Choices []struct {
+		Index        int                   `json:"index,omitempty"`
+		FinishReason string                `json:"finish_reason,omitempty"`
+		Delta        openAIToolStreamDelta `json:"delta"`
+	} `json:"choices"`
+	Usage *Usage `json:"usage"`
+}
+
+type openAIToolStreamDelta struct {
+	Content          string                 `json:"content"`
+	ReasoningContent string                 `json:"reasoning_content"`
+	Reasoning        string                 `json:"reasoning"`
+	ToolCalls        []openAIToolStreamCall `json:"tool_calls"`
+}
+
+type openAIToolStreamCall struct {
+	Index    *int                     `json:"index"`
+	ID       string                   `json:"id"`
+	Type     string                   `json:"type"`
+	Function openAIToolStreamFunction `json:"function"`
+}
+
+type openAIToolStreamFunction struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
+}
+
+type toolStreamParser struct {
+	acc           *ToolStreamAccumulator
+	onEvent       func(ModelStreamEvent) error
+	textOpen      bool
+	reasoningOpen bool
+	toolStarted   map[int]bool
+	toolEnded     map[int]bool
+	failed        bool
+	done          bool
+}
+
+func newToolStreamParser(acc *ToolStreamAccumulator, onEvent func(ModelStreamEvent) error) *toolStreamParser {
+	return &toolStreamParser{
+		acc:         acc,
+		onEvent:     onEvent,
+		toolStarted: make(map[int]bool),
+		toolEnded:   make(map[int]bool),
+	}
+}
+
+func (p *toolStreamParser) accept(chunk openAIToolStreamChunk) error {
+	for _, choice := range chunk.Choices {
+		reasoning := choice.Delta.ReasoningContent
+		if reasoning == "" {
+			reasoning = choice.Delta.Reasoning
+		}
+		if reasoning != "" {
+			if err := p.beginReasoning(); err != nil {
+				return err
+			}
+			if err := p.emit(ModelStreamEvent{Kind: ModelReasoningDelta, Text: reasoning}); err != nil {
+				return err
+			}
+		}
+		if content := choice.Delta.Content; content != "" {
+			if err := p.beginText(); err != nil {
+				return err
+			}
+			p.acc.AddText(content)
+			if err := p.emit(ModelStreamEvent{Kind: ModelTextDelta, Text: content}); err != nil {
+				return err
+			}
+		}
+		for _, toolCall := range choice.Delta.ToolCalls {
+			index := 0
+			if toolCall.Index != nil {
+				index = *toolCall.Index
+			}
+			if index < 0 {
+				index = 0
+			}
+			first := !p.toolStarted[index]
+			if first {
+				if err := p.closeTextAndReasoning(); err != nil {
+					return err
+				}
+				p.toolStarted[index] = true
+			}
+			p.acc.AddToolCallDelta(index, toolCall.ID, toolCall.Function.Name, toolCall.Function.Arguments)
+			if first {
+				if err := p.emit(ModelStreamEvent{
+					Kind:   ModelToolCallStart,
+					Index:  index,
+					CallID: toolCall.ID,
+					Name:   toolCall.Function.Name,
+				}); err != nil {
+					return err
+				}
+			}
+			if toolCall.Function.Arguments != "" || (!first && (toolCall.ID != "" || toolCall.Function.Name != "")) {
+				if err := p.emit(ModelStreamEvent{
+					Kind:          ModelToolCallDelta,
+					Index:         index,
+					CallID:        toolCall.ID,
+					Name:          toolCall.Function.Name,
+					ArgumentDelta: toolCall.Function.Arguments,
+				}); err != nil {
+					return err
+				}
+			}
+		}
+		if choice.FinishReason != "" {
+			if err := p.finishForReason(choice.FinishReason); err != nil {
+				return err
+			}
+		}
+	}
+	if chunk.Usage != nil {
+		// Usage-only chunks are sent after the final choice by most providers.
+		// Close any still-open segments before publishing usage so consumers see
+		// a complete text/tool lifecycle before the terminal accounting event.
+		if err := p.closeTextAndReasoning(); err != nil {
+			return err
+		}
+		if err := p.finishTools(); err != nil {
+			return err
+		}
+		p.acc.AddUsage(*chunk.Usage)
+		if err := p.emit(ModelStreamEvent{Kind: ModelUsage, Usage: *chunk.Usage}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (p *toolStreamParser) finishForReason(reason string) error {
+	switch reason {
+	case "tool_calls", "function_call", "stop", "length", "content_filter":
+		if err := p.closeTextAndReasoning(); err != nil {
+			return err
+		}
+		return p.finishTools()
+	default:
+		return nil
+	}
+}
+
+func (p *toolStreamParser) beginText() error {
+	if p.textOpen {
+		return nil
+	}
+	if p.reasoningOpen {
+		if err := p.emit(ModelStreamEvent{Kind: ModelReasoningEnd}); err != nil {
+			return err
+		}
+		p.reasoningOpen = false
+	}
+	p.textOpen = true
+	return p.emit(ModelStreamEvent{Kind: ModelTextStart})
+}
+
+func (p *toolStreamParser) beginReasoning() error {
+	if p.reasoningOpen {
+		return nil
+	}
+	if p.textOpen {
+		if err := p.emit(ModelStreamEvent{Kind: ModelTextEnd}); err != nil {
+			return err
+		}
+		p.textOpen = false
+	}
+	p.reasoningOpen = true
+	return p.emit(ModelStreamEvent{Kind: ModelReasoningStart})
+}
+
+func (p *toolStreamParser) closeTextAndReasoning() error {
+	if p.textOpen {
+		if err := p.emit(ModelStreamEvent{Kind: ModelTextEnd}); err != nil {
+			return err
+		}
+		p.textOpen = false
+	}
+	if p.reasoningOpen {
+		if err := p.emit(ModelStreamEvent{Kind: ModelReasoningEnd}); err != nil {
+			return err
+		}
+		p.reasoningOpen = false
+	}
+	return nil
+}
+
+func (p *toolStreamParser) finish() error {
+	if p.done {
+		return nil
+	}
+	if err := p.closeTextAndReasoning(); err != nil {
+		return err
+	}
+	if err := p.finishTools(); err != nil {
+		return err
+	}
+	p.done = true
+	return p.emit(ModelStreamEvent{Kind: ModelDone})
+}
+
+func (p *toolStreamParser) finishTools() error {
+	for _, index := range p.acc.orderedToolIndexes() {
+		if p.toolEnded[index] {
+			continue
+		}
+		call, err := p.acc.ToolCall(index)
+		if err != nil {
+			return p.fail(err)
+		}
+		if err := p.emit(ModelStreamEvent{
+			Kind:      ModelToolCallEnd,
+			Index:     index,
+			CallID:    call.ID,
+			Name:      call.Name,
+			Arguments: call.Arguments,
+		}); err != nil {
+			return err
+		}
+		p.toolEnded[index] = true
+	}
+	return nil
+}
+
+func (p *toolStreamParser) emit(event ModelStreamEvent) error {
+	if p.onEvent == nil {
+		return fmt.Errorf("stream event callback is required")
+	}
+	return p.onEvent(event)
+}
+
+func (p *toolStreamParser) fail(err error) error {
+	if err == nil {
+		err = fmt.Errorf("tool stream failed")
+	}
+	if p.failed {
+		return err
+	}
+	p.failed = true
+	if callbackErr := p.emit(ModelStreamEvent{Kind: ModelError, Err: err}); callbackErr != nil {
+		return callbackErr
+	}
+	return err
+}
+
+func emitModelStreamError(onEvent func(ModelStreamEvent) error, err error) error {
+	if callbackErr := onEvent(ModelStreamEvent{Kind: ModelError, Err: err}); callbackErr != nil {
+		return callbackErr
+	}
+	return err
 }
 
 func toOpenAIToolMessages(messages []ChatMessage) []openAIToolChatMessage {
