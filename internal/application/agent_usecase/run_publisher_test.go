@@ -11,6 +11,7 @@ import (
 
 	agentdomain "agentcanvas/internal/domain/agent"
 	"agentcanvas/internal/domain/conversation"
+	workspacedomain "agentcanvas/internal/domain/workspace"
 	"agentcanvas/internal/infrastructure/llm"
 	runtimeevent "agentcanvas/internal/runtime/event"
 	"agentcanvas/internal/runtime/eventhub"
@@ -167,6 +168,41 @@ func TestTerminalSnapshotIsAuthoritativeAndClosesCompletedRun(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("completed run stream did not close")
+	}
+}
+
+func TestPublicStreamRunIncludesResolvedWorkspace(t *testing.T) {
+	workspaceID := int64(70)
+	run := &agentdomain.Run{ID: 11, OwnerID: 1, AgentID: 2, WorkspaceID: &workspaceID, RunType: agentdomain.RunTypeTurn}
+	workspace := &workspacedomain.Workspace{ID: workspaceID, OwnerID: 1, RunID: 7, Kind: workspacedomain.KindShared, WorkspacePath: "/repo", BranchName: "main"}
+	snapshot := publicStreamRun(run, workspace)
+	if snapshot.Workspace == nil || snapshot.Workspace.ID != workspaceID || snapshot.Workspace.BranchName != "main" || snapshot.Workspace.RunID != run.ID {
+		t.Fatalf("workspace missing from terminal run snapshot: %#v", snapshot)
+	}
+	if workspace.RunID != 7 {
+		t.Fatalf("shared workspace record was mutated while building a child Run view: %#v", workspace)
+	}
+}
+
+func TestWorkspaceEventPayloadPreservesCompleteGitSnapshot(t *testing.T) {
+	item := &workspacedomain.Workspace{
+		ID: 70, OwnerID: 1, ProjectID: 3, RunID: 11, Kind: workspacedomain.KindWorktree,
+		RepositoryRoot: "/repo", WorkspacePath: "/repo/.worktrees/11-task", BranchName: "demo/11-task",
+		BaseSHA: "aaaaaaaa", HeadSHA: "bbbbbbbb", Status: workspacedomain.StatusReady,
+		Dirty: true, Unpushed: true, Locked: true, LockReason: "agentcanvas run=11 pid=1234",
+	}
+	payload := workspaceEventPayload(item, nil)
+	want := map[string]any{
+		"workspace_id": int64(70), "project_id": int64(3), "run_id": int64(11),
+		"kind": workspacedomain.KindWorktree, "repo_root": "/repo", "path": "/repo/.worktrees/11-task",
+		"branch": "demo/11-task", "base_sha": "aaaaaaaa", "head_sha": "bbbbbbbb",
+		"status": workspacedomain.StatusReady, "dirty": true, "unpushed": true, "locked": true,
+		"lock_reason": "agentcanvas run=11 pid=1234", "error": "",
+	}
+	for key, expected := range want {
+		if payload[key] != expected {
+			t.Fatalf("payload[%q] = %#v, want %#v (payload=%#v)", key, payload[key], expected, payload)
+		}
 	}
 }
 
