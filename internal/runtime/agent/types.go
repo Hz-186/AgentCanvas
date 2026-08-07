@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"time"
 
@@ -83,6 +84,8 @@ type RunRequest struct {
 	ToolPolicy                 ToolPolicy
 	ToolHookChain              hooks.ToolHookChain
 	Tools                      []toolruntime.RuntimeTool
+	Workspace                  *toolruntime.WorkspaceContext
+	EmitEvent                  func(context.Context, string, map[string]any) error
 	ResumeMessages             []llm.ChatMessage
 	ResumeBaseMessages         []llm.ChatMessage
 	ResumeTranscript           []llm.ChatMessage

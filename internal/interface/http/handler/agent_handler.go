@@ -9,11 +9,14 @@ import (
 	"time"
 
 	agentusecase "agentcanvas/internal/application/agent_usecase"
+	workspaceusecase "agentcanvas/internal/application/workspace_usecase"
 	agentdomain "agentcanvas/internal/domain/agent"
 	"agentcanvas/internal/domain/conversation"
+	workspacedomain "agentcanvas/internal/domain/workspace"
 	"agentcanvas/internal/interface/http/sse"
 	agenterrors "agentcanvas/internal/pkg/errors"
 	"agentcanvas/internal/pkg/response"
+	runtimeevent "agentcanvas/internal/runtime/event"
 
 	"github.com/gin-gonic/gin"
 )
@@ -21,31 +24,50 @@ import (
 type AgentHandler struct {
 	service     *agentusecase.Service
 	improvement *agentusecase.ImprovementService
+	workspace   *workspaceusecase.Service
 }
 
 // runDTO is the public execution view. Immutable release definitions remain
 // server-side snapshots and are never exposed through run endpoints.
 type runDTO struct {
-	ID              int64           `json:"id"`
-	OwnerID         int64           `json:"owner_id"`
-	AgentID         int64           `json:"agent_id"`
-	AgentReleaseID  *int64          `json:"agent_release_id,omitempty"`
-	ConversationID  *int64          `json:"conversation_id,omitempty"`
-	ParentRunID     *int64          `json:"parent_run_id,omitempty"`
-	RunType         string          `json:"run_type"`
-	DelegationDepth int             `json:"delegation_depth"`
-	DefinitionHash  string          `json:"definition_hash,omitempty"`
-	RuleHash        string          `json:"rule_hash,omitempty"`
-	Status          string          `json:"status"`
-	InputJSON       json.RawMessage `json:"input_json"`
-	OutputJSON      json.RawMessage `json:"output_json"`
-	ErrorMessage    string          `json:"error_message"`
-	TotalTokens     int             `json:"total_tokens"`
-	LatencyMS       int             `json:"latency_ms"`
-	StartedAt       time.Time       `json:"started_at"`
-	FinishedAt      *time.Time      `json:"finished_at,omitempty"`
-	CreatedAt       time.Time       `json:"created_at"`
-	UpdatedAt       time.Time       `json:"updated_at"`
+	ID              int64                      `json:"id"`
+	OwnerID         int64                      `json:"owner_id"`
+	AgentID         int64                      `json:"agent_id"`
+	AgentReleaseID  *int64                     `json:"agent_release_id,omitempty"`
+	ConversationID  *int64                     `json:"conversation_id,omitempty"`
+	WorkspaceID     *int64                     `json:"workspace_id,omitempty"`
+	Workspace       *workspacedomain.Workspace `json:"workspace,omitempty"`
+	ParentRunID     *int64                     `json:"parent_run_id,omitempty"`
+	RunType         string                     `json:"run_type"`
+	DelegationDepth int                        `json:"delegation_depth"`
+	DefinitionHash  string                     `json:"definition_hash,omitempty"`
+	RuleHash        string                     `json:"rule_hash,omitempty"`
+	Status          string                     `json:"status"`
+	InputJSON       json.RawMessage            `json:"input_json"`
+	OutputJSON      json.RawMessage            `json:"output_json"`
+	ErrorMessage    string                     `json:"error_message"`
+	TotalTokens     int                        `json:"total_tokens"`
+	LatencyMS       int                        `json:"latency_ms"`
+	StartedAt       time.Time                  `json:"started_at"`
+	FinishedAt      *time.Time                 `json:"finished_at,omitempty"`
+	CreatedAt       time.Time                  `json:"created_at"`
+	UpdatedAt       time.Time                  `json:"updated_at"`
+}
+
+func (h *AgentHandler) publicRun(ctx *gin.Context, item *agentdomain.Run) *runDTO {
+	dto := publicRun(item)
+	if dto == nil || h.workspace == nil || item == nil || item.WorkspaceID == nil {
+		return dto
+	}
+	if workspace, err := h.workspace.GetWorkspace(ctx.Request.Context(), item.OwnerID, *item.WorkspaceID); err == nil {
+		if workspace.Kind == workspacedomain.KindShared && workspace.RunID != item.ID {
+			view := *workspace
+			view.RunID = item.ID
+			workspace = &view
+		}
+		dto.Workspace = workspace
+	}
+	return dto
 }
 
 func publicRun(item *agentdomain.Run) *runDTO {
@@ -53,7 +75,7 @@ func publicRun(item *agentdomain.Run) *runDTO {
 		return nil
 	}
 	return &runDTO{ID: item.ID, OwnerID: item.OwnerID, AgentID: item.AgentID, AgentReleaseID: item.AgentReleaseID,
-		ConversationID: item.ConversationID, ParentRunID: item.ParentRunID, RunType: item.RunType,
+		ConversationID: item.ConversationID, WorkspaceID: item.WorkspaceID, ParentRunID: item.ParentRunID, RunType: item.RunType,
 		DelegationDepth: item.DelegationDepth, DefinitionHash: item.DefinitionHash, RuleHash: item.RuleHash,
 		Status: item.Status, InputJSON: item.InputJSON, OutputJSON: item.OutputJSON, ErrorMessage: item.ErrorMessage,
 		TotalTokens: item.TotalTokens, LatencyMS: item.LatencyMS, StartedAt: item.StartedAt, FinishedAt: item.FinishedAt,
@@ -72,6 +94,29 @@ func NewAgentHandler(service *agentusecase.Service, improvement ...*agentusecase
 		handler.improvement = improvement[0]
 	}
 	return handler
+}
+
+func (h *AgentHandler) ConfigureWorkspace(service *workspaceusecase.Service) { h.workspace = service }
+
+func workspaceEventPayload(item *workspacedomain.Workspace) map[string]any {
+	return map[string]any{"workspace_id": item.ID, "run_id": item.RunID, "project_id": item.ProjectID, "kind": item.Kind, "repo_root": item.RepositoryRoot, "path": item.WorkspacePath, "branch": item.BranchName, "base_sha": item.BaseSHA, "head_sha": item.HeadSHA, "dirty": item.Dirty, "unpushed": item.Unpushed, "status": item.Status, "locked": item.Locked, "lock_reason": item.LockReason, "cleanup_reason": item.CleanupReason, "error": item.ErrorMessage}
+}
+
+func (h *AgentHandler) workspaceForRun(c *gin.Context, ownerID, runID int64) (*workspacedomain.Workspace, error) {
+	run, err := h.service.GetRun(c.Request.Context(), ownerID, runID)
+	if err != nil {
+		return nil, err
+	}
+	if run.WorkspaceID != nil {
+		item, itemErr := h.workspace.GetWorkspace(c.Request.Context(), ownerID, *run.WorkspaceID)
+		if itemErr == nil && item.Kind == workspacedomain.KindShared && item.RunID != runID {
+			view := *item
+			view.RunID = runID
+			return &view, nil
+		}
+		return item, itemErr
+	}
+	return h.workspace.GetRunWorkspace(c.Request.Context(), ownerID, runID)
 }
 
 func (h *AgentHandler) Create(c *gin.Context) {
@@ -337,7 +382,7 @@ func (h *AgentHandler) StartTurn(c *gin.Context) {
 		writeAppError(c, err)
 		return
 	}
-	c.JSON(http.StatusAccepted, response.Body{Code: 0, Message: http.StatusText(http.StatusAccepted), Data: turnAcceptedDTO{Turn: accepted.Turn, Run: publicRun(accepted.Run), UserMessage: accepted.UserMessage}})
+	c.JSON(http.StatusAccepted, response.Body{Code: 0, Message: http.StatusText(http.StatusAccepted), Data: turnAcceptedDTO{Turn: accepted.Turn, Run: h.publicRun(c, accepted.Run), UserMessage: accepted.UserMessage}})
 }
 
 func bindStrictAgentJSON(c *gin.Context, target any) error {
@@ -498,7 +543,7 @@ func (h *AgentHandler) StreamRunEvents(c *gin.Context) {
 			return
 		}
 		if run.Status != "queued" && run.Status != "running" && run.Status != "resuming" {
-			_ = writer.Event("run_status", publicRun(run))
+			_ = writer.Event("run_status", h.publicRun(c, run))
 			return
 		}
 		select {
@@ -558,7 +603,7 @@ func (h *AgentHandler) GetRun(c *gin.Context) {
 		writeAppError(c, err)
 		return
 	}
-	response.OK(c, publicRun(item))
+	response.OK(c, h.publicRun(c, item))
 }
 
 func (h *AgentHandler) ListRunEvents(c *gin.Context) {
@@ -587,7 +632,7 @@ func (h *AgentHandler) ListChildRuns(c *gin.Context) {
 	}
 	public := make([]*runDTO, 0, len(items))
 	for index := range items {
-		public = append(public, publicRun(&items[index]))
+		public = append(public, h.publicRun(c, &items[index]))
 	}
 	response.OK(c, public)
 }
@@ -632,9 +677,9 @@ func (h *AgentHandler) GetRunTrace(c *gin.Context) {
 	}
 	publicChildren := make([]*runDTO, 0, len(children))
 	for index := range children {
-		publicChildren = append(publicChildren, publicRun(&children[index]))
+		publicChildren = append(publicChildren, h.publicRun(c, &children[index]))
 	}
-	response.OK(c, gin.H{"run": publicRun(run), "events": events, "steps": steps, "children": publicChildren})
+	response.OK(c, gin.H{"run": h.publicRun(c, run), "events": events, "steps": steps, "children": publicChildren})
 }
 
 func (h *AgentHandler) CancelRun(c *gin.Context) {
@@ -660,6 +705,198 @@ func (h *AgentHandler) ResumeRun(c *gin.Context) {
 		return
 	}
 	response.OK(c, item)
+}
+
+func (h *AgentHandler) GetRunWorkspace(c *gin.Context) {
+	ownerID, runID, ok := ownerAndID(c, "id")
+	if !ok {
+		return
+	}
+	if h.workspace == nil {
+		writeAppError(c, agenterrors.ErrInvalidInput)
+		return
+	}
+	item, err := h.workspaceForRun(c, ownerID, runID)
+	if err != nil {
+		writeAppError(c, err)
+		return
+	}
+	response.OK(c, item)
+}
+
+func (h *AgentHandler) RunGitStatus(c *gin.Context) {
+	ownerID, runID, ok := ownerAndID(c, "id")
+	if !ok {
+		return
+	}
+	if h.workspace == nil {
+		writeAppError(c, agenterrors.ErrInvalidInput)
+		return
+	}
+	item, err := h.workspaceForRun(c, ownerID, runID)
+	if err != nil {
+		writeAppError(c, err)
+		return
+	}
+	value, err := h.workspace.GitStatus(c.Request.Context(), item)
+	if err != nil {
+		payload := workspaceEventPayload(item)
+		payload["dirty"], payload["unpushed"], payload["error"] = true, true, err.Error()
+		_ = h.service.EmitWorkspaceEvent(c.Request.Context(), ownerID, runID, runtimeevent.GitStatusChanged, payload)
+		writeAppError(c, err)
+		return
+	}
+	payload := workspaceEventPayload(item)
+	payload["branch"], payload["dirty"], payload["unpushed"] = value.Branch, value.Dirty, value.Unpushed
+	payload["head_sha"] = value.Head
+	_ = h.service.EmitWorkspaceEvent(c.Request.Context(), ownerID, runID, runtimeevent.GitStatusChanged, payload)
+	response.OK(c, value)
+}
+
+func (h *AgentHandler) RunGitDiff(c *gin.Context) {
+	ownerID, runID, ok := ownerAndID(c, "id")
+	if !ok {
+		return
+	}
+	if h.workspace == nil {
+		writeAppError(c, agenterrors.ErrInvalidInput)
+		return
+	}
+	item, err := h.workspaceForRun(c, ownerID, runID)
+	if err != nil {
+		writeAppError(c, err)
+		return
+	}
+	value, err := h.workspace.GitDiff(c.Request.Context(), item, c.Query("staged") == "true")
+	if err != nil {
+		writeAppError(c, err)
+		return
+	}
+	response.OK(c, gin.H{"diff": value})
+}
+
+func (h *AgentHandler) RunGitLog(c *gin.Context) {
+	ownerID, runID, ok := ownerAndID(c, "id")
+	if !ok {
+		return
+	}
+	if h.workspace == nil {
+		writeAppError(c, agenterrors.ErrInvalidInput)
+		return
+	}
+	item, err := h.workspaceForRun(c, ownerID, runID)
+	if err != nil {
+		writeAppError(c, err)
+		return
+	}
+	limit, _ := strconv.Atoi(c.Query("limit"))
+	value, err := h.workspace.GitLog(c.Request.Context(), item, limit)
+	if err != nil {
+		writeAppError(c, err)
+		return
+	}
+	response.OK(c, gin.H{"log": value})
+}
+
+func (h *AgentHandler) RunGitCommit(c *gin.Context) {
+	ownerID, runID, ok := ownerAndID(c, "id")
+	if !ok {
+		return
+	}
+	if h.workspace == nil {
+		writeAppError(c, agenterrors.ErrInvalidInput)
+		return
+	}
+	var body struct {
+		Message string   `json:"message"`
+		Paths   []string `json:"paths"`
+	}
+	if err := bindStrictAgentJSON(c, &body); err != nil {
+		writeAppError(c, agenterrors.ErrInvalidInput)
+		return
+	}
+	item, err := h.workspaceForRun(c, ownerID, runID)
+	if err != nil {
+		writeAppError(c, err)
+		return
+	}
+	value, err := h.workspace.Commit(c.Request.Context(), item, body.Message, body.Paths)
+	if err != nil {
+		writeAppError(c, err)
+		return
+	}
+	payload := workspaceEventPayload(item)
+	payload["message"], payload["paths"], payload["hash"], payload["head_sha"] = value.Message, value.Paths, value.Hash, value.Hash
+	if item.Kind == workspacedomain.KindWorktree {
+		payload["unpushed"] = true
+	}
+	_ = h.service.EmitWorkspaceEvent(c.Request.Context(), ownerID, runID, runtimeevent.GitCommitCreated, payload)
+	response.OK(c, value)
+}
+
+func (h *AgentHandler) CleanupWorkspace(c *gin.Context) {
+	ownerID, workspaceID, ok := ownerAndID(c, "id")
+	if !ok {
+		return
+	}
+	if h.workspace == nil {
+		writeAppError(c, agenterrors.ErrInvalidInput)
+		return
+	}
+	item, err := h.workspace.GetWorkspace(c.Request.Context(), ownerID, workspaceID)
+	if err != nil {
+		writeAppError(c, err)
+		return
+	}
+	force := c.Query("force") == "true"
+	value, err := h.workspace.CleanupRunWorkspace(c.Request.Context(), ownerID, item.RunID, force)
+	if err != nil {
+		if value != nil {
+			payload := workspaceEventPayload(value)
+			payload["error"] = err.Error()
+			eventType := runtimeevent.WorkspacePreserved
+			if value.Status == workspacedomain.StatusCleaned {
+				eventType = runtimeevent.WorkspaceCleaned
+			}
+			_ = h.service.EmitWorkspaceEvent(c.Request.Context(), ownerID, value.RunID, eventType, payload)
+		}
+		writeAppError(c, err)
+		return
+	}
+	eventType := runtimeevent.WorkspaceStatusChanged
+	if value.Status == "preserved" {
+		eventType = runtimeevent.WorkspacePreserved
+	} else if value.Status == "cleaned" {
+		eventType = runtimeevent.WorkspaceCleaned
+	}
+	_ = h.service.EmitWorkspaceEvent(c.Request.Context(), ownerID, value.RunID, eventType, workspaceEventPayload(value))
+	response.OK(c, value)
+}
+
+func (h *AgentHandler) RefreshWorkspace(c *gin.Context) {
+	ownerID, workspaceID, ok := ownerAndID(c, "id")
+	if !ok {
+		return
+	}
+	if h.workspace == nil {
+		writeAppError(c, agenterrors.ErrInvalidInput)
+		return
+	}
+	item, err := h.workspace.GetWorkspace(c.Request.Context(), ownerID, workspaceID)
+	if err != nil {
+		writeAppError(c, err)
+		return
+	}
+	value, err := h.workspace.RefreshGitStatus(c.Request.Context(), item)
+	if err != nil {
+		payload := workspaceEventPayload(item)
+		payload["error"] = err.Error()
+		_ = h.service.EmitWorkspaceEvent(c.Request.Context(), ownerID, item.RunID, runtimeevent.WorkspaceStatusChanged, payload)
+		writeAppError(c, err)
+		return
+	}
+	_ = h.service.EmitWorkspaceEvent(c.Request.Context(), ownerID, value.RunID, runtimeevent.WorkspaceStatusChanged, workspaceEventPayload(value))
+	response.OK(c, value)
 }
 
 func (h *AgentHandler) ListApprovalRequests(c *gin.Context) {
@@ -697,7 +934,7 @@ func (h *AgentHandler) decideApproval(c *gin.Context, approved bool) {
 		writeAppError(c, err)
 		return
 	}
-	response.OK(c, publicRun(run))
+	response.OK(c, h.publicRun(c, run))
 }
 
 func requireOwner(c *gin.Context) (int64, bool) {

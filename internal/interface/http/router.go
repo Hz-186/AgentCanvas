@@ -30,6 +30,7 @@ type RouterDeps struct {
 	KnowledgeHandler  *handler.KnowledgeHandler
 	DocumentHandler   *handler.DocumentHandler
 	AgentHandler      *handler.AgentHandler
+	ProjectHandler    *handler.ProjectHandler
 	ResourceHandler   *handler.ResourceHandler
 	AuthService       *authusecase.Service
 	APITokens         authdomain.APITokenRepository
@@ -71,6 +72,13 @@ func NewRouter(deps RouterDeps) *gin.Engine {
 			protected.GET("/resource-summaries/:kind", deps.ResourceHandler.List)
 
 			registerCRUD(protected, "/agents", ":id", deps.AgentHandler.Create, deps.AgentHandler.List, deps.AgentHandler.Get, deps.AgentHandler.Update, deps.AgentHandler.Delete)
+			registerCRUD(protected, "/projects", ":id", deps.ProjectHandler.Create, deps.ProjectHandler.List, deps.ProjectHandler.Get, deps.ProjectHandler.Update, deps.ProjectHandler.Delete)
+			protected.POST("/projects/:id/folders", deps.ProjectHandler.AddFolder)
+			protected.GET("/projects/:id/folders", deps.ProjectHandler.ListFolders)
+			protected.DELETE("/projects/:id/folders/:folder_id", deps.ProjectHandler.DeleteFolder)
+			protected.GET("/projects/:id/git/status", deps.ProjectHandler.GitStatus)
+			protected.GET("/projects/:id/git/branches", deps.ProjectHandler.GitBranches)
+			protected.GET("/projects/:id/git/worktrees", deps.ProjectHandler.GitWorktrees)
 			protected.PATCH("/agents/:id/settings", deps.AgentHandler.UpdateSettings)
 			protected.POST("/agents/:id/conversations", deps.AgentHandler.CreateConversation)
 			protected.GET("/agents/:id/conversations", deps.AgentHandler.ListConversations)
@@ -96,6 +104,13 @@ func NewRouter(deps RouterDeps) *gin.Engine {
 			protected.GET("/runs/:id/children", deps.AgentHandler.ListChildRuns)
 			protected.GET("/runs/:id/steps", deps.AgentHandler.ListRunSteps)
 			protected.GET("/runs/:id/trace", deps.AgentHandler.GetRunTrace)
+			protected.GET("/runs/:id/workspace", deps.AgentHandler.GetRunWorkspace)
+			protected.GET("/runs/:id/git/status", deps.AgentHandler.RunGitStatus)
+			protected.GET("/runs/:id/git/diff", deps.AgentHandler.RunGitDiff)
+			protected.GET("/runs/:id/git/log", deps.AgentHandler.RunGitLog)
+			protected.POST("/runs/:id/git/commit", deps.AgentHandler.RunGitCommit)
+			protected.POST("/workspaces/:id/cleanup", deps.AgentHandler.CleanupWorkspace)
+			protected.POST("/workspaces/:id/refresh", deps.AgentHandler.RefreshWorkspace)
 			protected.POST("/runs/:id/cancel", deps.AgentHandler.CancelRun)
 			protected.POST("/runs/:id/resume", deps.AgentHandler.ResumeRun)
 			protected.POST("/runs/:id/reflections/:reflection_id/feedback", deps.ReflectionHandler.Feedback)

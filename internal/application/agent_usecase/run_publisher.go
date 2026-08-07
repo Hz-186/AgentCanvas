@@ -10,6 +10,7 @@ import (
 
 	agentdomain "agentcanvas/internal/domain/agent"
 	"agentcanvas/internal/domain/conversation"
+	workspacedomain "agentcanvas/internal/domain/workspace"
 	"agentcanvas/internal/infrastructure/llm"
 	runtimeagent "agentcanvas/internal/runtime/agent"
 	agentruntime "agentcanvas/internal/runtime/agentruntime"
@@ -187,31 +188,37 @@ func projectRuntimeEvent(event runtimeevent.Event, conversationID *int64) []even
 			message, _ := event.Payload["error"].(string)
 			return stream("status.update", map[string]any{"message": message, "level": "error"})
 		}
+	case runtimeevent.WorkspaceCreated, runtimeevent.WorkspaceReady, runtimeevent.WorkspaceFailed,
+		runtimeevent.WorkspaceStatusChanged, runtimeevent.WorkspacePreserved, runtimeevent.WorkspaceCleaned,
+		runtimeevent.GitStatusChanged, runtimeevent.GitCommitCreated:
+		return stream("workspace.update", event.Payload)
 	}
 	return nil
 }
 
 type streamRunSnapshot struct {
-	ID              int64           `json:"id"`
-	OwnerID         int64           `json:"owner_id"`
-	AgentID         int64           `json:"agent_id"`
-	AgentReleaseID  *int64          `json:"agent_release_id,omitempty"`
-	ConversationID  *int64          `json:"conversation_id,omitempty"`
-	ParentRunID     *int64          `json:"parent_run_id,omitempty"`
-	RunType         string          `json:"run_type"`
-	DelegationDepth int             `json:"delegation_depth"`
-	DefinitionHash  string          `json:"definition_hash,omitempty"`
-	RuleHash        string          `json:"rule_hash,omitempty"`
-	Status          string          `json:"status"`
-	InputJSON       json.RawMessage `json:"input_json"`
-	OutputJSON      json.RawMessage `json:"output_json"`
-	ErrorMessage    string          `json:"error_message"`
-	TotalTokens     int             `json:"total_tokens"`
-	LatencyMS       int             `json:"latency_ms"`
-	StartedAt       time.Time       `json:"started_at"`
-	FinishedAt      *time.Time      `json:"finished_at,omitempty"`
-	CreatedAt       time.Time       `json:"created_at"`
-	UpdatedAt       time.Time       `json:"updated_at"`
+	ID              int64                      `json:"id"`
+	OwnerID         int64                      `json:"owner_id"`
+	AgentID         int64                      `json:"agent_id"`
+	AgentReleaseID  *int64                     `json:"agent_release_id,omitempty"`
+	ConversationID  *int64                     `json:"conversation_id,omitempty"`
+	WorkspaceID     *int64                     `json:"workspace_id,omitempty"`
+	Workspace       *workspacedomain.Workspace `json:"workspace,omitempty"`
+	ParentRunID     *int64                     `json:"parent_run_id,omitempty"`
+	RunType         string                     `json:"run_type"`
+	DelegationDepth int                        `json:"delegation_depth"`
+	DefinitionHash  string                     `json:"definition_hash,omitempty"`
+	RuleHash        string                     `json:"rule_hash,omitempty"`
+	Status          string                     `json:"status"`
+	InputJSON       json.RawMessage            `json:"input_json"`
+	OutputJSON      json.RawMessage            `json:"output_json"`
+	ErrorMessage    string                     `json:"error_message"`
+	TotalTokens     int                        `json:"total_tokens"`
+	LatencyMS       int                        `json:"latency_ms"`
+	StartedAt       time.Time                  `json:"started_at"`
+	FinishedAt      *time.Time                 `json:"finished_at,omitempty"`
+	CreatedAt       time.Time                  `json:"created_at"`
+	UpdatedAt       time.Time                  `json:"updated_at"`
 }
 
 type terminalSnapshotPayload struct {
@@ -221,12 +228,33 @@ type terminalSnapshotPayload struct {
 	Usage   llm.Usage             `json:"usage"`
 }
 
-func publicStreamRun(run *agentdomain.Run) streamRunSnapshot {
+func publicStreamRun(run *agentdomain.Run, workspace *workspacedomain.Workspace) streamRunSnapshot {
+	if run != nil && workspace != nil && workspace.Kind == workspacedomain.KindShared && workspace.RunID != run.ID {
+		view := *workspace
+		view.RunID = run.ID
+		workspace = &view
+	}
 	return streamRunSnapshot{ID: run.ID, OwnerID: run.OwnerID, AgentID: run.AgentID, AgentReleaseID: run.AgentReleaseID,
-		ConversationID: run.ConversationID, ParentRunID: run.ParentRunID, RunType: run.RunType, DelegationDepth: run.DelegationDepth,
+		ConversationID: run.ConversationID, WorkspaceID: run.WorkspaceID, Workspace: workspace, ParentRunID: run.ParentRunID, RunType: run.RunType, DelegationDepth: run.DelegationDepth,
 		DefinitionHash: run.DefinitionHash, RuleHash: run.RuleHash, Status: run.Status, InputJSON: run.InputJSON, OutputJSON: run.OutputJSON,
 		ErrorMessage: run.ErrorMessage, TotalTokens: run.TotalTokens, LatencyMS: run.LatencyMS, StartedAt: run.StartedAt,
 		FinishedAt: run.FinishedAt, CreatedAt: run.CreatedAt, UpdatedAt: run.UpdatedAt}
+}
+
+func (s *Service) streamWorkspace(run *agentdomain.Run) *workspacedomain.Workspace {
+	if s.workspace == nil || run == nil || run.WorkspaceID == nil {
+		return nil
+	}
+	item, err := s.workspace.GetWorkspace(context.Background(), run.OwnerID, *run.WorkspaceID)
+	if err != nil {
+		return nil
+	}
+	if item.Kind == workspacedomain.KindShared && item.RunID != run.ID {
+		view := *item
+		view.RunID = run.ID
+		return &view
+	}
+	return item
 }
 
 func usageFromOutput(output agentruntime.RunOutput) llm.Usage {
@@ -274,7 +302,7 @@ func (s *Service) publishRunSnapshot(run *agentdomain.Run, turn *agentdomain.Tur
 	default:
 		return
 	}
-	data, _ := json.Marshal(terminalSnapshotPayload{Run: publicStreamRun(run), Turn: turn, Message: message, Usage: usage})
+	data, _ := json.Marshal(terminalSnapshotPayload{Run: publicStreamRun(run, s.streamWorkspace(run)), Turn: turn, Message: message, Usage: usage})
 	event := s.streamHub.Prepare(run.ID, eventhub.StreamEvent{RunID: run.ID, ConversationID: run.ConversationID, Kind: kind, Data: data})
 	if run.Status == agentdomain.RunStatusSucceeded || run.Status == agentdomain.RunStatusFailed || run.Status == agentdomain.RunStatusCancelled || run.Status == agentdomain.RunStatusTimeout {
 		s.streamHub.CloseRun(run.ID, event)

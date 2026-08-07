@@ -2,8 +2,31 @@ package toolruntime
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"strconv"
+	"strings"
+
+	"agentcanvas/internal/domain/audit"
 )
+
+type WorkspaceContext struct {
+	ID               int64  `json:"workspace_id"`
+	ProjectID        int64  `json:"project_id"`
+	RunID            int64  `json:"run_id"`
+	Kind             string `json:"kind"`
+	RepositoryRoot   string `json:"repository_root"`
+	WorkspacePath    string `json:"workspace_path"`
+	BranchName       string `json:"branch_name"`
+	BaseSHA          string `json:"base_sha,omitempty"`
+	HeadSHA          string `json:"head_sha,omitempty"`
+	Dirty            bool   `json:"dirty"`
+	Unpushed         bool   `json:"unpushed"`
+	FileWriteEnabled bool   `json:"file_write_enabled"`
+	GitEnabled       bool   `json:"git_enabled"`
+	ExecEnabled      bool   `json:"exec_enabled"`
+}
 
 type ToolRunContext struct {
 	OwnerID         int64
@@ -14,7 +37,9 @@ type ToolRunContext struct {
 	ConversationID  *int64
 	// Task is the current run objective. Tools use it as a semantic query
 	// when the model omits an explicit query (for example memory recall).
-	Task string
+	Task      string
+	Workspace *WorkspaceContext
+	EmitEvent func(context.Context, string, map[string]any) error
 }
 
 type ToolResult struct {
@@ -75,6 +100,71 @@ type RuntimeTool interface {
 	Description() string
 	Parameters() json.RawMessage
 	Execute(ctx context.Context, rc ToolRunContext, input json.RawMessage) (*ToolResult, error)
+}
+
+// AuditedTool records workspace tool execution without persisting source file
+// contents. workspace_exec intentionally retains its command for operator
+// review; file bodies and patch text are replaced by length and SHA-256.
+type AuditedTool struct {
+	Tool   RuntimeTool
+	Audits audit.Repository
+}
+
+func (t AuditedTool) Name() string                { return t.Tool.Name() }
+func (t AuditedTool) Description() string         { return t.Tool.Description() }
+func (t AuditedTool) Parameters() json.RawMessage { return t.Tool.Parameters() }
+func (t AuditedTool) Metadata() ToolMetadata      { return MetadataOf(t.Tool) }
+func (t AuditedTool) Execute(ctx context.Context, rc ToolRunContext, input json.RawMessage) (*ToolResult, error) {
+	result, runErr := t.Tool.Execute(ctx, rc, input)
+	if t.Audits == nil || rc.OwnerID <= 0 || rc.Workspace == nil {
+		return result, runErr
+	}
+	detail := map[string]any{
+		"agent_id": rc.AgentID, "run_id": rc.RunID, "tool": t.Tool.Name(),
+		"workspace_path": rc.Workspace.WorkspacePath, "branch": rc.Workspace.BranchName,
+		"input": sanitizedAuditInput(input), "succeeded": runErr == nil,
+	}
+	if runErr != nil {
+		detail["error"] = runErr.Error()
+	}
+	if result != nil {
+		detail["result_summary"] = truncateAuditText(result.ContentText, 2048)
+		if len(result.Metadata) > 0 {
+			detail["metadata"] = result.Metadata
+		}
+	}
+	encoded, _ := json.Marshal(detail)
+	_ = t.Audits.Create(ctx, &audit.Log{
+		OwnerID: rc.OwnerID, ActorID: rc.OwnerID, Action: "workspace.tool." + t.Tool.Name(),
+		ResourceType: "workspace", ResourceID: strconv.FormatInt(rc.Workspace.ID, 10), DetailJSON: string(encoded),
+	})
+	return result, runErr
+}
+
+func sanitizedAuditInput(input json.RawMessage) map[string]any {
+	var value map[string]any
+	if err := json.Unmarshal(input, &value); err != nil {
+		return map[string]any{"invalid_json": true}
+	}
+	for _, key := range []string{"content", "old_string", "new_string", "patch"} {
+		raw, ok := value[key].(string)
+		if !ok {
+			continue
+		}
+		sum := sha256.Sum256([]byte(raw))
+		value[key+"_chars"] = len([]rune(raw))
+		value[key+"_sha256"] = hex.EncodeToString(sum[:])
+		delete(value, key)
+	}
+	return value
+}
+
+func truncateAuditText(value string, limit int) string {
+	value = strings.TrimSpace(value)
+	if len(value) <= limit {
+		return value
+	}
+	return value[:limit] + "…"
 }
 
 type MetadataProvider interface {

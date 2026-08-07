@@ -3,6 +3,8 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -27,6 +29,25 @@ type Config struct {
 	OCR             OCRConfig             `yaml:"ocr"`
 	Security        SecurityConfig        `yaml:"security"`
 	OAuth           OAuthConfig           `yaml:"oauth"`
+	GitWorkspace    GitWorkspaceConfig    `yaml:"git_workspace"`
+}
+
+type GitWorkspaceConfig struct {
+	Enabled                  bool     `yaml:"enabled"`
+	AllowedRoots             []string `yaml:"allowed_roots"`
+	WorktreeDirName          string   `yaml:"worktree_dir_name"`
+	FetchTimeoutSeconds      int      `yaml:"fetch_timeout_seconds"`
+	FetchFreshnessSeconds    int      `yaml:"fetch_freshness_seconds"`
+	GitCommandTimeoutSeconds int      `yaml:"git_command_timeout_seconds"`
+	MaxOutputBytes           int      `yaml:"max_output_bytes"`
+	FileReadMaxChars         int      `yaml:"file_read_max_chars"`
+	MaxWorkspacesPerProject  int      `yaml:"max_workspaces_per_project"`
+	PruneTTLHours            int      `yaml:"prune_ttl_hours"`
+	PreserveDirty            bool     `yaml:"preserve_dirty"`
+	PreserveUnpushed         bool     `yaml:"preserve_unpushed"`
+	AutoInitRepository       bool     `yaml:"auto_init_repository"`
+	GitUserName              string   `yaml:"git_user_name"`
+	GitUserEmail             string   `yaml:"git_user_email"`
 }
 
 type AgentRuntimeConfig struct {
@@ -385,6 +406,36 @@ func (c *Config) setDefaults() {
 	if c.OCR.TimeoutSeconds == 0 {
 		c.OCR.TimeoutSeconds = 60
 	}
+	if c.GitWorkspace.WorktreeDirName == "" {
+		c.GitWorkspace.WorktreeDirName = ".worktrees"
+	}
+	if c.GitWorkspace.FetchTimeoutSeconds == 0 {
+		c.GitWorkspace.FetchTimeoutSeconds = 5
+	}
+	if c.GitWorkspace.FetchFreshnessSeconds == 0 {
+		c.GitWorkspace.FetchFreshnessSeconds = 300
+	}
+	if c.GitWorkspace.GitCommandTimeoutSeconds == 0 {
+		c.GitWorkspace.GitCommandTimeoutSeconds = 30
+	}
+	if c.GitWorkspace.MaxOutputBytes == 0 {
+		c.GitWorkspace.MaxOutputBytes = 256 * 1024
+	}
+	if c.GitWorkspace.FileReadMaxChars == 0 {
+		c.GitWorkspace.FileReadMaxChars = 100000
+	}
+	if c.GitWorkspace.MaxWorkspacesPerProject == 0 {
+		c.GitWorkspace.MaxWorkspacesPerProject = 64
+	}
+	if c.GitWorkspace.PruneTTLHours == 0 {
+		c.GitWorkspace.PruneTTLHours = 24
+	}
+	if c.GitWorkspace.GitUserName == "" {
+		c.GitWorkspace.GitUserName = "AgentCanvas"
+	}
+	if c.GitWorkspace.GitUserEmail == "" {
+		c.GitWorkspace.GitUserEmail = "agentcanvas@localhost"
+	}
 }
 
 func (c *Config) Validate() error {
@@ -408,6 +459,27 @@ func (c *Config) Validate() error {
 	}
 	if c.ReflectionQueue.Backend != "mysql" && c.ReflectionQueue.Backend != "nats" {
 		return fmt.Errorf("reflection_queue.backend must be mysql or nats")
+	}
+	if c.GitWorkspace.FetchTimeoutSeconds <= 0 || c.GitWorkspace.FetchFreshnessSeconds <= 0 || c.GitWorkspace.GitCommandTimeoutSeconds <= 0 {
+		return fmt.Errorf("git_workspace timeout settings must be positive")
+	}
+	if c.GitWorkspace.MaxOutputBytes <= 0 || c.GitWorkspace.FileReadMaxChars <= 0 || c.GitWorkspace.MaxWorkspacesPerProject <= 0 {
+		return fmt.Errorf("git_workspace limits must be positive")
+	}
+	if c.GitWorkspace.PruneTTLHours <= 0 {
+		return fmt.Errorf("git_workspace.prune_ttl_hours must be positive")
+	}
+	if c.GitWorkspace.Enabled && len(c.GitWorkspace.AllowedRoots) == 0 {
+		return fmt.Errorf("git_workspace.allowed_roots is required when enabled")
+	}
+	for _, root := range c.GitWorkspace.AllowedRoots {
+		if !filepath.IsAbs(strings.TrimSpace(root)) {
+			return fmt.Errorf("git_workspace.allowed_roots entries must be absolute")
+		}
+	}
+	worktreeDir := strings.TrimSpace(c.GitWorkspace.WorktreeDirName)
+	if worktreeDir == "" || filepath.IsAbs(worktreeDir) || filepath.Clean(worktreeDir) != worktreeDir || filepath.Base(worktreeDir) != worktreeDir || worktreeDir == "." || worktreeDir == ".." {
+		return fmt.Errorf("git_workspace.worktree_dir_name must be a single relative directory name")
 	}
 	if c.ReflectionQueue.Backend == "nats" && c.NATS.URL == "" {
 		return fmt.Errorf("nats.url is required when reflection_queue.backend is nats")
