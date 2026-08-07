@@ -8,6 +8,7 @@ const eventKinds = new Set([
   ...toolKinds,
   ...terminalKinds,
   'status.update',
+  'workspace.update',
   'approval.required',
   'usage.update',
 ]);
@@ -30,6 +31,14 @@ function requireString(value: Record<string, unknown>, key: string): void {
 
 function requireNumber(value: Record<string, unknown>, key: string): void {
   if (typeof value[key] !== 'number' || !Number.isFinite(value[key])) throw new RunStreamProtocolError(`data.${key} must be a number`);
+}
+
+function requireBoolean(value: Record<string, unknown>, key: string): void {
+  if (typeof value[key] !== 'boolean') throw new RunStreamProtocolError(`data.${key} must be a boolean`);
+}
+
+function requireStringValue(value: Record<string, unknown>, key: string): void {
+  if (typeof value[key] !== 'string') throw new RunStreamProtocolError(`data.${key} must be a string`);
 }
 
 function validateUsage(data: Record<string, unknown>): void {
@@ -70,6 +79,10 @@ export function parseRunStreamEvent(input: string | unknown): RunStreamEvent {
     for (const key of ['call_id', 'tool_name', 'reason']) requireString(data, key);
   } else if (envelope.kind === 'usage.update') {
     validateUsage(data);
+  } else if (envelope.kind === 'workspace.update') {
+	for (const key of ['workspace_id', 'run_id']) requireNumber(data, key);
+	for (const key of ['repo_root', 'path', 'branch', 'base_sha', 'head_sha']) requireStringValue(data, key);
+	for (const key of ['dirty', 'unpushed']) requireBoolean(data, key);
   } else if (terminalKinds.has(envelope.kind)) {
     objectValue(data.run, 'data.run');
     validateUsage(objectValue(data.usage, 'data.usage'));

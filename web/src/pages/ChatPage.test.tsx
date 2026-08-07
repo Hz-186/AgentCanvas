@@ -9,6 +9,7 @@ const apiMocks = vi.hoisted(() => ({
   listAgents: vi.fn(),
   listProviders: vi.fn(),
   listKnowledge: vi.fn(),
+  listProjects: vi.fn(),
   listConversations: vi.fn(),
   listMessages: vi.fn(),
   latestTurn: vi.fn(),
@@ -21,6 +22,15 @@ const apiMocks = vi.hoisted(() => ({
   listRunEvents: vi.fn(),
   listChildRuns: vi.fn(),
   listApprovalRequests: vi.fn(),
+  createConversation: vi.fn(),
+  startTurn: vi.fn(),
+  workspace: vi.fn(),
+  gitStatus: vi.fn(),
+  gitDiff: vi.fn(),
+  gitLog: vi.fn(),
+  gitCommit: vi.fn(),
+  refreshWorkspace: vi.fn(),
+  cleanupWorkspace: vi.fn(),
 }));
 
 vi.mock('../api/resources', () => ({
@@ -34,14 +44,24 @@ vi.mock('../api/resources', () => ({
     streamRunEventsV1: apiMocks.streamRunEventsV1,
     searchSessions: apiMocks.searchSessions,
     updateConversationMode: apiMocks.updateConversationMode,
+    createConversation: apiMocks.createConversation,
+    startTurn: apiMocks.startTurn,
   },
   settingsApi: { providers: { list: apiMocks.listProviders } },
   knowledgeApi: { list: apiMocks.listKnowledge },
+  projectApi: { list: apiMocks.listProjects },
   runApi: {
     getRun: apiMocks.getRun,
     listRunEvents: apiMocks.listRunEvents,
     listChildRuns: apiMocks.listChildRuns,
     listApprovalRequests: apiMocks.listApprovalRequests,
+    workspace: apiMocks.workspace,
+    gitStatus: apiMocks.gitStatus,
+    gitDiff: apiMocks.gitDiff,
+    gitLog: apiMocks.gitLog,
+    gitCommit: apiMocks.gitCommit,
+    refreshWorkspace: apiMocks.refreshWorkspace,
+    cleanupWorkspace: apiMocks.cleanupWorkspace,
   },
 }));
 
@@ -112,6 +132,44 @@ const activeTurn: AgentTurn = {
   updated_at: '2026-07-26T00:00:03Z',
 };
 
+const project = {
+  id: 44,
+  owner_id: 7,
+  slug: 'agent-canvas',
+  name: 'AgentCanvas',
+  description: '',
+  icon: '',
+  color: '',
+  primary_path: '/Users/test/AgentCanvas',
+  archived: false,
+  folders: [],
+  created_at: '2026-07-26T00:00:00Z',
+  updated_at: '2026-07-26T00:00:00Z',
+};
+
+const readyWorkspace = {
+  id: 70,
+  owner_id: 7,
+  project_id: project.id,
+  run_id: activeRun.id,
+  kind: 'worktree' as const,
+  repository_root: project.primary_path,
+  workspace_path: `${project.primary_path}/.worktrees/20-first-task`,
+  branch_name: 'agent-canvas/20-first-task',
+  base_ref: 'origin/main',
+  base_sha: 'aaaaaaaaaaaaaaaa',
+  head_sha: 'bbbbbbbbbbbbbbbb',
+  status: 'ready' as const,
+  dirty: false,
+  unpushed: false,
+  locked: true,
+  lock_reason: 'run:20 pid:1234',
+  cleanup_reason: '',
+  error_message: '',
+  created_at: '2026-07-26T00:00:03Z',
+  updated_at: '2026-07-26T00:00:03Z',
+};
+
 function runStreamEvent(runID: number, seq: number, kind: RunStreamEvent['kind'], data: unknown): RunStreamEvent {
   return {
     version: 1,
@@ -132,12 +190,21 @@ function renderChat() {
   );
 }
 
+function renderNewChat() {
+  return render(
+    <MemoryRouter initialEntries={['/app/agents/1/chat/new']}>
+      <Routes><Route path="/app/agents/:agentId/chat/:conversationId" element={<ChatPage />} /></Routes>
+    </MemoryRouter>,
+  );
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   localStorage.clear();
   apiMocks.listAgents.mockResolvedValue([agent]);
   apiMocks.listProviders.mockResolvedValue([{ id: 4, name: 'OpenAI', default_chat_model: 'gpt-test', status: 1 }]);
   apiMocks.listKnowledge.mockResolvedValue([]);
+  apiMocks.listProjects.mockResolvedValue([]);
   apiMocks.listConversations.mockResolvedValue([conversation]);
   apiMocks.listMessages.mockResolvedValue(messages);
   apiMocks.latestTurn.mockRejectedValue(new Error('no turn'));
@@ -150,6 +217,24 @@ beforeEach(() => {
   apiMocks.listRunEvents.mockResolvedValue([]);
   apiMocks.listChildRuns.mockResolvedValue([]);
   apiMocks.listApprovalRequests.mockResolvedValue([]);
+  apiMocks.createConversation.mockResolvedValue({ ...conversation, id: 50, title: '', project_id: project.id, workspace_mode: 'worktree' });
+  apiMocks.startTurn.mockResolvedValue({
+    turn: { ...activeTurn, id: 51, conversation_id: 50 },
+    run: { ...activeRun, id: 52, conversation_id: 50 },
+    user_message: { ...messages[1], id: 53, conversation_id: 50, content: 'edit README' },
+  });
+  apiMocks.workspace.mockResolvedValue(readyWorkspace);
+  apiMocks.gitStatus.mockResolvedValue({ root: readyWorkspace.workspace_path, branch: readyWorkspace.branch_name, head: readyWorkspace.head_sha, dirty: false, unpushed: false });
+  apiMocks.gitDiff.mockResolvedValue({ diff: '' });
+  apiMocks.gitLog.mockResolvedValue({ log: 'abc123 feat: update' });
+  apiMocks.gitCommit.mockResolvedValue({ hash: 'cccccccc', message: 'feat: update README', paths: ['README.md'] });
+  apiMocks.refreshWorkspace.mockResolvedValue(readyWorkspace);
+  apiMocks.cleanupWorkspace.mockResolvedValue({
+    ...readyWorkspace,
+    status: 'cleaned',
+    locked: false,
+    cleanup_reason: 'checkout removed; branch retained',
+  });
   Object.defineProperty(HTMLElement.prototype, 'scrollTo', { configurable: true, value: vi.fn() });
 });
 
@@ -177,6 +262,19 @@ describe('Agent chat helpers', () => {
 });
 
 describe('Agent chat page', () => {
+  it('binds a new conversation to the selected Project and worktree mode', async () => {
+    apiMocks.listProjects.mockResolvedValue([project]);
+    renderNewChat();
+
+    fireEvent.change(await screen.findByLabelText('项目工作区'), { target: { value: String(project.id) } });
+    fireEvent.change(screen.getByLabelText('工作区模式'), { target: { value: 'worktree' } });
+    fireEvent.change(screen.getByPlaceholderText('交给 Agent 一个任务…'), { target: { value: 'edit README' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+
+    await waitFor(() => expect(apiMocks.createConversation).toHaveBeenCalledWith(1, undefined, 'react', project.id, 'worktree'));
+    await waitFor(() => expect(apiMocks.startTurn).toHaveBeenCalledWith(1, 50, 'edit README', expect.any(String)));
+  });
+
   it('renders user and Agent on opposite message roles without a false empty state', async () => {
     const { container } = renderChat();
     expect(await screen.findByText('hello agent')).toBeInTheDocument();
@@ -303,5 +401,143 @@ describe('Agent chat page', () => {
     expect(container.querySelectorAll('[data-run-segment]')).toHaveLength(0);
     expect(apiMocks.streamRunEventsV1).toHaveBeenCalled();
     expect(apiMocks.streamRunEvents).not.toHaveBeenCalled();
+  });
+
+  it('refreshes the Workspace card after a workspace.update stream event', async () => {
+    apiMocks.latestTurn.mockResolvedValue(activeTurn);
+    let animationFrame: FrameRequestCallback | null = null;
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+      animationFrame = callback;
+      return 1;
+    });
+    renderChat();
+
+    await screen.findByText(readyWorkspace.branch_name);
+    await waitFor(() => expect(apiMocks.streamRunEventsV1).toHaveBeenCalled());
+    const initialWorkspaceLoads = apiMocks.workspace.mock.calls.length;
+    const updatedWorkspace = {
+      ...readyWorkspace,
+      head_sha: 'dddddddddddddddd',
+      dirty: true,
+      updated_at: '2026-07-26T00:00:08Z',
+    };
+    apiMocks.workspace.mockResolvedValue(updatedWorkspace);
+    apiMocks.gitStatus.mockResolvedValue({
+      root: updatedWorkspace.workspace_path,
+      branch: updatedWorkspace.branch_name,
+      head: updatedWorkspace.head_sha,
+      dirty: true,
+      unpushed: false,
+    });
+    const handlers = apiMocks.streamRunEventsV1.mock.calls[0][2] as {
+      onMessage: (message: { id?: string; event: string; data: string }) => void;
+    };
+
+    act(() => {
+      const event = runStreamEvent(activeRun.id, 8, 'workspace.update', {
+        workspace_id: updatedWorkspace.id,
+        run_id: activeRun.id,
+        project_id: project.id,
+        repo_root: updatedWorkspace.repository_root,
+        path: updatedWorkspace.workspace_path,
+        branch: updatedWorkspace.branch_name,
+        base_sha: updatedWorkspace.base_sha,
+        head_sha: updatedWorkspace.head_sha,
+        dirty: true,
+        unpushed: false,
+        status: 'ready',
+        locked: true,
+      });
+      handlers.onMessage({ id: String(event.seq), event: event.kind, data: JSON.stringify(event) });
+      const callback = animationFrame;
+      animationFrame = null;
+      if (!callback) throw new Error('expected a pending animation frame');
+      callback(performance.now());
+    });
+
+    await waitFor(() => expect(apiMocks.workspace.mock.calls.length).toBeGreaterThan(initialWorkspaceLoads));
+    expect(await screen.findByText('ready · dirty')).toBeInTheDocument();
+    expect(screen.getByText('dddddddd')).toBeInTheDocument();
+  });
+
+  it('prefers live Git status over the persisted Workspace snapshot', async () => {
+    apiMocks.latestTurn.mockResolvedValue(activeTurn);
+    apiMocks.gitStatus.mockResolvedValue({
+      root: readyWorkspace.workspace_path,
+      branch: readyWorkspace.branch_name,
+      head: readyWorkspace.head_sha,
+      dirty: true,
+      unpushed: true,
+    });
+    renderChat();
+
+    expect(await screen.findByText('ready · dirty · unpushed')).toBeInTheDocument();
+  });
+
+  it('keeps the persisted Workspace visible when live Git status fails', async () => {
+    apiMocks.latestTurn.mockResolvedValue(activeTurn);
+    apiMocks.gitStatus.mockRejectedValue(new Error('Git status unavailable'));
+    renderChat();
+
+    expect(await screen.findByText(readyWorkspace.branch_name)).toBeInTheDocument();
+    expect(screen.getByText(readyWorkspace.workspace_path)).toBeInTheDocument();
+    expect(screen.getByText('ready')).toBeInTheDocument();
+  });
+
+  it('loads Git log for the current Workspace', async () => {
+    apiMocks.latestTurn.mockResolvedValue(activeTurn);
+    renderChat();
+
+    await screen.findByText(readyWorkspace.branch_name);
+    fireEvent.click(screen.getByRole('button', { name: 'Log' }));
+
+    await waitFor(() => expect(apiMocks.gitLog).toHaveBeenCalledWith(activeRun.id, 20));
+    expect(await screen.findByLabelText('Git log')).toHaveTextContent('abc123 feat: update');
+  });
+
+  it('requires an explicit modal confirmation before creating a Git commit', async () => {
+    apiMocks.latestTurn.mockResolvedValue(activeTurn);
+    renderChat();
+
+    await screen.findByText(readyWorkspace.branch_name);
+    fireEvent.click(screen.getByRole('button', { name: 'Commit…' }));
+    expect(await screen.findByText(/不会 push、merge 或删除分支/)).toBeInTheDocument();
+    expect(apiMocks.gitCommit).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByPlaceholderText('feat: update implementation'), { target: { value: '  feat: update README  ' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Approve commit' }));
+
+    await waitFor(() => expect(apiMocks.gitCommit).toHaveBeenCalledWith(activeRun.id, 'feat: update README'));
+    expect(await screen.findByText(/Commit 已创建，分支仍保留供人工合并/)).toBeInTheDocument();
+  });
+
+  it('cleans a safe Worktree checkout while retaining its branch', async () => {
+    apiMocks.latestTurn.mockResolvedValue(activeTurn);
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    renderChat();
+
+    await screen.findByText(readyWorkspace.branch_name);
+    fireEvent.click(screen.getByRole('button', { name: 'Cleanup' }));
+
+    await waitFor(() => expect(apiMocks.cleanupWorkspace).toHaveBeenCalledWith(readyWorkspace.id));
+    expect(await screen.findByText(/Git branch 仍保留供人工审查/)).toBeInTheDocument();
+    expect(screen.getByText('cleaned')).toBeInTheDocument();
+  });
+
+  it('shows why an unsafe Worktree was preserved instead of removed', async () => {
+    apiMocks.latestTurn.mockResolvedValue(activeTurn);
+    apiMocks.cleanupWorkspace.mockResolvedValue({
+      ...readyWorkspace,
+      status: 'preserved',
+      dirty: true,
+      cleanup_reason: 'workspace contains dirty or unpushed work',
+    });
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    renderChat();
+
+    await screen.findByText(readyWorkspace.branch_name);
+    fireEvent.click(screen.getByRole('button', { name: 'Cleanup' }));
+
+    expect(await screen.findByText(/Workspace 已保留：workspace contains dirty or unpushed work/)).toBeInTheDocument();
+    expect(screen.getByText(/保留原因：workspace contains dirty or unpushed work/)).toBeInTheDocument();
   });
 });

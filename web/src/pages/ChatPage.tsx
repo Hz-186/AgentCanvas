@@ -16,7 +16,7 @@ import {
   X,
 } from 'lucide-react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { agentApi, knowledgeApi, runApi, settingsApi } from '../api/resources';
+import { agentApi, knowledgeApi, projectApi, runApi, settingsApi } from '../api/resources';
 import { Button, EmptyState, Field, IconButton, Modal, Select, StatusBadge, TextArea, TextInput, Toast } from '../components/ui';
 import { EditorialHeader, ResizableRail, paneStyle, storedWidth } from '../components/editorial';
 import { ApprovalQueue } from '../components/ApprovalQueue';
@@ -33,6 +33,9 @@ import type {
   ModelProvider,
   Run,
   RunEvent,
+  Workspace,
+  GitStatus,
+  Project,
 } from '../types/api';
 import { formatDate, friendlyErrorMessage } from '../utils/format';
 
@@ -134,11 +137,20 @@ export function ChatPage() {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [providers, setProviders] = useState<ModelProvider[]>([]);
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([]);
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [selectedProjectID, setSelectedProjectID] = useState<number | undefined>();
+  const [workspaceMode, setWorkspaceMode] = useState<'shared' | 'worktree'>('shared');
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [messages, setMessages] = useState<Message[]>([]);
   const [trace, setTrace] = useState<RunEvent[]>([]);
   const [turn, setTurn] = useState<AgentTurn | null>(null);
   const [run, setRun] = useState<Run | null>(null);
+  const [workspace, setWorkspace] = useState<Workspace | null>(null);
+  const [gitStatus, setGitStatus] = useState<GitStatus | null>(null);
+  const [gitDiff, setGitDiff] = useState('');
+  const [gitLog, setGitLog] = useState('');
+  const [commitOpen, setCommitOpen] = useState(false);
+  const [commitMessage, setCommitMessage] = useState('');
   const [childRuns, setChildRuns] = useState<Run[]>([]);
   const [approvals, setApprovals] = useState<ApprovalRequest[]>([]);
   const [question, setQuestion] = useState('');
@@ -187,6 +199,11 @@ export function ChatPage() {
     { value: 'plan_execute', label: 'Plan Guided', description: '先制定计划，再按计划推进' },
   ];
 
+  useEffect(() => {
+    if (!streamIsCurrent || !runStreamTarget || !runStreamState.workspace) return;
+    void loadWorkspace(runStreamTarget.runId);
+  }, [streamIsCurrent, runStreamTarget?.runId, runStreamState.workspace]);
+
   async function reloadAgents() {
     const list = await agentApi.list();
     setAgents(list);
@@ -195,11 +212,12 @@ export function ChatPage() {
 
   useEffect(() => {
     let cancelled = false;
-    Promise.all([agentApi.list(), settingsApi.providers.list(), knowledgeApi.list()]).then(([agentList, providerList, kbList]) => {
+    Promise.all([agentApi.list(), settingsApi.providers.list(), knowledgeApi.list(), projectApi.list()]).then(([agentList, providerList, kbList, projectList]) => {
       if (cancelled) return;
       setAgents(agentList);
       setProviders(providerList);
       setKnowledgeBases(kbList.filter((item) => item.status === 1));
+      setProjects(projectList);
       setNewProviderID(providerList[0]?.id ?? 0);
     }).catch((cause) => !cancelled && setError(friendlyErrorMessage(cause, '加载 Agent 数据失败')));
     return () => { cancelled = true; pageGeneration.current += 1; };
@@ -233,6 +251,11 @@ export function ChatPage() {
       setRunStreamTarget(null);
       setTurn(null);
       setRun(null);
+      setWorkspace(null);
+      setGitStatus(null);
+      setGitDiff('');
+      setGitLog('');
+      setCommitOpen(false);
       setBusy(false);
     }
     if (!conversationID || !agentID) {
@@ -258,6 +281,7 @@ export function ChatPage() {
           setTrace((current) => mergeByID(current, events));
           setChildRuns((current) => mergeRuns(current, children));
         }).catch(() => undefined);
+        void loadWorkspace(latest.run_id);
       }
       if (latest.run_id && (activeTurnStatuses.has(latest.status) || latest.status === 'waiting_human' || latest.status === 'paused')) {
         setBusy(activeTurnStatuses.has(latest.status));
@@ -273,8 +297,12 @@ export function ChatPage() {
   }, [agentID, conversationID, isNewConversation]);
 
   useEffect(() => {
-    if (conversationID && currentConversation) setMode(currentConversation.agent_mode ?? 'react');
-  }, [conversationID, currentConversation?.agent_mode]);
+    if (conversationID && currentConversation) {
+      setMode(currentConversation.agent_mode ?? 'react');
+      setSelectedProjectID(currentConversation.project_id ?? undefined);
+      setWorkspaceMode(currentConversation.workspace_mode ?? 'shared');
+    }
+  }, [conversationID, currentConversation?.agent_mode, currentConversation?.project_id, currentConversation?.workspace_mode]);
 
   useEffect(() => {
     const node = messageListRef.current;
@@ -392,7 +420,7 @@ export function ChatPage() {
   async function createConversation(selectedMode = mode): Promise<Conversation | null> {
     if (!agentID) return null;
     try {
-      const item = await agentApi.createConversation(agentID, undefined, selectedMode);
+      const item = await agentApi.createConversation(agentID, undefined, selectedMode, selectedProjectID, workspaceMode);
       setConversations((current) => [item, ...current]);
       return item;
     } catch (cause) { setError(friendlyErrorMessage(cause, '创建会话失败')); return null; }
@@ -426,6 +454,7 @@ export function ChatPage() {
   }
 
   function followRun(nextTurn: AgentTurn, runID: number) {
+    void loadWorkspace(runID);
     setRunStreamTarget((current) => {
       if (current?.runId === runID && current.turnId === nextTurn.id && current.conversationId === nextTurn.conversation_id) return current;
       streamGeneration.current += 1;
@@ -436,6 +465,79 @@ export function ChatPage() {
         generation: streamGeneration.current,
       };
     });
+  }
+
+  async function loadWorkspace(runID: number) {
+    if (typeof runApi.workspace !== 'function') return;
+    let item: Workspace;
+    try {
+      item = await runApi.workspace(runID);
+      setWorkspace(item);
+    } catch {
+      // Runs without a Project intentionally have no workspace.
+      setWorkspace(null);
+      setGitStatus(null);
+      setGitDiff('');
+      setGitLog('');
+      return;
+    }
+    if (typeof runApi.gitStatus === 'function') {
+      try {
+        setGitStatus(await runApi.gitStatus(runID));
+      } catch {
+        // Keep the persisted Workspace visible when live Git inspection fails.
+        setGitStatus(null);
+      }
+    }
+  }
+
+  async function refreshWorkspace() {
+    if (!workspace || typeof runApi.refreshWorkspace !== 'function') return;
+    try {
+      const item = await runApi.refreshWorkspace(workspace.id);
+      setWorkspace(item);
+    } catch (cause) { setError(friendlyErrorMessage(cause, '刷新 Workspace 失败')); }
+    if (run && typeof runApi.gitStatus === 'function') {
+      try { setGitStatus(await runApi.gitStatus(run.id)); }
+      catch { setGitStatus(null); }
+    }
+  }
+
+  async function showGitDiff() {
+    if (!run || typeof runApi.gitDiff !== 'function') return;
+    try { const result = await runApi.gitDiff(run.id); setGitDiff(result.diff); }
+    catch (cause) { setError(friendlyErrorMessage(cause, '读取 Git diff 失败')); }
+  }
+
+  async function showGitLog() {
+    if (!run || typeof runApi.gitLog !== 'function') return;
+    try { const result = await runApi.gitLog(run.id, 20); setGitLog(result.log); }
+    catch (cause) { setError(friendlyErrorMessage(cause, '读取 Git log 失败')); }
+  }
+
+  async function cleanupWorkspace() {
+    if (!workspace || workspace.kind !== 'worktree' || workspace.status === 'cleaned' || typeof runApi.cleanupWorkspace !== 'function') return;
+    if (!window.confirm('确认清理这个 Worktree checkout 吗？分支会保留；dirty、unpushed 或锁状态不安全时服务端会自动保留。')) return;
+    try {
+      const item = await runApi.cleanupWorkspace(workspace.id);
+      setWorkspace(item);
+      if (item.status === 'cleaned') {
+        setGitStatus(null); setGitDiff(''); setGitLog('');
+        setMessage('Worktree checkout 已清理，Git branch 仍保留供人工审查');
+      } else if (item.status === 'preserved') {
+        setMessage(`Workspace 已保留：${item.cleanup_reason || 'Git 状态无法安全确认'}`);
+      }
+    } catch (cause) { setError(friendlyErrorMessage(cause, '清理 Workspace 失败')); }
+  }
+
+  async function commitWorkspace(event: FormEvent) {
+    event.preventDefault();
+    if (!run || !commitMessage.trim() || typeof runApi.gitCommit !== 'function') return;
+    try {
+      await runApi.gitCommit(run.id, commitMessage.trim());
+      setCommitOpen(false); setCommitMessage(''); setMessage('Commit 已创建，分支仍保留供人工合并');
+      await loadWorkspace(run.id);
+    } catch (cause) { setError(friendlyErrorMessage(cause, '创建 Commit 失败')); }
   }
 
   async function send(event: FormEvent) {
@@ -566,6 +668,8 @@ export function ChatPage() {
     || approvals.length > 0
     || streamSegments.some((segment) => segment.kind !== 'assistant')
     || Boolean(run || (streamIsCurrent && (runStreamState.status || runStreamState.approval)));
+	const effectiveWorkspaceDirty = gitStatus?.dirty ?? workspace?.dirty ?? false;
+	const effectiveWorkspaceUnpushed = gitStatus?.unpushed ?? workspace?.unpushed ?? false;
 
   return <div className="page chat-page-scoped"><div ref={shellRef} className="chat-shell" style={shellStyle}>
     <aside className="chat-sidebar glass">
@@ -611,8 +715,17 @@ export function ChatPage() {
           <summary><ChevronDown size={14} /><span>执行详情</span>{run ? <StatusBadge tone={run.status === 'succeeded' ? 'good' : run.status === 'failed' ? 'bad' : 'info'}>{run.status}</StatusBadge> : null}</summary>
           <div className="chat-run-details-body stack">
             {run ? <div className="meta-row"><span>{run.total_tokens ?? 0} tok</span><span>{run.latency_ms ?? 0} ms</span><span>{run.run_type}</span><span>depth {run.delegation_depth}</span></div> : null}
+            {workspace ? <div className="stack workspace-run-card">
+              <div className="card-title"><strong><GitBranch size={14} /> {workspace.branch_name || 'detached'}</strong><StatusBadge tone={effectiveWorkspaceDirty || effectiveWorkspaceUnpushed ? 'warn' : workspace.status === 'preserved' ? 'bad' : 'good'}>{workspace.status}{effectiveWorkspaceDirty ? ' · dirty' : ''}{effectiveWorkspaceUnpushed ? ' · unpushed' : ''}</StatusBadge></div>
+              <p className="muted">{workspace.workspace_path}</p>
+              <div className="meta-row"><span>{workspace.kind}</span><span>base {workspace.base_sha?.slice(0, 8) || '—'}</span><span>{gitStatus?.head?.slice(0, 8) || workspace.head_sha?.slice(0, 8) || '—'}</span></div>
+              <div className="button-row"><Button type="button" onClick={() => void refreshWorkspace()} disabled={workspace.status === 'cleaned'}>Refresh</Button><Button type="button" onClick={() => void showGitDiff()} disabled={workspace.status === 'cleaned'}>Diff</Button><Button type="button" onClick={() => void showGitLog()} disabled={workspace.status === 'cleaned'}>Log</Button>{workspace.kind === 'worktree' ? <Button type="button" tone="danger" onClick={() => void cleanupWorkspace()} disabled={workspace.status === 'cleaned'}>Cleanup</Button> : null}<Button type="button" tone="primary" onClick={() => setCommitOpen(true)} disabled={workspace.status === 'cleaned'}>Commit…</Button></div>
+              {gitDiff ? <pre className="chat-git-diff">{gitDiff}</pre> : null}
+              {gitLog ? <pre className="chat-git-diff" aria-label="Git log">{gitLog}</pre> : null}
+              {workspace.status === 'preserved' ? <p className="muted">保留原因：{workspace.cleanup_reason || 'Git 状态存在风险，未自动清理。'}</p> : null}
+            </div> : null}
             {trace.map((item) => { const view = tracePresentation(item); return <article className="chat-trace-row" key={item.id}><strong>{view.title}</strong><p>{view.summary}</p></article>; })}
-            {childRuns.map((child) => <article className="chat-trace-row" key={child.id}><strong>Subagent run {child.id}</strong><p>{child.status} · {child.total_tokens} tok</p></article>)}
+            {childRuns.map((child) => <article className="chat-trace-row" key={child.id}><strong>Subagent run {child.id}{child.workspace?.branch_name ? ` · ${child.workspace.branch_name}` : ''}</strong><p>{child.status} · {child.total_tokens} tok{child.workspace?.workspace_path ? ` · ${child.workspace.workspace_path}` : ''}</p></article>)}
             <ApprovalQueue items={approvals} onDecide={(item, approve, optionID) => void decideApproval(item, approve, optionID)} />
           </div>
         </details> : null}
@@ -623,6 +736,11 @@ export function ChatPage() {
           <TextArea value={question} onChange={(event) => { const value = event.target.value; setQuestion(value); setSlashOpen(value === '/' || value.startsWith('/mode')); }} placeholder={turnBlocksNewMessage ? '请先处理当前暂停或审批中的 Run' : '交给 Agent 一个任务…'} disabled={busy || turnBlocksNewMessage} onKeyDown={onComposerKeyDown} />
         </div>
         <div className="chat-composer-actions">
+          <Select aria-label="项目工作区" value={selectedProjectID ?? ''} onChange={(event) => setSelectedProjectID(event.target.value ? Number(event.target.value) : undefined)} disabled={Boolean(conversationID) || busy || turnBlocksNewMessage}>
+            <option value="">无项目（不启用文件工具）</option>
+            {projects.map((project) => <option value={project.id} key={project.id}>{project.name}</option>)}
+          </Select>
+          {selectedProjectID ? <Select aria-label="工作区模式" value={workspaceMode} onChange={(event) => setWorkspaceMode(event.target.value as 'shared' | 'worktree')} disabled={Boolean(conversationID) || busy || turnBlocksNewMessage}><option value="shared">共享仓库</option><option value="worktree">独立 Git Worktree</option></Select> : null}
           <button type="button" className="mode-chip" aria-label={`当前模式：${mode === 'plan_execute' ? 'Plan Guided' : 'ReAct'}`} disabled={busy || turnBlocksNewMessage} onClick={() => { setQuestion('/'); setSlashOpen(true); }}><span>{mode === 'plan_execute' ? 'Plan Guided' : 'ReAct'}</span><ChevronDown size={13} /></button>
           <div className="chat-send-actions">{busy ? <Button type="button" tone="danger" onClick={() => void stopRun()}><Square size={15} />Stop</Button> : turn?.status === 'paused' || streamPaused ? <Button type="button" tone="primary" onClick={() => void resumePausedRun()}>Resume</Button> : turn?.status === 'waiting_human' || streamWaiting ? <Button type="button" disabled>Awaiting approval</Button> : <Button tone="primary" type="submit" disabled={!question.trim() || slashOpen}><Send size={16} />发送</Button>}</div>
         </div>
@@ -641,6 +759,7 @@ export function ChatPage() {
       </div>
       <div className="chat-inspector-footer"><Button tone="primary" onClick={() => void saveSettings()} disabled={busy || !settings.provider_id}>保存设置</Button></div>
     </aside>
+    <Modal open={commitOpen} title="Approve Git Commit" onClose={() => setCommitOpen(false)}><form className="stack" onSubmit={(event) => void commitWorkspace(event)}><p className="muted">仅在当前 Workspace 分支创建 Commit；不会 push、merge 或删除分支。</p><Field label="Commit message"><TextInput autoFocus value={commitMessage} onChange={(event) => setCommitMessage(event.target.value)} placeholder="feat: update implementation" /></Field><div className="button-row"><Button type="button" onClick={() => setCommitOpen(false)}>Cancel</Button><Button tone="primary" type="submit" disabled={!commitMessage.trim()}>Approve commit</Button></div></form></Modal>
   </div>
   {message ? <Toast tone="good" message={message} onClose={() => setMessage('')} /> : null}
   {error ? <Toast tone="bad" message={error} duration={4800} onClose={() => setError('')} /> : null}

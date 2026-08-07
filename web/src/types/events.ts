@@ -34,6 +34,14 @@ export const RUNTIME_EVENT_TYPES = [
   'tool_started',
   'tool_finished',
   'tool_failed',
+  'workspace.created',
+  'workspace.ready',
+  'workspace.failed',
+  'workspace.status_changed',
+  'workspace.preserved',
+  'workspace.cleaned',
+  'git.status_changed',
+  'git.commit_created',
 ] as const;
 
 export const RUN_STREAM_VERSION = 1 as const;
@@ -89,6 +97,25 @@ export interface UsagePayload {
 	total_tokens: number;
 }
 
+export interface WorkspaceUpdatePayload {
+	workspace_id: number;
+	run_id: number;
+	project_id?: number;
+	repo_root: string;
+	path: string;
+	branch: string;
+	base_sha: string;
+	head_sha: string;
+	kind?: 'shared' | 'worktree' | string;
+	dirty: boolean;
+	unpushed: boolean;
+	status?: string;
+	locked?: boolean;
+	lock_reason?: string;
+	cleanup_reason?: string;
+	error?: string;
+}
+
 export interface TerminalSnapshotPayload {
 	run: Run;
 	turn?: AgentTurn;
@@ -100,6 +127,7 @@ export type RunStreamEvent =
 	| RunStreamEnvelope<'assistant.start' | 'assistant.delta' | 'assistant.end', TextPayload>
 	| RunStreamEnvelope<'reasoning.start' | 'reasoning.delta' | 'reasoning.end', TextPayload>
 	| RunStreamEnvelope<'status.update', StatusPayload>
+	| RunStreamEnvelope<'workspace.update', WorkspaceUpdatePayload>
 	| RunStreamEnvelope<'tool.start' | 'tool.progress' | 'tool.complete' | 'tool.error', ToolPayload>
 	| RunStreamEnvelope<'approval.required', ApprovalPayload>
 	| RunStreamEnvelope<'usage.update', UsagePayload>

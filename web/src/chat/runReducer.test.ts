@@ -36,6 +36,14 @@ describe('runReducer', () => {
     expect(state.segments[0].text).toBe('one');
   });
 
+  it('stores workspace status updates for the active run', () => {
+    let state = emptyRunState(7, 1);
+    const workspace = { workspace_id: 9, run_id: 7, repo_root: '/repo', path: '/repo/.worktrees/7-task', branch: 'demo/7-task', base_sha: 'abc', head_sha: 'def', dirty: true, unpushed: false };
+    state = runReducer(state, { type: 'event', event: event(7, 1, 'workspace.update', workspace) });
+    expect(state.workspace).toEqual(workspace);
+    expect(state.segments).toContainEqual(expect.objectContaining({ id: 'workspace:1', kind: 'status' }));
+  });
+
   it('isolates runs and lets the terminal snapshot replace the temporary view', () => {
     let state = emptyRunState(7, 2);
     state = runReducer(state, { type: 'event', event: event(8, 1, 'assistant.delta', { segment_id: 'other', text: 'leak' }) });

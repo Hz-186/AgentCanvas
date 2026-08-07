@@ -4,6 +4,7 @@ import type {
 	StatusPayload,
 	TerminalSnapshotPayload,
 	UsagePayload,
+	WorkspaceUpdatePayload,
 } from '../types/events';
 import type { RunEvent } from '../types/api';
 
@@ -31,6 +32,7 @@ export interface RunState {
 	approval: ApprovalPayload | null;
 	usage: UsagePayload | null;
 	status: StatusPayload | null;
+	workspace: WorkspaceUpdatePayload | null;
 	terminalSnapshot: TerminalSnapshotPayload | null;
 }
 
@@ -47,6 +49,7 @@ export const emptyRunState = (runId: number | null = null, generation = 0): RunS
 	approval: null,
 	usage: null,
 	status: null,
+	workspace: null,
 	terminalSnapshot: null,
 });
 
@@ -216,6 +219,10 @@ export function runReducer(state: RunState, action: RunAction): RunState {
 	case 'status.update':
 		next.status = incoming.data;
 		next.segments = upsertSegment(next.segments, { id: `status:${seq}`, kind: 'status', text: incoming.data.message });
+		break;
+	case 'workspace.update':
+		next.workspace = incoming.data;
+		next.segments = upsertSegment(next.segments, { id: `workspace:${seq}`, kind: 'status', text: 'Workspace 状态已更新' });
 		break;
 	case 'approval.required':
 		next.approval = incoming.data;

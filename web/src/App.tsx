@@ -7,6 +7,7 @@ import {
   LibraryBig,
   Settings,
   Wrench,
+  FolderGit2,
 } from 'lucide-react';
 import {
   BrowserRouter,
@@ -24,6 +25,7 @@ import { ThemeControl } from './components/ThemeControl';
 import { LoginPage, RegisterPage } from './pages/AuthPages';
 import { ChatPage } from './pages/ChatPage';
 import { KnowledgePage } from './pages/KnowledgePage';
+import { ProjectsPage } from './pages/ProjectsPage';
 import { MemoryPage, SettingsPage, SkillsPage, ToolsPage } from './pages/SettingsPage';
 import { useAuthStore } from './stores/authStore';
 
@@ -44,6 +46,7 @@ function PublicOnly({ children }: { children: React.ReactNode }) {
 
 const nav = [
   { to: AGENT_HOME_PATH, label: 'Agents', icon: Bot },
+  { to: '/app/projects', label: 'Projects', icon: FolderGit2 },
   { to: '/app/knowledge', label: 'Knowledge', icon: Database },
   { to: '/app/memory', label: 'Memory', icon: Network },
   { to: '/app/tools', label: 'Tools', icon: Wrench },
@@ -212,6 +215,7 @@ function Boot() {
         <Route path="/app" element={<AppShell />}>
           <Route index element={<Navigate to={AGENT_HOME_PATH} replace />} />
           <Route path="knowledge" element={<KnowledgePage />} />
+          <Route path="projects" element={<ProjectsPage />} />
           <Route path="knowledge/:id" element={<KnowledgePage />} />
           <Route path="chat" element={<Navigate to={AGENT_HOME_PATH} replace />} />
           <Route path="chat/:conversationId" element={<Navigate to={AGENT_HOME_PATH} replace />} />
