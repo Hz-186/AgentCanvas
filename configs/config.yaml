@@ -74,6 +74,24 @@ agent_runtime:
   review_provider_id: 0
   review_model: ""
 
+git_workspace:
+  enabled: true
+  allowed_roots:
+    - /workspaces
+  worktree_dir_name: .worktrees
+  fetch_timeout_seconds: 5
+  fetch_freshness_seconds: 300
+  git_command_timeout_seconds: 30
+  max_output_bytes: 262144
+  file_read_max_chars: 100000
+  max_workspaces_per_project: 64
+  prune_ttl_hours: 24
+  preserve_dirty: true
+  preserve_unpushed: true
+  auto_init_repository: true
+  git_user_name: AgentCanvas
+  git_user_email: agentcanvas@localhost
+
 minio:
   endpoint: minio:9000
   access_key: minioadmin

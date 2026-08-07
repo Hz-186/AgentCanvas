@@ -22,6 +22,10 @@ services:
       - "8080:8080"
     environment:
       AGENTCANVAS_CONFIG_PATH: /app/configs/config.yaml
+    volumes:
+      # Set AGENTCANVAS_WORKSPACE_ROOT to one absolute host directory shared by API, worker, and pruner.
+      # Project paths stored in Docker must use the matching container prefix: /workspaces/<repo>.
+      - ${AGENTCANVAS_WORKSPACE_ROOT:?Set AGENTCANVAS_WORKSPACE_ROOT to an absolute host repository root}:/workspaces
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -47,6 +51,8 @@ services:
     command: ["/app/worker"]
     environment:
       AGENTCANVAS_CONFIG_PATH: /app/configs/config.yaml
+    volumes:
+      - ${AGENTCANVAS_WORKSPACE_ROOT:?Set AGENTCANVAS_WORKSPACE_ROOT to an absolute host repository root}:/workspaces
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -61,4 +67,21 @@ services:
       nats:
         condition: service_healthy
       elasticsearch:
+        condition: service_healthy
+
+  workspace-pruner:
+    build:
+      context: ..
+      dockerfile: deployments/docker/Dockerfile
+    container_name: agentcanvas-workspace-pruner
+    restart: unless-stopped
+    command: ["/app/workspace-pruner"]
+    environment:
+      AGENTCANVAS_CONFIG_PATH: /app/configs/config.yaml
+    volumes:
+      - ${AGENTCANVAS_WORKSPACE_ROOT:?Set AGENTCANVAS_WORKSPACE_ROOT to an absolute host repository root}:/workspaces
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      mysql:
         condition: service_healthy
