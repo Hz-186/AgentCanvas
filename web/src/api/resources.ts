@@ -44,6 +44,11 @@ import type {
   AgentTurnAccepted,
   ImprovementReview,
   ChangeProposal,
+  Project,
+  ProjectFolder,
+  Workspace,
+  GitStatus,
+  GitWorktree,
 } from '../types/api';
 
 export const agentApi = {
@@ -53,7 +58,7 @@ export const agentApi = {
   update: (id: number, body: { name?: string; description?: string; avatar_url?: string }) => api.patch<Agent>(`/agents/${id}`, body),
   updateSettings: (id: number, settings: AgentEditableSettings) => api.patch<Agent>(`/agents/${id}/settings`, settings),
   remove: (id: number) => api.delete<{ success: boolean }>(`/agents/${id}`),
-  createConversation: (id: number, title?: string, mode: Conversation['agent_mode'] = 'react') => api.post<Conversation>(`/agents/${id}/conversations`, { title, mode }),
+  createConversation: (id: number, title?: string, mode: Conversation['agent_mode'] = 'react', projectId?: number, workspaceMode: Conversation['workspace_mode'] = 'shared') => api.post<Conversation>(`/agents/${id}/conversations`, { title, mode, project_id: projectId, workspace_mode: workspaceMode }),
   listConversations: (id: number) => api.get<Conversation[]>(`/agents/${id}/conversations`),
   listMessages: (id: number, conversationId: number) => api.get<Message[]>(`/agents/${id}/conversations/${conversationId}/messages`),
   updateConversationMode: (id: number, conversationId: number, mode: NonNullable<Conversation['agent_mode']>) => api.patch<Conversation>(`/agents/${id}/conversations/${conversationId}/mode`, { mode }),
@@ -63,8 +68,8 @@ export const agentApi = {
   startTurn: (id: number, conversationId: number, content: string, idempotencyKey: string) => api.post<AgentTurnAccepted>(`/agents/${id}/conversations/${conversationId}/turns`, { content }, { headers: { 'Idempotency-Key': idempotencyKey } }),
   getTurn: (id: number) => api.get<AgentTurn>(`/agent-turns/${id}`),
   getLatestTurn: (id: number, conversationId: number) => api.get<AgentTurn>(`/agents/${id}/conversations/${conversationId}/turns/latest`),
-  streamRunEvents: (runId: number, lastEventId: string | undefined, handlers: { onMessage: (msg: SSEMessage) => void; onError?: (err: Error) => void; signal?: AbortSignal }) =>
-    streamGet(`/runs/${runId}/events/stream`, { lastEventId, ...handlers }),
+  streamRunEventsV1: (runId: number, lastEventId: string | undefined, handlers: { onMessage: (msg: SSEMessage) => void; onError?: (err: Error) => void; signal?: AbortSignal }) =>
+    streamGet(`/runs/${runId}/events/stream/v1`, { lastEventId, ...handlers }),
   searchSessions: (id: number, query: string, limit = 10) => api.get<MessageSearchResult[]>(`/agents/${id}/session-search`, { q: query, limit }),
   listImprovementReviews: (id: number) => api.get<ImprovementReview[]>(`/agents/${id}/improvement-reviews`),
   listChangeProposals: (id: number, status?: ChangeProposal['status']) => api.get<ChangeProposal[]>(`/agents/${id}/change-proposals`, status ? { status } : undefined),
@@ -77,6 +82,20 @@ export const agentApi = {
     reflectionId: number,
     status: Extract<ReflectionStatus, 'active' | 'validated' | 'disputed' | 'archived'>,
   ) => api.patch<{ success: boolean }>(`/agents/${id}/reflections/${reflectionId}`, { status }),
+};
+
+export const projectApi = {
+  list: (includeArchived = false) => api.get<Project[]>('/projects', includeArchived ? { include_archived: 'true' } : undefined),
+  get: (id: number) => api.get<Project>(`/projects/${id}`),
+  create: (body: { name: string; slug?: string; description?: string; primary_path: string; initialize_git?: boolean }) => api.post<Project>('/projects', body),
+  update: (id: number, body: Partial<Pick<Project, 'name' | 'description' | 'icon' | 'color'>>) => api.patch<Project>(`/projects/${id}`, body),
+  remove: (id: number) => api.delete<{ success: boolean }>(`/projects/${id}`),
+  folders: (id: number) => api.get<ProjectFolder[]>(`/projects/${id}/folders`),
+  addFolder: (id: number, body: { path: string; label?: string; is_primary?: boolean }) => api.post<ProjectFolder>(`/projects/${id}/folders`, body),
+  removeFolder: (id: number, folderId: number) => api.delete<{ success: boolean }>(`/projects/${id}/folders/${folderId}`),
+  status: (id: number) => api.get<GitStatus>(`/projects/${id}/git/status`),
+  branches: (id: number) => api.get<string[]>(`/projects/${id}/git/branches`),
+  worktrees: (id: number) => api.get<GitWorktree[]>(`/projects/${id}/git/worktrees`),
 };
 
 export const resourceSummaryApi = {
@@ -92,6 +111,13 @@ export const runApi = {
   getRunTrace: (id: number) => api.get<RunTrace>(`/runs/${id}/trace`),
   cancelRun: (id: number) => api.post<Run>(`/runs/${id}/cancel`),
   resumeRun: (id: number) => api.post<Run>(`/runs/${id}/resume`),
+  workspace: (id: number) => api.get<Workspace>(`/runs/${id}/workspace`),
+  gitStatus: (id: number) => api.get<GitStatus>(`/runs/${id}/git/status`),
+  gitDiff: (id: number, staged = false) => api.get<{ diff: string }>(`/runs/${id}/git/diff`, staged ? { staged: 'true' } : undefined),
+  gitLog: (id: number, limit = 20) => api.get<{ log: string }>(`/runs/${id}/git/log`, { limit }),
+  gitCommit: (id: number, message: string, paths?: string[]) => api.post<{ hash: string; message: string; paths: string[] }>(`/runs/${id}/git/commit`, { message, paths }),
+  cleanupWorkspace: (id: number, force = false) => request<Workspace>(`/workspaces/${id}/cleanup`, { method: 'POST', query: force ? { force: 'true' } : undefined }),
+  refreshWorkspace: (id: number) => api.post<Workspace>(`/workspaces/${id}/refresh`),
   feedbackReflection: (runId: number, reflectionId: number, verdict: 'helpful' | 'harmful', note?: string) =>
     api.post<{ success: boolean }>(`/runs/${runId}/reflections/${reflectionId}/feedback`, { verdict, note }),
   listApprovalRequests: (status?: 'pending' | 'approved' | 'rejected') =>

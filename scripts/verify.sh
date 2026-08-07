@@ -50,9 +50,10 @@ check_migration_tables
 echo "==> go vet ./..."
 go vet ./...
 
-echo "==> go build check (api + worker + migrate)..."
+echo "==> go build check (api + worker + workspace-pruner + migrate)..."
 go build -o /dev/null ./cmd/api
 go build -o /dev/null ./cmd/worker
+go build -o /dev/null ./cmd/workspace-pruner
 go build -o /dev/null ./cmd/migrate
 
 echo ""

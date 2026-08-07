@@ -22,6 +22,7 @@ import (
 	"agentcanvas/internal/domain/retrieval"
 	"agentcanvas/internal/domain/skill"
 	"agentcanvas/internal/domain/tool"
+	gitinfra "agentcanvas/internal/infrastructure/git"
 	memoryretrieval "agentcanvas/internal/infrastructure/retrieval"
 	"agentcanvas/internal/infrastructure/vectorstore"
 	runtimeagent "agentcanvas/internal/runtime/agent"
@@ -61,6 +62,10 @@ type runtimeCore struct {
 	ArchivalVecStore   vectorstore.Store
 	ContextIndex       contextresource.Index
 	Embedder           llm.EmbeddingClient
+	Git                *gitinfra.Service
+	FileReadMaxChars   int
+	MaxOutputBytes     int
+	WorkspaceTimeout   time.Duration
 	SkillRoot          string
 
 	OnExtractTrigger func(ctx context.Context, ownerID int64, conversationID int64, roundNumber int)
@@ -253,7 +258,7 @@ func (n runtimeCore) runAgent(
 	if semanticProvider != nil {
 		embeddingProviderID, embeddingModel = semanticProvider.ProviderID, semanticProvider.EmbeddingModel
 	}
-	tools, err := n.loadTools(ctx, rc.OwnerID, cfg, semanticProvider)
+	tools, err := n.loadTools(ctx, rc.OwnerID, cfg, semanticProvider, rc.Workspace)
 	if err != nil {
 		return nil, err
 	}
@@ -322,6 +327,9 @@ func (n runtimeCore) runAgent(
 	contextBlocks = append(contextBlocks, cfg.AdditionalContextBlocks...)
 	// // ***
 	contextBlocks = append(contextBlocks, conversationBlocks...)
+	if workspaceBlock := n.workspaceCodingContext(ctx, rc); workspaceBlock != nil {
+		contextBlocks = append(contextBlocks, *workspaceBlock)
+	}
 	if resume == nil {
 		if memoryBlock := n.buildAutomaticMemoryBlock(ctx, rc, cfg, semanticProvider, recallTask); memoryBlock != nil {
 			contextBlocks = append(contextBlocks, *memoryBlock)
@@ -454,7 +462,12 @@ func (n runtimeCore) runAgent(
 			DenyAllHosts:           cfg.DenyAllHosts,
 			RuleBindings:           rules.PolicyBindingsForRules(cfg.Rules),
 		},
-		Tools: tools,
+		Tools:     tools,
+		Workspace: rc.Workspace,
+		EmitEvent: func(eventCtx context.Context, eventType string, payload map[string]any) error {
+			emitRuntimeEvent(eventCtx, rc, runtimeevent.Event{Type: eventType, RunID: rc.RunID, Payload: payload})
+			return nil
+		},
 	}
 	if resume != nil && resume.Checkpoint != nil {
 		// Restore the checkpoint snapshot instead of generating a new plan.
@@ -988,6 +1001,39 @@ func agentMode(mode string) string {
 	return "react"
 }
 
+func (n runtimeCore) workspaceCodingContext(ctx context.Context, rc *RunContext) *runtimeagent.ContextBlock {
+	if rc == nil || rc.Workspace == nil {
+		return nil
+	}
+	workspace := rc.Workspace
+	statusText := "unavailable"
+	if n.Git != nil && workspace.GitEnabled {
+		if status, err := n.Git.Status(ctx, workspace.WorkspacePath); err == nil {
+			if workspace.Kind == "worktree" && workspace.BaseSHA != "" && status.Head != "" && status.Head != workspace.BaseSHA {
+				status.Unpushed = true
+			}
+			statusText = fmt.Sprintf("branch=%s head=%s dirty=%t unpushed=%t", status.Branch, status.Head, status.Dirty, status.Unpushed)
+		} else {
+			statusText = "unavailable (status check failed)"
+		}
+	}
+	content := fmt.Sprintf(`Active coding workspace (resolved by the server; never replace it with a model-provided path):
+- absolute workspace path: %s
+- repository root: %s
+- workspace kind: %s
+- branch: %s
+- base SHA: %s
+- Git status: %s
+
+Workspace safety rules:
+- Resolve every relative file path from the active workspace path.
+- Do not read or expose secrets, credentials, .env files, or private keys.
+- Do not modify .git or AgentCanvas internal state directories.
+- Before editing, read the current file and confirm its contents.
+- Do not commit, push, merge, reset, or delete branches unless the user explicitly requests it and the approval gate is satisfied.`, workspace.WorkspacePath, workspace.RepositoryRoot, workspace.Kind, workspace.BranchName, workspace.BaseSHA, statusText)
+	return &runtimeagent.ContextBlock{Name: "coding_workspace", Role: "system", Content: content, Pinned: true}
+}
+
 func agentStepRecord(step runtimeagent.RunStep) AgentStepRecord {
 	return AgentStepRecord{
 		StepIndex:     step.Index,
@@ -1007,9 +1053,54 @@ func agentStepRecord(step runtimeagent.RunStep) AgentStepRecord {
 	}
 }
 
-func (n runtimeCore) loadTools(ctx context.Context, ownerID int64, cfg agentRuntimeConfig, provider *LoadedProvider) ([]toolruntime.RuntimeTool, error) {
+func (n runtimeCore) loadTools(ctx context.Context, ownerID int64, cfg agentRuntimeConfig, provider *LoadedProvider, workspace ...*toolruntime.WorkspaceContext) ([]toolruntime.RuntimeTool, error) {
 	tools := make([]toolruntime.RuntimeTool, 0, len(cfg.ToolIDs)+2)
 	tools = append(tools, toolruntime.HumanApprovalTool{})
+	var workspaceContext *toolruntime.WorkspaceContext
+	if len(workspace) > 0 {
+		workspaceContext = workspace[0]
+	}
+	if workspaceContext != nil {
+		workspaceTools := make([]toolruntime.RuntimeTool, 0, 14)
+		readChars := n.FileReadMaxChars
+		if readChars <= 0 {
+			readChars = 100000
+		}
+		outputBytes := n.MaxOutputBytes
+		if outputBytes <= 0 {
+			outputBytes = 256 * 1024
+		}
+		if cfg.MaxToolOutputBytes > 0 && cfg.MaxToolOutputBytes < outputBytes {
+			outputBytes = cfg.MaxToolOutputBytes
+		}
+		workspaceTools = append(workspaceTools,
+			toolruntime.FileTool{Kind: "read_file", MaxReadChars: readChars, MaxOutputBytes: outputBytes},
+			toolruntime.FileTool{Kind: "search_files", MaxReadChars: readChars, MaxOutputBytes: outputBytes},
+			toolruntime.FileTool{Kind: "list_files", MaxReadChars: readChars, MaxOutputBytes: outputBytes},
+		)
+		if workspaceContext.FileWriteEnabled {
+			workspaceTools = append(workspaceTools,
+				toolruntime.FileTool{Kind: "write_file", MaxReadChars: readChars, MaxOutputBytes: outputBytes},
+				toolruntime.FileTool{Kind: "patch_file", MaxReadChars: readChars, MaxOutputBytes: outputBytes},
+				toolruntime.FileTool{Kind: "move_file", MaxReadChars: readChars, MaxOutputBytes: outputBytes},
+				toolruntime.FileTool{Kind: "delete_file", MaxReadChars: readChars, MaxOutputBytes: outputBytes},
+			)
+		}
+		if workspaceContext.ExecEnabled {
+			workspaceTools = append(workspaceTools, toolruntime.WorkspaceExecTool{MaxOutputBytes: outputBytes, Timeout: n.WorkspaceTimeout})
+		}
+		if workspaceContext.GitEnabled && n.Git != nil {
+			for _, name := range []string{"git_status", "git_diff", "git_log", "git_branch", "git_worktree", "git_commit"} {
+				workspaceTools = append(workspaceTools, toolruntime.GitTool{Kind: name, Git: n.Git})
+			}
+		}
+		for _, workspaceTool := range workspaceTools {
+			if n.Audits != nil && toolruntime.MetadataOf(workspaceTool).SideEffect != toolruntime.SideEffectRead {
+				workspaceTool = toolruntime.AuditedTool{Tool: workspaceTool, Audits: n.Audits}
+			}
+			tools = append(tools, workspaceTool)
+		}
+	}
 	loadedSkills, err := n.loadSkillDefinitions(ctx, ownerID, cfg.SkillIDs)
 	if err != nil {
 		return nil, err

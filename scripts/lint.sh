@@ -21,6 +21,9 @@ go build -o /dev/null ./cmd/api
 echo "==> go build ./cmd/worker (dry-run check)"
 go build -o /dev/null ./cmd/worker
 
+echo "==> go build ./cmd/workspace-pruner (dry-run check)"
+go build -o /dev/null ./cmd/workspace-pruner
+
 echo "==> go build ./cmd/migrate (dry-run check)"
 go build -o /dev/null ./cmd/migrate
 

@@ -16,10 +16,11 @@ import {
   X,
 } from 'lucide-react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { agentApi, knowledgeApi, runApi, settingsApi } from '../api/resources';
+import { agentApi, knowledgeApi, projectApi, runApi, settingsApi } from '../api/resources';
 import { Button, EmptyState, Field, IconButton, Modal, Select, StatusBadge, TextArea, TextInput, Toast } from '../components/ui';
 import { EditorialHeader, ResizableRail, paneStyle, storedWidth } from '../components/editorial';
 import { ApprovalQueue } from '../components/ApprovalQueue';
+import { useRunStream } from '../hooks/useRunStream';
 import type {
   Agent,
   AgentEditableSettings,
@@ -32,14 +33,25 @@ import type {
   ModelProvider,
   Run,
   RunEvent,
+  Workspace,
+  GitStatus,
+  Project,
 } from '../types/api';
 import { formatDate, friendlyErrorMessage } from '../utils/format';
 
 type AgentMode = NonNullable<Conversation['agent_mode']>;
 
-const terminalTurnStatuses = new Set(['succeeded', 'failed', 'cancelled', 'waiting_human', 'paused']);
 const activeTurnStatuses = new Set(['queued', 'retry_wait', 'running']);
+const activeRunStatuses = new Set(['queued', 'running', 'resuming']);
+const finalRunStatuses = new Set(['succeeded', 'failed', 'cancelled', 'timeout']);
 const inspectorWidthKey = 'agentcanvas-agent-inspector-width';
+
+interface RunStreamTarget {
+  runId: number;
+  turnId: number;
+  conversationId: number;
+  generation: number;
+}
 
 const emptySettings = (providerID = 0): AgentEditableSettings => ({
   provider_id: providerID,
@@ -74,8 +86,31 @@ function nextIdempotencyKey(): string {
 
 export function mergeMessages(current: Message[], incoming: Message[]): Message[] {
   const byID = new Map<number, Message>();
-  [...current.filter((item) => item.id < 0), ...incoming].forEach((item) => byID.set(item.id, item));
+  [...current, ...incoming].forEach((item) => byID.set(item.id, item));
   return Array.from(byID.values()).sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+}
+
+function mergeByID<T extends { id: number }>(current: T[], incoming: T[]): T[] {
+  const byID = new Map(current.map((item) => [item.id, item]));
+  incoming.forEach((item) => byID.set(item.id, item));
+  return Array.from(byID.values());
+}
+
+function reconcileRunRecord(current: Run | null, incoming: Run): Run {
+  if (current?.id !== incoming.id) return incoming;
+  const currentUpdatedAt = Date.parse(current.updated_at);
+  const incomingUpdatedAt = Date.parse(incoming.updated_at);
+  if (currentUpdatedAt > incomingUpdatedAt) return current;
+  if (currentUpdatedAt < incomingUpdatedAt) return incoming;
+  if (finalRunStatuses.has(current.status) && !finalRunStatuses.has(incoming.status)) return current;
+  if (!activeRunStatuses.has(current.status) && activeRunStatuses.has(incoming.status)) return current;
+  return incoming;
+}
+
+function mergeRuns(current: Run[], incoming: Run[]): Run[] {
+  const byID = new Map(current.map((item) => [item.id, item]));
+  incoming.forEach((item) => byID.set(item.id, reconcileRunRecord(byID.get(item.id) ?? null, item)));
+  return Array.from(byID.values());
 }
 
 export function visibleChatMessages(items: Message[]): Message[] {
@@ -93,8 +128,8 @@ export function deduplicateSearchResults(items: MessageSearchResult[]): MessageS
 
 export function ChatPage() {
   const navigate = useNavigate();
-	const { agentId: routeAgentID, conversationId: routeConversationID } = useParams();
-	const agentID = routeAgentID ? Number(routeAgentID) : undefined;
+  const { agentId: routeAgentID, conversationId: routeConversationID } = useParams();
+  const agentID = routeAgentID ? Number(routeAgentID) : undefined;
   const scoped = Boolean(agentID && !Number.isNaN(agentID));
   const isNewConversation = routeConversationID === 'new';
   const conversationID = routeConversationID && !isNewConversation ? Number(routeConversationID) : undefined;
@@ -102,11 +137,20 @@ export function ChatPage() {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [providers, setProviders] = useState<ModelProvider[]>([]);
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([]);
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [selectedProjectID, setSelectedProjectID] = useState<number | undefined>();
+  const [workspaceMode, setWorkspaceMode] = useState<'shared' | 'worktree'>('shared');
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [messages, setMessages] = useState<Message[]>([]);
   const [trace, setTrace] = useState<RunEvent[]>([]);
   const [turn, setTurn] = useState<AgentTurn | null>(null);
   const [run, setRun] = useState<Run | null>(null);
+  const [workspace, setWorkspace] = useState<Workspace | null>(null);
+  const [gitStatus, setGitStatus] = useState<GitStatus | null>(null);
+  const [gitDiff, setGitDiff] = useState('');
+  const [gitLog, setGitLog] = useState('');
+  const [commitOpen, setCommitOpen] = useState(false);
+  const [commitMessage, setCommitMessage] = useState('');
   const [childRuns, setChildRuns] = useState<Run[]>([]);
   const [approvals, setApprovals] = useState<ApprovalRequest[]>([]);
   const [question, setQuestion] = useState('');
@@ -125,22 +169,40 @@ export function ChatPage() {
   const [sessionResults, setSessionResults] = useState<MessageSearchResult[]>([]);
   const [hasSearched, setHasSearched] = useState(false);
   const [inspectorWidth, setInspectorWidth] = useState(() => storedWidth(inspectorWidthKey, 380));
+  const [runStreamTarget, setRunStreamTarget] = useState<RunStreamTarget | null>(null);
 
   const shellRef = useRef<HTMLDivElement | null>(null);
   const messageListRef = useRef<HTMLDivElement | null>(null);
-  const pollGeneration = useRef(0);
-  const streamAbort = useRef<AbortController | null>(null);
+  const pageGeneration = useRef(0);
+  const streamGeneration = useRef(0);
   const pendingConversation = useRef<number | null>(null);
+  const { state: runStreamState, error: runStreamError } = useRunStream({
+    runId: runStreamTarget?.runId ?? null,
+    generation: runStreamTarget?.generation ?? 0,
+    enabled: runStreamTarget != null,
+  });
 
   const currentAgent = useMemo(() => agents.find((item) => item.id === agentID), [agents, agentID]);
   const currentConversation = useMemo(() => conversations.find((item) => item.id === conversationID), [conversations, conversationID]);
   const visibleMessages = useMemo(() => visibleChatMessages(messages), [messages]);
   const searchResults = useMemo(() => deduplicateSearchResults(sessionResults), [sessionResults]);
-  const turnBlocksNewMessage = turn?.status === 'waiting_human' || turn?.status === 'paused';
+  const streamIsCurrent = runStreamTarget != null
+    && runStreamState.runId === runStreamTarget.runId
+    && runStreamState.generation === runStreamTarget.generation;
+  const streamSegments = streamIsCurrent && !runStreamState.terminalSnapshot?.message ? runStreamState.segments : [];
+  const hasAssistantStreamSegment = streamSegments.some((segment) => segment.kind === 'assistant');
+  const streamWaiting = streamIsCurrent && runStreamState.lifecycle === 'waiting';
+  const streamPaused = streamIsCurrent && runStreamState.lifecycle === 'paused';
+  const turnBlocksNewMessage = turn?.status === 'waiting_human' || turn?.status === 'paused' || streamWaiting || streamPaused;
   const modeOptions: Array<{ value: AgentMode; label: string; description: string }> = [
     { value: 'react', label: 'ReAct', description: '边分析边行动，按需调用能力' },
     { value: 'plan_execute', label: 'Plan Guided', description: '先制定计划，再按计划推进' },
   ];
+
+  useEffect(() => {
+    if (!streamIsCurrent || !runStreamTarget || !runStreamState.workspace) return;
+    void loadWorkspace(runStreamTarget.runId);
+  }, [streamIsCurrent, runStreamTarget?.runId, runStreamState.workspace]);
 
   async function reloadAgents() {
     const list = await agentApi.list();
@@ -150,15 +212,16 @@ export function ChatPage() {
 
   useEffect(() => {
     let cancelled = false;
-    Promise.all([agentApi.list(), settingsApi.providers.list(), knowledgeApi.list()]).then(([agentList, providerList, kbList]) => {
+    Promise.all([agentApi.list(), settingsApi.providers.list(), knowledgeApi.list(), projectApi.list()]).then(([agentList, providerList, kbList, projectList]) => {
       if (cancelled) return;
       setAgents(agentList);
       setProviders(providerList);
       setKnowledgeBases(kbList.filter((item) => item.status === 1));
+      setProjects(projectList);
       setNewProviderID(providerList[0]?.id ?? 0);
-	}).catch((cause) => !cancelled && setError(friendlyErrorMessage(cause, '加载 Agent 数据失败')));
-	return () => { cancelled = true; pollGeneration.current += 1; streamAbort.current?.abort(); };
-	}, []);
+    }).catch((cause) => !cancelled && setError(friendlyErrorMessage(cause, '加载 Agent 数据失败')));
+    return () => { cancelled = true; pageGeneration.current += 1; };
+  }, []);
 
   useEffect(() => {
     if (!currentAgent) return;
@@ -178,54 +241,143 @@ export function ChatPage() {
   }, [agentID, routeConversationID, navigate]);
 
   useEffect(() => {
-    pollGeneration.current += 1;
-    const generation = pollGeneration.current;
-    streamAbort.current?.abort();
+    pageGeneration.current += 1;
+    const generation = pageGeneration.current;
+    const preservePending = pendingConversation.current === conversationID;
     setTrace([]);
-    setTurn(null);
-    setRun(null);
     setChildRuns([]);
     setApprovals([]);
-    setBusy(false);
+    if (!preservePending) {
+      setRunStreamTarget(null);
+      setTurn(null);
+      setRun(null);
+      setWorkspace(null);
+      setGitStatus(null);
+      setGitDiff('');
+      setGitLog('');
+      setCommitOpen(false);
+      setBusy(false);
+    }
     if (!conversationID || !agentID) {
       if (isNewConversation) setMessages([]);
       setMode('react');
       return;
     }
-    const preservePending = pendingConversation.current === conversationID;
     if (!preservePending) setMessages([]);
     let cancelled = false;
     setMode(currentConversation?.agent_mode ?? 'react');
     agentApi.listMessages(agentID, conversationID).then((items) => {
       if (cancelled) return;
-      setMessages((current) => preservePending ? mergeMessages(current, items) : items);
+      setMessages((current) => mergeMessages(current.filter((item) => item.conversation_id === conversationID), items));
       if (pendingConversation.current === conversationID) pendingConversation.current = null;
     }).catch((cause) => !cancelled && setError(friendlyErrorMessage(cause, '加载消息失败')));
     agentApi.getLatestTurn(agentID, conversationID).then((latest) => {
-      if (cancelled || pollGeneration.current !== generation) return;
+      if (cancelled || pageGeneration.current !== generation) return;
       setTurn(latest);
       if (latest.run_id) {
         Promise.all([runApi.getRun(latest.run_id), runApi.listRunEvents(latest.run_id), runApi.listChildRuns(latest.run_id)]).then(([latestRun, events, children]) => {
-          if (cancelled || pollGeneration.current !== generation) return;
-          setRun(latestRun); setTrace(events); setChildRuns(children);
+          if (cancelled || pageGeneration.current !== generation) return;
+          setRun((current) => reconcileRunRecord(current, latestRun));
+          setTrace((current) => mergeByID(current, events));
+          setChildRuns((current) => mergeRuns(current, children));
         }).catch(() => undefined);
+        void loadWorkspace(latest.run_id);
       }
       if (latest.run_id && (activeTurnStatuses.has(latest.status) || latest.status === 'waiting_human' || latest.status === 'paused')) {
         setBusy(activeTurnStatuses.has(latest.status));
-        void monitorTurn(latest.id, latest.run_id, generation, conversationID);
+        followRun(latest, latest.run_id);
+        if (latest.status === 'waiting_human') {
+          runApi.listApprovalRequests('pending').then((items) => {
+            if (!cancelled && pageGeneration.current === generation) setApprovals(items.filter((item) => item.run_id === latest.run_id));
+          }).catch(() => undefined);
+        }
       }
     }).catch(() => undefined);
-    return () => { cancelled = true; streamAbort.current?.abort(); };
+    return () => { cancelled = true; };
   }, [agentID, conversationID, isNewConversation]);
 
   useEffect(() => {
-    if (conversationID && currentConversation) setMode(currentConversation.agent_mode ?? 'react');
-  }, [conversationID, currentConversation?.agent_mode]);
+    if (conversationID && currentConversation) {
+      setMode(currentConversation.agent_mode ?? 'react');
+      setSelectedProjectID(currentConversation.project_id ?? undefined);
+      setWorkspaceMode(currentConversation.workspace_mode ?? 'shared');
+    }
+  }, [conversationID, currentConversation?.agent_mode, currentConversation?.project_id, currentConversation?.workspace_mode]);
 
   useEffect(() => {
     const node = messageListRef.current;
     if (node) node.scrollTo({ top: node.scrollHeight, behavior: 'smooth' });
-  }, [visibleMessages.length, busy, turn?.status]);
+  }, [visibleMessages.length, busy, turn?.status, runStreamState.lastSeq]);
+
+  useEffect(() => {
+    if (!streamIsCurrent || runStreamState.lastSeq === 0) return;
+    setBusy(runStreamState.lifecycle === 'running');
+  }, [runStreamState.lastSeq, runStreamState.lifecycle, streamIsCurrent]);
+
+  useEffect(() => {
+    if (!streamIsCurrent || !runStreamError) return;
+    setError('Agent 事件流暂时中断，正在自动重连。');
+  }, [runStreamError, streamIsCurrent]);
+
+  useEffect(() => {
+    const target = runStreamTarget;
+    const approval = runStreamState.approval;
+    if (!streamIsCurrent || !target || !approval) return;
+    let cancelled = false;
+    setBusy(false);
+    runApi.listApprovalRequests('pending').then((items) => {
+      if (!cancelled) setApprovals(items.filter((item) => item.run_id === target.runId));
+    }).catch((cause) => {
+      if (!cancelled) setError(friendlyErrorMessage(cause, '加载审批请求失败'));
+    });
+    return () => { cancelled = true; };
+  }, [runStreamState.approval?.request_id, runStreamTarget, streamIsCurrent]);
+
+  useEffect(() => {
+    const target = runStreamTarget;
+    const snapshot = runStreamState.terminalSnapshot;
+    if (!streamIsCurrent || !target || !snapshot || snapshot.run.id !== target.runId) return;
+    let cancelled = false;
+    setRun(snapshot.run);
+    if (snapshot.turn?.id === target.turnId) setTurn(snapshot.turn);
+    if (snapshot.message?.conversation_id === target.conversationId) {
+      setMessages((current) => mergeMessages(current, [snapshot.message!]));
+    }
+
+    const stillRunning = ['queued', 'running', 'resuming'].includes(snapshot.run.status);
+    setBusy(stillRunning);
+    if (stillRunning) return;
+    if (snapshot.run.status !== 'waiting_human') setApprovals([]);
+
+    const reconcile = async () => {
+      try {
+        const [events, children, persistedTurn] = await Promise.all([
+          runApi.listRunEvents(target.runId),
+          runApi.listChildRuns(target.runId),
+          snapshot.turn?.id === target.turnId ? Promise.resolve(null) : agentApi.getTurn(target.turnId),
+        ]);
+        let persistedMessages: Message[] | null = null;
+        if (agentID && !snapshot.message) {
+          persistedMessages = await agentApi.listMessages(agentID, target.conversationId);
+        }
+        let pendingApprovals: ApprovalRequest[] | null = null;
+        if (snapshot.run.status === 'waiting_human') {
+          const pending = await runApi.listApprovalRequests('pending');
+          pendingApprovals = pending.filter((item) => item.run_id === target.runId);
+        }
+        if (cancelled) return;
+        setTrace((current) => mergeByID(current, events));
+        setChildRuns((current) => mergeRuns(current, children));
+        if (persistedTurn) setTurn(persistedTurn);
+        if (persistedMessages) setMessages((current) => mergeMessages(current, persistedMessages!));
+        if (pendingApprovals) setApprovals(pendingApprovals);
+      } catch (cause) {
+        if (!cancelled) setError(friendlyErrorMessage(cause, '刷新 Run 状态失败'));
+      }
+    };
+    void reconcile();
+    return () => { cancelled = true; };
+  }, [agentID, runStreamState.terminalSnapshot, runStreamTarget, streamIsCurrent]);
 
   useEffect(() => {
     if (!sessionQuery.trim()) {
@@ -268,7 +420,7 @@ export function ChatPage() {
   async function createConversation(selectedMode = mode): Promise<Conversation | null> {
     if (!agentID) return null;
     try {
-      const item = await agentApi.createConversation(agentID, undefined, selectedMode);
+      const item = await agentApi.createConversation(agentID, undefined, selectedMode, selectedProjectID, workspaceMode);
       setConversations((current) => [item, ...current]);
       return item;
     } catch (cause) { setError(friendlyErrorMessage(cause, '创建会话失败')); return null; }
@@ -301,54 +453,97 @@ export function ChatPage() {
     } catch (cause) { setError(friendlyErrorMessage(cause, upgrade ? '升级会话失败' : '分支会话失败')); }
   }
 
-  async function monitorTurn(turnID: number, runID: number, generation: number, activeConversationID: number) {
-    streamAbort.current?.abort();
-    const controller = new AbortController();
-    streamAbort.current = controller;
-    let lastEventId: string | undefined;
-    let reconnects = 0;
-    while (pollGeneration.current === generation && !controller.signal.aborted) {
-      let streamError: Error | undefined;
-      await agentApi.streamRunEvents(runID, lastEventId, {
-        signal: controller.signal,
-        onMessage: (streamMessage) => {
-          if (pollGeneration.current !== generation || streamMessage.event === 'run_status' || streamMessage.event === 'error') return;
-          try {
-            const event = JSON.parse(streamMessage.data) as RunEvent;
-            if (!event.id) return;
-            lastEventId = streamMessage.id ?? String(event.id);
-            setTrace((current) => current.some((item) => item.id === event.id) ? current : [...current, event]);
-          } catch { /* 状态帧由随后的 Turn 查询处理。 */ }
-        },
-        onError: (cause) => { streamError = cause; },
-      });
-      if (pollGeneration.current !== generation || controller.signal.aborted) return;
-      try {
-        const nextTurn = await agentApi.getTurn(turnID);
-        if (pollGeneration.current !== generation) return;
-        setTurn(nextTurn);
-        if (terminalTurnStatuses.has(nextTurn.status)) {
-          if (nextTurn.status === 'waiting_human') {
-            const pending = await runApi.listApprovalRequests('pending');
-            setApprovals(pending.filter((item) => item.run_id === runID));
-          } else setApprovals([]);
-          if (agentID) setMessages(await agentApi.listMessages(agentID, activeConversationID));
-          const [latestRun, children] = await Promise.all([runApi.getRun(runID), runApi.listChildRuns(runID)]);
-          setRun(latestRun); setChildRuns(children); setBusy(false);
-          if (streamAbort.current === controller) streamAbort.current = null;
-          return;
-        }
-      } catch (cause) { streamError = cause instanceof Error ? cause : new Error(String(cause)); }
-      reconnects += 1;
-      if (streamError && reconnects === 3) setError('Agent 事件流暂时中断，正在自动重连。');
-      await new Promise((resolve) => window.setTimeout(resolve, Math.min(250 * reconnects, 2000)));
+  function followRun(nextTurn: AgentTurn, runID: number) {
+    void loadWorkspace(runID);
+    setRunStreamTarget((current) => {
+      if (current?.runId === runID && current.turnId === nextTurn.id && current.conversationId === nextTurn.conversation_id) return current;
+      streamGeneration.current += 1;
+      return {
+        runId: runID,
+        turnId: nextTurn.id,
+        conversationId: nextTurn.conversation_id,
+        generation: streamGeneration.current,
+      };
+    });
+  }
+
+  async function loadWorkspace(runID: number) {
+    if (typeof runApi.workspace !== 'function') return;
+    let item: Workspace;
+    try {
+      item = await runApi.workspace(runID);
+      setWorkspace(item);
+    } catch {
+      // Runs without a Project intentionally have no workspace.
+      setWorkspace(null);
+      setGitStatus(null);
+      setGitDiff('');
+      setGitLog('');
+      return;
     }
+    if (typeof runApi.gitStatus === 'function') {
+      try {
+        setGitStatus(await runApi.gitStatus(runID));
+      } catch {
+        // Keep the persisted Workspace visible when live Git inspection fails.
+        setGitStatus(null);
+      }
+    }
+  }
+
+  async function refreshWorkspace() {
+    if (!workspace || typeof runApi.refreshWorkspace !== 'function') return;
+    try {
+      const item = await runApi.refreshWorkspace(workspace.id);
+      setWorkspace(item);
+    } catch (cause) { setError(friendlyErrorMessage(cause, '刷新 Workspace 失败')); }
+    if (run && typeof runApi.gitStatus === 'function') {
+      try { setGitStatus(await runApi.gitStatus(run.id)); }
+      catch { setGitStatus(null); }
+    }
+  }
+
+  async function showGitDiff() {
+    if (!run || typeof runApi.gitDiff !== 'function') return;
+    try { const result = await runApi.gitDiff(run.id); setGitDiff(result.diff); }
+    catch (cause) { setError(friendlyErrorMessage(cause, '读取 Git diff 失败')); }
+  }
+
+  async function showGitLog() {
+    if (!run || typeof runApi.gitLog !== 'function') return;
+    try { const result = await runApi.gitLog(run.id, 20); setGitLog(result.log); }
+    catch (cause) { setError(friendlyErrorMessage(cause, '读取 Git log 失败')); }
+  }
+
+  async function cleanupWorkspace() {
+    if (!workspace || workspace.kind !== 'worktree' || workspace.status === 'cleaned' || typeof runApi.cleanupWorkspace !== 'function') return;
+    if (!window.confirm('确认清理这个 Worktree checkout 吗？分支会保留；dirty、unpushed 或锁状态不安全时服务端会自动保留。')) return;
+    try {
+      const item = await runApi.cleanupWorkspace(workspace.id);
+      setWorkspace(item);
+      if (item.status === 'cleaned') {
+        setGitStatus(null); setGitDiff(''); setGitLog('');
+        setMessage('Worktree checkout 已清理，Git branch 仍保留供人工审查');
+      } else if (item.status === 'preserved') {
+        setMessage(`Workspace 已保留：${item.cleanup_reason || 'Git 状态无法安全确认'}`);
+      }
+    } catch (cause) { setError(friendlyErrorMessage(cause, '清理 Workspace 失败')); }
+  }
+
+  async function commitWorkspace(event: FormEvent) {
+    event.preventDefault();
+    if (!run || !commitMessage.trim() || typeof runApi.gitCommit !== 'function') return;
+    try {
+      await runApi.gitCommit(run.id, commitMessage.trim());
+      setCommitOpen(false); setCommitMessage(''); setMessage('Commit 已创建，分支仍保留供人工合并');
+      await loadWorkspace(run.id);
+    } catch (cause) { setError(friendlyErrorMessage(cause, '创建 Commit 失败')); }
   }
 
   async function send(event: FormEvent) {
     event.preventDefault();
     const content = question.trim();
-    if (!content || !agentID || busy || slashOpen) return;
+    if (!content || !agentID || busy || turnBlocksNewMessage || slashOpen) return;
     let activeConversationID = conversationID;
     let created: Conversation | null = null;
     if (!activeConversationID) {
@@ -357,6 +552,7 @@ export function ChatPage() {
     }
     if (!activeConversationID) return;
     const optimisticID = -Date.now();
+    pageGeneration.current += 1;
     setBusy(true); setError(''); setQuestion(''); setTrace([]); setApprovals([]);
     setMessages((current) => [...current, { id: optimisticID, owner_id: 0, conversation_id: activeConversationID!, role: 'user', content, content_type: 'text', token_count: 0, created_at: new Date().toISOString() }]);
     try {
@@ -365,19 +561,23 @@ export function ChatPage() {
       setTurn(accepted.turn); setRun(accepted.run); setChildRuns([]);
       if (created) {
         pendingConversation.current = activeConversationID;
+        followRun(accepted.turn, accepted.run.id);
         navigate(`/app/agents/${agentID}/chat/${activeConversationID}`, { replace: true });
         return;
       }
-      const generation = pollGeneration.current + 1; pollGeneration.current = generation;
-      await monitorTurn(accepted.turn.id, accepted.run.id, generation, activeConversationID);
-    } catch (cause) { setBusy(false); setError(friendlyErrorMessage(cause, '启动 Agent Run 失败')); }
+      followRun(accepted.turn, accepted.run.id);
+    } catch (cause) {
+      setMessages((current) => current.filter((item) => item.id !== optimisticID));
+      setQuestion(content);
+      setBusy(false);
+      setError(friendlyErrorMessage(cause, '启动 Agent Run 失败'));
+    }
   }
 
   async function stopRun() {
     if (!turn?.run_id) return;
     try {
       const cancelledRun = await runApi.cancelRun(turn.run_id);
-      streamAbort.current?.abort();
       const nextTurn = await agentApi.getTurn(turn.id);
       setTurn(nextTurn); setRun(cancelledRun);
       if (agentID) setMessages(await agentApi.listMessages(agentID, turn.conversation_id));
@@ -394,8 +594,7 @@ export function ChatPage() {
       setApprovals([]);
       if (!turn) return;
       const nextTurn = await agentApi.getTurn(turn.id); setTurn(nextTurn);
-      const generation = pollGeneration.current + 1; pollGeneration.current = generation;
-      await monitorTurn(nextTurn.id, item.run_id, generation, nextTurn.conversation_id);
+      followRun(nextTurn, item.run_id);
     } catch (cause) { setBusy(false); setError(friendlyErrorMessage(cause, '恢复 Agent Run 失败')); }
   }
 
@@ -405,8 +604,7 @@ export function ChatPage() {
     try {
       await runApi.resumeRun(turn.run_id);
       const nextTurn = await agentApi.getTurn(turn.id); setTurn(nextTurn);
-      const generation = pollGeneration.current + 1; pollGeneration.current = generation;
-      await monitorTurn(nextTurn.id, turn.run_id, generation, nextTurn.conversation_id);
+      followRun(nextTurn, turn.run_id);
     } catch (cause) { setBusy(false); setError(friendlyErrorMessage(cause, '继续 Agent Run 失败')); }
   }
 
@@ -465,7 +663,13 @@ export function ChatPage() {
     '--dialog-nav-width': `${storedWidth('agentcanvas-agent-navigator-width', 270)}px`,
     '--dialog-inspector-width': `${inspectorWidth}px`,
   });
-  const runDetailsVisible = trace.length > 0 || childRuns.length > 0 || approvals.length > 0 || Boolean(run);
+  const runDetailsVisible = trace.length > 0
+    || childRuns.length > 0
+    || approvals.length > 0
+    || streamSegments.some((segment) => segment.kind !== 'assistant')
+    || Boolean(run || (streamIsCurrent && (runStreamState.status || runStreamState.approval)));
+	const effectiveWorkspaceDirty = gitStatus?.dirty ?? workspace?.dirty ?? false;
+	const effectiveWorkspaceUnpushed = gitStatus?.unpushed ?? workspace?.unpushed ?? false;
 
   return <div className="page chat-page-scoped"><div ref={shellRef} className="chat-shell" style={shellStyle}>
     <aside className="chat-sidebar glass">
@@ -502,14 +706,26 @@ export function ChatPage() {
       <div className="message-list" ref={messageListRef} role="log" aria-live="polite" aria-busy={busy}>
         {visibleMessages.length === 0 && !busy ? <EmptyState icon={<MessageSquareText size={24} />} title="开始对话" description="输入任务，或输入 / 选择运行模式。" /> : null}
         {visibleMessages.map((item) => <article className={`message ${item.role}`} key={item.id}><span className="message-role">{item.role === 'user' ? '你' : currentAgent?.name ?? 'Agent'}</span><p>{item.content}</p></article>)}
-        {busy ? <article className="message assistant pending"><span className="message-role">{currentAgent?.name ?? 'Agent'}</span><p><i />{turn?.status === 'queued' ? '任务已排队…' : '正在处理…'}</p></article> : null}
+        {streamSegments.map((segment) => segment.kind === 'assistant'
+          ? <article className="message assistant pending" data-run-segment={segment.id} key={`stream:${segment.id}`}><span className="message-role">{currentAgent?.name ?? 'Agent'}</span><p>{segment.text || <><i />正在处理…</>}</p></article>
+          : <article className={`chat-trace-row chat-stream-segment ${segment.kind}`} data-run-segment={segment.id} key={`stream:${segment.id}`}><strong>{segment.kind === 'tool' ? segment.toolName || 'Tool' : segment.kind === 'reasoning' ? 'Reasoning' : 'Status'}</strong><p>{segment.text || segment.status || (segment.kind === 'reasoning' ? '正在推理…' : '正在执行…')}</p></article>)}
+        {busy && !hasAssistantStreamSegment ? <article className="message assistant pending"><span className="message-role">{currentAgent?.name ?? 'Agent'}</span><p><i />{turn?.status === 'queued' ? '任务已排队…' : '正在处理…'}</p></article> : null}
         {turn?.status === 'failed' ? <article className="message assistant failed"><span className="message-role">运行失败</span><p>{turn.error_message || 'Agent 未能完成本次任务。'}</p></article> : null}
         {runDetailsVisible ? <details className="chat-run-details">
           <summary><ChevronDown size={14} /><span>执行详情</span>{run ? <StatusBadge tone={run.status === 'succeeded' ? 'good' : run.status === 'failed' ? 'bad' : 'info'}>{run.status}</StatusBadge> : null}</summary>
           <div className="chat-run-details-body stack">
             {run ? <div className="meta-row"><span>{run.total_tokens ?? 0} tok</span><span>{run.latency_ms ?? 0} ms</span><span>{run.run_type}</span><span>depth {run.delegation_depth}</span></div> : null}
+            {workspace ? <div className="stack workspace-run-card">
+              <div className="card-title"><strong><GitBranch size={14} /> {workspace.branch_name || 'detached'}</strong><StatusBadge tone={effectiveWorkspaceDirty || effectiveWorkspaceUnpushed ? 'warn' : workspace.status === 'preserved' ? 'bad' : 'good'}>{workspace.status}{effectiveWorkspaceDirty ? ' · dirty' : ''}{effectiveWorkspaceUnpushed ? ' · unpushed' : ''}</StatusBadge></div>
+              <p className="muted">{workspace.workspace_path}</p>
+              <div className="meta-row"><span>{workspace.kind}</span><span>base {workspace.base_sha?.slice(0, 8) || '—'}</span><span>{gitStatus?.head?.slice(0, 8) || workspace.head_sha?.slice(0, 8) || '—'}</span></div>
+              <div className="button-row"><Button type="button" onClick={() => void refreshWorkspace()} disabled={workspace.status === 'cleaned'}>Refresh</Button><Button type="button" onClick={() => void showGitDiff()} disabled={workspace.status === 'cleaned'}>Diff</Button><Button type="button" onClick={() => void showGitLog()} disabled={workspace.status === 'cleaned'}>Log</Button>{workspace.kind === 'worktree' ? <Button type="button" tone="danger" onClick={() => void cleanupWorkspace()} disabled={workspace.status === 'cleaned'}>Cleanup</Button> : null}<Button type="button" tone="primary" onClick={() => setCommitOpen(true)} disabled={workspace.status === 'cleaned'}>Commit…</Button></div>
+              {gitDiff ? <pre className="chat-git-diff">{gitDiff}</pre> : null}
+              {gitLog ? <pre className="chat-git-diff" aria-label="Git log">{gitLog}</pre> : null}
+              {workspace.status === 'preserved' ? <p className="muted">保留原因：{workspace.cleanup_reason || 'Git 状态存在风险，未自动清理。'}</p> : null}
+            </div> : null}
             {trace.map((item) => { const view = tracePresentation(item); return <article className="chat-trace-row" key={item.id}><strong>{view.title}</strong><p>{view.summary}</p></article>; })}
-            {childRuns.map((child) => <article className="chat-trace-row" key={child.id}><strong>Subagent run {child.id}</strong><p>{child.status} · {child.total_tokens} tok</p></article>)}
+            {childRuns.map((child) => <article className="chat-trace-row" key={child.id}><strong>Subagent run {child.id}{child.workspace?.branch_name ? ` · ${child.workspace.branch_name}` : ''}</strong><p>{child.status} · {child.total_tokens} tok{child.workspace?.workspace_path ? ` · ${child.workspace.workspace_path}` : ''}</p></article>)}
             <ApprovalQueue items={approvals} onDecide={(item, approve, optionID) => void decideApproval(item, approve, optionID)} />
           </div>
         </details> : null}
@@ -520,8 +736,13 @@ export function ChatPage() {
           <TextArea value={question} onChange={(event) => { const value = event.target.value; setQuestion(value); setSlashOpen(value === '/' || value.startsWith('/mode')); }} placeholder={turnBlocksNewMessage ? '请先处理当前暂停或审批中的 Run' : '交给 Agent 一个任务…'} disabled={busy || turnBlocksNewMessage} onKeyDown={onComposerKeyDown} />
         </div>
         <div className="chat-composer-actions">
+          <Select aria-label="项目工作区" value={selectedProjectID ?? ''} onChange={(event) => setSelectedProjectID(event.target.value ? Number(event.target.value) : undefined)} disabled={Boolean(conversationID) || busy || turnBlocksNewMessage}>
+            <option value="">无项目（不启用文件工具）</option>
+            {projects.map((project) => <option value={project.id} key={project.id}>{project.name}</option>)}
+          </Select>
+          {selectedProjectID ? <Select aria-label="工作区模式" value={workspaceMode} onChange={(event) => setWorkspaceMode(event.target.value as 'shared' | 'worktree')} disabled={Boolean(conversationID) || busy || turnBlocksNewMessage}><option value="shared">共享仓库</option><option value="worktree">独立 Git Worktree</option></Select> : null}
           <button type="button" className="mode-chip" aria-label={`当前模式：${mode === 'plan_execute' ? 'Plan Guided' : 'ReAct'}`} disabled={busy || turnBlocksNewMessage} onClick={() => { setQuestion('/'); setSlashOpen(true); }}><span>{mode === 'plan_execute' ? 'Plan Guided' : 'ReAct'}</span><ChevronDown size={13} /></button>
-          <div className="chat-send-actions">{busy ? <Button type="button" tone="danger" onClick={() => void stopRun()}><Square size={15} />Stop</Button> : turn?.status === 'paused' ? <Button type="button" tone="primary" onClick={() => void resumePausedRun()}>Resume</Button> : turn?.status === 'waiting_human' ? <Button type="button" disabled>Awaiting approval</Button> : <Button tone="primary" type="submit" disabled={!question.trim() || slashOpen}><Send size={16} />发送</Button>}</div>
+          <div className="chat-send-actions">{busy ? <Button type="button" tone="danger" onClick={() => void stopRun()}><Square size={15} />Stop</Button> : turn?.status === 'paused' || streamPaused ? <Button type="button" tone="primary" onClick={() => void resumePausedRun()}>Resume</Button> : turn?.status === 'waiting_human' || streamWaiting ? <Button type="button" disabled>Awaiting approval</Button> : <Button tone="primary" type="submit" disabled={!question.trim() || slashOpen}><Send size={16} />发送</Button>}</div>
         </div>
       </form>
     </section>
@@ -538,6 +759,7 @@ export function ChatPage() {
       </div>
       <div className="chat-inspector-footer"><Button tone="primary" onClick={() => void saveSettings()} disabled={busy || !settings.provider_id}>保存设置</Button></div>
     </aside>
+    <Modal open={commitOpen} title="Approve Git Commit" onClose={() => setCommitOpen(false)}><form className="stack" onSubmit={(event) => void commitWorkspace(event)}><p className="muted">仅在当前 Workspace 分支创建 Commit；不会 push、merge 或删除分支。</p><Field label="Commit message"><TextInput autoFocus value={commitMessage} onChange={(event) => setCommitMessage(event.target.value)} placeholder="feat: update implementation" /></Field><div className="button-row"><Button type="button" onClick={() => setCommitOpen(false)}>Cancel</Button><Button tone="primary" type="submit" disabled={!commitMessage.trim()}>Approve commit</Button></div></form></Modal>
   </div>
   {message ? <Toast tone="good" message={message} onClose={() => setMessage('')} /> : null}
   {error ? <Toast tone="bad" message={error} duration={4800} onClose={() => setError('')} /> : null}

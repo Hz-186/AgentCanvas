@@ -749,6 +749,8 @@ func (r *Runner) executeToolBatch(
 			RunID:           req.RunID,
 			DelegationDepth: req.DelegationDepth,
 			ConversationID:  req.ConversationID,
+			Workspace:       req.Workspace,
+			EmitEvent:       req.EmitEvent,
 		}, item.call.Arguments)
 		if item.execCancel != nil {
 			item.execCancel()

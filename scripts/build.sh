@@ -19,6 +19,9 @@ CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o "$OUT_DIR/api" ./cmd/api
 echo "==> Building worker..."
 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o "$OUT_DIR/worker" ./cmd/worker
 
+echo "==> Building workspace pruner..."
+CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o "$OUT_DIR/workspace-pruner" ./cmd/workspace-pruner
+
 echo "==> Building migrate..."
 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o "$OUT_DIR/migrate" ./cmd/migrate
 

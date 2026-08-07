@@ -4,12 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"agentcanvas/internal/domain/memory"
+	gitinfra "agentcanvas/internal/infrastructure/git"
 	runtimeagent "agentcanvas/internal/runtime/agent"
 	runtimeevent "agentcanvas/internal/runtime/event"
+	"agentcanvas/internal/runtime/toolruntime"
 )
 
 func TestDecodeDefinitionBuildsIdentityAndCapabilities(t *testing.T) {
@@ -24,6 +28,31 @@ func TestDecodeDefinitionBuildsIdentityAndCapabilities(t *testing.T) {
 	}
 	if len(cfg.ToolPackIDs) != 1 || !cfg.AllowSubagents || cfg.MaxSubagentDepth != 3 {
 		t.Fatalf("capabilities were not decoded: %+v", cfg)
+	}
+}
+
+func TestWorkspaceCodingContextTreatsCommitsBeyondWorktreeBaseAsUnpushed(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	gitService := gitinfra.NewService(gitinfra.Config{GitUserName: "AgentCanvas Test", GitUserEmail: "test@example.com"})
+	if _, err := gitService.EnsureRepository(ctx, root, true); err != nil {
+		t.Fatal(err)
+	}
+	base, err := gitService.Head(ctx, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "change.txt"), []byte("change\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gitService.Commit(ctx, root, "feat: add change", []string{"change.txt"}); err != nil {
+		t.Fatal(err)
+	}
+	block := (runtimeCore{Git: gitService}).workspaceCodingContext(ctx, &RunContext{Workspace: &toolruntime.WorkspaceContext{
+		Kind: "worktree", RepositoryRoot: root, WorkspacePath: root, BranchName: gitService.CurrentBranch(ctx, root), BaseSHA: base, GitEnabled: true,
+	}})
+	if block == nil || !strings.Contains(block.Content, "unpushed=true") {
+		t.Fatalf("coding context lost worktree base status: %#v", block)
 	}
 }
 

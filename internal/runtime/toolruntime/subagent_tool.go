@@ -30,6 +30,7 @@ type SubagentDefinition struct {
 	MaxToolOutputBytes     int      `json:"max_tool_output_bytes,omitempty"`
 	AllowedHosts           []string `json:"allowed_hosts,omitempty"`
 	CodeExecutionEnabled   bool     `json:"code_execution_enabled,omitempty"`
+	WorkspaceMode          string   `json:"workspace_mode,omitempty"`
 }
 
 type SubagentRequest struct {
@@ -40,6 +41,7 @@ type SubagentRequest struct {
 	DelegationDepth int                `json:"delegation_depth"`
 	MaxDepth        int                `json:"max_depth"`
 	Definition      SubagentDefinition `json:"definition"`
+	Workspace       *WorkspaceContext  `json:"workspace,omitempty"`
 }
 
 type SubagentResult struct {
@@ -85,7 +87,7 @@ func (SubagentTool) Description() string {
 }
 
 func (SubagentTool) Parameters() json.RawMessage {
-	return json.RawMessage(`{"type":"object","properties":{"name":{"type":"string","description":"Optional label chosen by the parent model."},"description":{"type":"string"},"system_prompt":{"type":"string","description":"Optional role instructions chosen for this task."},"task":{"type":"string"},"mode":{"type":"string","enum":["react","plan_execute"]},"model":{"type":"string"},"tool_ids":{"type":"array","items":{"type":"number"}},"skill_ids":{"type":"array","items":{"type":"number"}},"knowledge_ids":{"type":"array","items":{"type":"number"}},"mcp_server_ids":{"type":"array","items":{"type":"number"}},"max_iterations":{"type":"number"},"max_tool_calls":{"type":"number"},"max_execution_time_ms":{"type":"number"}},"required":["task"],"additionalProperties":false}`)
+	return json.RawMessage(`{"type":"object","properties":{"name":{"type":"string","description":"Optional label chosen by the parent model."},"description":{"type":"string"},"system_prompt":{"type":"string","description":"Optional role instructions chosen for this task."},"task":{"type":"string"},"mode":{"type":"string","enum":["react","plan_execute"]},"workspace_mode":{"type":"string","enum":["inherit","shared","worktree"]},"model":{"type":"string"},"tool_ids":{"type":"array","items":{"type":"number"}},"skill_ids":{"type":"array","items":{"type":"number"}},"knowledge_ids":{"type":"array","items":{"type":"number"}},"mcp_server_ids":{"type":"array","items":{"type":"number"}},"max_iterations":{"type":"number"},"max_tool_calls":{"type":"number"},"max_execution_time_ms":{"type":"number"}},"required":["task"],"additionalProperties":false}`)
 }
 
 func (SubagentTool) Metadata() ToolMetadata {
@@ -148,7 +150,10 @@ func (t SubagentTool) Execute(ctx context.Context, rc ToolRunContext, input json
 	definition.MaxToolTimeoutMS = t.Default.MaxToolTimeoutMS
 	definition.MaxToolOutputBytes = t.Default.MaxToolOutputBytes
 	definition.AllowedHosts = append([]string(nil), t.Default.AllowedHosts...)
-	result, err := t.Dispatcher.RunSubagent(ctx, SubagentRequest{OwnerID: rc.OwnerID, ParentRunID: rc.RunID, AgentID: rc.AgentID, ConversationID: rc.ConversationID, DelegationDepth: rc.DelegationDepth, MaxDepth: definition.MaxDepth, Definition: definition})
+	if definition.WorkspaceMode != "" && definition.WorkspaceMode != "inherit" && definition.WorkspaceMode != "shared" && definition.WorkspaceMode != "worktree" {
+		return &ToolResult{ContentText: "workspace_mode must be inherit, shared, or worktree", IsError: true}, fmt.Errorf("workspace_mode must be inherit, shared, or worktree")
+	}
+	result, err := t.Dispatcher.RunSubagent(ctx, SubagentRequest{OwnerID: rc.OwnerID, ParentRunID: rc.RunID, AgentID: rc.AgentID, ConversationID: rc.ConversationID, DelegationDepth: rc.DelegationDepth, MaxDepth: definition.MaxDepth, Definition: definition, Workspace: rc.Workspace})
 	if err != nil {
 		return &ToolResult{ContentText: err.Error(), IsError: true}, err
 	}

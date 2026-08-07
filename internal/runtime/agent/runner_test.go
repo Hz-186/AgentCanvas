@@ -36,6 +36,7 @@ type fakeRuntimeTool struct {
 	output      string
 	outputJSON  json.RawMessage
 	input       json.RawMessage
+	runContext  toolruntime.ToolRunContext
 	metadata    toolruntime.ToolMetadata
 	sawDeadline bool
 }
@@ -132,12 +133,39 @@ func (t *fakeRuntimeTool) Parameters() json.RawMessage {
 
 func (t *fakeRuntimeTool) Execute(ctx context.Context, rc toolruntime.ToolRunContext, input json.RawMessage) (*toolruntime.ToolResult, error) {
 	t.input = input
+	t.runContext = rc
 	_, t.sawDeadline = ctx.Deadline()
 	outputJSON := t.outputJSON
 	if len(outputJSON) == 0 {
 		outputJSON = json.RawMessage(`{"ok":true}`)
 	}
 	return &toolruntime.ToolResult{ContentText: t.output, ContentJSON: outputJSON}, nil
+}
+
+func TestRunnerPassesImmutableWorkspaceContextToTools(t *testing.T) {
+	client := &fakeToolClient{responses: []llm.ToolChatResponse{
+		{Message: llm.ChatMessage{Role: conversation.RoleAssistant, ToolCalls: []llm.ToolCall{{ID: "call_workspace", Name: "read_workspace", Arguments: json.RawMessage(`{}`)}}}},
+		{Message: llm.ChatMessage{Role: conversation.RoleAssistant, Content: "done"}},
+	}}
+	tool := &fakeRuntimeTool{name: "read_workspace", output: "ok"}
+	workspace := &toolruntime.WorkspaceContext{
+		ID: 9, ProjectID: 8, RunID: 7, Kind: "worktree", RepositoryRoot: "/repo",
+		WorkspacePath: "/repo/.worktrees/7-task", BranchName: "demo/7-task", BaseSHA: "abc",
+		FileWriteEnabled: true, GitEnabled: true, ExecEnabled: true,
+	}
+	runner := &Runner{LLM: client, ProviderID: 1, ModelName: "gpt-4"}
+	if _, err := runner.Run(context.Background(), RunRequest{
+		OwnerID: 1, AgentID: 2, AgentReleaseID: 3, RunID: 7, Model: "gpt-4", Task: "read",
+		MaxIterations: 3, MaxToolCalls: 1, Tools: []toolruntime.RuntimeTool{tool}, Workspace: workspace,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if tool.runContext.Workspace != workspace {
+		t.Fatalf("runner did not preserve resolved workspace context: got %#v want %#v", tool.runContext.Workspace, workspace)
+	}
+	if tool.runContext.RunID != 7 || tool.runContext.Workspace.WorkspacePath != workspace.WorkspacePath || tool.runContext.Workspace.BranchName != workspace.BranchName {
+		t.Fatalf("tool received incomplete workspace context: %#v", tool.runContext)
+	}
 }
 
 func (t *fakeRuntimeTool) Metadata() toolruntime.ToolMetadata {

@@ -17,6 +17,7 @@ AgentCanvas 是一个以 Agent 为唯一执行单元的开源运行平台，面�
 - Skills：支持内联 Markdown 与本地 Bundle，包含校验、版本、校验和与按需加载。
 - Human in the Loop：高风险工具触发审批，完整快照持久化后可批准、拒绝或恢复。
 - Self Improvement：可选的 Turn Review、Change Proposal 与人工批准应用。
+- Git Workspace：Project 绑定受控仓库；Run 可使用 shared checkout 或独立 worktree，worktree 子 Agent 自动使用 sibling checkout，并以 fail-safe 策略保留 dirty、unpushed 或锁状态不明的工作区。
 
 ## 运行架构
 
@@ -173,6 +174,15 @@ make dev
 
 打开 `http://localhost:8080/app/agents`。
 
+如需用 Compose 同时运行 API、Worker 与 Workspace Pruner，必须显式选择一个宿主机仓库根目录，并让三个服务以相同路径挂载：
+
+```bash
+export AGENTCANVAS_WORKSPACE_ROOT="/Users/your-name/Projects"
+docker compose -f deployments/docker-compose.yml -f deployments/docker-compose.dev.yml up -d
+```
+
+Docker 内的 Project 路径应填写为 `/workspaces/<repo>`；不要把用户仓库放入临时 Sandbox。AgentCanvas 不会自动 commit、push 或 merge，worktree branch 默认保留供人工审查。
+
 数据库基线不提供旧数据升级能力。部署和本地切换必须使用空 MySQL 数据库，并重新初始化本项目的 Redis key、Elasticsearch index 与 Milvus collection。不要对无法确认归属的外部实例执行清理。
 
 ## 常用命令
@@ -247,6 +257,30 @@ PATCH  /api/v1/agents/:id/reflections/:reflection_id
 POST   /api/v1/runs/:id/reflections/:reflection_id/feedback
 ```
 
+### Project、Workspace 与 Git
+
+```text
+POST   /api/v1/projects
+GET    /api/v1/projects
+GET    /api/v1/projects/:id
+PATCH  /api/v1/projects/:id
+DELETE /api/v1/projects/:id
+POST   /api/v1/projects/:id/folders
+GET    /api/v1/projects/:id/folders
+DELETE /api/v1/projects/:id/folders/:folder_id
+GET    /api/v1/projects/:id/git/status
+GET    /api/v1/projects/:id/git/branches
+GET    /api/v1/projects/:id/git/worktrees
+
+GET    /api/v1/runs/:id/workspace
+GET    /api/v1/runs/:id/git/status
+GET    /api/v1/runs/:id/git/diff
+GET    /api/v1/runs/:id/git/log
+POST   /api/v1/runs/:id/git/commit
+POST   /api/v1/workspaces/:id/cleanup
+POST   /api/v1/workspaces/:id/refresh
+```
+
 ### RAG、Memory、Tools 与 Skills
 
 ```text
@@ -287,6 +321,7 @@ export AGENTCANVAS_CONFIG_PATH="/absolute/path/to/config.yaml"
 - `reflection_queue`：Reflection Outbox、JetStream、lease 与 DLQ。
 - `minio`、`ocr`：文档存储与解析。
 - `security`、`oauth`：密钥、Token 与 GitHub OAuth。
+- `git_workspace`：允许的绝对仓库根目录、worktree 目录、Git/fetch 超时、输出与文件读取上限、prune TTL、自动初始化和 Git identity。API、Worker 与 Pruner 必须使用完全相同的 `allowed_roots` 与挂载。
 
 ## 未来扩展边界
 

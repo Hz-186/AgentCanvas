@@ -35,6 +35,7 @@ type RunRequest struct {
 	Definition      Definition
 	StepRecorder    AgentStepRecorder
 	ContextBlocks   []runtimeagent.ContextBlock
+	Workspace       *toolruntime.WorkspaceContext
 }
 
 type ResumeRequest struct {
@@ -130,7 +131,8 @@ func (r *AgentRuntime) run(ctx context.Context, req RunRequest, emit EventEmitte
 		OwnerID: req.OwnerID, AgentID: req.AgentID, AgentReleaseID: req.AgentReleaseID,
 		RuleHash: req.RuleHash, RunID: req.RunID, ParentRunID: req.ParentRunID, DelegationDepth: req.DelegationDepth,
 		ConversationID: conversationID, Input: map[string]any{"query": req.Task},
-		Events: emit, AgentSteps: req.StepRecorder,
+		Workspace: req.Workspace,
+		Events:    emit, AgentSteps: req.StepRecorder,
 	}
 	cfg := agentRuntimeConfig(req.Definition)
 	cfg.RuleHash = req.RuleHash

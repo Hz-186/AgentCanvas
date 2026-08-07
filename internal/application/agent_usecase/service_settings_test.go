@@ -4,16 +4,24 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
+	"time"
 
+	workspaceusecase "agentcanvas/internal/application/workspace_usecase"
 	agentdomain "agentcanvas/internal/domain/agent"
 	"agentcanvas/internal/domain/conversation"
 	"agentcanvas/internal/domain/knowledge"
+	projectdomain "agentcanvas/internal/domain/project"
 	"agentcanvas/internal/domain/provider"
+	workspacedomain "agentcanvas/internal/domain/workspace"
+	gitinfra "agentcanvas/internal/infrastructure/git"
 	"agentcanvas/internal/infrastructure/llm"
 	agenterrors "agentcanvas/internal/pkg/errors"
 	runtimeagent "agentcanvas/internal/runtime/agent"
 	agentruntime "agentcanvas/internal/runtime/agentruntime"
+	runtimeevent "agentcanvas/internal/runtime/event"
 	"agentcanvas/internal/runtime/toolruntime"
 )
 
@@ -106,6 +114,28 @@ func TestConversationModeLifecycleAndForkInheritance(t *testing.T) {
 	}
 }
 
+func TestCreateConversationRejectsArchivedProject(t *testing.T) {
+	agentID, releaseID, projectID := int64(10), int64(100), int64(11)
+	agents := newSettingsAgentRepo()
+	agents.items[agentID] = &agentdomain.Agent{ID: agentID, OwnerID: 3, Status: agentdomain.StatusActive, CurrentReleaseID: &releaseID}
+	conversations := &settingsConversationRepo{items: map[int64]*conversation.Conversation{}, nextID: 20}
+	service := NewService(agents, nil, conversations, nil, nil, nil, nil, nil, nil)
+	service.ConfigureWorkspace(workspaceusecase.NewService(
+		&staticLifecycleProjectRepo{item: projectdomain.Project{ID: projectID, OwnerID: 3, Archived: true}},
+		nil,
+		gitinfra.NewService(gitinfra.Config{}),
+		workspaceusecase.Config{Enabled: true},
+	))
+
+	_, err := service.CreateConversation(context.Background(), 3, agentID, CreateConversationRequest{ProjectID: &projectID})
+	if !errors.Is(err, agenterrors.ErrForbidden) {
+		t.Fatalf("archived project must reject new conversations, got %v", err)
+	}
+	if len(conversations.items) != 0 {
+		t.Fatalf("conversation was persisted for archived project: %#v", conversations.items)
+	}
+}
+
 func TestStartTurnSnapshotsModeAndReturnsPersistentUserMessage(t *testing.T) {
 	agentID, releaseID := int64(10), int64(100)
 	conv := &conversation.Conversation{ID: 20, OwnerID: 3, AgentID: &agentID, AgentReleaseID: &releaseID, Source: conversation.SourceAgent, AgentMode: "plan_execute"}
@@ -135,6 +165,248 @@ func TestStartTurnSnapshotsModeAndReturnsPersistentUserMessage(t *testing.T) {
 	}
 	if turnInput["mode"] != "plan_execute" || runInput["mode"] != "plan_execute" || turnInput["query"] != "investigate" {
 		t.Fatalf("turn mode was not snapshotted: turn=%v run=%v", turnInput, runInput)
+	}
+}
+
+func TestRootRunNeverEntersRunningWhenWorkspacePreparationFails(t *testing.T) {
+	definition := agentdomain.Definition{ProviderID: 1, Model: "test-model", SystemPrompt: "test", Mode: "react"}
+	definitionJSON, _, err := definition.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	conversationID, projectID, runID, agentID := int64(20), int64(11), int64(401), int64(10)
+	run := &agentdomain.Run{
+		ID: runID, OwnerID: 3, AgentID: agentID, ConversationID: &conversationID,
+		Status: agentdomain.RunStatusQueued, DefinitionJSON: definitionJSON,
+		InputJSON: json.RawMessage(`{"query":"edit README","mode":"react"}`), StartedAt: time.Now().UTC(),
+	}
+	runs := &workspaceLifecycleRunRepo{settingsRunRepo: settingsRunRepo{items: map[int64]*agentdomain.Run{runID: run}}}
+	turns := &settingsTurnRepo{}
+	turn := &agentdomain.Turn{ID: 201, OwnerID: 3, AgentID: agentID, ConversationID: conversationID, RunID: &runID, InputJSON: run.InputJSON, Status: agentdomain.TurnStatusQueued}
+	conversations := &settingsConversationRepo{items: map[int64]*conversation.Conversation{
+		conversationID: {ID: conversationID, OwnerID: 3, AgentID: &agentID, ProjectID: &projectID, WorkspaceMode: "worktree"},
+	}}
+	events := &workspaceLifecycleEventRepo{}
+	runtime := &settingsAgentRuntime{executeResult: &agentruntime.RunResult{Output: agentruntime.RunOutput{"final_answer": "should not run"}}}
+	service := NewService(nil, turns, conversations, nil, runs, events, nil, nil, runtime)
+	service.ConfigureWorkspace(workspaceusecase.NewService(
+		&missingLifecycleProjectRepo{}, nil, gitinfra.NewService(gitinfra.Config{}),
+		workspaceusecase.Config{Enabled: true, AllowedRoots: []string{"/workspaces"}},
+	))
+
+	service.executeTurnOwned(context.Background(), turn)
+	if run.Status != agentdomain.RunStatusFailed {
+		t.Fatalf("Run status = %q, want failed", run.Status)
+	}
+	for _, status := range runs.statuses {
+		if status == agentdomain.RunStatusRunning {
+			t.Fatalf("Run entered running before workspace readiness: %v", runs.statuses)
+		}
+	}
+	if runtime.executeReq.RunID != 0 {
+		t.Fatalf("runtime executed despite workspace failure: %#v", runtime.executeReq)
+	}
+	if len(events.items) != 1 || events.items[0].EventType != runtimeevent.WorkspaceFailed {
+		t.Fatalf("workspace failure event missing: %#v", events.items)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(events.items[0].PayloadJSON, &payload); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"workspace_id", "project_id", "run_id", "repo_root", "path", "branch", "base_sha", "head_sha", "dirty", "unpushed", "status", "locked", "error"} {
+		if _, ok := payload[key]; !ok {
+			t.Fatalf("workspace.failed payload is missing %q: %#v", key, payload)
+		}
+	}
+}
+
+func TestRootRunDoesNotExecuteWhenWorkspaceLinkPersistenceFails(t *testing.T) {
+	definition := agentdomain.Definition{ProviderID: 1, Model: "test-model", SystemPrompt: "test", Mode: "react"}
+	definitionJSON, _, err := definition.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	conversationID, projectID, runID, agentID := int64(20), int64(11), int64(402), int64(10)
+	run := &agentdomain.Run{
+		ID: runID, OwnerID: 3, AgentID: agentID, ConversationID: &conversationID,
+		Status: agentdomain.RunStatusQueued, DefinitionJSON: definitionJSON,
+		InputJSON: json.RawMessage(`{"query":"edit README","mode":"react"}`), StartedAt: time.Now().UTC(),
+	}
+	linkErr := errors.New("run workspace link unavailable")
+	runs := &workspaceLifecycleRunRepo{
+		settingsRunRepo:  settingsRunRepo{items: map[int64]*agentdomain.Run{runID: run}},
+		workspaceLinkErr: linkErr,
+	}
+	turns := &settingsTurnRepo{}
+	turn := &agentdomain.Turn{ID: 202, OwnerID: 3, AgentID: agentID, ConversationID: conversationID, RunID: &runID, InputJSON: run.InputJSON, Status: agentdomain.TurnStatusQueued}
+	conversations := &settingsConversationRepo{items: map[int64]*conversation.Conversation{
+		conversationID: {ID: conversationID, OwnerID: 3, AgentID: &agentID, ProjectID: &projectID, WorkspaceMode: workspacedomain.KindWorktree},
+	}}
+	events := &workspaceLifecycleEventRepo{}
+	runtime := &settingsAgentRuntime{executeResult: &agentruntime.RunResult{Output: agentruntime.RunOutput{"final_answer": "should not run"}}}
+	workspaceRepository := &lifecycleWorkspaceRepository{items: make(map[int64]workspacedomain.Workspace)}
+	gitService := gitinfra.NewService(gitinfra.Config{GitUserName: "AgentCanvas Test", GitUserEmail: "agentcanvas@example.test"})
+	service := NewService(nil, turns, conversations, nil, runs, events, nil, nil, runtime)
+	service.ConfigureWorkspace(workspaceusecase.NewService(
+		&staticLifecycleProjectRepo{item: projectdomain.Project{ID: projectID, OwnerID: 3, Slug: "demo", Name: "Demo", PrimaryPath: root}},
+		workspaceRepository, gitService,
+		workspaceusecase.Config{Enabled: true, AllowedRoots: []string{root}, WorktreeDirName: ".worktrees", AutoInitRepository: true},
+	))
+
+	service.executeTurnOwned(context.Background(), turn)
+	if !runs.workspaceLinkFailed || run.Status != agentdomain.RunStatusFailed || runtime.executeReq.RunID != 0 {
+		t.Fatalf("workspace link failure did not stop execution: run=%+v runtime=%+v", run, runtime.executeReq)
+	}
+	if run.ErrorMessage != linkErr.Error() {
+		t.Fatalf("unexpected Run error: %q", run.ErrorMessage)
+	}
+	if len(events.items) != 1 || events.items[0].EventType != runtimeevent.WorkspaceFailed {
+		t.Fatalf("workspace link failure event missing: %#v", events.items)
+	}
+	workspaces, err := gitService.ListWorktrees(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range workspaces {
+		if filepath.Clean(item.Path) != filepath.Clean(root) && item.Locked {
+			t.Fatalf("failed Run left its worktree locked: %#v", item)
+		}
+	}
+}
+
+func TestSubagentDoesNotExecuteWhenWorkspaceLinkPersistenceFails(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	projectID, parentRunID := int64(11), int64(41)
+	workspaceRepository := &lifecycleWorkspaceRepository{items: make(map[int64]workspacedomain.Workspace)}
+	gitService := gitinfra.NewService(gitinfra.Config{GitUserName: "AgentCanvas Test", GitUserEmail: "agentcanvas@example.test"})
+	workspaceService := workspaceusecase.NewService(
+		&staticLifecycleProjectRepo{item: projectdomain.Project{ID: projectID, OwnerID: 3, Slug: "demo", Name: "Demo", PrimaryPath: root}},
+		workspaceRepository, gitService,
+		workspaceusecase.Config{Enabled: true, AllowedRoots: []string{root}, WorktreeDirName: ".worktrees", AutoInitRepository: true},
+	)
+	parentWorkspace, err := workspaceService.PrepareRunWorkspace(ctx, 3, projectID, parentRunID, workspacedomain.KindWorktree, "demo", "parent task", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent := &agentdomain.Run{ID: parentRunID, OwnerID: 3, AgentID: 10, RunType: agentdomain.RunTypeTurn, DelegationDepth: 0, Status: agentdomain.RunStatusRunning, WorkspaceID: &parentWorkspace.ID}
+	linkErr := errors.New("child workspace link unavailable")
+	runs := &workspaceLifecycleRunRepo{
+		settingsRunRepo:  settingsRunRepo{items: map[int64]*agentdomain.Run{parent.ID: parent}, nextID: parentRunID + 1},
+		workspaceLinkErr: linkErr,
+	}
+	events := &workspaceLifecycleEventRepo{}
+	runtime := &settingsAgentRuntime{executeResult: &agentruntime.RunResult{Output: agentruntime.RunOutput{"final_answer": "should not run"}}}
+	service := NewService(nil, nil, nil, nil, runs, events, nil, nil, runtime)
+	service.ConfigureWorkspace(workspaceService)
+
+	_, err = service.RunSubagent(ctx, toolruntime.SubagentRequest{
+		OwnerID: 3, ParentRunID: parentRunID, AgentID: parent.AgentID, DelegationDepth: 0, MaxDepth: 3,
+		Definition: toolruntime.SubagentDefinition{Task: "edit child file", WorkspaceMode: workspacedomain.KindWorktree},
+	})
+	if !errors.Is(err, linkErr) {
+		t.Fatalf("RunSubagent returned %v, want %v", err, linkErr)
+	}
+	child := runs.items[parentRunID+1]
+	if child == nil || child.Status != agentdomain.RunStatusFailed || child.ErrorMessage != linkErr.Error() || runtime.executeReq.RunID != 0 {
+		t.Fatalf("workspace link failure did not stop the child Run: child=%+v runtime=%+v", child, runtime.executeReq)
+	}
+	if len(events.items) != 1 || events.items[0].EventType != runtimeevent.WorkspaceFailed {
+		t.Fatalf("child workspace link failure event missing: %#v", events.items)
+	}
+	childWorkspace, err := workspaceRepository.FindByRunID(ctx, 3, child.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if childWorkspace.Locked || childWorkspace.LockReason != "" {
+		t.Fatalf("failed child Run left its sibling worktree locked: %#v", childWorkspace)
+	}
+}
+
+func TestRootRunEmitsFinalWorkspaceStatusAfterRuntimeMutation(t *testing.T) {
+	definition := agentdomain.Definition{ProviderID: 1, Model: "test-model", SystemPrompt: "test", Mode: "react"}
+	definitionJSON, _, err := definition.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	conversationID, projectID, runID, agentID := int64(20), int64(11), int64(404), int64(10)
+	run := &agentdomain.Run{
+		ID: runID, OwnerID: 3, AgentID: agentID, ConversationID: &conversationID,
+		Status: agentdomain.RunStatusQueued, DefinitionJSON: definitionJSON,
+		InputJSON: json.RawMessage(`{"query":"edit README","mode":"react"}`), StartedAt: time.Now().UTC(),
+	}
+	runs := &workspaceLifecycleRunRepo{settingsRunRepo: settingsRunRepo{items: map[int64]*agentdomain.Run{runID: run}}}
+	turns := &settingsTurnRepo{}
+	turn := &agentdomain.Turn{ID: 204, OwnerID: 3, AgentID: agentID, ConversationID: conversationID, RunID: &runID, InputJSON: run.InputJSON, Status: agentdomain.TurnStatusQueued}
+	conversations := &settingsConversationRepo{items: map[int64]*conversation.Conversation{
+		conversationID: {ID: conversationID, OwnerID: 3, AgentID: &agentID, ProjectID: &projectID, WorkspaceMode: workspacedomain.KindShared},
+	}}
+	events := &workspaceLifecycleEventRepo{}
+	runtime := &settingsAgentRuntime{
+		executeResult: &agentruntime.RunResult{Output: agentruntime.RunOutput{"final_answer": "done"}},
+		executeHook: func(request agentruntime.RunRequest) {
+			if request.Workspace == nil {
+				t.Fatal("runtime request is missing workspace context")
+			}
+			if writeErr := os.WriteFile(filepath.Join(request.Workspace.WorkspacePath, "agent.txt"), []byte("runtime change\n"), 0o644); writeErr != nil {
+				t.Fatal(writeErr)
+			}
+		},
+	}
+	workspaceRepository := &lifecycleWorkspaceRepository{items: make(map[int64]workspacedomain.Workspace)}
+	workspaceService := workspaceusecase.NewService(
+		&staticLifecycleProjectRepo{item: projectdomain.Project{ID: projectID, OwnerID: 3, Slug: "demo", Name: "Demo", PrimaryPath: root}},
+		workspaceRepository,
+		gitinfra.NewService(gitinfra.Config{GitUserName: "AgentCanvas Test", GitUserEmail: "agentcanvas@example.test"}),
+		workspaceusecase.Config{Enabled: true, AllowedRoots: []string{root}, AutoInitRepository: true},
+	)
+	service := NewService(nil, turns, conversations, nil, runs, events, nil, nil, runtime)
+	service.ConfigureWorkspace(workspaceService)
+
+	service.executeTurnOwned(context.Background(), turn)
+	var finalPayload map[string]any
+	for index := range events.items {
+		if events.items[index].EventType == runtimeevent.WorkspaceStatusChanged {
+			if err := json.Unmarshal(events.items[index].PayloadJSON, &finalPayload); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if finalPayload == nil || finalPayload["dirty"] != true || finalPayload["run_id"] != float64(runID) || finalPayload["status"] != workspacedomain.StatusReady {
+		t.Fatalf("final workspace.status_changed event did not describe the runtime mutation: %#v", finalPayload)
+	}
+}
+
+func TestRefreshWorkspaceSnapshotPersistsRuntimeFileChanges(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	projectID := int64(11)
+	workspaceRepository := &lifecycleWorkspaceRepository{items: make(map[int64]workspacedomain.Workspace)}
+	gitService := gitinfra.NewService(gitinfra.Config{GitUserName: "AgentCanvas Test", GitUserEmail: "agentcanvas@example.test"})
+	workspaceService := workspaceusecase.NewService(
+		&staticLifecycleProjectRepo{item: projectdomain.Project{ID: projectID, OwnerID: 3, Slug: "demo", Name: "Demo", PrimaryPath: root}},
+		workspaceRepository, gitService,
+		workspaceusecase.Config{Enabled: true, AllowedRoots: []string{root}, AutoInitRepository: true},
+	)
+	item, err := workspaceService.PrepareRunWorkspace(ctx, 3, projectID, 403, workspacedomain.KindShared, "demo", "runtime-write", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "agent.txt"), []byte("runtime change\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	service.ConfigureWorkspace(workspaceService)
+	service.refreshWorkspaceSnapshot(ctx, 3, item.ID)
+
+	stored, err := workspaceRepository.FindByID(ctx, 3, item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !stored.Dirty || stored.LastCheckedAt == nil || stored.ErrorMessage != "" {
+		t.Fatalf("runtime file change was not persisted in the workspace snapshot: %#v", stored)
 	}
 }
 
@@ -296,6 +568,74 @@ func TestDecideApprovalResumesSubagentWithoutTurn(t *testing.T) {
 	}
 }
 
+func TestResumeRunEmitsFinalWorkspaceStatusAfterRuntimeMutation(t *testing.T) {
+	ctx := context.Background()
+	_, definitionJSON, err := subagentRuntimeDefinition(toolruntime.SubagentDefinition{Task: "continue", SystemPrompt: "be precise"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	projectID, runID := int64(11), int64(43)
+	workspaceRepository := &lifecycleWorkspaceRepository{items: make(map[int64]workspacedomain.Workspace)}
+	workspaceService := workspaceusecase.NewService(
+		&staticLifecycleProjectRepo{item: projectdomain.Project{ID: projectID, OwnerID: 3, Slug: "demo", Name: "Demo", PrimaryPath: root}},
+		workspaceRepository,
+		gitinfra.NewService(gitinfra.Config{GitUserName: "AgentCanvas Test", GitUserEmail: "agentcanvas@example.test"}),
+		workspaceusecase.Config{Enabled: true, AllowedRoots: []string{root}, AutoInitRepository: true},
+	)
+	workspace, err := workspaceService.PrepareRunWorkspace(ctx, 3, projectID, runID, workspacedomain.KindShared, "demo", "resume mutation", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := &agentdomain.Run{
+		ID: runID, OwnerID: 3, AgentID: 10, RunType: agentdomain.RunTypeSubagent,
+		Status: agentdomain.RunStatusWaitingHuman, DefinitionJSON: definitionJSON, DefinitionHash: hashJSON(definitionJSON),
+		InputJSON: json.RawMessage(`{"query":"continue"}`), WorkspaceID: &workspace.ID, StartedAt: time.Now().UTC(),
+	}
+	runs := &settingsRunRepo{items: map[int64]*agentdomain.Run{run.ID: run}}
+	events := &workspaceLifecycleEventRepo{}
+	runtime := &settingsAgentRuntime{
+		resumeResult: &agentruntime.RunResult{Output: agentruntime.RunOutput{"final_answer": "approved"}},
+		resumeHook: func(request agentruntime.ResumeRequest) {
+			if request.Workspace == nil {
+				t.Fatal("resume request is missing workspace context")
+			}
+			if writeErr := os.WriteFile(filepath.Join(request.Workspace.WorkspacePath, "resumed.txt"), []byte("resume change\n"), 0o644); writeErr != nil {
+				t.Fatal(writeErr)
+			}
+		},
+	}
+	service := NewService(nil, nil, nil, nil, runs, events, nil, nil, runtime)
+	service.ConfigureWorkspace(workspaceService)
+	checkpoint := &agentdomain.RunCheckpoint{ID: 8, OwnerID: 3, RunID: run.ID, MessagesJSON: json.RawMessage(`[]`), PendingToolCallJSON: json.RawMessage(`null`), ContextJSON: json.RawMessage(`{}`)}
+
+	resumed, err := service.ResumeRun(ctx, run, checkpoint, &agentdomain.ApprovalRequest{Status: agentdomain.ApprovalStatusApproved})
+	if err != nil {
+		t.Fatalf("ResumeRun returned error: %v", err)
+	}
+	if resumed.Status != agentdomain.RunStatusSucceeded || runtime.resumeReq.Workspace == nil {
+		t.Fatalf("Run did not resume with its workspace: run=%+v request=%+v", resumed, runtime.resumeReq)
+	}
+	stored, err := workspaceRepository.FindByID(ctx, 3, workspace.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !stored.Dirty || stored.LastCheckedAt == nil {
+		t.Fatalf("resume mutation was not persisted: %#v", stored)
+	}
+	var finalPayload map[string]any
+	for index := range events.items {
+		if events.items[index].EventType == runtimeevent.WorkspaceStatusChanged {
+			if err := json.Unmarshal(events.items[index].PayloadJSON, &finalPayload); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if finalPayload == nil || finalPayload["dirty"] != true || finalPayload["run_id"] != float64(runID) {
+		t.Fatalf("resume workspace.status_changed event mismatch: %#v", finalPayload)
+	}
+}
+
 type settingsRunRepo struct {
 	agentdomain.RunRepository
 	item   *agentdomain.Run
@@ -349,18 +689,128 @@ type settingsAgentRuntime struct {
 	executeReq    agentruntime.RunRequest
 	executeResult *agentruntime.RunResult
 	executeErr    error
+	executeHook   func(agentruntime.RunRequest)
 	resumeReq     agentruntime.ResumeRequest
 	resumeResult  *agentruntime.RunResult
 	resumeErr     error
+	resumeHook    func(agentruntime.ResumeRequest)
+}
+
+type missingLifecycleProjectRepo struct{ projectdomain.Repository }
+
+func (*missingLifecycleProjectRepo) FindByID(context.Context, int64, int64) (*projectdomain.Project, error) {
+	return nil, agenterrors.ErrNotFound
+}
+
+type staticLifecycleProjectRepo struct {
+	projectdomain.Repository
+	item projectdomain.Project
+}
+
+func (r *staticLifecycleProjectRepo) FindByID(_ context.Context, ownerID, projectID int64) (*projectdomain.Project, error) {
+	if r.item.OwnerID != ownerID || r.item.ID != projectID {
+		return nil, agenterrors.ErrNotFound
+	}
+	item := r.item
+	return &item, nil
+}
+
+type workspaceLifecycleRunRepo struct {
+	settingsRunRepo
+	statuses            []string
+	workspaceLinkErr    error
+	workspaceLinkFailed bool
+}
+
+func (r *workspaceLifecycleRunRepo) Update(ctx context.Context, item *agentdomain.Run) error {
+	r.statuses = append(r.statuses, item.Status)
+	if r.workspaceLinkErr != nil && item.WorkspaceID != nil && !r.workspaceLinkFailed {
+		r.workspaceLinkFailed = true
+		return r.workspaceLinkErr
+	}
+	return r.settingsRunRepo.Update(ctx, item)
+}
+
+type lifecycleWorkspaceRepository struct {
+	workspacedomain.Repository
+	nextID int64
+	items  map[int64]workspacedomain.Workspace
+}
+
+func (r *lifecycleWorkspaceRepository) Create(_ context.Context, item *workspacedomain.Workspace) error {
+	r.nextID++
+	item.ID = r.nextID
+	r.items[item.ID] = *item
+	return nil
+}
+
+func (r *lifecycleWorkspaceRepository) FindByID(_ context.Context, ownerID, id int64) (*workspacedomain.Workspace, error) {
+	item, ok := r.items[id]
+	if !ok || item.OwnerID != ownerID {
+		return nil, agenterrors.ErrNotFound
+	}
+	return &item, nil
+}
+
+func (r *lifecycleWorkspaceRepository) FindByRunID(_ context.Context, ownerID, runID int64) (*workspacedomain.Workspace, error) {
+	for _, item := range r.items {
+		if item.OwnerID == ownerID && item.RunID == runID {
+			copy := item
+			return &copy, nil
+		}
+	}
+	return nil, agenterrors.ErrNotFound
+}
+
+func (r *lifecycleWorkspaceRepository) ListByProject(_ context.Context, ownerID, projectID int64) ([]workspacedomain.Workspace, error) {
+	items := make([]workspacedomain.Workspace, 0)
+	for _, item := range r.items {
+		if item.OwnerID == ownerID && item.ProjectID == projectID {
+			items = append(items, item)
+		}
+	}
+	return items, nil
+}
+
+func (r *lifecycleWorkspaceRepository) Update(_ context.Context, item *workspacedomain.Workspace) error {
+	r.items[item.ID] = *item
+	return nil
+}
+
+type workspaceLifecycleEventRepo struct {
+	agentdomain.RunEventRepository
+	items []agentdomain.RunEvent
+}
+
+func (r *workspaceLifecycleEventRepo) Create(_ context.Context, item *agentdomain.RunEvent) error {
+	item.ID = int64(len(r.items) + 1)
+	r.items = append(r.items, *item)
+	return nil
+}
+
+func (r *workspaceLifecycleEventRepo) ListByRun(_ context.Context, ownerID, runID int64) ([]agentdomain.RunEvent, error) {
+	items := make([]agentdomain.RunEvent, 0)
+	for _, item := range r.items {
+		if item.OwnerID == ownerID && item.RunID == runID {
+			items = append(items, item)
+		}
+	}
+	return items, nil
 }
 
 func (r *settingsAgentRuntime) Execute(_ context.Context, request agentruntime.RunRequest, _ agentruntime.EventEmitter) (*agentruntime.RunResult, error) {
 	r.executeReq = request
+	if r.executeHook != nil {
+		r.executeHook(request)
+	}
 	return r.executeResult, r.executeErr
 }
 
 func (r *settingsAgentRuntime) Resume(_ context.Context, request agentruntime.ResumeRequest, _ agentruntime.EventEmitter) (*agentruntime.RunResult, error) {
 	r.resumeReq = request
+	if r.resumeHook != nil {
+		r.resumeHook(request)
+	}
 	return r.resumeResult, r.resumeErr
 }
 
@@ -580,5 +1030,12 @@ func (r *settingsTurnRepo) FindByRunID(_ context.Context, ownerID, runID int64) 
 
 func (r *settingsTurnRepo) Update(_ context.Context, item *agentdomain.Turn) error {
 	r.updated = item
+	return nil
+}
+
+func (r *settingsTurnRepo) CompleteWithMessage(_ context.Context, turn *agentdomain.Turn, message *conversation.Message, _ *agentdomain.Run) error {
+	message.ID = 302
+	turn.AssistantMessageID = &message.ID
+	r.updated = turn
 	return nil
 }

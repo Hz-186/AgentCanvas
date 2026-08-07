@@ -1193,6 +1193,33 @@
   border-top: 1px solid var(--border);
 }
 
+:is(html[data-theme='dark'], html[data-theme='light']) .workspace-run-card {
+  min-width: 0;
+  margin-top: 10px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--engineering-card);
+}
+
+:is(html[data-theme='dark'], html[data-theme='light']) .workspace-run-card .muted {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+:is(html[data-theme='dark'], html[data-theme='light']) .chat-git-diff {
+  max-height: 320px;
+  margin: 0;
+  padding: 12px;
+  overflow: auto;
+  border: 1px solid var(--separator);
+  border-radius: 6px;
+  background: var(--engineering-main);
+  color: var(--text-secondary);
+  font: 12px/1.55 var(--font-mono);
+  white-space: pre;
+}
+
 :is(html[data-theme='dark'], html[data-theme='light']) .chat-trace-row {
   display: grid;
   grid-template-columns: minmax(110px, 180px) minmax(0, 1fr);

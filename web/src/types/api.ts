@@ -460,6 +460,8 @@ export interface Conversation {
   source: string;
   agent_id?: number | null;
   agent_release_id?: number | null;
+  project_id?: number | null;
+  workspace_mode?: 'shared' | 'worktree';
   agent_mode?: 'react' | 'plan_execute';
   parent_conversation_id?: number | null;
   last_message_at: string | null;
@@ -665,6 +667,8 @@ export interface Run {
   agent_id: number;
   agent_release_id?: number | null;
   conversation_id?: number | null;
+  workspace_id?: number | null;
+  workspace?: Workspace | null;
   parent_run_id?: number | null;
   run_type: "turn" | "subagent";
   delegation_depth: number;
@@ -681,6 +685,14 @@ export interface Run {
   created_at: string;
   updated_at: string;
 }
+
+export type WorkspaceKind = 'shared' | 'worktree';
+export type WorkspaceStatus = 'creating' | 'ready' | 'failed' | 'preserved' | 'cleaned';
+export interface ProjectFolder { id: number; owner_id: number; project_id: number; path: string; label: string; is_primary: boolean; added_at: string; }
+export interface Project { id: number; owner_id: number; slug: string; name: string; description: string; icon: string; color: string; primary_path: string; archived: boolean; folders: ProjectFolder[]; created_at: string; updated_at: string; }
+export interface Workspace { id: number; owner_id: number; project_id: number; run_id: number; parent_workspace_id?: number | null; kind: WorkspaceKind; repository_root: string; workspace_path: string; branch_name: string; base_ref: string; base_sha: string; head_sha: string; status: WorkspaceStatus; dirty: boolean; unpushed: boolean; locked: boolean; lock_reason: string; cleanup_reason: string; error_message: string; last_checked_at?: string | null; cleaned_at?: string | null; created_at: string; updated_at: string; }
+export interface GitStatus { root: string; branch: string; head: string; dirty: boolean; unpushed: boolean; staged?: string[]; changed?: string[]; untracked?: string[]; }
+export interface GitWorktree { path: string; branch?: string; head?: string; detached: boolean; bare: boolean; locked: boolean; lock_reason?: string; prunable?: boolean; }
 
 export interface ApprovalRequest {
   id: number;

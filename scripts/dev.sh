@@ -77,6 +77,9 @@ trap cleanup EXIT INT TERM
 go run ./cmd/worker &
 pids+=("$!")
 
+go run ./cmd/workspace-pruner &
+pids+=("$!")
+
 go run ./cmd/api &
 pids+=("$!")
 

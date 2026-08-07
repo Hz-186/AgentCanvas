@@ -13,14 +13,17 @@ import (
 	"sync"
 	"time"
 
+	workspaceusecase "agentcanvas/internal/application/workspace_usecase"
 	agentdomain "agentcanvas/internal/domain/agent"
 	"agentcanvas/internal/domain/conversation"
 	"agentcanvas/internal/domain/knowledge"
 	"agentcanvas/internal/domain/provider"
+	workspacedomain "agentcanvas/internal/domain/workspace"
 	"agentcanvas/internal/infrastructure/llm"
 	agenterrors "agentcanvas/internal/pkg/errors"
 	runtimeagent "agentcanvas/internal/runtime/agent"
 	agentruntime "agentcanvas/internal/runtime/agentruntime"
+	runtimeevent "agentcanvas/internal/runtime/event"
 	"agentcanvas/internal/runtime/harness/rules"
 	"agentcanvas/internal/runtime/toolruntime"
 )
@@ -43,6 +46,37 @@ type Service struct {
 	cancels       map[int64]context.CancelFunc
 	leaseDuration time.Duration
 	streamHub     runStreamHub
+	workspace     *workspaceusecase.Service
+}
+
+func runtimeWorkspaceContext(item *workspacedomain.Context) *toolruntime.WorkspaceContext {
+	if item == nil {
+		return nil
+	}
+	return &toolruntime.WorkspaceContext{
+		ID: item.ID, ProjectID: item.ProjectID, RunID: item.RunID, Kind: item.Kind,
+		RepositoryRoot: item.RepositoryRoot, WorkspacePath: item.WorkspacePath,
+		BranchName: item.BranchName, BaseSHA: item.BaseSHA, HeadSHA: item.HeadSHA, Dirty: item.Dirty, Unpushed: item.Unpushed,
+		FileWriteEnabled: item.FileWriteEnabled, GitEnabled: item.GitEnabled, ExecEnabled: item.ExecEnabled,
+	}
+}
+
+func workspaceEventPayload(item *workspacedomain.Workspace, err error) map[string]any {
+	payload := map[string]any{"workspace_id": int64(0), "project_id": int64(0), "run_id": int64(0), "kind": "", "repo_root": "", "path": "", "branch": "", "base_sha": "", "head_sha": "", "dirty": false, "unpushed": false, "status": "", "locked": false, "lock_reason": "", "cleanup_reason": "", "error": ""}
+	if item != nil {
+		payload["workspace_id"], payload["project_id"], payload["run_id"] = item.ID, item.ProjectID, item.RunID
+		payload["kind"], payload["repo_root"], payload["path"] = item.Kind, item.RepositoryRoot, item.WorkspacePath
+		payload["branch"], payload["base_sha"], payload["head_sha"] = item.BranchName, item.BaseSHA, item.HeadSHA
+		payload["dirty"], payload["unpushed"] = item.Dirty, item.Unpushed
+		payload["status"], payload["locked"], payload["lock_reason"], payload["cleanup_reason"] = item.Status, item.Locked, item.LockReason, item.CleanupReason
+		if item.ErrorMessage != "" {
+			payload["error"] = item.ErrorMessage
+		}
+	}
+	if err != nil {
+		payload["error"] = err.Error()
+	}
+	return payload
 }
 
 func NewService(
@@ -369,8 +403,10 @@ func (s *Service) Capabilities(ctx context.Context, ownerID, releaseID int64) (m
 }
 
 type CreateConversationRequest struct {
-	Title string `json:"title"`
-	Mode  string `json:"mode"`
+	Title         string `json:"title"`
+	Mode          string `json:"mode"`
+	ProjectID     *int64 `json:"project_id,omitempty"`
+	WorkspaceMode string `json:"workspace_mode,omitempty"`
 }
 
 func normalizeAgentMode(mode string) (string, error) {
@@ -400,8 +436,24 @@ func (s *Service) CreateConversation(ctx context.Context, ownerID, agentID int64
 	if err != nil {
 		return nil, err
 	}
+	workspaceMode, err := workspaceusecase.NormalizeMode(req.WorkspaceMode)
+	if err != nil {
+		return nil, err
+	}
+	if req.ProjectID != nil {
+		if s.workspace == nil {
+			return nil, agenterrors.ErrInvalidInput
+		}
+		project, err := s.workspace.GetProject(ctx, ownerID, *req.ProjectID)
+		if err != nil {
+			return nil, err
+		}
+		if project.Archived {
+			return nil, fmt.Errorf("%w: project is archived", agenterrors.ErrForbidden)
+		}
+	}
 	item := &conversation.Conversation{OwnerID: ownerID, AgentID: &agentID, AgentReleaseID: agentItem.CurrentReleaseID,
-		Title: title, Name: title, Source: conversation.SourceAgent, AgentMode: mode}
+		ProjectID: req.ProjectID, WorkspaceMode: workspaceMode, Title: title, Name: title, Source: conversation.SourceAgent, AgentMode: mode}
 	if err := s.conversations.Create(ctx, item); err != nil {
 		return nil, err
 	}
@@ -500,6 +552,8 @@ func (s *Service) ForkConversation(ctx context.Context, ownerID, agentID, conver
 		Name:                 title,
 		Source:               conversation.SourceAgent,
 		AgentMode:            source.AgentMode,
+		ProjectID:            source.ProjectID,
+		WorkspaceMode:        source.WorkspaceMode,
 	}
 	if err := s.conversations.Create(ctx, fork); err != nil {
 		return nil, err
@@ -661,12 +715,7 @@ func (s *Service) executeTurnOwned(ctx context.Context, turn *agentdomain.Turn) 
 		_ = s.turns.Update(ctx, turn)
 		return
 	}
-	if err := run.TransitionStatus(agentdomain.RunStatusRunning); err != nil {
-		s.failTurn(ctx, turn, run, err)
-		return
-	}
 	run.ErrorMessage = ""
-	_ = s.runs.Update(ctx, run)
 	execCtx, cancel := context.WithCancel(ctx)
 	s.registerCancel(run.ID, cancel)
 	defer func() { cancel(); s.unregisterCancel(run.ID) }()
@@ -686,6 +735,57 @@ func (s *Service) executeTurnOwned(ctx context.Context, turn *agentdomain.Turn) 
 		definition.Mode = mode
 	}
 	emitter := s.newRunEventEmitter(turn.OwnerID, run.ID, &turn.ConversationID)
+	var runtimeWorkspace *toolruntime.WorkspaceContext
+	var preparedWorkspace *workspacedomain.Workspace
+	if s.workspace != nil && run.ConversationID != nil {
+		conv, convErr := s.conversations.FindByID(ctx, turn.OwnerID, *run.ConversationID)
+		if convErr != nil {
+			s.failTurn(ctx, turn, run, convErr)
+			return
+		}
+		if conv.ProjectID != nil {
+			project, projectErr := s.workspace.GetProject(ctx, turn.OwnerID, *conv.ProjectID)
+			if projectErr != nil {
+				_ = emitter.Emit(ctx, runtimeevent.Event{Type: runtimeevent.WorkspaceFailed, RunID: run.ID, Payload: workspaceEventPayload(&workspacedomain.Workspace{ProjectID: *conv.ProjectID, RunID: run.ID}, projectErr)})
+				s.failTurn(ctx, turn, run, projectErr)
+				return
+			}
+			ws, wsErr := s.workspace.PrepareRunWorkspace(ctx, turn.OwnerID, *conv.ProjectID, run.ID, conv.WorkspaceMode, project.Slug, task, nil)
+			if wsErr != nil {
+				failedWorkspace := ws
+				if failedWorkspace == nil {
+					failedWorkspace = &workspacedomain.Workspace{ProjectID: project.ID, RunID: run.ID, RepositoryRoot: project.PrimaryPath}
+				} else {
+					run.WorkspaceID = &failedWorkspace.ID
+					_ = s.runs.Update(ctx, run)
+				}
+				_ = emitter.Emit(ctx, runtimeevent.Event{Type: runtimeevent.WorkspaceFailed, RunID: run.ID, Payload: workspaceEventPayload(failedWorkspace, wsErr)})
+				s.failTurn(ctx, turn, run, wsErr)
+				return
+			}
+			preparedWorkspace = ws
+			defer func() { _ = s.workspace.ReleaseRunWorkspaceLock(context.Background(), turn.OwnerID, run.ID) }()
+			run.WorkspaceID = &ws.ID
+			if updateErr := s.runs.Update(ctx, run); updateErr != nil {
+				_ = emitter.Emit(ctx, runtimeevent.Event{Type: runtimeevent.WorkspaceFailed, RunID: run.ID, Payload: workspaceEventPayload(ws, updateErr)})
+				s.failTurn(ctx, turn, run, updateErr)
+				return
+			}
+			runtimeWorkspace = runtimeWorkspaceContext(s.workspace.WorkspaceContext(ws))
+			_ = emitter.Emit(ctx, runtimeevent.Event{Type: runtimeevent.WorkspaceCreated, RunID: run.ID, Payload: workspaceEventPayload(ws, nil)})
+		}
+	}
+	if runtimeWorkspace != nil {
+		_ = emitter.Emit(ctx, runtimeevent.Event{Type: runtimeevent.WorkspaceReady, RunID: run.ID, Payload: workspaceEventPayload(preparedWorkspace, nil)})
+	}
+	if err := run.TransitionStatus(agentdomain.RunStatusRunning); err != nil {
+		s.failTurn(ctx, turn, run, err)
+		return
+	}
+	if err := s.runs.Update(ctx, run); err != nil {
+		s.failTurn(ctx, turn, run, err)
+		return
+	}
 	result, execErr := s.runtime.Execute(ctx,
 		agentruntime.RunRequest{
 			OwnerID:        turn.OwnerID,
@@ -697,7 +797,13 @@ func (s *Service) executeTurnOwned(ctx context.Context, turn *agentdomain.Turn) 
 			RuleHash:       run.RuleHash,
 			Definition:     definition,
 			StepRecorder:   &runStepRecorder{repo: s.steps},
+			Workspace:      runtimeWorkspace,
 		}, emitter)
+	if preparedWorkspace != nil {
+		if refreshed := s.refreshWorkspaceSnapshot(context.WithoutCancel(ctx), turn.OwnerID, preparedWorkspace.ID); refreshed != nil {
+			_ = emitter.Emit(context.WithoutCancel(ctx), runtimeevent.Event{Type: runtimeevent.WorkspaceStatusChanged, RunID: run.ID, Payload: workspaceEventPayload(refreshed, nil)})
+		}
+	}
 	if execErr != nil {
 		s.failTurn(ctx, turn, run, execErr)
 		return
@@ -717,6 +823,40 @@ func (s *Service) ConfigureImprovement(enqueuer TurnReviewEnqueuer) {
 
 func (s *Service) ConfigureSessionSearch(index conversation.MessageSearchIndex) {
 	s.sessionSearch = index
+}
+
+func (s *Service) ConfigureWorkspace(service *workspaceusecase.Service) {
+	s.workspace = service
+}
+
+func (s *Service) refreshWorkspaceSnapshot(ctx context.Context, ownerID, workspaceID int64) *workspacedomain.Workspace {
+	if s.workspace == nil || ownerID <= 0 || workspaceID <= 0 {
+		return nil
+	}
+	item, err := s.workspace.GetWorkspace(ctx, ownerID, workspaceID)
+	if err == nil {
+		var refreshed *workspacedomain.Workspace
+		refreshed, err = s.workspace.RefreshGitStatus(ctx, item)
+		if refreshed != nil {
+			item = refreshed
+		}
+	}
+	if err != nil {
+		slog.Default().Error("refresh run workspace status failed", "owner_id", ownerID, "workspace_id", workspaceID, "error", err)
+	}
+	return item
+}
+
+// EmitWorkspaceEvent lets HTTP lifecycle actions use the same durable Run
+// Event/SSE lane as runtime tool actions.
+func (s *Service) EmitWorkspaceEvent(ctx context.Context, ownerID, runID int64, eventType string, payload map[string]any) error {
+	if ownerID <= 0 || runID <= 0 {
+		return agenterrors.ErrInvalidInput
+	}
+	if s.events == nil {
+		return nil
+	}
+	return s.newRunEventEmitter(ownerID, runID, nil).Emit(ctx, runtimeevent.Event{Type: eventType, RunID: runID, Payload: payload})
 }
 
 func (s *Service) effectiveLeaseDuration() time.Duration {
@@ -1069,13 +1209,61 @@ func (s *Service) ResumeRun(ctx context.Context, run *agentdomain.Run, stored *a
 		turn.Status = agentdomain.TurnStatusRunning
 		_ = s.turns.Update(ctx, turn)
 	}
+	failResumePreparation := func(cause error) (*agentdomain.Run, error) {
+		if turn != nil {
+			s.failTurn(ctx, turn, run, cause)
+			return run, cause
+		}
+		now := time.Now().UTC()
+		if transitionErr := run.TransitionStatus(agentdomain.RunStatusFailed); transitionErr != nil {
+			run.ErrorMessage = transitionErr.Error()
+		} else {
+			run.ErrorMessage, run.FinishedAt = cause.Error(), &now
+		}
+		run.LatencyMS = int(now.Sub(run.StartedAt).Milliseconds())
+		_ = s.runs.Update(ctx, run)
+		s.publishRunSnapshot(run, nil, nil, llm.Usage{})
+		return run, cause
+	}
 	releaseID := int64(0)
 	if run.AgentReleaseID != nil {
 		releaseID = *run.AgentReleaseID
 	}
+	var runtimeWorkspace *toolruntime.WorkspaceContext
+	var resolvedWorkspace *workspacedomain.Workspace
+	if s.workspace != nil && run.WorkspaceID != nil {
+		var item *workspacedomain.Workspace
+		var workspaceErr error
+		if run.WorkspaceID != nil {
+			item, workspaceErr = s.workspace.GetWorkspace(ctx, run.OwnerID, *run.WorkspaceID)
+		} else {
+			item, workspaceErr = s.workspace.GetRunWorkspace(ctx, run.OwnerID, run.ID)
+		}
+		if workspaceErr != nil {
+			return failResumePreparation(workspaceErr)
+		}
+		resolved, resolveErr := s.workspace.ResolveExistingWorkspace(ctx, item)
+		if resolveErr != nil {
+			return failResumePreparation(resolveErr)
+		}
+		if lockErr := s.workspace.AcquireRunWorkspaceLock(ctx, resolved, run.ID); lockErr != nil {
+			return failResumePreparation(lockErr)
+		}
+		defer func() { _ = s.workspace.ReleaseRunWorkspaceLock(context.Background(), run.OwnerID, run.ID) }()
+		runtimeWorkspace = runtimeWorkspaceContext(s.workspace.WorkspaceContext(resolved))
+		if runtimeWorkspace == nil {
+			return failResumePreparation(fmt.Errorf("run workspace is not ready"))
+		}
+		runtimeWorkspace.RunID = run.ID
+		resolvedWorkspace = resolved
+	}
 	execCtx, cancel := context.WithCancel(ctx)
 	s.registerCancel(run.ID, cancel)
 	defer func() { cancel(); s.unregisterCancel(run.ID) }()
+	emitter := s.newRunEventEmitter(run.OwnerID, run.ID, run.ConversationID)
+	if runtimeWorkspace != nil {
+		_ = emitter.Emit(ctx, runtimeevent.Event{Type: runtimeevent.WorkspaceReady, RunID: run.ID, Payload: workspaceEventPayload(resolvedWorkspace, nil)})
+	}
 	result, execErr := s.runtime.Resume(execCtx,
 		agentruntime.ResumeRequest{
 			RunRequest: agentruntime.RunRequest{
@@ -1090,11 +1278,22 @@ func (s *Service) ResumeRun(ctx context.Context, run *agentdomain.Run, stored *a
 				Task:            task,
 				Definition:      definition,
 				StepRecorder:    &runStepRecorder{repo: s.steps},
+				Workspace:       runtimeWorkspace,
 			},
 			Checkpoint:    checkpoint,
 			Approved:      approved,
 			RejectionNote: note,
-		}, s.newRunEventEmitter(run.OwnerID, run.ID, run.ConversationID))
+		}, emitter)
+	if resolvedWorkspace != nil {
+		if refreshed := s.refreshWorkspaceSnapshot(context.WithoutCancel(ctx), run.OwnerID, resolvedWorkspace.ID); refreshed != nil {
+			if refreshed.Kind == workspacedomain.KindShared && refreshed.RunID != run.ID {
+				view := *refreshed
+				view.RunID = run.ID
+				refreshed = &view
+			}
+			_ = emitter.Emit(context.WithoutCancel(ctx), runtimeevent.Event{Type: runtimeevent.WorkspaceStatusChanged, RunID: run.ID, Payload: workspaceEventPayload(refreshed, nil)})
+		}
+	}
 	if execErr != nil {
 		if turn != nil {
 			s.failTurn(ctx, turn, run, execErr)
@@ -1418,11 +1617,68 @@ func (s *Service) RunSubagent(ctx context.Context, req toolruntime.SubagentReque
 		DelegationDepth: req.DelegationDepth + 1,
 		DefinitionJSON:  definitionJSON,
 		DefinitionHash:  hashJSON(definitionJSON),
-		Status:          agentdomain.RunStatusRunning,
+		Status:          agentdomain.RunStatusQueued,
 		InputJSON:       inputJSON,
 		StartedAt:       now,
 	}
 	if err := s.runs.Create(ctx, run); err != nil {
+		return nil, err
+	}
+	var runtimeWorkspace *toolruntime.WorkspaceContext
+	emitter := s.newRunEventEmitter(req.OwnerID, run.ID, req.ConversationID)
+	if s.workspace != nil && parent.WorkspaceID != nil {
+		var parentWorkspace *workspacedomain.Workspace
+		var workspaceErr error
+		parentWorkspace, workspaceErr = s.workspace.GetWorkspace(ctx, req.OwnerID, *parent.WorkspaceID)
+		if workspaceErr != nil {
+			_ = emitter.Emit(ctx, runtimeevent.Event{Type: runtimeevent.WorkspaceFailed, RunID: run.ID, Payload: workspaceEventPayload(&workspacedomain.Workspace{RunID: run.ID}, workspaceErr)})
+			_ = run.TransitionStatus(agentdomain.RunStatusFailed)
+			run.ErrorMessage = workspaceErr.Error()
+			_ = s.runs.Update(ctx, run)
+			return nil, workspaceErr
+		}
+		project, projectErr := s.workspace.GetProject(ctx, req.OwnerID, parentWorkspace.ProjectID)
+		if projectErr != nil {
+			_ = emitter.Emit(ctx, runtimeevent.Event{Type: runtimeevent.WorkspaceFailed, RunID: run.ID, Payload: workspaceEventPayload(&workspacedomain.Workspace{ProjectID: parentWorkspace.ProjectID, RunID: run.ID, RepositoryRoot: parentWorkspace.RepositoryRoot}, projectErr)})
+			_ = run.TransitionStatus(agentdomain.RunStatusFailed)
+			run.ErrorMessage = projectErr.Error()
+			_ = s.runs.Update(ctx, run)
+			return nil, projectErr
+		}
+		childWorkspace, childErr := s.workspace.PrepareChildWorkspace(ctx, req.OwnerID, parentWorkspace.ProjectID, run.ID, req.Definition.WorkspaceMode, project.Slug, req.Definition.Task, parentWorkspace)
+		if childErr != nil {
+			failedWorkspace := childWorkspace
+			if failedWorkspace == nil {
+				failedWorkspace = &workspacedomain.Workspace{ProjectID: parentWorkspace.ProjectID, RunID: run.ID, RepositoryRoot: parentWorkspace.RepositoryRoot}
+			} else {
+				run.WorkspaceID = &failedWorkspace.ID
+				_ = s.runs.Update(ctx, run)
+			}
+			_ = emitter.Emit(ctx, runtimeevent.Event{Type: runtimeevent.WorkspaceFailed, RunID: run.ID, Payload: workspaceEventPayload(failedWorkspace, childErr)})
+			_ = run.TransitionStatus(agentdomain.RunStatusFailed)
+			run.ErrorMessage = childErr.Error()
+			_ = s.runs.Update(ctx, run)
+			return nil, childErr
+		}
+		defer func() { _ = s.workspace.ReleaseRunWorkspaceLock(context.Background(), req.OwnerID, run.ID) }()
+		run.WorkspaceID = &childWorkspace.ID
+		if updateErr := s.runs.Update(ctx, run); updateErr != nil {
+			_ = emitter.Emit(ctx, runtimeevent.Event{Type: runtimeevent.WorkspaceFailed, RunID: run.ID, Payload: workspaceEventPayload(childWorkspace, updateErr)})
+			_ = run.TransitionStatus(agentdomain.RunStatusFailed)
+			run.ErrorMessage = updateErr.Error()
+			_ = s.runs.Update(ctx, run)
+			return nil, updateErr
+		}
+		runtimeWorkspace = runtimeWorkspaceContext(s.workspace.WorkspaceContext(childWorkspace))
+		_ = emitter.Emit(ctx, runtimeevent.Event{Type: runtimeevent.WorkspaceCreated, RunID: run.ID, Payload: workspaceEventPayload(childWorkspace, nil)})
+		_ = emitter.Emit(ctx, runtimeevent.Event{Type: runtimeevent.WorkspaceReady, RunID: run.ID, Payload: workspaceEventPayload(childWorkspace, nil)})
+	}
+	if err := run.TransitionStatus(agentdomain.RunStatusRunning); err != nil {
+		run.ErrorMessage = err.Error()
+		_ = s.runs.Update(ctx, run)
+		return nil, err
+	}
+	if err := s.runs.Update(ctx, run); err != nil {
 		return nil, err
 	}
 	result, execErr := s.runtime.Execute(ctx,
@@ -1436,7 +1692,18 @@ func (s *Service) RunSubagent(ctx context.Context, req toolruntime.SubagentReque
 			Task:            strings.TrimSpace(req.Definition.Task),
 			Definition:      definition,
 			StepRecorder:    &runStepRecorder{repo: s.steps},
-		}, s.newRunEventEmitter(req.OwnerID, run.ID, req.ConversationID))
+			Workspace:       runtimeWorkspace,
+		}, emitter)
+	if run.WorkspaceID != nil {
+		if refreshed := s.refreshWorkspaceSnapshot(context.WithoutCancel(ctx), req.OwnerID, *run.WorkspaceID); refreshed != nil {
+			if refreshed.Kind == workspacedomain.KindShared && refreshed.RunID != run.ID {
+				view := *refreshed
+				view.RunID = run.ID
+				refreshed = &view
+			}
+			_ = emitter.Emit(context.WithoutCancel(ctx), runtimeevent.Event{Type: runtimeevent.WorkspaceStatusChanged, RunID: run.ID, Payload: workspaceEventPayload(refreshed, nil)})
+		}
+	}
 	var output map[string]any
 	if result != nil {
 		output = map[string]any(result.Output)
@@ -1474,7 +1741,8 @@ func (s *Service) RunSubagent(ctx context.Context, req toolruntime.SubagentReque
 func subagentRuntimeDefinition(source toolruntime.SubagentDefinition) (agentruntime.Definition, json.RawMessage, error) {
 	raw, err := json.Marshal(map[string]any{
 		"provider_id": source.ProviderID, "model": source.Model, "mode": source.Mode,
-		"system_prompt": source.SystemPrompt, "tool_ids": source.ToolIDs, "skill_ids": source.SkillIDs,
+		"workspace_mode": source.WorkspaceMode,
+		"system_prompt":  source.SystemPrompt, "tool_ids": source.ToolIDs, "skill_ids": source.SkillIDs,
 		"knowledge_ids": source.KnowledgeIDs, "mcp_server_ids": source.MCPServerIDs,
 		"max_iterations": source.MaxIterations, "max_tool_calls": source.MaxToolCalls,
 		"max_execution_time_ms": source.MaxExecutionTimeMS, "max_parallel_sub_agents": source.MaxParallelChildren,

@@ -37,6 +37,34 @@ func TestQueueConfigDefaults(t *testing.T) {
 	if cfg.OCR.TimeoutSeconds != 60 {
 		t.Fatalf("unexpected OCR defaults: %+v", cfg.OCR)
 	}
+	if cfg.GitWorkspace.WorktreeDirName != ".worktrees" || cfg.GitWorkspace.FetchTimeoutSeconds != 5 ||
+		cfg.GitWorkspace.FetchFreshnessSeconds != 300 || cfg.GitWorkspace.GitCommandTimeoutSeconds != 30 ||
+		cfg.GitWorkspace.MaxOutputBytes != 256*1024 || cfg.GitWorkspace.FileReadMaxChars != 100000 ||
+		cfg.GitWorkspace.MaxWorkspacesPerProject != 64 || cfg.GitWorkspace.PruneTTLHours != 24 {
+		t.Fatalf("unexpected Git workspace defaults: %+v", cfg.GitWorkspace)
+	}
+}
+
+func TestGitWorkspaceConfigRequiresSafeAbsoluteRootAndDirectoryName(t *testing.T) {
+	base := Config{MySQL: MySQLConfig{DSN: "dsn"}, Security: SecurityConfig{JWTSecret: "jwt", RefreshTokenPepper: "pepper", SecretEncryptKey: "secret"}}
+	base.setDefaults()
+	base.GitWorkspace.Enabled = true
+	base.GitWorkspace.AllowedRoots = []string{"/workspaces"}
+	if err := base.Validate(); err != nil {
+		t.Fatalf("valid Git workspace config rejected: %v", err)
+	}
+
+	relativeRoot := base
+	relativeRoot.GitWorkspace.AllowedRoots = []string{"workspaces"}
+	if err := relativeRoot.Validate(); err == nil {
+		t.Fatal("relative allowed root was accepted")
+	}
+
+	escapingDirectory := base
+	escapingDirectory.GitWorkspace.WorktreeDirName = "../worktrees"
+	if err := escapingDirectory.Validate(); err == nil {
+		t.Fatal("escaping worktree directory name was accepted")
+	}
 }
 
 func TestReflectionQueueConfigValidation(t *testing.T) {

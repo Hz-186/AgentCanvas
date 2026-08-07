@@ -19,12 +19,14 @@ import (
 	retrievalusecase "agentcanvas/internal/application/retrieval_usecase"
 	skillusecase "agentcanvas/internal/application/skill_usecase"
 	toolusecase "agentcanvas/internal/application/tool_usecase"
+	workspaceusecase "agentcanvas/internal/application/workspace_usecase"
 	"agentcanvas/internal/domain/contextresource"
 	"agentcanvas/internal/domain/resource"
 	"agentcanvas/internal/infrastructure"
 	cacheinfra "agentcanvas/internal/infrastructure/cache"
 	cataloginfra "agentcanvas/internal/infrastructure/catalog"
 	cryptoinfra "agentcanvas/internal/infrastructure/crypto"
+	gitinfra "agentcanvas/internal/infrastructure/git"
 	jobinfra "agentcanvas/internal/infrastructure/job"
 	"agentcanvas/internal/infrastructure/llm"
 	mysqlinfra "agentcanvas/internal/infrastructure/mysql"
@@ -127,6 +129,33 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 	reflectionEventSink := mysqlinfra.NewReflectionEventSink(runEventRepo)
 	runStepRepo := mysqlinfra.NewRunStepRepository(db)
 	approvalRepo := mysqlinfra.NewApprovalRepository(db)
+	projectRepo := mysqlinfra.NewProjectRepository(db)
+	workspaceRepo := mysqlinfra.NewWorkspaceRepository(db)
+	gitService := gitinfra.NewService(gitinfra.Config{
+		CommandTimeout:  time.Duration(cfg.GitWorkspace.GitCommandTimeoutSeconds) * time.Second,
+		FetchTimeout:    time.Duration(cfg.GitWorkspace.FetchTimeoutSeconds) * time.Second,
+		FetchFreshness:  time.Duration(cfg.GitWorkspace.FetchFreshnessSeconds) * time.Second,
+		MaxOutputBytes:  cfg.GitWorkspace.MaxOutputBytes,
+		WorktreeDirName: cfg.GitWorkspace.WorktreeDirName,
+		GitUserName:     cfg.GitWorkspace.GitUserName,
+		GitUserEmail:    cfg.GitWorkspace.GitUserEmail,
+	})
+	workspaceService := workspaceusecase.NewService(projectRepo, workspaceRepo, gitService, workspaceusecase.Config{
+		Enabled:                 cfg.GitWorkspace.Enabled,
+		AllowedRoots:            cfg.GitWorkspace.AllowedRoots,
+		WorktreeDirName:         cfg.GitWorkspace.WorktreeDirName,
+		MaxWorkspacesPerProject: cfg.GitWorkspace.MaxWorkspacesPerProject,
+		PruneTTL:                time.Duration(cfg.GitWorkspace.PruneTTLHours) * time.Hour,
+		PreserveDirty:           cfg.GitWorkspace.PreserveDirty,
+		PreserveUnpushed:        cfg.GitWorkspace.PreserveUnpushed,
+		AutoInitRepository:      cfg.GitWorkspace.AutoInitRepository,
+	})
+	workspaceService.ConfigureAudits(auditRepo)
+	if cfg.GitWorkspace.Enabled {
+		if recoverErr := workspaceService.RecoverAfterRestart(ctx, 0, 0); recoverErr != nil {
+			log.Warn("recover persisted Git workspaces failed", "error", recoverErr)
+		}
+	}
 	memoryRepo := cacheinfra.NewMemoryRepository(mysqlinfra.NewMemoryRepository(db), resourceInvalidator, memoryCache)
 	memoryWriteLogRepo := mysqlinfra.NewMemoryWriteLogRepository(db)
 	memoryRecallLogRepo := mysqlinfra.NewMemoryRecallLogRepository(db)
@@ -262,7 +291,9 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 		Skills: skillRepo, Audits: auditRepo, MCPServers: mcpRepo, ToolInvocations: toolInvocationRepo,
 		ToolCalling: toolCallingClient, ToolRegistry: toolRegistry, Reflections: reflectionService,
 		Sandbox: sandbox.NewDockerRunner(), ArchivalVecStore: archivalVecStore, ContextIndex: contextIndex,
-		Embedder: embeddingClient,
+		Embedder: embeddingClient, Git: gitService,
+		FileReadMaxChars: cfg.GitWorkspace.FileReadMaxChars, MaxOutputBytes: cfg.GitWorkspace.MaxOutputBytes,
+		WorkspaceTimeout: time.Duration(cfg.GitWorkspace.GitCommandTimeoutSeconds) * time.Second,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("init agent runtime: %w", err)
@@ -277,6 +308,7 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 	}()
 	agentService.ConfigureEditableResources(providerRepo, knowledgeRepo)
 	agentService.ConfigureSessionSearch(sessionSearch)
+	agentService.ConfigureWorkspace(workspaceService)
 	agentRuntime.ConfigureSubagentDispatcher(agentService)
 	agentRuntime.ConfigureMemoryReader(memoryService)
 	agentRuntime.ConfigureMemoryCandidates(memoryCandidateService)
@@ -309,6 +341,8 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 	knowledgeHandler := handler.NewKnowledgeHandler(knowledgeService)
 	documentHandler := handler.NewDocumentHandler(knowledgeService)
 	agentHandler := handler.NewAgentHandler(agentService, improvementService)
+	agentHandler.ConfigureWorkspace(workspaceService)
+	projectHandler := handler.NewProjectHandler(workspaceService)
 	reflectionHandler := handler.NewReflectionHandler(reflectionService)
 	resourceHandler := handler.NewResourceHandler(resourceusecase.NewService(resourceQuery))
 
@@ -331,6 +365,7 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 		KnowledgeHandler:  knowledgeHandler,
 		DocumentHandler:   documentHandler,
 		AgentHandler:      agentHandler,
+		ProjectHandler:    projectHandler,
 		ReflectionHandler: reflectionHandler,
 		ResourceHandler:   resourceHandler,
 		AuthService:       authService,

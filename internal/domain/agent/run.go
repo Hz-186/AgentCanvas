@@ -28,6 +28,7 @@ type Run struct {
 	AgentID         int64           `json:"agent_id" gorm:"column:agent_id"`
 	AgentReleaseID  *int64          `json:"agent_release_id,omitempty" gorm:"column:agent_release_id"`
 	ConversationID  *int64          `json:"conversation_id,omitempty" gorm:"column:conversation_id"`
+	WorkspaceID     *int64          `json:"workspace_id,omitempty" gorm:"column:workspace_id"`
 	ParentRunID     *int64          `json:"parent_run_id,omitempty" gorm:"column:parent_run_id"`
 	RunType         string          `json:"run_type" gorm:"column:run_type"`
 	DelegationDepth int             `json:"delegation_depth" gorm:"column:delegation_depth"`
