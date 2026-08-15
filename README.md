@@ -149,6 +149,7 @@ internal/
   bootstrap/              依赖装配与 Worker 启动
   domain/                 Agent、Conversation、Memory、Reflection 等领域模型
   infrastructure/         MySQL、Redis、ES、Milvus、MinIO、Queue、LLM
+    pythonbridge/          Python Bridge gRPC 客户端与 Chunker/Tool 适配
   interface/http/         Handler、Middleware、SSE 与 Router
   runtime/
     agent/                Runner、Planner、Resumer、Context Assembler
@@ -158,6 +159,8 @@ internal/
     sandbox/              Docker 代码沙箱
     conversationcontext/  会话压缩与滚动快照
 migrations/               单一 Agent-only 数据库基线
+proto/                    Python Bridge Protobuf v1 合约
+python/                   Python 常驻侧车、工具与切片实现
 web/                      React SPA
 ```
 
@@ -183,6 +186,28 @@ docker compose -f deployments/docker-compose.yml -f deployments/docker-compose.d
 
 Docker 内的 Project 路径应填写为 `/workspaces/<repo>`；不要把用户仓库放入临时 Sandbox。AgentCanvas 不会自动 commit、push 或 merge，worktree branch 默认保留供人工审查。
 
+Python Bridge 默认关闭。需要试用 Python 工具或切片时，在启动 Compose 前设置同一进程级令牌，并将 `configs/config.local.yaml` 的 `python_bridge.enabled` 改为 `true`。Python 切片还必须在 shadow 基准达标并人工审阅后显式打开 `python_bridge.allow_experimental_chunking`：
+
+```bash
+export AGENTCANVAS_PYTHON_BRIDGE_TOKEN="$(openssl rand -hex 32)"
+make docker-up
+```
+
+本地 Go 进程使用 `127.0.0.1:50051`；Compose 内 API/Worker 使用 `python-bridge:50051`。知识库可显式选择 `python:recursive` 或 `python:fixed_token`，Agent 设置通过 `python_tool_names` 选择全局 `allowed_tools` 白名单内的 Python 工具。
+
+本地运行 Python 测试前可创建独立虚拟环境：
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r python/requirements-dev.txt
+make test-python
+```
+
+侧车运行后可执行 `make benchmark-python`，它读取固定 fixture 并输出跨语言边界、p50/p95、分配量及 Recall@K/Precision@K；设置 `AGENTCANVAS_ELASTICSEARCH_URL` 时会额外对真实 Elasticsearch 索引测量，否则使用确定性的本地检索代理。
+
+评估新切片策略时可同时设置 `python_bridge.shadow_enabled: true`。Worker 会保留 Go 的 `fixed_token`/`recursive` 结果，只限时调用 Python 并输出边界、token、元数据和延迟对比日志；shadow 失败不会污染入库结果。
+
 数据库基线不提供旧数据升级能力。部署和本地切换必须使用空 MySQL 数据库，并重新初始化本项目的 Redis key、Elasticsearch index 与 Milvus collection。不要对无法确认归属的外部实例执行清理。
 
 ## 常用命令
@@ -194,6 +219,8 @@ make worker                 # 启动异步 Worker
 make migrate                # 执行数据库基线
 make backfill-context-index # 登记统一上下文索引 Outbox
 make test                   # Go 测试
+make test-python            # Python Bridge 测试
+make benchmark-python       # 真实侧车跨语言基准（需设置 Bridge 环境变量）
 make test-web               # 前端测试
 make typecheck-web          # TypeScript 检查
 make lint                   # 静态检查
@@ -320,17 +347,12 @@ export AGENTCANVAS_CONFIG_PATH="/absolute/path/to/config.yaml"
 - `memory_dream`、`working_memory`：记忆提取与运行缓存。
 - `reflection_queue`：Reflection Outbox、JetStream、lease 与 DLQ。
 - `minio`、`ocr`：文档存储与解析。
+- `python_bridge`：侧车开关、gRPC target、令牌环境变量、超时、消息/并发限制以及切片和工具白名单。
 - `security`、`oauth`：密钥、Token 与 GitHub OAuth。
 - `git_workspace`：允许的绝对仓库根目录、worktree 目录、Git/fetch 超时、输出与文件读取上限、prune TTL、自动初始化和 Git identity。API、Worker 与 Pruner 必须使用完全相同的 `allowed_roots` 与挂载。
 
-## 未来扩展边界
+## 多语言扩展边界
 
-本次重构不实现 RPC 或 Python Bridge，但保留了清晰入口：
+当前由 Go `agentruntime.AgentRuntime` 保留运行、审批、事件、Memory、Reflection 与 Checkpoint 的权威状态；Python Bridge 只提供窄领域 Chunker 和低风险 Tool。Python 不直接访问 AgentCanvas 数据库、对象存储、宿主机文件或用户密钥。
 
-- `agentruntime.AgentRuntime`：统一运行协议，可由未来 Gateway 或 RPC Server 调用。
-- `toolruntime.RuntimeTool`：外部能力适配协议，可接 Python Tool Host。
-- MCP 与 Sandbox：隔离第三方工具和本地代码执行。
-- 动态子 Agent 调度端口：可扩展远程 Agent、分布式 Worker 与跨进程事件传输。
-- Run Event / Checkpoint：为 CLI、Desktop、Gateway 与远程恢复提供稳定状态协议。
-
-建议未来按 `Gateway → RunRequest → Agent Runtime → Event Stream` 扩展，不在运行时内部引入第二套执行内核。
+未来若引入 Python Agent Loop 或 LangGraph，应作为可选 Workflow Runtime 或远程子 Agent，继续复用 Go 的 Run/Event/Approval/Checkpoint 契约，不建立第二套持久化模型。详细计划见 `doc/python-bridge-plan.md`。
