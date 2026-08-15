@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -16,10 +17,52 @@ import (
 	cryptoinfra "agentcanvas/internal/infrastructure/crypto"
 	"agentcanvas/internal/infrastructure/llm"
 	"agentcanvas/internal/infrastructure/parser"
+	pythonbridgeinfra "agentcanvas/internal/infrastructure/pythonbridge"
 	"agentcanvas/internal/infrastructure/queue"
 
 	"gorm.io/gorm"
 )
+
+func TestProcessJobViaLivePythonBridge(t *testing.T) {
+	target := os.Getenv("AGENTCANVAS_PYTHON_BRIDGE_TEST_TARGET")
+	if target == "" {
+		t.Skip("AGENTCANVAS_PYTHON_BRIDGE_TEST_TARGET is not set")
+	}
+	bridge, err := pythonbridgeinfra.NewClient(pythonbridgeinfra.Config{
+		Enabled: true, Target: target, AuthToken: os.Getenv("AGENTCANVAS_PYTHON_BRIDGE_TOKEN"),
+		ConnectTimeout: 3 * time.Second, RequestTimeout: 3 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = bridge.Close() })
+	registry := chunker.NewDefaultRegistry()
+	registry.Register(pythonbridgeinfra.NewChunker(bridge, "python:recursive"))
+	kbs := &fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{10: {
+		ID: 10, OwnerID: 1, RetrievalMode: knowledge.RetrievalModeKeyword,
+		ChunkMethod: "python:recursive", ChunkSize: 12, ChunkOverlap: 2,
+	}}}
+	docs := &fakeDocumentRepo{items: map[int64]*knowledge.Document{20: {
+		ID: 20, OwnerID: 1, KBID: 10, Name: "Bridge", OriginalFilename: "bridge.md", FileType: "md",
+		ObjectKey: "raw/bridge.md", ParserStatus: knowledge.DocumentStatusPending, Enabled: true,
+	}}}
+	chunks, indexer := &fakeChunkRepo{}, &fakeIndexer{}
+	service := NewService(
+		kbs, docs, chunks, &fakeJobRepo{}, nil,
+		fakeReadStorage{objects: map[string]string{"raw/bridge.md": "# Bridge\n\n第一段内容。第二段内容。"}},
+		parser.NewTextParser(), registry, indexer, nil, nil, "test_chunks",
+	)
+	if err := service.ProcessJob(context.Background(), &knowledge.IngestionJob{ID: 30, OwnerID: 1, KBID: 10, DocumentID: 20}); err != nil {
+		t.Fatalf("ProcessJob() error = %v", err)
+	}
+	if docs.items[20].ParserStatus != knowledge.DocumentStatusCompleted || len(chunks.byDocument[20]) == 0 || len(indexer.indexed) == 0 {
+		t.Fatalf("Python ingestion did not complete: doc=%+v chunks=%+v indexed=%+v", docs.items[20], chunks.byDocument[20], indexer.indexed)
+	}
+	var metadata map[string]any
+	if err := json.Unmarshal([]byte(chunks.byDocument[20][0].MetadataJSON), &metadata); err != nil || metadata["chunk_method"] != "python:recursive" {
+		t.Fatalf("unexpected Python chunk metadata: metadata=%+v error=%v", metadata, err)
+	}
+}
 
 func TestProcessJobParsesChunksIndexesAndCompletes(t *testing.T) {
 	ctx := context.Background()

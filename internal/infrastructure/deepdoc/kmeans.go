@@ -6,10 +6,10 @@ import (
 )
 
 type KMeans1D struct {
-	K        int
-	Centers  []float64
-	Labels   []int
-	MaxIter  int
+	K       int
+	Centers []float64
+	Labels  []int
+	MaxIter int
 }
 
 func KMeans1DClustering(values []float64, k int) *KMeans1D {

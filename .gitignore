@@ -16,12 +16,17 @@ dist/
 tmp/
 .tmp-go-build/
 .cache/
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
 
 # OS files
 .DS_Store
 
 # Local documentation and skills
 doc/*
+!doc/python-bridge-plan.md
 skill/*
 
 # doc / study

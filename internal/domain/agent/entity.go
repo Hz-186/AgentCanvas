@@ -37,6 +37,7 @@ type Definition struct {
 	Temperature               *float64        `json:"temperature,omitempty"`
 	ToolPackIDs               []int64         `json:"tool_pack_ids,omitempty"`
 	ToolIDs                   []int64         `json:"tool_ids,omitempty"`
+	PythonToolNames           []string        `json:"python_tool_names,omitempty"`
 	SkillIDs                  []int64         `json:"skill_ids,omitempty"`
 	SkillLoadingMode          string          `json:"skill_loading_mode,omitempty"`
 	KnowledgeIDs              []int64         `json:"knowledge_ids,omitempty"`
@@ -106,6 +107,7 @@ func (d Definition) Normalize() Definition {
 	if strings.TrimSpace(d.OutputMode) == "" {
 		d.OutputMode = "final_answer"
 	}
+	d.PythonToolNames = normalizeNames(d.PythonToolNames)
 	return d
 }
 
@@ -141,6 +143,9 @@ func (d Definition) Validate() error {
 	if d.MaxSubagentDepth < 1 || d.MaxSubagentDepth > 5 {
 		return fmt.Errorf("max_subagent_depth must be 1..5")
 	}
+	if len(d.PythonToolNames) > 64 {
+		return fmt.Errorf("python_tool_names must contain at most 64 tools")
+	}
 	if d.KnowledgeTopK < 1 || d.KnowledgeTopK > 20 {
 		return fmt.Errorf("knowledge_top_k must be 1..20")
 	}
@@ -175,18 +180,35 @@ func (d Definition) Snapshot() (json.RawMessage, string, error) {
 func (d Definition) ResourceSnapshot() (json.RawMessage, string, string, error) {
 	resources := map[string]any{
 		"tool_pack_ids": d.ToolPackIDs, "tool_ids": d.ToolIDs, "skill_ids": d.SkillIDs,
-		"knowledge_ids": d.KnowledgeIDs, "mcp_server_ids": d.MCPServerIDs,
+		"python_tool_names": d.PythonToolNames, "knowledge_ids": d.KnowledgeIDs, "mcp_server_ids": d.MCPServerIDs,
 	}
 	raw, err := json.Marshal(resources)
 	if err != nil {
 		return nil, "", "", err
 	}
-	toolRaw, err := json.Marshal(map[string]any{"tool_pack_ids": d.ToolPackIDs, "tool_ids": d.ToolIDs, "mcp_server_ids": d.MCPServerIDs})
+	toolRaw, err := json.Marshal(map[string]any{"tool_pack_ids": d.ToolPackIDs, "tool_ids": d.ToolIDs, "python_tool_names": d.PythonToolNames, "mcp_server_ids": d.MCPServerIDs})
 	if err != nil {
 		return nil, "", "", err
 	}
 	toolSum, ruleSum := sha256.Sum256(toolRaw), sha256.Sum256(d.RulesJSON)
 	return raw, hex.EncodeToString(ruleSum[:]), hex.EncodeToString(toolSum[:]), nil
+}
+
+func normalizeNames(names []string) []string {
+	seen := make(map[string]struct{}, len(names))
+	result := make([]string, 0, len(names))
+	for _, name := range names {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		if _, exists := seen[name]; exists {
+			continue
+		}
+		seen[name] = struct{}{}
+		result = append(result, name)
+	}
+	return result
 }
 
 type Agent struct {

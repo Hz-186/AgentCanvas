@@ -1,0 +1,116 @@
+syntax = "proto3";
+
+package agentcanvas.pythonbridge.v1;
+
+option go_package = "agentcanvas/internal/infrastructure/pythonbridge/gen;pythonbridge";
+
+message HealthRequest {}
+
+message HealthResponse {
+  string status = 1;
+  string service_version = 2;
+  string protocol_version = 3;
+  string message = 4;
+}
+
+message CapabilitiesRequest {}
+
+message ToolCapability {
+  string name = 1;
+  string description = 2;
+  string parameters_json = 3;
+  string risk_level = 4;
+  string side_effect = 5;
+  string version = 6;
+}
+
+message CapabilitiesResponse {
+  string protocol_version = 1;
+  string service_version = 2;
+  repeated string chunk_methods = 3;
+  repeated ToolCapability tools = 4;
+  uint32 max_concurrency = 5;
+  uint64 max_input_bytes = 6;
+  uint64 max_output_bytes = 7;
+}
+
+message DocumentBlock {
+  string id = 1;
+  string type = 2;
+  string text = 3;
+  optional int32 page_no = 4;
+  string bbox_json = 5;
+  string metadata_json = 6;
+}
+
+message ParsedDocument {
+  string text = 1;
+  string file_type = 2;
+  repeated DocumentBlock blocks = 3;
+}
+
+message ChunkPolicy {
+  int32 chunk_size = 1;
+  int32 overlap = 2;
+}
+
+message ChunkDocumentRequest {
+  string request_id = 1;
+  string method = 2;
+  ParsedDocument document = 3;
+  ChunkPolicy policy = 4;
+}
+
+message Chunk {
+  int32 index = 1;
+  string content = 2;
+  int32 token_count = 3;
+  int32 char_count = 4;
+  string section_title = 5;
+  optional int32 page_no = 6;
+  string metadata_json = 7;
+}
+
+message ChunkDocumentResponse {
+  repeated Chunk chunks = 1;
+  string algorithm = 2;
+  string tokenizer = 3;
+  string implementation_version = 4;
+}
+
+message ToolRunContext {
+  int64 owner_id = 1;
+  int64 agent_id = 2;
+  int64 agent_release_id = 3;
+  int64 run_id = 4;
+  int64 conversation_id = 5;
+  int32 delegation_depth = 6;
+}
+
+message ListToolsRequest {}
+
+message ListToolsResponse {
+  repeated ToolCapability tools = 1;
+}
+
+message ExecuteToolRequest {
+  string request_id = 1;
+  string tool_name = 2;
+  string arguments_json = 3;
+  ToolRunContext context = 4;
+}
+
+message ExecuteToolResponse {
+  string content_json = 1;
+  string content_text = 2;
+  bool is_error = 3;
+  string metadata_json = 4;
+}
+
+service PythonBridge {
+  rpc Health(HealthRequest) returns (HealthResponse);
+  rpc GetCapabilities(CapabilitiesRequest) returns (CapabilitiesResponse);
+  rpc ChunkDocument(ChunkDocumentRequest) returns (ChunkDocumentResponse);
+  rpc ListTools(ListToolsRequest) returns (ListToolsResponse);
+  rpc ExecuteTool(ExecuteToolRequest) returns (ExecuteToolResponse);
+}

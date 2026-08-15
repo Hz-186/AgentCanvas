@@ -108,11 +108,12 @@ type UpdateAgentRequest struct {
 }
 
 type AgentEditableSettings struct {
-	ProviderID   int64    `json:"provider_id"`
-	Model        string   `json:"model"`
-	SystemPrompt string   `json:"system_prompt"`
-	KnowledgeIDs []int64  `json:"knowledge_ids"`
-	Temperature  *float64 `json:"temperature,omitempty"`
+	ProviderID      int64    `json:"provider_id"`
+	Model           string   `json:"model"`
+	SystemPrompt    string   `json:"system_prompt"`
+	KnowledgeIDs    []int64  `json:"knowledge_ids"`
+	PythonToolNames []string `json:"python_tool_names,omitempty"`
+	Temperature     *float64 `json:"temperature,omitempty"`
 }
 
 type AgentView struct {
@@ -134,7 +135,8 @@ func ManagedDefinition(settings AgentEditableSettings) agentdomain.Definition {
 	return agentdomain.Definition{
 		ProviderID: settings.ProviderID, Model: strings.TrimSpace(settings.Model),
 		SystemPrompt: strings.TrimSpace(settings.SystemPrompt), Temperature: settings.Temperature,
-		Mode: "react", KnowledgeIDs: normalizeIDs(settings.KnowledgeIDs), KnowledgeTopK: 5, KnowledgeMode: "hybrid",
+		PythonToolNames: append([]string(nil), settings.PythonToolNames...),
+		Mode:            "react", KnowledgeIDs: normalizeIDs(settings.KnowledgeIDs), KnowledgeTopK: 5, KnowledgeMode: "hybrid",
 		SkillLoadingMode: "auto", MemoryEnabled: true, ReflectionEnabled: true, AllowSubagents: true,
 		MaxIterations: 8, MaxToolCalls: 16, MaxExecutionTimeMS: 120000, MaxToolTimeoutMS: 30000,
 		MaxToolOutputBytes: 512 * 1024, MaxParallelSubAgents: 4, MaxSubagentDepth: 3, OutputMode: "final_answer",
@@ -159,7 +161,7 @@ func normalizeIDs(ids []int64) []int64 {
 
 func settingsFromDefinition(definition agentdomain.Definition) AgentEditableSettings {
 	return AgentEditableSettings{ProviderID: definition.ProviderID, Model: definition.Model, SystemPrompt: definition.SystemPrompt,
-		KnowledgeIDs: append([]int64(nil), definition.KnowledgeIDs...), Temperature: definition.Temperature}
+		KnowledgeIDs: append([]int64(nil), definition.KnowledgeIDs...), PythonToolNames: append([]string(nil), definition.PythonToolNames...), Temperature: definition.Temperature}
 }
 
 func viewAgent(item *agentdomain.Agent) *AgentView {
@@ -396,6 +398,7 @@ func (s *Service) Capabilities(ctx context.Context, ownerID, releaseID int64) (m
 	return map[string]any{
 		"release_id": release.ID, "checksum": release.Checksum, "mode": d.Mode,
 		"tools": len(d.ToolIDs), "tool_packs": len(d.ToolPackIDs), "skills": len(d.SkillIDs),
+		"python_tools":    len(d.PythonToolNames),
 		"knowledge_bases": len(d.KnowledgeIDs), "mcp_servers": len(d.MCPServerIDs),
 		"dynamic_subagents": d.AllowSubagents,
 		"memory":            d.MemoryEnabled, "reflection": d.ReflectionEnabled,

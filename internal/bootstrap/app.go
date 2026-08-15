@@ -31,6 +31,7 @@ import (
 	"agentcanvas/internal/infrastructure/llm"
 	mysqlinfra "agentcanvas/internal/infrastructure/mysql"
 	oauthinfra "agentcanvas/internal/infrastructure/oauth"
+	pythonbridgeinfra "agentcanvas/internal/infrastructure/pythonbridge"
 	redisinfra "agentcanvas/internal/infrastructure/redis"
 	contextretrieval "agentcanvas/internal/infrastructure/retrieval"
 	esretrieval "agentcanvas/internal/infrastructure/retrieval/elasticsearch"
@@ -261,6 +262,7 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 		retrievalService,
 		retrievalStore,
 	)
+	knowledgeService.ConfigurePythonChunking(cfg.PythonBridge.AllowExperimentalChunking)
 	jobQueue := infraDeps.JobQueue
 	dreamCfg := memoryusecase.NewDreamConfig(cfg.MemoryDream)
 	if jobQueue != nil {
@@ -279,6 +281,30 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 	}
 	providerLoader := agentruntime.ProviderLoader{Providers: providerRepo, Secrets: secretBox}
 	toolRegistry := toolruntime.BasicRegistry{Tools: toolDefinitionRepo, Invocations: toolInvocationRepo}
+	var pythonBridge *pythonbridgeinfra.Client
+	if cfg.PythonBridge.Enabled {
+		pythonBridge, err = pythonbridgeinfra.NewClient(pythonbridgeinfra.Config{
+			Enabled:         true,
+			Target:          cfg.PythonBridge.Target,
+			AuthToken:       os.Getenv(cfg.PythonBridge.AuthTokenEnv),
+			ConnectTimeout:  time.Duration(cfg.PythonBridge.ConnectTimeoutSeconds) * time.Second,
+			RequestTimeout:  time.Duration(cfg.PythonBridge.RequestTimeoutSeconds) * time.Second,
+			MaxSendBytes:    cfg.PythonBridge.MaxSendBytes,
+			MaxReceiveBytes: cfg.PythonBridge.MaxReceiveBytes,
+			MaxConcurrency:  cfg.PythonBridge.MaxConcurrency,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("init Python bridge: %w", err)
+		}
+		if _, err := pythonBridge.GetCapabilities(ctx); err != nil {
+			_ = pythonBridge.Close()
+			return nil, fmt.Errorf("handshake with Python bridge: %w", err)
+		}
+		go func() {
+			<-ctx.Done()
+			_ = pythonBridge.Close()
+		}()
+	}
 	agentRuntime, err := agentruntime.New(agentruntime.Deps{
 		Retriever: retrievalService, LLM: chatClient, Providers: providerLoader,
 		Messages: agentruntime.ConversationMessageWriter{Messages: messageRepo}, MessageHistory: messageRepo,
@@ -292,6 +318,7 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 		ToolCalling: toolCallingClient, ToolRegistry: toolRegistry, Reflections: reflectionService,
 		Sandbox: sandbox.NewDockerRunner(), ArchivalVecStore: archivalVecStore, ContextIndex: contextIndex,
 		Embedder: embeddingClient, Git: gitService,
+		PythonBridge: pythonBridge, PythonToolAllowlist: cfg.PythonBridge.AllowedTools,
 		FileReadMaxChars: cfg.GitWorkspace.FileReadMaxChars, MaxOutputBytes: cfg.GitWorkspace.MaxOutputBytes,
 		WorkspaceTimeout: time.Duration(cfg.GitWorkspace.GitCommandTimeoutSeconds) * time.Second,
 	})

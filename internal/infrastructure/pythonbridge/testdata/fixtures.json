@@ -1,0 +1,69 @@
+[
+  {
+    "name": "english_markdown",
+    "method": "recursive",
+    "chunk_size": 16,
+    "overlap": 4,
+    "text": "ignored because structured blocks are present",
+    "blocks": [
+      {"id": "h1", "type": "heading", "text": "# Retrieval"},
+      {"id": "b1", "type": "paragraph", "text": "Retrieval combines keyword matching with vector search.", "metadata": {"source": "fixture"}},
+      {"id": "h2", "type": "heading", "text": "## Security"},
+      {"id": "b2", "type": "paragraph", "text": "Security policies keep tools isolated and auditable."}
+    ],
+    "queries": [
+      {"term": "retrieval", "expected": ["Retrieval"]},
+      {"term": "security", "expected": ["Security"]}
+    ],
+    "required_metadata": ["block_ids"]
+  },
+  {
+    "name": "chinese_long_text",
+    "method": "recursive",
+    "chunk_size": 24,
+    "overlap": 4,
+    "text": "中文检索需要保留标题、页码和段落边界。",
+    "repeat_text": "普通段落内容需要稳定切分并保留确定性。",
+    "repeat_count": 80,
+    "queries": [
+      {"term": "中文检索", "expected": ["中文检索"]}
+    ]
+  },
+  {
+    "name": "faq_with_page",
+    "method": "recursive",
+    "chunk_size": 64,
+    "overlap": 8,
+    "text": "ignored",
+    "blocks": [
+      {"id": "faq1", "type": "faq", "text": "问题：什么是 Python Bridge？\n答案：它是一个独立的低风险能力侧车。", "page_no": 7, "metadata": {"chunk_hint": "single_faq"}}
+    ],
+    "queries": [
+      {"term": "Python Bridge", "expected": ["Python Bridge"]}
+    ],
+    "required_metadata": ["page_no"]
+  },
+  {
+    "name": "layout_metadata",
+    "method": "fixed_token",
+    "chunk_size": 12,
+    "overlap": 2,
+    "text": "# Layout\nA table and a list retain source metadata.",
+    "blocks": [
+      {"id": "h1", "type": "heading", "text": "# Layout"},
+      {"id": "list1", "type": "list", "text": "- first\n- second", "page_no": 3, "metadata": {"source": "layout"}},
+      {"id": "p1", "type": "paragraph", "text": "A table and a list retain source metadata.", "page_no": 3}
+    ],
+    "queries": [
+      {"term": "metadata", "expected": ["metadata"]}
+    ],
+    "required_metadata": ["chunk_method"]
+  },
+  {
+    "name": "empty_document",
+    "method": "recursive",
+    "chunk_size": 16,
+    "overlap": 2,
+    "text": ""
+  }
+]

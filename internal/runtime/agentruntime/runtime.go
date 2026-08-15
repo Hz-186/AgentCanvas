@@ -23,6 +23,7 @@ import (
 	"agentcanvas/internal/domain/skill"
 	"agentcanvas/internal/domain/tool"
 	gitinfra "agentcanvas/internal/infrastructure/git"
+	pythonbridgeinfra "agentcanvas/internal/infrastructure/pythonbridge"
 	memoryretrieval "agentcanvas/internal/infrastructure/retrieval"
 	"agentcanvas/internal/infrastructure/vectorstore"
 	runtimeagent "agentcanvas/internal/runtime/agent"
@@ -37,36 +38,39 @@ import (
 )
 
 type runtimeCore struct {
-	LLM                llm.ToolCallingClient
-	Providers          ProviderConfigLoader
-	Tools              toolruntime.Registry
-	ToolPacks          tool.PackRepository
-	Skills             skill.Repository
-	Audits             audit.Repository
-	MCPServers         tool.MCPRepository
-	Retriever          retrieval.Retriever
-	MemoryReader       MemoryBatchReader
-	MemoryRetriever    memory.SemanticRetriever
-	Memories           memory.Repository
-	MemoryLogs         memory.WriteLogRepository
-	MemoryRecallLogs   memory.RecallLogRepository
-	MemoryCandidates   memory.CandidateWriter
-	WorkingMemory      memory.WorkingMemoryRepository
-	SubagentDispatcher toolruntime.SubagentDispatcher
-	Reflections        reflection.Advisor
-	Sandbox            sandbox.Runner
-	MessageHistory     MessageHistoryReader
-	Coordinator        *conversationcontext.Coordinator
-	Compactions        conversation.CompactionRepository
-	SessionSearch      conversation.MessageSearchIndex
-	ArchivalVecStore   vectorstore.Store
-	ContextIndex       contextresource.Index
-	Embedder           llm.EmbeddingClient
-	Git                *gitinfra.Service
-	FileReadMaxChars   int
-	MaxOutputBytes     int
-	WorkspaceTimeout   time.Duration
-	SkillRoot          string
+	LLM                 llm.ToolCallingClient
+	Providers           ProviderConfigLoader
+	Tools               toolruntime.Registry
+	ToolPacks           tool.PackRepository
+	Skills              skill.Repository
+	Audits              audit.Repository
+	MCPServers          tool.MCPRepository
+	Retriever           retrieval.Retriever
+	MemoryReader        MemoryBatchReader
+	MemoryRetriever     memory.SemanticRetriever
+	Memories            memory.Repository
+	MemoryLogs          memory.WriteLogRepository
+	MemoryRecallLogs    memory.RecallLogRepository
+	MemoryCandidates    memory.CandidateWriter
+	WorkingMemory       memory.WorkingMemoryRepository
+	SubagentDispatcher  toolruntime.SubagentDispatcher
+	Reflections         reflection.Advisor
+	Sandbox             sandbox.Runner
+	MessageHistory      MessageHistoryReader
+	Coordinator         *conversationcontext.Coordinator
+	Compactions         conversation.CompactionRepository
+	SessionSearch       conversation.MessageSearchIndex
+	ArchivalVecStore    vectorstore.Store
+	ContextIndex        contextresource.Index
+	Embedder            llm.EmbeddingClient
+	Git                 *gitinfra.Service
+	PythonBridge        *pythonbridgeinfra.Client
+	PythonToolAllowlist []string
+	ToolInvocations     tool.InvocationRepository
+	FileReadMaxChars    int
+	MaxOutputBytes      int
+	WorkspaceTimeout    time.Duration
+	SkillRoot           string
 
 	OnExtractTrigger func(ctx context.Context, ownerID int64, conversationID int64, roundNumber int)
 }
@@ -105,6 +109,7 @@ type agentRuntimeConfig struct {
 	MemoryEnabledSet                bool                        `json:"-"`
 	MaxIterations                   int                         `json:"max_iterations"`
 	MaxToolCalls                    int                         `json:"max_tool_calls"`
+	PythonToolNames                 []string                    `json:"python_tool_names"`
 	MaxExecutionTimeMS              int                         `json:"max_execution_time_ms"`
 	MaxParallelSubAgents            int                         `json:"max_parallel_sub_agents"`
 	AllowSubagents                  bool                        `json:"allow_subagents"`
@@ -183,6 +188,14 @@ func validateAgentRuntimeConfig(cfg agentRuntimeConfig, requireProvider bool) er
 	}
 	if cfg.MaxSubagentDepth < 0 || cfg.MaxSubagentDepth > 5 {
 		return fmt.Errorf("%w: agent runtime max_subagent_depth must be <= 5", agenterrors.ErrInvalidInput)
+	}
+	if len(cfg.PythonToolNames) > 64 {
+		return fmt.Errorf("%w: agent runtime python_tool_names must contain at most 64 tools", agenterrors.ErrInvalidInput)
+	}
+	for _, name := range cfg.PythonToolNames {
+		if strings.TrimSpace(name) == "" {
+			return fmt.Errorf("%w: agent runtime python_tool_names contains an empty name", agenterrors.ErrInvalidInput)
+		}
 	}
 	if cfg.Mode != "" && cfg.Mode != "react" && cfg.Mode != "plan_execute" {
 		return fmt.Errorf("%w: agent runtime mode must be react or plan_execute", agenterrors.ErrInvalidInput)
@@ -1152,6 +1165,25 @@ func (n runtimeCore) loadTools(ctx context.Context, ownerID int64, cfg agentRunt
 		}
 		tools = append(tools, toolruntime.PythonSandboxTool{Runner: n.Sandbox})
 	}
+	if len(cfg.PythonToolNames) > 0 {
+		if n.PythonBridge == nil {
+			return nil, fmt.Errorf("agent runtime Python bridge is not configured")
+		}
+		capabilities, err := n.PythonBridge.GetCapabilities(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("load Python bridge capabilities: %w", err)
+		}
+		requested := uniqueNames(cfg.PythonToolNames)
+		allowed := intersectNames(requested, n.PythonToolAllowlist)
+		if len(allowed) != len(requested) {
+			return nil, fmt.Errorf("agent runtime requested a Python tool outside the global allowlist")
+		}
+		loaded := pythonbridgeinfra.RuntimeTools(n.PythonBridge, capabilities, allowed, n.ToolInvocations)
+		if len(loaded) != len(uniqueNames(allowed)) {
+			return nil, fmt.Errorf("Python bridge did not provide all requested tools")
+		}
+		tools = append(tools, loaded...)
+	}
 	if cfg.MemoryEnabled {
 		if n.ContextIndex == nil {
 			return nil, fmt.Errorf("agent runtime unified context index is not configured")
@@ -1186,6 +1218,42 @@ func (n runtimeCore) loadTools(ctx context.Context, ownerID int64, cfg agentRunt
 		return nil, err
 	}
 	return append(tools, loaded...), nil
+}
+
+func intersectNames(requested, globalAllowlist []string) []string {
+	requested = uniqueNames(requested)
+	globalAllowlist = uniqueNames(globalAllowlist)
+	if len(globalAllowlist) == 0 {
+		return nil
+	}
+	allowed := make(map[string]struct{}, len(globalAllowlist))
+	for _, name := range globalAllowlist {
+		allowed[name] = struct{}{}
+	}
+	result := make([]string, 0, len(requested))
+	for _, name := range requested {
+		if _, ok := allowed[name]; ok {
+			result = append(result, name)
+		}
+	}
+	return result
+}
+
+func uniqueNames(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	return result
 }
 
 func (n runtimeCore) loadSkillDefinitions(ctx context.Context, ownerID int64, ids []int64) ([]skill.Skill, error) {

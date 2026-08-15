@@ -58,6 +58,7 @@ const emptySettings = (providerID = 0): AgentEditableSettings => ({
   model: '',
   system_prompt: '',
   knowledge_ids: [],
+  python_tool_names: [],
 });
 
 function eventPayload(event: RunEvent): Record<string, unknown> {
@@ -225,7 +226,7 @@ export function ChatPage() {
 
   useEffect(() => {
     if (!currentAgent) return;
-    setSettings({ ...currentAgent.settings, knowledge_ids: [...(currentAgent.settings.knowledge_ids ?? [])] });
+    setSettings({ ...currentAgent.settings, knowledge_ids: [...(currentAgent.settings.knowledge_ids ?? [])], python_tool_names: [...(currentAgent.settings.python_tool_names ?? [])] });
     setSettingsSaved(false);
   }, [currentAgent?.id, currentAgent?.updated_at]);
 

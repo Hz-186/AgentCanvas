@@ -18,8 +18,8 @@ func NewRect(x, y, w, h float64) Rect {
 	return Rect{Left: x, Top: y, Right: x + w, Bottom: y + h}
 }
 
-func (r Rect) Width() float64  { return r.Right - r.Left }
-func (r Rect) Height() float64 { return r.Bottom - r.Top }
+func (r Rect) Width() float64   { return r.Right - r.Left }
+func (r Rect) Height() float64  { return r.Bottom - r.Top }
 func (r Rect) CenterX() float64 { return (r.Left + r.Right) / 2 }
 func (r Rect) CenterY() float64 { return (r.Top + r.Bottom) / 2 }
 

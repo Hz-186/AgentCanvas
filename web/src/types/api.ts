@@ -474,6 +474,7 @@ export interface AgentEditableSettings {
   model: string;
   system_prompt: string;
   knowledge_ids: number[];
+  python_tool_names?: string[];
   temperature?: number;
 }
 

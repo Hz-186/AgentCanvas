@@ -15,6 +15,7 @@ import (
 	"agentcanvas/internal/domain/tool"
 	gitinfra "agentcanvas/internal/infrastructure/git"
 	"agentcanvas/internal/infrastructure/llm"
+	pythonbridgeinfra "agentcanvas/internal/infrastructure/pythonbridge"
 	"agentcanvas/internal/infrastructure/vectorstore"
 	"agentcanvas/internal/runtime/conversationcontext"
 	"agentcanvas/internal/runtime/sandbox"
@@ -74,6 +75,8 @@ type Deps struct {
 	ContextIndex            contextresource.Index
 	Embedder                llm.EmbeddingClient
 	Git                     *gitinfra.Service
+	PythonBridge            *pythonbridgeinfra.Client
+	PythonToolAllowlist     []string
 	FileReadMaxChars        int
 	MaxOutputBytes          int
 	WorkspaceTimeout        time.Duration
@@ -82,36 +85,39 @@ type Deps struct {
 func buildRuntimeCore(deps Deps) runtimeCore {
 	workspaceRoot, _ := os.Getwd()
 	return runtimeCore{
-		LLM:                deps.ToolCalling,
-		Providers:          deps.Providers,
-		Tools:              deps.ToolRegistry,
-		ToolPacks:          deps.ToolPacks,
-		Skills:             deps.Skills,
-		Audits:             deps.Audits,
-		MCPServers:         deps.MCPServers,
-		Retriever:          deps.Retriever,
-		MemoryRetriever:    deps.MemoryRetriever,
-		Memories:           deps.Memories,
-		MemoryReader:       deps.MemoryReader,
-		MemoryLogs:         deps.MemoryWriteLogs,
-		MemoryRecallLogs:   deps.MemoryRecallLogs,
-		MemoryCandidates:   deps.MemoryCandidates,
-		WorkingMemory:      deps.WorkingMemory,
-		SubagentDispatcher: deps.SubagentDispatcher,
-		Reflections:        deps.Reflections,
-		Sandbox:            deps.Sandbox,
-		MessageHistory:     deps.MessageHistory,
-		Coordinator:        conversationCoordinator(deps),
-		SessionSearch:      deps.SessionSearch,
-		ArchivalVecStore:   deps.ArchivalVecStore,
-		ContextIndex:       deps.ContextIndex,
-		Embedder:           deps.Embedder,
-		Git:                deps.Git,
-		FileReadMaxChars:   deps.FileReadMaxChars,
-		MaxOutputBytes:     deps.MaxOutputBytes,
-		WorkspaceTimeout:   deps.WorkspaceTimeout,
-		SkillRoot:          workspaceRoot,
-		OnExtractTrigger:   deps.MemoryExtractionTrigger,
+		LLM:                 deps.ToolCalling,
+		Providers:           deps.Providers,
+		Tools:               deps.ToolRegistry,
+		ToolPacks:           deps.ToolPacks,
+		Skills:              deps.Skills,
+		Audits:              deps.Audits,
+		MCPServers:          deps.MCPServers,
+		Retriever:           deps.Retriever,
+		MemoryRetriever:     deps.MemoryRetriever,
+		Memories:            deps.Memories,
+		MemoryReader:        deps.MemoryReader,
+		MemoryLogs:          deps.MemoryWriteLogs,
+		MemoryRecallLogs:    deps.MemoryRecallLogs,
+		MemoryCandidates:    deps.MemoryCandidates,
+		WorkingMemory:       deps.WorkingMemory,
+		SubagentDispatcher:  deps.SubagentDispatcher,
+		Reflections:         deps.Reflections,
+		Sandbox:             deps.Sandbox,
+		MessageHistory:      deps.MessageHistory,
+		Coordinator:         conversationCoordinator(deps),
+		SessionSearch:       deps.SessionSearch,
+		ArchivalVecStore:    deps.ArchivalVecStore,
+		ContextIndex:        deps.ContextIndex,
+		Embedder:            deps.Embedder,
+		Git:                 deps.Git,
+		PythonBridge:        deps.PythonBridge,
+		PythonToolAllowlist: append([]string(nil), deps.PythonToolAllowlist...),
+		ToolInvocations:     deps.ToolInvocations,
+		FileReadMaxChars:    deps.FileReadMaxChars,
+		MaxOutputBytes:      deps.MaxOutputBytes,
+		WorkspaceTimeout:    deps.WorkspaceTimeout,
+		SkillRoot:           workspaceRoot,
+		OnExtractTrigger:    deps.MemoryExtractionTrigger,
 	}
 }
 

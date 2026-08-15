@@ -6,22 +6,22 @@ import (
 )
 
 type TableCell struct {
-	Row      int
-	Col      int
-	RowSpan  int
-	ColSpan  int
-	Text     string
-	BBox     *Rect
+	Row     int
+	Col     int
+	RowSpan int
+	ColSpan int
+	Text    string
+	BBox    *Rect
 }
 
 type Table struct {
-	ID        string
-	PageNo    int
-	Caption   string
-	Cells     []TableCell
-	NumRows   int
-	NumCols   int
-	BBox      *Rect
+	ID      string
+	PageNo  int
+	Caption string
+	Cells   []TableCell
+	NumRows int
+	NumCols int
+	BBox    *Rect
 }
 
 type TableBuilder struct {
@@ -87,9 +87,9 @@ func (tb *TableBuilder) buildTable(rows []TextBox, index int) *Table {
 		}
 		for j, colText := range cols {
 			cells = append(cells, TableCell{
-				Row:    i,
-				Col:    j,
-				Text:   strings.TrimSpace(colText),
+				Row:     i,
+				Col:     j,
+				Text:    strings.TrimSpace(colText),
 				RowSpan: 1,
 				ColSpan: 1,
 			})

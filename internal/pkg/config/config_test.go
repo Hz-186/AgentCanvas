@@ -43,6 +43,29 @@ func TestQueueConfigDefaults(t *testing.T) {
 		cfg.GitWorkspace.MaxWorkspacesPerProject != 64 || cfg.GitWorkspace.PruneTTLHours != 24 {
 		t.Fatalf("unexpected Git workspace defaults: %+v", cfg.GitWorkspace)
 	}
+	if cfg.PythonBridge.Target != "127.0.0.1:50051" || cfg.PythonBridge.MaxConcurrency != 8 {
+		t.Fatalf("unexpected Python bridge defaults: %+v", cfg.PythonBridge)
+	}
+}
+
+func TestPythonBridgeConfigRejectsUnsupportedChunker(t *testing.T) {
+	cfg := Config{
+		MySQL:        MySQLConfig{DSN: "dsn"},
+		Security:     SecurityConfig{JWTSecret: "jwt", RefreshTokenPepper: "pepper", SecretEncryptKey: "secret"},
+		PythonBridge: PythonBridgeConfig{Enabled: true, AllowedChunkMethods: []string{"python:unknown"}},
+	}
+	cfg.setDefaults()
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected unsupported Python chunk method error")
+	}
+}
+
+func TestPythonBridgeConfigRejectsShadowWithoutBridge(t *testing.T) {
+	cfg := Config{PythonBridge: PythonBridgeConfig{ShadowEnabled: true}}
+	cfg.setDefaults()
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected shadow mode to require Python bridge")
+	}
 }
 
 func TestGitWorkspaceConfigRequiresSafeAbsoluteRootAndDirectoryName(t *testing.T) {

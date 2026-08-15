@@ -27,16 +27,17 @@ type FileStorage interface {
 }
 
 type Service struct {
-	kbs       knowledge.KnowledgeBaseRepository
-	documents knowledge.DocumentRepository
-	chunks    knowledge.ChunkRepository
-	jobs      knowledge.IngestionJobRepository
-	logs      knowledge.RetrievalLogRepository
-	audits    audit.Repository
-	storage   FileStorage
-	retriever retrieval.Retriever
-	indexer   retrieval.Indexer
-	jobQueue  queue.JobQueue
+	kbs                   knowledge.KnowledgeBaseRepository
+	documents             knowledge.DocumentRepository
+	chunks                knowledge.ChunkRepository
+	jobs                  knowledge.IngestionJobRepository
+	logs                  knowledge.RetrievalLogRepository
+	audits                audit.Repository
+	storage               FileStorage
+	retriever             retrieval.Retriever
+	indexer               retrieval.Indexer
+	jobQueue              queue.JobQueue
+	pythonChunkingEnabled bool
 }
 
 type ClientInfo struct {
@@ -46,6 +47,13 @@ type ClientInfo struct {
 
 func (s *Service) WithJobQueue(jobQueue queue.JobQueue) *Service {
 	s.jobQueue = jobQueue
+	return s
+}
+
+// ConfigurePythonChunking enables explicit python:* selection after the
+// shadow benchmark has been reviewed.
+func (s *Service) ConfigurePythonChunking(enabled bool) *Service {
+	s.pythonChunkingEnabled = enabled
 	return s
 }
 
@@ -147,7 +155,7 @@ func (s *Service) CreateKnowledgeBase(ctx context.Context, ownerID int64, req Cr
 	if chunkMethod == "" {
 		chunkMethod = knowledge.ChunkMethodRecursive
 	}
-	if !validChunkMethod(chunkMethod) {
+	if !s.validChunkMethod(chunkMethod) {
 		return nil, agenterrors.ErrInvalidInput
 	}
 	retrievalMode := strings.TrimSpace(req.RetrievalMode)
@@ -259,7 +267,7 @@ func (s *Service) UpdateKnowledgeBase(ctx context.Context, ownerID, id int64, re
 	}
 	if req.ChunkMethod != nil {
 		method := strings.TrimSpace(*req.ChunkMethod)
-		if !validChunkMethod(method) {
+		if !s.validChunkMethod(method) {
 			return nil, agenterrors.ErrInvalidInput
 		}
 		kb.ChunkMethod = method
@@ -443,10 +451,10 @@ func (s *Service) createIngestionJob(ctx context.Context, job *knowledge.Ingesti
 		ID:   strconv.FormatInt(job.ID, 10),
 		Type: job.JobType,
 		Payload: map[string]any{
-			"owner_id":          job.OwnerID,
+			"owner_id":         job.OwnerID,
 			"ingestion_job_id": job.ID,
-			"kb_id":             job.KBID,
-			"document_id":       job.DocumentID,
+			"kb_id":            job.KBID,
+			"document_id":      job.DocumentID,
 		},
 	})
 }
@@ -577,11 +585,18 @@ func requiresEmbedding(mode string) bool {
 
 func validChunkMethod(method string) bool {
 	switch method {
-	case knowledge.ChunkMethodFixedToken, knowledge.ChunkMethodRecursive:
+	case knowledge.ChunkMethodFixedToken, knowledge.ChunkMethodRecursive, "python:fixed_token", "python:recursive":
 		return true
 	default:
 		return false
 	}
+}
+
+func (s *Service) validChunkMethod(method string) bool {
+	if strings.HasPrefix(method, "python:") && !s.pythonChunkingEnabled {
+		return false
+	}
+	return validChunkMethod(method)
 }
 
 func (s *Service) GetIngestionJob(ctx context.Context, ownerID, id int64) (*knowledge.IngestionJob, error) {

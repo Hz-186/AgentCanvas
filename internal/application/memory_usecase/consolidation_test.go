@@ -10,11 +10,11 @@ import (
 func TestConsolidationService_UpgradeShortTerm(t *testing.T) {
 	repo := &fakeMemRepo{items: map[int64]*memory.Memory{}}
 	repo.Create(context.Background(), &memory.Memory{
-		OwnerID:   100, MemoryType: memory.TypeProfile, MemoryLevel: memory.LevelShortTerm,
+		OwnerID: 100, MemoryType: memory.TypeProfile, MemoryLevel: memory.LevelShortTerm,
 		Importance: 0.8, AccessCount: 5, Content: "high importance and accessed",
 	})
 	repo.Create(context.Background(), &memory.Memory{
-		OwnerID:   100, MemoryType: memory.TypeProfile, MemoryLevel: memory.LevelShortTerm,
+		OwnerID: 100, MemoryType: memory.TypeProfile, MemoryLevel: memory.LevelShortTerm,
 		Importance: 0.7, AccessCount: 1, Content: "low access",
 	})
 
@@ -38,11 +38,11 @@ func TestConsolidationService_UpgradeShortTerm(t *testing.T) {
 func TestConsolidationService_DowngradeWeak(t *testing.T) {
 	repo := &fakeMemRepo{items: map[int64]*memory.Memory{}}
 	repo.Create(context.Background(), &memory.Memory{
-		OwnerID:   100, MemoryType: memory.TypeProfile, MemoryLevel: memory.LevelLongTerm,
+		OwnerID: 100, MemoryType: memory.TypeProfile, MemoryLevel: memory.LevelLongTerm,
 		Importance: 0.1, AccessCount: 1, Content: "low importance long term",
 	})
 	repo.Create(context.Background(), &memory.Memory{
-		OwnerID:   100, MemoryType: memory.TypeProfile, MemoryLevel: memory.LevelLongTerm,
+		OwnerID: 100, MemoryType: memory.TypeProfile, MemoryLevel: memory.LevelLongTerm,
 		Importance: 0.9, AccessCount: 10, Content: "high importance long term",
 	})
 
@@ -59,11 +59,11 @@ func TestConsolidationService_DowngradeWeak(t *testing.T) {
 func TestConsolidationService_RunFullCycle(t *testing.T) {
 	repo := &fakeMemRepo{items: map[int64]*memory.Memory{}}
 	repo.Create(context.Background(), &memory.Memory{
-		OwnerID:   100, MemoryType: memory.TypeProfile, MemoryLevel: memory.LevelShortTerm,
+		OwnerID: 100, MemoryType: memory.TypeProfile, MemoryLevel: memory.LevelShortTerm,
 		Importance: 0.7, AccessCount: 4, Content: "should upgrade",
 	})
 	repo.Create(context.Background(), &memory.Memory{
-		OwnerID:   100, MemoryType: memory.TypeProfile, MemoryLevel: memory.LevelLongTerm,
+		OwnerID: 100, MemoryType: memory.TypeProfile, MemoryLevel: memory.LevelLongTerm,
 		Importance: 0.1, AccessCount: 1, Content: "should downgrade",
 	})
 

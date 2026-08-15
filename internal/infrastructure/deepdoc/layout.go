@@ -13,11 +13,11 @@ type TextChar struct {
 }
 
 type TextBox struct {
-	ID      string
-	Text    string
-	Rect    Rect
-	PageNo  int
-	Type    string
+	ID     string
+	Text   string
+	Rect   Rect
+	PageNo int
+	Type   string
 }
 
 type Section struct {

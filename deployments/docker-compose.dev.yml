@@ -22,6 +22,7 @@ services:
       - "8080:8080"
     environment:
       AGENTCANVAS_CONFIG_PATH: /app/configs/config.yaml
+      AGENTCANVAS_PYTHON_BRIDGE_TOKEN: ${AGENTCANVAS_PYTHON_BRIDGE_TOKEN:-local-dev-python-bridge-token}
     volumes:
       # Set AGENTCANVAS_WORKSPACE_ROOT to one absolute host directory shared by API, worker, and pruner.
       # Project paths stored in Docker must use the matching container prefix: /workspaces/<repo>.
@@ -30,6 +31,8 @@ services:
       migrate:
         condition: service_completed_successfully
       mysql:
+        condition: service_healthy
+      python-bridge:
         condition: service_healthy
       redis:
         condition: service_healthy
@@ -51,12 +54,15 @@ services:
     command: ["/app/worker"]
     environment:
       AGENTCANVAS_CONFIG_PATH: /app/configs/config.yaml
+      AGENTCANVAS_PYTHON_BRIDGE_TOKEN: ${AGENTCANVAS_PYTHON_BRIDGE_TOKEN:-local-dev-python-bridge-token}
     volumes:
       - ${AGENTCANVAS_WORKSPACE_ROOT:?Set AGENTCANVAS_WORKSPACE_ROOT to an absolute host repository root}:/workspaces
     depends_on:
       migrate:
         condition: service_completed_successfully
       mysql:
+        condition: service_healthy
+      python-bridge:
         condition: service_healthy
       redis:
         condition: service_healthy

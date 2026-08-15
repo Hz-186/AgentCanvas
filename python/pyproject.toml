@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agentcanvas-python-bridge"
+version = "0.1.0"
+description = "Python capability sidecar for AgentCanvas"
+requires-python = ">=3.11"
+dependencies = [
+  "grpcio>=1.66.2,<2",
+  "protobuf>=5.27.2,<6",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
