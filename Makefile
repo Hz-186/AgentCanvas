@@ -1,4 +1,4 @@
-.PHONY: dev dev-v1 dev-v2 run worker workspace-pruner backfill-context-index build build-web typecheck-web test-web docker-up docker-down tidy test migrate lint fmt verify clean
+.PHONY: dev dev-v1 dev-v2 run worker workspace-pruner backfill-context-index build build-web typecheck-web test-web test-python benchmark-python docker-up docker-down tidy test migrate lint fmt verify clean
 
 dev:
 	./scripts/dev.sh
@@ -20,6 +20,14 @@ typecheck-web:
 
 test-web:
 	npm --prefix web test -- --run
+
+test-python:
+	PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=python python3 -m unittest discover -s python/tests -v
+
+benchmark-python:
+	@test -n "$$AGENTCANVAS_PYTHON_BRIDGE_TEST_TARGET" || (echo "set AGENTCANVAS_PYTHON_BRIDGE_TEST_TARGET and AGENTCANVAS_PYTHON_BRIDGE_TOKEN"; exit 1)
+	go test ./internal/infrastructure/pythonbridge -run TestLivePythonBridgeBenchmark -count=1 -v
+	@docker stats --no-stream --format 'python-bridge memory={{.MemUsage}}' agentcanvas-python-bridge 2>/dev/null || true
 
 worker: migrate
 	go run ./cmd/worker
@@ -46,7 +54,7 @@ migrate:
 	./scripts/migrate.sh
 
 lint:
-	./scripts/lint.sh
+	bash ./scripts/lint.sh
 
 fmt:
 	gofmt -w .

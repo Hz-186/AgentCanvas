@@ -1,4 +1,25 @@
 services:
+  python-bridge:
+    build:
+      context: ..
+      dockerfile: python/Dockerfile
+    container_name: agentcanvas-python-bridge
+    restart: unless-stopped
+    environment:
+      AGENTCANVAS_PYTHON_BRIDGE_HOST: 0.0.0.0
+      AGENTCANVAS_PYTHON_BRIDGE_PORT: "50051"
+      AGENTCANVAS_PYTHON_BRIDGE_TOKEN: ${AGENTCANVAS_PYTHON_BRIDGE_TOKEN:-local-dev-python-bridge-token}
+      AGENTCANVAS_PYTHON_BRIDGE_MAX_INPUT_BYTES: "8388608"
+      AGENTCANVAS_PYTHON_BRIDGE_MAX_OUTPUT_BYTES: "2097152"
+      AGENTCANVAS_PYTHON_BRIDGE_MAX_CONCURRENCY: "8"
+    ports:
+      - "127.0.0.1:50051:50051"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; s=socket.create_connection(('127.0.0.1', 50051), 2); s.close()"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
   mysql:
     image: mysql:8.4
     container_name: agentcanvas-mysql

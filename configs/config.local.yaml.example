@@ -118,6 +118,22 @@ ocr:
   token: ""
   timeout_seconds: 60
 
+python_bridge:
+  enabled: false
+  shadow_enabled: false
+  allow_experimental_chunking: false
+  target: 127.0.0.1:50051
+  auth_token_env: AGENTCANVAS_PYTHON_BRIDGE_TOKEN
+  connect_timeout_seconds: 2
+  request_timeout_seconds: 30
+  max_send_bytes: 8388608
+  max_receive_bytes: 2097152
+  max_concurrency: 8
+  allowed_chunk_methods:
+    - python:fixed_token
+    - python:recursive
+  allowed_tools: []
+
 security:
   jwt_secret: replace-me-with-long-random-string
   refresh_token_pepper: replace-me-with-another-long-random-string
