@@ -23,6 +23,7 @@ import (
 	"agentcanvas/internal/infrastructure/llm"
 	mysqlinfra "agentcanvas/internal/infrastructure/mysql"
 	parserinfra "agentcanvas/internal/infrastructure/parser"
+	pythonbridgeinfra "agentcanvas/internal/infrastructure/pythonbridge"
 	"agentcanvas/internal/infrastructure/queue"
 	redisinfra "agentcanvas/internal/infrastructure/redis"
 	"agentcanvas/internal/infrastructure/vectorstore"
@@ -88,6 +89,53 @@ func main() {
 	if cfg.OCR.Enabled {
 		parserRegistry = parserinfra.NewDefaultRegistryWithOCR(parserinfra.NewHTTPOCRClient(cfg.OCR.Endpoint, cfg.OCR.Token, time.Duration(cfg.OCR.TimeoutSeconds)*time.Second))
 	}
+	chunkers := chunkerinfra.NewDefaultRegistry()
+	var pythonBridge *pythonbridgeinfra.Client
+	if cfg.PythonBridge.Enabled {
+		pythonBridge, err = pythonbridgeinfra.NewClient(pythonbridgeinfra.Config{
+			Enabled:         true,
+			Target:          cfg.PythonBridge.Target,
+			AuthToken:       os.Getenv(cfg.PythonBridge.AuthTokenEnv),
+			ConnectTimeout:  time.Duration(cfg.PythonBridge.ConnectTimeoutSeconds) * time.Second,
+			RequestTimeout:  time.Duration(cfg.PythonBridge.RequestTimeoutSeconds) * time.Second,
+			MaxSendBytes:    cfg.PythonBridge.MaxSendBytes,
+			MaxReceiveBytes: cfg.PythonBridge.MaxReceiveBytes,
+			MaxConcurrency:  cfg.PythonBridge.MaxConcurrency,
+		})
+		if err != nil {
+			appLogger.Error("init Python bridge failed", "error", err)
+			os.Exit(1)
+		}
+		if _, err := pythonBridge.GetCapabilities(ctx); err != nil {
+			appLogger.Error("handshake with Python bridge failed", "error", err)
+			_ = pythonBridge.Close()
+			os.Exit(1)
+		}
+		defer pythonBridge.Close()
+		methods := cfg.PythonBridge.AllowedChunkMethods
+		if len(methods) == 0 {
+			methods = []string{"python:fixed_token", "python:recursive"}
+		}
+		if cfg.PythonBridge.AllowExperimentalChunking || cfg.PythonBridge.ShadowEnabled {
+			for _, method := range methods {
+				if method == "python:fixed_token" || method == "python:recursive" {
+					chunkers.Register(pythonbridgeinfra.NewPythonChunker(pythonBridge, method))
+				}
+			}
+		}
+		if cfg.PythonBridge.ShadowEnabled {
+			for _, method := range []string{"fixed_token", "recursive"} {
+				if !containsString(methods, "python:"+method) {
+					continue
+				}
+				primary, primaryErr := chunkers.Select(method)
+				shadow, shadowErr := chunkers.Select("python:" + method)
+				if primaryErr == nil && shadowErr == nil {
+					chunkers.Register(chunkerinfra.NewShadowChunker(primary, shadow, appLogger))
+				}
+			}
+		}
+	}
 
 	service := ingestionusecase.NewService(
 		knowledgeRepo,
@@ -97,7 +145,7 @@ func main() {
 		providerRepo,
 		fileStorage,
 		parserRegistry,
-		chunkerinfra.NewDefaultRegistry(),
+		chunkers,
 		indexer,
 		llm.NewOpenAICompatibleEmbeddingClient(),
 		secretBox,
@@ -271,4 +319,13 @@ func payloadInt64(payload map[string]any, key string) int64 {
 		parsed, _ := strconv.ParseInt(fmt.Sprint(value), 10, 64)
 		return parsed
 	}
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }

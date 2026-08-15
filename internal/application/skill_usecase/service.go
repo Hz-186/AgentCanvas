@@ -47,11 +47,11 @@ type UpdateSkillRequest struct {
 }
 
 type ValidationResult struct {
-	Valid      bool         `json:"valid"`
-	Error      string       `json:"error,omitempty"`
-	Checksum   string       `json:"checksum,omitempty"`
-	ValidatedAt time.Time   `json:"validated_at"`
-	Skill      *skill.Skill `json:"skill"`
+	Valid       bool         `json:"valid"`
+	Error       string       `json:"error,omitempty"`
+	Checksum    string       `json:"checksum,omitempty"`
+	ValidatedAt time.Time    `json:"validated_at"`
+	Skill       *skill.Skill `json:"skill"`
 }
 
 func NewService(repo skill.Repository, workspaceRoot string) *Service {

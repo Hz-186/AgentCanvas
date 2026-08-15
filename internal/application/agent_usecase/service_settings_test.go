@@ -29,7 +29,7 @@ func TestManagedDefinitionOwnsInternalDefaults(t *testing.T) {
 	temperature := 0.4
 	definition := ManagedDefinition(AgentEditableSettings{
 		ProviderID: 8, Model: "  gpt-test  ", SystemPrompt: "  be useful  ",
-		KnowledgeIDs: []int64{4, 4, 2}, Temperature: &temperature,
+		KnowledgeIDs: []int64{4, 4, 2}, PythonToolNames: []string{" python_text_stats ", "python_text_stats"}, Temperature: &temperature,
 	})
 
 	if definition.Mode != "react" || !definition.MemoryEnabled || !definition.ReflectionEnabled || !definition.AllowSubagents {
@@ -41,7 +41,7 @@ func TestManagedDefinitionOwnsInternalDefaults(t *testing.T) {
 		t.Fatalf("unexpected managed limits: %+v", definition)
 	}
 	if definition.Model != "gpt-test" || definition.SystemPrompt != "be useful" || len(definition.KnowledgeIDs) != 2 ||
-		definition.KnowledgeIDs[0] != 4 || definition.KnowledgeIDs[1] != 2 {
+		definition.KnowledgeIDs[0] != 4 || definition.KnowledgeIDs[1] != 2 || len(definition.PythonToolNames) != 1 || definition.PythonToolNames[0] != "python_text_stats" {
 		t.Fatalf("editable settings were not normalized: %+v", definition)
 	}
 }

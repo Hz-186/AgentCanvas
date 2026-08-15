@@ -6,7 +6,7 @@ import (
 )
 
 type CacheKey struct {
-	Prefix string
+	Prefix  string
 	OwnerID int64
 	ID      string
 }

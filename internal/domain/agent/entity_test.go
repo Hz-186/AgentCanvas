@@ -64,4 +64,11 @@ func TestDefinitionResourceSnapshotHashesCapabilities(t *testing.T) {
 	if len(first) == 0 || firstToolHash == secondToolHash {
 		t.Fatal("tool schema hash must change with pinned tool IDs")
 	}
+	_, _, pythonToolHash, err := (Definition{ToolIDs: []int64{1}, PythonToolNames: []string{"python_text_stats"}}).ResourceSnapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pythonToolHash == firstToolHash {
+		t.Fatal("tool schema hash must change with pinned Python tools")
+	}
 }

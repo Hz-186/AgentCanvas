@@ -27,6 +27,7 @@ type Config struct {
 	Milvus          MilvusConfig          `yaml:"milvus"`
 	ContextIndex    ContextIndexConfig    `yaml:"context_index"`
 	OCR             OCRConfig             `yaml:"ocr"`
+	PythonBridge    PythonBridgeConfig    `yaml:"python_bridge"`
 	Security        SecurityConfig        `yaml:"security"`
 	OAuth           OAuthConfig           `yaml:"oauth"`
 	GitWorkspace    GitWorkspaceConfig    `yaml:"git_workspace"`
@@ -195,6 +196,21 @@ type OCRConfig struct {
 	Endpoint       string `yaml:"endpoint"`
 	Token          string `yaml:"token"`
 	TimeoutSeconds int    `yaml:"timeout_seconds"`
+}
+
+type PythonBridgeConfig struct {
+	Enabled                   bool     `yaml:"enabled"`
+	ShadowEnabled             bool     `yaml:"shadow_enabled"`
+	AllowExperimentalChunking bool     `yaml:"allow_experimental_chunking"`
+	Target                    string   `yaml:"target"`
+	AuthTokenEnv              string   `yaml:"auth_token_env"`
+	ConnectTimeoutSeconds     int      `yaml:"connect_timeout_seconds"`
+	RequestTimeoutSeconds     int      `yaml:"request_timeout_seconds"`
+	MaxSendBytes              int      `yaml:"max_send_bytes"`
+	MaxReceiveBytes           int      `yaml:"max_receive_bytes"`
+	MaxConcurrency            int      `yaml:"max_concurrency"`
+	AllowedChunkMethods       []string `yaml:"allowed_chunk_methods"`
+	AllowedTools              []string `yaml:"allowed_tools"`
 }
 
 type SecurityConfig struct {
@@ -436,6 +452,27 @@ func (c *Config) setDefaults() {
 	if c.GitWorkspace.GitUserEmail == "" {
 		c.GitWorkspace.GitUserEmail = "agentcanvas@localhost"
 	}
+	if c.PythonBridge.Target == "" {
+		c.PythonBridge.Target = "127.0.0.1:50051"
+	}
+	if c.PythonBridge.AuthTokenEnv == "" {
+		c.PythonBridge.AuthTokenEnv = "AGENTCANVAS_PYTHON_BRIDGE_TOKEN"
+	}
+	if c.PythonBridge.ConnectTimeoutSeconds == 0 {
+		c.PythonBridge.ConnectTimeoutSeconds = 2
+	}
+	if c.PythonBridge.RequestTimeoutSeconds == 0 {
+		c.PythonBridge.RequestTimeoutSeconds = 30
+	}
+	if c.PythonBridge.MaxSendBytes == 0 {
+		c.PythonBridge.MaxSendBytes = 8 * 1024 * 1024
+	}
+	if c.PythonBridge.MaxReceiveBytes == 0 {
+		c.PythonBridge.MaxReceiveBytes = 2 * 1024 * 1024
+	}
+	if c.PythonBridge.MaxConcurrency == 0 {
+		c.PythonBridge.MaxConcurrency = 8
+	}
 }
 
 func (c *Config) Validate() error {
@@ -513,6 +550,32 @@ func (c *Config) Validate() error {
 	}
 	if c.OCR.Enabled && c.OCR.Endpoint == "" {
 		return fmt.Errorf("ocr.endpoint is required when ocr.enabled is true")
+	}
+	if c.PythonBridge.Enabled {
+		if strings.TrimSpace(c.PythonBridge.Target) == "" || strings.TrimSpace(c.PythonBridge.AuthTokenEnv) == "" {
+			return fmt.Errorf("python_bridge.target and auth_token_env are required when enabled")
+		}
+		if c.PythonBridge.ConnectTimeoutSeconds <= 0 || c.PythonBridge.RequestTimeoutSeconds <= 0 {
+			return fmt.Errorf("python_bridge timeout settings must be positive")
+		}
+		if c.PythonBridge.MaxSendBytes <= 0 || c.PythonBridge.MaxReceiveBytes <= 0 || c.PythonBridge.MaxConcurrency <= 0 || c.PythonBridge.MaxConcurrency > 256 {
+			return fmt.Errorf("python_bridge limits must be positive")
+		}
+		for _, method := range c.PythonBridge.AllowedChunkMethods {
+			if method != "python:fixed_token" && method != "python:recursive" {
+				return fmt.Errorf("python_bridge.allowed_chunk_methods contains unsupported method %q", method)
+			}
+		}
+		for _, name := range c.PythonBridge.AllowedTools {
+			if strings.TrimSpace(name) == "" {
+				return fmt.Errorf("python_bridge.allowed_tools must not contain empty names")
+			}
+			if !strings.HasPrefix(strings.TrimSpace(name), "python_") {
+				return fmt.Errorf("python_bridge.allowed_tools must use the python_ namespace")
+			}
+		}
+	} else if c.PythonBridge.ShadowEnabled || c.PythonBridge.AllowExperimentalChunking {
+		return fmt.Errorf("python_bridge shadow and experimental chunking require python_bridge.enabled")
 	}
 	if c.ResourceCache.TTLSeconds < 1 {
 		return fmt.Errorf("resource_cache.ttl_seconds must be positive")

@@ -137,6 +137,21 @@ func TestCreateKnowledgeBaseRejectsUnsupportedChunkMethod(t *testing.T) {
 	}
 }
 
+func TestCreateKnowledgeBaseRequiresExperimentalPythonChunkingFlag(t *testing.T) {
+	service := NewService(&fakeKBRepo{}, &fakeDocumentRepo{}, &fakeChunkRepo{}, &fakeJobRepo{}, &fakeRetrievalLogRepo{}, nil, &fakeWriteStorage{}, &fakeRetriever{}, &fakeIndexer{})
+	if _, err := service.CreateKnowledgeBase(context.Background(), 1, CreateKnowledgeBaseRequest{Name: "Docs", ChunkMethod: "python:recursive"}, ClientInfo{}); err == nil {
+		t.Fatal("Python chunking should remain disabled before benchmark approval")
+	}
+	service.ConfigurePythonChunking(true)
+	kb, err := service.CreateKnowledgeBase(context.Background(), 1, CreateKnowledgeBaseRequest{Name: "Docs", ChunkMethod: "python:recursive"}, ClientInfo{})
+	if err != nil {
+		t.Fatalf("CreateKnowledgeBase() error = %v", err)
+	}
+	if kb.ChunkMethod != "python:recursive" {
+		t.Fatalf("ChunkMethod = %q, want python:recursive", kb.ChunkMethod)
+	}
+}
+
 func TestUploadDocumentRejectsUnsupportedFileType(t *testing.T) {
 	service := NewService(
 		&fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{10: {ID: 10, OwnerID: 1}}},
