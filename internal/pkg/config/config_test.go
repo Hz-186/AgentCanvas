@@ -28,8 +28,11 @@ func TestQueueConfigDefaults(t *testing.T) {
 		cfg.ReflectionQueue.LeaseSeconds != 180 || cfg.ReflectionQueue.MaxAckPending != cfg.ReflectionQueue.Concurrency {
 		t.Fatalf("unexpected reflection queue defaults: %+v", cfg.ReflectionQueue)
 	}
-	if cfg.Milvus.Collection == "" || cfg.Milvus.M == 0 || cfg.Milvus.MetricType != "COSINE" {
+	if cfg.Milvus.Collection != "agentcanvas_chunks_v2" || cfg.Milvus.M == 0 || cfg.Milvus.MetricType != "COSINE" {
 		t.Fatalf("unexpected milvus defaults: %+v", cfg.Milvus)
+	}
+	if cfg.Retrieval.Backend != "elasticsearch" {
+		t.Fatalf("unexpected retrieval backend default: %+v", cfg.Retrieval)
 	}
 	if cfg.ContextIndex.BatchSize != 50 || cfg.ContextIndex.PollMilliseconds != 1000 || cfg.ContextIndex.LeaseSeconds != 60 {
 		t.Fatalf("unexpected context index defaults: %+v", cfg.ContextIndex)
@@ -138,15 +141,36 @@ func TestQueueConfigRejectsUnsupportedBackend(t *testing.T) {
 	}
 }
 
-func TestMilvusRequiresAddressWhenEnabled(t *testing.T) {
+func TestMilvusRequiresAddressWhenSelected(t *testing.T) {
 	cfg := Config{
-		MySQL:    MySQLConfig{DSN: "dsn"},
-		Security: SecurityConfig{JWTSecret: "jwt", RefreshTokenPepper: "pepper", SecretEncryptKey: "secret"},
-		Milvus:   MilvusConfig{Enabled: true},
+		MySQL:     MySQLConfig{DSN: "dsn"},
+		Security:  SecurityConfig{JWTSecret: "jwt", RefreshTokenPepper: "pepper", SecretEncryptKey: "secret"},
+		Retrieval: RetrievalConfig{Backend: "milvus"},
 	}
 	cfg.setDefaults()
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("expected missing milvus address error")
+	}
+}
+
+func TestMilvusRequiresDimensionsWhenSelected(t *testing.T) {
+	cfg := Config{
+		MySQL:     MySQLConfig{DSN: "dsn"},
+		Security:  SecurityConfig{JWTSecret: "jwt", RefreshTokenPepper: "pepper", SecretEncryptKey: "secret"},
+		Retrieval: RetrievalConfig{Backend: "milvus"},
+		Milvus:    MilvusConfig{Address: "http://milvus:19530"},
+	}
+	cfg.setDefaults()
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected missing milvus dimensions error")
+	}
+}
+
+func TestRetrievalBackendRejectsUnsupportedValue(t *testing.T) {
+	cfg := Config{Retrieval: RetrievalConfig{Backend: "solr"}}
+	cfg.setDefaults()
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected unsupported retrieval backend error")
 	}
 }
 

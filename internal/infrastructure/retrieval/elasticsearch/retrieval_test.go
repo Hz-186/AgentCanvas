@@ -50,14 +50,18 @@ func TestVectorSearchBuildsKNNBody(t *testing.T) {
 	}
 }
 
-func TestHybridSearchIsRejectedWithoutCallingElasticsearch(t *testing.T) {
+func TestHybridSearchFusesWithinElasticsearch(t *testing.T) {
 	calls := 0
 	store := newTestStore(t, func(w http.ResponseWriter, r *http.Request) {
 		calls++
-		t.Fatal("hybrid search must not call elasticsearch")
+		if calls == 1 {
+			writeSearchHits(w, []map[string]any{{"chunk_id": 100, "score": 10.0, "content": "keyword"}})
+			return
+		}
+		writeSearchHits(w, []map[string]any{{"chunk_id": 200, "score": 5.0, "content": "vector"}})
 	})
 
-	_, err := store.Search(context.Background(), retrieval.RetrievalRequest{
+	resp, err := store.Search(context.Background(), retrieval.RetrievalRequest{
 		OwnerID:      1,
 		KBIDs:        []int64{10},
 		Query:        "agent canvas",
@@ -67,11 +71,11 @@ func TestHybridSearchIsRejectedWithoutCallingElasticsearch(t *testing.T) {
 		QueryVector:  []float32{0.1, 0.2, 0.3},
 		HybridWeight: 0.5,
 	})
-	if err == nil || !strings.Contains(err.Error(), "unsupported retrieval mode: hybrid") {
-		t.Fatalf("Search() error = %v, want unsupported hybrid mode", err)
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
 	}
-	if calls != 0 {
-		t.Fatalf("elasticsearch calls = %d, want 0", calls)
+	if calls != 2 || len(resp.Results) != 2 {
+		t.Fatalf("elasticsearch calls/results = %d/%+v", calls, resp.Results)
 	}
 }
 

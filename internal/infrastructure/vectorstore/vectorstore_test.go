@@ -24,7 +24,7 @@ func TestMilvusStoreValidatesConfiguration(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/v2/vectordb/collections/has":
-			_, _ = w.Write([]byte(`{"code":0,"data":true}`))
+			_, _ = w.Write([]byte(`{"code":0,"data":{"has":true}}`))
 		default:
 			_, _ = w.Write([]byte(`{"code":0,"data":{}}`))
 		}
@@ -53,11 +53,11 @@ func TestMilvusStoreUsesRESTAPIForCollectionAndSearch(t *testing.T) {
 		requests = append(requests, payload)
 		switch r.URL.Path {
 		case "/v2/vectordb/collections/has":
-			_, _ = w.Write([]byte(`{"code":0,"data":false}`))
+			_, _ = w.Write([]byte(`{"code":0,"data":{"has":false}}`))
 		case "/v2/vectordb/entities/query":
-			_, _ = w.Write([]byte(`{"code":0,"data":[{"id":"chunk-1","vector":[0.1,0.2],"metadata":{"enabled":true,"document_id":20}}]}`))
+			_, _ = w.Write([]byte(`{"code":0,"data":[{"id":"chunk-1","vector":[0.1,0.2],"metadata":"{\"enabled\":true,\"document_id\":20}"}]}`))
 		case "/v2/vectordb/entities/search":
-			_, _ = w.Write([]byte(`{"code":0,"data":[{"id":"chunk-1","score":0.91,"metadata":{"page_no":2}}]}`))
+			_, _ = w.Write([]byte(`{"code":0,"data":[{"id":"chunk-1","score":0.91,"metadata":"{\"page_no\":2}"}]}`))
 		default:
 			_, _ = w.Write([]byte(`{"code":0,"data":{}}`))
 		}
@@ -101,6 +101,10 @@ func TestMilvusStoreUsesRESTAPIForCollectionAndSearch(t *testing.T) {
 	encoded, _ := json.Marshal(indexReq)
 	if !strings.Contains(string(encoded), "HNSW") || !strings.Contains(string(encoded), "efConstruction") {
 		t.Fatalf("index request missing HNSW config: %s", encoded)
+	}
+	createReq, _ := json.Marshal(requests[1])
+	if !strings.Contains(string(createReq), "SparseFloatVector") || !strings.Contains(string(createReq), "BM25") || !strings.Contains(string(createReq), "text_bm25_emb") {
+		t.Fatalf("collection request missing BM25 schema: %s", createReq)
 	}
 	deleteReq := requests[5]
 	if !strings.Contains(deleteReq["filter"].(string), "metadata['document_id']") {
@@ -147,11 +151,33 @@ func TestMilvusStoreRejectsUnsafeFilterField(t *testing.T) {
 	}
 }
 
+func TestMilvusStoreSearchTextUsesBM25Field(t *testing.T) {
+	var payload map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v2/vectordb/entities/search" {
+			_, _ = w.Write([]byte(`{"code":0,"data":{}}`))
+			return
+		}
+		_ = json.NewDecoder(r.Body).Decode(&payload)
+		_, _ = w.Write([]byte(`{"code":0,"data":[{"id":"1","score":0.7,"metadata":"{\"content\":\"hello\"}"}]}`))
+	}))
+	defer server.Close()
+
+	store := NewMilvusStore(server.URL, "", HNSWConfig{})
+	results, err := store.SearchText(context.Background(), SearchRequest{Collection: "docs", QueryText: "hello world", TopK: 3})
+	if err != nil || len(results) != 1 || results[0].Score != 0.7 {
+		t.Fatalf("SearchText() results=%+v err=%v", results, err)
+	}
+	if payload["annsField"] != "sparse" || payload["data"].([]any)[0] != "hello world" {
+		t.Fatalf("unexpected BM25 request: %+v", payload)
+	}
+}
+
 func TestMilvusStoreTreatsExistingIndexAndLoadedCollectionAsIdempotent(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/v2/vectordb/collections/has":
-			_, _ = w.Write([]byte(`{"code":0,"data":true}`))
+			_, _ = w.Write([]byte(`{"code":0,"data":{"has":true}}`))
 		case "/v2/vectordb/indexes/create":
 			_, _ = w.Write([]byte(`{"code":1100,"message":"index already exists"}`))
 		case "/v2/vectordb/collections/load":

@@ -27,6 +27,42 @@ func TestIndexChunksUpsertsVectorsWithRetrievalMetadata(t *testing.T) {
 	if backend.upserts[0].Metadata["content"] != "content" || backend.upserts[0].Metadata["page_no"] == nil {
 		t.Fatalf("metadata = %+v", backend.upserts[0].Metadata)
 	}
+	if backend.upserts[0].Text != "content" || backend.upserts[0].Metadata["has_vector"] != true {
+		t.Fatalf("text/vector metadata = %+v", backend.upserts[0])
+	}
+}
+
+func TestIndexChunksWritesKeywordTextWithoutEmbedding(t *testing.T) {
+	backend := &fakeVectorStore{}
+	store := NewStore(backend, "docs", 2, vectorstore.HNSWConfig{})
+
+	err := store.IndexChunks(context.Background(), []retrieval.ChunkIndexDocument{{
+		OwnerID: 1, KBID: 10, DocumentID: 20, ChunkID: 30, Content: "keyword content", Enabled: true,
+	}})
+	if err != nil {
+		t.Fatalf("IndexChunks() error = %v", err)
+	}
+	if len(backend.upserts) != 1 || backend.upserts[0].Text != "keyword content" || len(backend.upserts[0].Vector) != 2 {
+		t.Fatalf("keyword upsert = %+v", backend.upserts)
+	}
+	if backend.upserts[0].Metadata["has_vector"] != false {
+		t.Fatalf("keyword chunk must not be eligible for vector search: %+v", backend.upserts[0].Metadata)
+	}
+}
+
+func TestKeywordSearchUsesMilvusBM25WithoutQueryVector(t *testing.T) {
+	backend := &fakeVectorStore{textSearchResults: []vectorstore.SearchResult{{ID: "30", Score: 0.7, Metadata: map[string]any{
+		"chunk_id": float64(30), "document_id": float64(20), "kb_id": float64(10), "content": "keyword content",
+	}}}}
+	store := NewStore(backend, "docs", 2, vectorstore.HNSWConfig{})
+
+	resp, err := store.Search(context.Background(), retrieval.RetrievalRequest{OwnerID: 1, KBIDs: []int64{10}, Query: "keyword", Mode: retrieval.ModeKeyword, TopK: 1})
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if len(resp.Results) != 1 || resp.Results[0].KeywordScore != 0.7 || backend.textSearchRequest.QueryText != "keyword" {
+		t.Fatalf("keyword results/request = %+v / %+v", resp.Results, backend.textSearchRequest)
+	}
 }
 
 func TestSearchConvertsMilvusMetadataToRetrievalResults(t *testing.T) {
@@ -91,15 +127,17 @@ func TestSetDocumentEnabledUpdatesMilvusMetadataWhenSupported(t *testing.T) {
 }
 
 type fakeVectorStore struct {
-	dimensions       int
-	upserts          []vectorstore.VectorDocument
-	searchResults    []vectorstore.SearchResult
-	searchRequest    vectorstore.SearchRequest
-	deleteCollection string
-	deleteFilter     map[string]any
-	updateCollection string
-	updateFilter     map[string]any
-	updateMutate     func(map[string]any) map[string]any
+	dimensions        int
+	upserts           []vectorstore.VectorDocument
+	searchResults     []vectorstore.SearchResult
+	searchRequest     vectorstore.SearchRequest
+	textSearchResults []vectorstore.SearchResult
+	textSearchRequest vectorstore.SearchRequest
+	deleteCollection  string
+	deleteFilter      map[string]any
+	updateCollection  string
+	updateFilter      map[string]any
+	updateMutate      func(map[string]any) map[string]any
 }
 
 func (f *fakeVectorStore) EnsureCollection(_ context.Context, _ string, dimensions int, _ vectorstore.HNSWConfig) error {
@@ -130,4 +168,9 @@ func (f *fakeVectorStore) UpdateMetadataByFilter(_ context.Context, collection s
 func (f *fakeVectorStore) Search(_ context.Context, req vectorstore.SearchRequest) ([]vectorstore.SearchResult, error) {
 	f.searchRequest = req
 	return f.searchResults, nil
+}
+
+func (f *fakeVectorStore) SearchText(_ context.Context, req vectorstore.SearchRequest) ([]vectorstore.SearchResult, error) {
+	f.textSearchRequest = req
+	return f.textSearchResults, nil
 }
