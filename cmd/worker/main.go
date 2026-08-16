@@ -153,8 +153,10 @@ func main() {
 	)
 	jobQueue := infraDeps.JobQueue
 	var archivalVecStore vectorstore.Store
-	if cfg.Milvus.Enabled {
+	if cfg.Retrieval.Backend == "milvus" {
 		archivalVecStore = vectorstore.NewMilvusStore(cfg.Milvus.Address, cfg.Milvus.Token, vectorstore.HNSWConfig{M: cfg.Milvus.M, EFConstruction: cfg.Milvus.EFConstruction, EFSearch: cfg.Milvus.EFSearch, MetricType: cfg.Milvus.MetricType})
+	} else {
+		archivalVecStore = vectorstore.NewElasticsearchStore(infraDeps.ElasticsearchClient)
 	}
 
 	hostname, _ := os.Hostname()

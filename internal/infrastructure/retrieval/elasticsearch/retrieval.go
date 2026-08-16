@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"agentcanvas/internal/domain/retrieval"
+	"agentcanvas/internal/domain/retrieval/fusion"
 	"agentcanvas/internal/pkg/config"
 
 	esclient "github.com/elastic/go-elasticsearch/v8"
@@ -177,6 +178,22 @@ func (s *Store) Search(ctx context.Context, req retrieval.RetrievalRequest) (*re
 		results, err = s.keywordSearch(ctx, req, req.TopK)
 	case retrieval.ModeVector:
 		results, err = s.vectorSearch(ctx, req, req.TopK)
+	case retrieval.ModeHybrid:
+		if len(req.QueryVector) == 0 {
+			err = fmt.Errorf("query vector is required for %s retrieval", req.Mode)
+			break
+		}
+		keywordResults, keywordErr := s.keywordSearch(ctx, req, req.CandidateK)
+		if keywordErr != nil {
+			err = keywordErr
+			break
+		}
+		vectorResults, vectorErr := s.vectorSearch(ctx, req, req.CandidateK)
+		if vectorErr != nil {
+			err = vectorErr
+			break
+		}
+		results = fusion.WeightedRetrievalResults(keywordResults, vectorResults, req.HybridWeight, req.TopK)
 	default:
 		err = fmt.Errorf("unsupported retrieval mode: %s", req.Mode)
 	}

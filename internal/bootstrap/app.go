@@ -197,7 +197,7 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 	var chatClient llm.ChatClient = baseChatClient
 	embeddingClient := llm.NewOpenAICompatibleEmbeddingClient()
 	var archivalVecStore vectorstore.Store
-	if cfg.Milvus.Enabled {
+	if cfg.Retrieval.Backend == "milvus" {
 		archivalVecStore = vectorstore.NewMilvusStore(
 			cfg.Milvus.Address,
 			cfg.Milvus.Token,
@@ -208,21 +208,27 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 				MetricType:     cfg.Milvus.MetricType,
 			},
 		)
+	} else {
+		archivalVecStore = vectorstore.NewElasticsearchStore(esClient)
 	}
 	var contextIndex contextresource.Index
-	if cfg.ContextIndex.Enabled && archivalVecStore != nil {
+	if cfg.ContextIndex.Enabled {
 		providerID := cfg.ContextIndex.EmbeddingProviderID
 		model := strings.TrimSpace(cfg.ContextIndex.EmbeddingModel)
 		semanticIndex := contextretrieval.NewContextSemanticIndex(archivalVecStore, embeddingClient, providerRepo, secretBox, providerID, model, vectorstore.HNSWConfig{
 			M: cfg.Milvus.M, EFConstruction: cfg.Milvus.EFConstruction, EFSearch: cfg.Milvus.EFSearch, MetricType: cfg.Milvus.MetricType,
 		})
-		keywordIndex := esretrieval.NewContextKeywordIndex(esClient, cfg.Elasticsearch.ContextIndex)
-		ensureContext, cancelContext := context.WithTimeout(ctx, 10*time.Second)
-		if err := keywordIndex.EnsureIndex(ensureContext); err != nil {
-			log.Warn("ensure context keyword index failed; outbox worker will retry", "error", err)
+		if cfg.Retrieval.Backend == "milvus" {
+			contextIndex = semanticIndex
+		} else {
+			keywordIndex := esretrieval.NewContextKeywordIndex(esClient, cfg.Elasticsearch.ContextIndex)
+			ensureContext, cancelContext := context.WithTimeout(ctx, 10*time.Second)
+			if err := keywordIndex.EnsureIndex(ensureContext); err != nil {
+				log.Warn("ensure context keyword index failed; outbox worker will retry", "error", err)
+			}
+			cancelContext()
+			contextIndex = contextretrieval.ContextBackendIndex{Keyword: keywordIndex, Semantic: semanticIndex}
 		}
-		cancelContext()
-		contextIndex = contextretrieval.ContextHybridIndex{Keyword: keywordIndex, Semantic: semanticIndex, RRFK: 60}
 		if cfg.ContextIndex.WorkerEnabled {
 			contextWorker := &contextresource.Worker{Repository: mysqlinfra.NewContextResourceRepository(db), Index: contextIndex,
 				WorkerID: fmt.Sprintf("context-api-%d", os.Getpid()), BatchSize: cfg.ContextIndex.BatchSize,
@@ -262,6 +268,7 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 		retrievalService,
 		retrievalStore,
 	)
+	knowledgeService.ConfigureRetrievalBackend(cfg.Retrieval.Backend)
 	knowledgeService.ConfigurePythonChunking(cfg.PythonBridge.AllowExperimentalChunking)
 	jobQueue := infraDeps.JobQueue
 	dreamCfg := memoryusecase.NewDreamConfig(cfg.MemoryDream)

@@ -23,6 +23,7 @@ type Config struct {
 	ReflectionQueue ReflectionQueueConfig `yaml:"reflection_queue"`
 	AgentRuntime    AgentRuntimeConfig    `yaml:"agent_runtime"`
 	MinIO           MinIOConfig           `yaml:"minio"`
+	Retrieval       RetrievalConfig       `yaml:"retrieval"`
 	Elasticsearch   ElasticsearchConfig   `yaml:"elasticsearch"`
 	Milvus          MilvusConfig          `yaml:"milvus"`
 	ContextIndex    ContextIndexConfig    `yaml:"context_index"`
@@ -169,6 +170,10 @@ type ElasticsearchConfig struct {
 	ContextIndex string   `yaml:"context_index"`
 }
 
+type RetrievalConfig struct {
+	Backend string `yaml:"backend"`
+}
+
 type MilvusConfig struct {
 	Enabled        bool   `yaml:"enabled"`
 	Address        string `yaml:"address"`
@@ -271,6 +276,9 @@ func (c *Config) setDefaults() {
 	}
 	if c.Elasticsearch.ChunkIndex == "" {
 		c.Elasticsearch.ChunkIndex = "agentcanvas_chunks_v1"
+	}
+	if c.Retrieval.Backend == "" {
+		c.Retrieval.Backend = "elasticsearch"
 	}
 	if c.Elasticsearch.MessageIndex == "" {
 		c.Elasticsearch.MessageIndex = "agentcanvas_messages_v1"
@@ -396,7 +404,7 @@ func (c *Config) setDefaults() {
 		c.AgentRuntime.ReviewWorkerConcurrency = 1
 	}
 	if c.Milvus.Collection == "" {
-		c.Milvus.Collection = "agentcanvas_chunks"
+		c.Milvus.Collection = "agentcanvas_chunks_v2"
 	}
 	if c.Milvus.M == 0 {
 		c.Milvus.M = 16
@@ -536,11 +544,14 @@ func (c *Config) Validate() error {
 	if c.ReflectionQueue.OutboxBatchSize <= 0 || c.ReflectionQueue.OutboxPollMilliseconds <= 0 || c.ReflectionQueue.StreamReplicas <= 0 {
 		return fmt.Errorf("reflection_queue outbox and stream settings must be positive")
 	}
-	if c.Milvus.Enabled && c.Milvus.Address == "" {
-		return fmt.Errorf("milvus.address is required when milvus.enabled is true")
+	if c.Retrieval.Backend != "elasticsearch" && c.Retrieval.Backend != "milvus" {
+		return fmt.Errorf("retrieval.backend must be elasticsearch or milvus")
 	}
-	if c.ContextIndex.Enabled && !c.Milvus.Enabled {
-		return fmt.Errorf("milvus.enabled must be true when context_index.enabled is true")
+	if c.Retrieval.Backend == "milvus" && c.Milvus.Address == "" {
+		return fmt.Errorf("milvus.address is required when retrieval.backend is milvus")
+	}
+	if c.Retrieval.Backend == "milvus" && c.Milvus.Dimensions <= 0 {
+		return fmt.Errorf("milvus.dimensions must be positive when retrieval.backend is milvus")
 	}
 	if c.ContextIndex.WorkerEnabled && !c.ContextIndex.Enabled {
 		return fmt.Errorf("context_index.enabled must be true when its worker is enabled")
