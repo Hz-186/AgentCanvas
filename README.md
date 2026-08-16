@@ -92,7 +92,7 @@ HTTP / SPA / future Gateway
 
 ### RAG 与统一上下文
 
-知识库支持 `keyword`、`vector`、`hybrid` 三种检索模式。Elasticsearch 负责全文检索，Milvus 可用于向量检索。统一上下文索引按 `owner_id`、`agent_id` 与 `conversation_id` 隔离，并使用 Outbox、lease、重试和 dead letter 保证最终一致性。
+知识库支持 `keyword`、`vector`、`hybrid` 三种检索模式。通过 `retrieval.backend` 全局选择 Elasticsearch 或 Milvus；选中的后端独立负责 keyword/vector/hybrid，两个后端不会跨系统融合。Milvus 使用 BM25 sparse full-text search，Elasticsearch 使用 BM25 与 dense_vector。切换到 Milvus 时必须配置 `milvus.dimensions`，并重建版本化 collection（默认 `agentcanvas_chunks_v2`），不进行 ES/Milvus 双写。统一上下文索引按 `owner_id`、`agent_id` 与 `conversation_id` 隔离，并使用 Outbox、lease、重试和 dead letter 保证最终一致性。
 
 Embedding provider、model、dimensions 与 profile hash 会被持久化；不同向量空间不会混用。
 
@@ -343,7 +343,7 @@ export AGENTCANVAS_CONFIG_PATH="/absolute/path/to/config.yaml"
 
 - `agent_runtime`：Turn Worker、lease、自改进与 Review Model。
 - `mysql`、`redis`、`queue`、`nats`：持久化、缓存与异步任务。
-- `elasticsearch`、`milvus`、`context_index`：RAG 与统一上下文索引。
+- `retrieval.backend`：全局选择 `elasticsearch` 或 `milvus`；`elasticsearch`、`milvus`、`context_index`：RAG 与统一上下文索引。
 - `memory_dream`、`working_memory`：记忆提取与运行缓存。
 - `reflection_queue`：Reflection Outbox、JetStream、lease 与 DLQ。
 - `minio`、`ocr`：文档存储与解析。
