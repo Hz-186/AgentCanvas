@@ -21,6 +21,7 @@ import (
 	toolusecase "agentcanvas/internal/application/tool_usecase"
 	workspaceusecase "agentcanvas/internal/application/workspace_usecase"
 	"agentcanvas/internal/domain/contextresource"
+	"agentcanvas/internal/domain/memory"
 	"agentcanvas/internal/domain/resource"
 	"agentcanvas/internal/infrastructure"
 	cacheinfra "agentcanvas/internal/infrastructure/cache"
@@ -306,21 +307,30 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 		}()
 	}
 	agentRuntime, err := agentruntime.New(agentruntime.Deps{
-		Retriever: retrievalService, LLM: chatClient, Providers: providerLoader,
-		Messages: agentruntime.ConversationMessageWriter{Messages: messageRepo}, MessageHistory: messageRepo,
-		Compactions: compactionRepo, SessionSearch: sessionSearch,
-		Memories: memoryRepo, MemoryReader: memoryService, MemoryWriteLogs: memoryWriteLogRepo,
-		MemoryRecallLogs: memoryRecallLogRepo, MemoryCommands: memoryCommandService,
-		MemoryCandidates: memoryCandidateService, MemoryRetriever: memoryRetrievalStore,
-		MemoryExtractionTrigger: memoryusecase.NewDreamTrigger(jobQueue, redisClient, dreamCfg),
-		WorkingMemory:           workingMemoryRepo, Tools: toolDefinitionRepo, ToolPacks: toolPackRepo,
-		Skills: skillRepo, Audits: auditRepo, MCPServers: mcpRepo, ToolInvocations: toolInvocationRepo,
-		ToolCalling: toolCallingClient, ToolRegistry: toolRegistry, Reflections: reflectionService,
-		Sandbox: sandbox.NewDockerRunner(), ArchivalVecStore: archivalVecStore, ContextIndex: contextIndex,
-		Embedder: embeddingClient, Git: gitService,
-		PythonBridge: pythonBridge, PythonToolAllowlist: cfg.PythonBridge.AllowedTools,
-		FileReadMaxChars: cfg.GitWorkspace.FileReadMaxChars, MaxOutputBytes: cfg.GitWorkspace.MaxOutputBytes,
-		WorkspaceTimeout: time.Duration(cfg.GitWorkspace.GitCommandTimeoutSeconds) * time.Second,
+		Repositories: agentruntime.Repositories{
+			Retriever: retrievalService, Providers: providerLoader, MessageHistory: messageRepo, Compactions: compactionRepo,
+			SessionSearch: sessionSearch, Memories: memoryRepo, MemoryReader: memoryService, MemoryWriteLogs: memoryWriteLogRepo,
+			MemoryRecallLogs: memoryRecallLogRepo, MemoryCandidates: memoryCandidateService, MemoryRetriever: memoryRetrievalStore,
+			WorkingMemory: workingMemoryRepo, ToolPacks: toolPackRepo, Skills: skillRepo, MCPServers: mcpRepo,
+			ToolInvocations: toolInvocationRepo, ContextIndex: contextIndex,
+		},
+		RuntimeClients: agentruntime.RuntimeClients{
+			LLM: chatClient, ToolCalling: toolCallingClient, Embedder: embeddingClient, PythonBridge: pythonBridge,
+			Archival: agentruntime.ArchivalIndexFactoryFunc(func(provider agentruntime.LoadedProvider) memory.ArchivalIndex {
+				if archivalVecStore == nil || strings.TrimSpace(provider.EmbeddingModel) == "" {
+					return nil
+				}
+				return contextretrieval.ArchivalMemoryIndex{Store: archivalVecStore, Embedder: embeddingClient, Provider: provider.EmbeddingConfig, ProviderID: provider.ProviderID, Model: provider.EmbeddingModel}
+			}),
+		},
+		Tooling:       agentruntime.Tooling{ToolRegistry: toolRegistry, PythonToolAllowlist: cfg.PythonBridge.AllowedTools},
+		Workspace:     agentruntime.Workspace{Sandbox: sandbox.NewDockerRunner(), Git: gitService},
+		Observability: agentruntime.Observability{Audits: auditRepo, Reflections: reflectionService},
+		Policies: agentruntime.Policies{
+			MemoryExtractionTrigger: memoryusecase.NewDreamTrigger(jobQueue, redisClient, dreamCfg),
+			FileReadMaxChars:        cfg.GitWorkspace.FileReadMaxChars, MaxOutputBytes: cfg.GitWorkspace.MaxOutputBytes,
+			WorkspaceTimeout: time.Duration(cfg.GitWorkspace.GitCommandTimeoutSeconds) * time.Second,
+		},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("init agent runtime: %w", err)
