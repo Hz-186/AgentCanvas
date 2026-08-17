@@ -83,6 +83,9 @@ minio:
   bucket: agentcanvas
   use_ssl: false
 
+retrieval:
+  backend: elasticsearch
+
 elasticsearch:
   addresses:
     - http://localhost:9200
@@ -96,7 +99,7 @@ milvus:
   enabled: true
   address: http://localhost:19530
   token: ""
-  collection: agentcanvas_chunks
+  collection: agentcanvas_chunks_v2
   dimensions: 0
   m: 16
   ef_construction: 200

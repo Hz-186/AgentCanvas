@@ -8,6 +8,7 @@ import (
 
 const (
 	RetrievalBackendElasticsearch = "elasticsearch"
+	RetrievalBackendMilvus        = "milvus"
 	RetrievalModeKeyword          = "keyword"
 	RetrievalModeVector           = "vector"
 	RetrievalModeHybrid           = "hybrid"

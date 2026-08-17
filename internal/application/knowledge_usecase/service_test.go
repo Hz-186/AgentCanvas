@@ -274,7 +274,7 @@ func TestSearchCallsRetrieverAndWritesRetrievalLog(t *testing.T) {
 		&fakeWriteStorage{},
 		retriever,
 		&fakeIndexer{},
-	)
+	).ConfigureRetrievalBackend(knowledge.RetrievalBackendMilvus)
 
 	resp, err := service.Search(ctx, 1, 10, SearchRequest{Query: " AgentCanvas ", TopK: 5})
 	if err != nil {
@@ -292,7 +292,7 @@ func TestSearchCallsRetrieverAndWritesRetrievalLog(t *testing.T) {
 	if len(logs.items) != 1 {
 		t.Fatalf("retrieval logs = %d, want 1", len(logs.items))
 	}
-	if logs.items[0].ResultCount != 1 || logs.items[0].LatencyMS != 12 {
+	if logs.items[0].ResultCount != 1 || logs.items[0].LatencyMS != 12 || logs.items[0].RetrievalBackend != knowledge.RetrievalBackendMilvus {
 		t.Fatalf("retrieval log = %#v", logs.items[0])
 	}
 }

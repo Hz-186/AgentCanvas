@@ -38,6 +38,7 @@ type Service struct {
 	indexer               retrieval.Indexer
 	jobQueue              queue.JobQueue
 	pythonChunkingEnabled bool
+	retrievalBackend      string
 }
 
 type ClientInfo struct {
@@ -47,6 +48,14 @@ type ClientInfo struct {
 
 func (s *Service) WithJobQueue(jobQueue queue.JobQueue) *Service {
 	s.jobQueue = jobQueue
+	return s
+}
+
+func (s *Service) ConfigureRetrievalBackend(backend string) *Service {
+	backend = strings.TrimSpace(backend)
+	if backend == knowledge.RetrievalBackendElasticsearch || backend == knowledge.RetrievalBackendMilvus {
+		s.retrievalBackend = backend
+	}
 	return s
 }
 
@@ -176,11 +185,15 @@ func (s *Service) CreateKnowledgeBase(ctx context.Context, ownerID int64, req Cr
 		return nil, agenterrors.ErrInvalidInput
 	}
 
+	retrievalBackend := s.retrievalBackend
+	if retrievalBackend == "" {
+		retrievalBackend = knowledge.RetrievalBackendElasticsearch
+	}
 	kb := &knowledge.KnowledgeBase{
 		OwnerID:             ownerID,
 		Name:                name,
 		Description:         strings.TrimSpace(req.Description),
-		RetrievalBackend:    knowledge.RetrievalBackendElasticsearch,
+		RetrievalBackend:    retrievalBackend,
 		RetrievalMode:       retrievalMode,
 		EmbeddingProviderID: req.EmbeddingProviderID,
 		EmbeddingModel:      strings.TrimSpace(req.EmbeddingModel),
@@ -506,9 +519,9 @@ func (s *Service) SetDocumentEnabled(ctx context.Context, ownerID, id int64, ena
 	if err := s.documents.SetEnabled(ctx, ownerID, id, enabled); err != nil {
 		return nil, err
 	}
-	// 同步更新 ES 中该文档所有 chunk 的 enabled 标记;禁用后检索不再命中,启用后恢复命中。
+	// 同步更新当前检索后端中该文档所有 chunk 的 enabled 标记；禁用后不再命中，启用后恢复命中。
 	if err := s.indexer.SetDocumentEnabled(ctx, ownerID, id, enabled); err != nil {
-		// MySQL 已更新,ES 同步失败时回滚 MySQL 以保持一致。
+		// MySQL 已更新，索引同步失败时回滚 MySQL 以保持一致。
 		_ = s.documents.SetEnabled(ctx, ownerID, id, doc.Enabled)
 		return nil, err
 	}
@@ -610,11 +623,15 @@ func (s *Service) GetIngestionJob(ctx context.Context, ownerID, id int64) (*know
 func (s *Service) logRetrieval(ctx context.Context, ownerID, kbID int64, query string, topK int, mode retrieval.Mode, resp *retrieval.RetrievalResponse) error {
 	kbIDsJSON, _ := json.Marshal([]int64{kbID})
 	resultsJSON, _ := json.Marshal(resp.Results)
+	backend := s.retrievalBackend
+	if backend == "" {
+		backend = knowledge.RetrievalBackendElasticsearch
+	}
 	return s.logs.Create(ctx, &knowledge.RetrievalLog{
 		OwnerID:          ownerID,
 		KBIDsJSON:        string(kbIDsJSON),
 		QueryText:        query,
-		RetrievalBackend: knowledge.RetrievalBackendElasticsearch,
+		RetrievalBackend: backend,
 		RetrievalMode:    string(mode),
 		TopK:             topK,
 		ResultCount:      len(resp.Results),

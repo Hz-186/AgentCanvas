@@ -12,7 +12,6 @@ import (
 	queueinfra "agentcanvas/internal/infrastructure/queue"
 	redisinfra "agentcanvas/internal/infrastructure/redis"
 	memoryretrievalinfra "agentcanvas/internal/infrastructure/retrieval"
-	compositeretrieval "agentcanvas/internal/infrastructure/retrieval/composite"
 	esretrieval "agentcanvas/internal/infrastructure/retrieval/elasticsearch"
 	milvusretrieval "agentcanvas/internal/infrastructure/retrieval/milvus"
 	"agentcanvas/internal/infrastructure/vectorstore"
@@ -67,14 +66,14 @@ func InitInfrastructure(ctx context.Context, cfg *config.Config, opts InitOption
 		return nil, fmt.Errorf("init elasticsearch: %w", err)
 	}
 	esStore := esretrieval.NewStore(esClient, cfg.Elasticsearch)
-	var retrievalStore RetrievalStore = compositeretrieval.NewShared(esStore)
-	if cfg.Milvus.Enabled {
+	var retrievalStore RetrievalStore = esStore
+	if cfg.Retrieval.Backend == "milvus" {
 		milvusVector := vectorstore.NewMilvusStore(cfg.Milvus.Address, cfg.Milvus.Token, milvusHNSW(cfg))
 		milvusStore := milvusretrieval.NewStore(milvusVector, cfg.Milvus.Collection, cfg.Milvus.Dimensions, milvusHNSW(cfg))
-		retrievalStore = compositeretrieval.New(esStore, milvusStore)
+		retrievalStore = milvusStore
 	}
 	if err := retrievalStore.EnsureIndex(ctx); err != nil {
-		return nil, fmt.Errorf("ensure elasticsearch chunk index: %w", err)
+		return nil, fmt.Errorf("ensure %s retrieval index: %w", cfg.Retrieval.Backend, err)
 	}
 	secretBox, err := cryptoinfra.NewSecretBox(cfg.Security.SecretEncryptKey)
 	if err != nil {
