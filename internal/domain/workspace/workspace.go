@@ -16,6 +16,34 @@ const (
 	StatusCleaned   = "cleaned"
 )
 
+type GitWorktree struct {
+	Path       string `json:"path"`
+	Branch     string `json:"branch,omitempty"`
+	Head       string `json:"head,omitempty"`
+	Detached   bool   `json:"detached"`
+	Bare       bool   `json:"bare"`
+	Locked     bool   `json:"locked"`
+	LockReason string `json:"lock_reason,omitempty"`
+	Prunable   bool   `json:"prunable"`
+}
+
+type GitStatus struct {
+	Root      string   `json:"root"`
+	Branch    string   `json:"branch"`
+	Head      string   `json:"head"`
+	Dirty     bool     `json:"dirty"`
+	Unpushed  bool     `json:"unpushed"`
+	Staged    []string `json:"staged,omitempty"`
+	Changed   []string `json:"changed,omitempty"`
+	Untracked []string `json:"untracked,omitempty"`
+}
+
+type GitCommitResult struct {
+	Hash    string   `json:"hash"`
+	Message string   `json:"message"`
+	Paths   []string `json:"paths"`
+}
+
 type Workspace struct {
 	ID                int64      `json:"id" gorm:"primaryKey;column:id"`
 	OwnerID           int64      `json:"owner_id" gorm:"column:owner_id"`

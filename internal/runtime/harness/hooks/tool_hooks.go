@@ -164,7 +164,7 @@ func (PolicyPreToolUseHook) BeforeToolUse(ctx context.Context, req PreToolUseReq
 			Traces:  append(bindingTraces, Trace{Stage: "pre_tool_use", Hook: "policy", Decision: "denied", Reason: err.Error()}),
 		}
 	}
-	if err := validateAllowedHosts(req.Metadata.AllowedHosts, req.Policy.AllowedHosts, req.Policy.DenyAllHosts); err != nil {
+	if err := toolruntime.ValidateAllowedHosts(req.Metadata.AllowedHosts, req.Policy.AllowedHosts, req.Policy.DenyAllHosts); err != nil {
 		return PreToolUseResult{
 			Context: ctx,
 			Denied:  err,
@@ -178,7 +178,7 @@ func (PolicyPreToolUseHook) BeforeToolUse(ctx context.Context, req PreToolUseReq
 			Traces:   append(bindingTraces, Trace{Stage: "pre_tool_use", Hook: "policy", Decision: "approval_required", Reason: approval.Reason}),
 		}
 	}
-	timeoutMS := effectiveTimeoutMS(req.Metadata, req.Policy)
+	timeoutMS := toolruntime.EffectiveLimit(req.Metadata.TimeoutMS, req.Policy.MaxToolTimeoutMS)
 	if timeoutMS <= 0 {
 		return PreToolUseResult{
 			Context: ctx,
@@ -268,8 +268,8 @@ func appendUniqueFold(values []string, additions ...string) []string {
 }
 
 func intersectAllowedHosts(current, constraint []string) ([]string, bool) {
-	left := normalizedSet(current)
-	right := normalizedSet(constraint)
+	left := toolruntime.NormalizeHosts(current)
+	right := toolruntime.NormalizeHosts(constraint)
 	if len(left) == 0 {
 		return right, len(right) == 0
 	}
@@ -309,7 +309,7 @@ func (ObservationPostToolUseHook) AfterToolUse(ctx context.Context, req PostTool
 		strings.TrimSpace(content) == strings.TrimSpace(string(req.OutputJSON)) {
 		content = string(raw)
 	}
-	maxBytes := effectiveMaxOutputBytes(req.Metadata, req.Policy)
+	maxBytes := toolruntime.EffectiveLimit(req.Metadata.MaxOutputBytes, req.Policy.MaxToolOutputBytes)
 	if maxBytes <= 0 {
 		return PostToolUseResult{
 			Content:    content,
@@ -323,8 +323,8 @@ func (ObservationPostToolUseHook) AfterToolUse(ctx context.Context, req PostTool
 			},
 		}
 	}
-	compactContent, contentCompressed := compactStringWithFlag(content, maxBytes)
-	compactJSON, jsonCompressed := compactRawJSONWithFlag(raw, maxBytes)
+	compactContent, contentCompressed := strutil.TruncateWithSuffixFlag(content, maxBytes, "...[truncated]")
+	compactJSON, jsonCompressed := strutil.TruncateRawJSONWithSuffix(raw, maxBytes, "...[truncated]")
 	compressed := contentCompressed || jsonCompressed
 	decision := "recorded"
 	if compressed {
@@ -393,42 +393,6 @@ func ShouldRequireApprovalForRisk(riskLevel string, requiresApproval bool, polic
 	return risk, required
 }
 
-func effectiveTimeoutMS(metadata toolruntime.ToolMetadata, policy ToolPolicy) int {
-	timeoutMS := metadata.TimeoutMS
-	if policy.MaxToolTimeoutMS > 0 && (timeoutMS <= 0 || policy.MaxToolTimeoutMS < timeoutMS) {
-		timeoutMS = policy.MaxToolTimeoutMS
-	}
-	return timeoutMS
-}
-
-func effectiveMaxOutputBytes(metadata toolruntime.ToolMetadata, policy ToolPolicy) int {
-	maxBytes := metadata.MaxOutputBytes
-	if policy.MaxToolOutputBytes > 0 && (maxBytes <= 0 || policy.MaxToolOutputBytes < maxBytes) {
-		maxBytes = policy.MaxToolOutputBytes
-	}
-	return maxBytes
-}
-
-func validateAllowedHosts(toolHosts []string, policyHosts []string, denyAll bool) error {
-	if denyAll && len(toolHosts) > 0 {
-		return fmt.Errorf("tool hosts are denied by intersected policy allowlists")
-	}
-	allowed := normalizedSet(policyHosts)
-	if len(allowed) == 0 || len(toolHosts) == 0 {
-		return nil
-	}
-	for _, host := range toolHosts {
-		normalized := normalizeHost(host)
-		if normalized == "" {
-			continue
-		}
-		if !slices.Contains(allowed, normalized) {
-			return fmt.Errorf("tool host %s is not allowed by policy", normalized)
-		}
-	}
-	return nil
-}
-
 func dangerousToolArgumentReason(req PreToolUseRequest) string {
 	toolName := strings.ToLower(strings.TrimSpace(req.ToolName))
 	if toolName == "" || len(req.Arguments) == 0 {
@@ -490,31 +454,6 @@ func dangerousToolArgumentReason(req PreToolUseRequest) string {
 	return ""
 }
 
-func normalizedSet(hosts []string) []string {
-	out := make([]string, 0, len(hosts))
-	for _, host := range hosts {
-		normalized := normalizeHost(host)
-		if normalized == "" || slices.Contains(out, normalized) {
-			continue
-		}
-		out = append(out, normalized)
-	}
-	return out
-}
-
-func normalizeHost(host string) string {
-	host = strings.TrimSpace(strings.ToLower(host))
-	host = strings.TrimPrefix(host, "http://")
-	host = strings.TrimPrefix(host, "https://")
-	if idx := strings.IndexByte(host, '/'); idx >= 0 {
-		host = host[:idx]
-	}
-	if idx := strings.LastIndexByte(host, ':'); idx > 0 {
-		host = host[:idx]
-	}
-	return host
-}
-
 func DefaultSensitiveFields() []string {
 	return []string{
 		"api_key", "apikey", "authorization", "access_token", "refresh_token", "token", "password", "secret",
@@ -539,12 +478,4 @@ func RedactSensitiveFields(raw json.RawMessage, fields []string) json.RawMessage
 		return raw
 	}
 	return json.RawMessage(out)
-}
-
-func compactStringWithFlag(value string, maxBytes int) (string, bool) {
-	return strutil.TruncateWithSuffixFlag(value, maxBytes, "...[truncated]")
-}
-
-func compactRawJSONWithFlag(raw json.RawMessage, maxBytes int) (json.RawMessage, bool) {
-	return strutil.TruncateRawJSONWithSuffix(raw, maxBytes, "...[truncated]")
 }

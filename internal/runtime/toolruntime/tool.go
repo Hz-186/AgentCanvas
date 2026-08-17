@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -95,6 +96,66 @@ type ToolMetadata struct {
 	ExecutionClass   string   `json:"execution_class,omitempty"`
 }
 
+func EffectiveLimit(value, ceiling int) int {
+	if ceiling > 0 && (value <= 0 || ceiling < value) {
+		return ceiling
+	}
+	return value
+}
+
+func NormalizeHost(host string) string {
+	host = strings.TrimSpace(strings.ToLower(host))
+	host = strings.TrimPrefix(host, "http://")
+	host = strings.TrimPrefix(host, "https://")
+	if index := strings.IndexByte(host, '/'); index >= 0 {
+		host = host[:index]
+	}
+	if index := strings.LastIndexByte(host, ':'); index > 0 {
+		host = host[:index]
+	}
+	return host
+}
+
+func NormalizeHosts(hosts []string) []string {
+	seen := make(map[string]struct{}, len(hosts))
+	result := make([]string, 0, len(hosts))
+	for _, host := range hosts {
+		normalized := NormalizeHost(host)
+		if normalized == "" {
+			continue
+		}
+		if _, ok := seen[normalized]; ok {
+			continue
+		}
+		seen[normalized] = struct{}{}
+		result = append(result, normalized)
+	}
+	return result
+}
+
+func ValidateAllowedHosts(toolHosts, policyHosts []string, denyAll bool) error {
+	if denyAll && len(toolHosts) > 0 {
+		return fmt.Errorf("tool hosts are denied by intersected policy allowlists")
+	}
+	allowed := make(map[string]struct{}, len(policyHosts))
+	for _, host := range NormalizeHosts(policyHosts) {
+		allowed[host] = struct{}{}
+	}
+	if len(allowed) == 0 || len(toolHosts) == 0 {
+		return nil
+	}
+	for _, host := range toolHosts {
+		normalized := NormalizeHost(host)
+		if normalized == "" {
+			continue
+		}
+		if _, ok := allowed[normalized]; !ok {
+			return fmt.Errorf("tool host %s is not allowed by policy", normalized)
+		}
+	}
+	return nil
+}
+
 type RuntimeTool interface {
 	Name() string
 	Description() string
@@ -133,11 +194,7 @@ func (t AuditedTool) Execute(ctx context.Context, rc ToolRunContext, input json.
 			detail["metadata"] = result.Metadata
 		}
 	}
-	encoded, _ := json.Marshal(detail)
-	_ = t.Audits.Create(ctx, &audit.Log{
-		OwnerID: rc.OwnerID, ActorID: rc.OwnerID, Action: "workspace.tool." + t.Tool.Name(),
-		ResourceType: "workspace", ResourceID: strconv.FormatInt(rc.Workspace.ID, 10), DetailJSON: string(encoded),
-	})
+	_ = t.Audits.Create(ctx, audit.NewLog(rc.OwnerID, rc.OwnerID, "workspace.tool."+t.Tool.Name(), "workspace", strconv.FormatInt(rc.Workspace.ID, 10), detail, "", ""))
 	return result, runErr
 }
 

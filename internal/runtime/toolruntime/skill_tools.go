@@ -157,26 +157,14 @@ func (t SkillLoadTool) audit(ownerID int64, action, resourceID string, detail ma
 	if t.Audits == nil || ownerID <= 0 {
 		return
 	}
-	detailJSON := "{}"
-	if detail != nil {
-		if data, err := json.Marshal(detail); err == nil {
-			detailJSON = string(data)
-		}
-	}
-	_ = t.Audits.Create(context.Background(), &audit.Log{OwnerID: ownerID, ActorID: ownerID, Action: action, ResourceType: "skill", ResourceID: resourceID, DetailJSON: detailJSON})
+	_ = t.Audits.Create(context.Background(), audit.NewLog(ownerID, ownerID, action, "skill", resourceID, detail, "", ""))
 }
 
 func (t SkillSearchTool) audit(ownerID int64, action, resourceID string, detail map[string]any) {
 	if t.Audits == nil || ownerID <= 0 {
 		return
 	}
-	detailJSON := "{}"
-	if detail != nil {
-		if data, err := json.Marshal(detail); err == nil {
-			detailJSON = string(data)
-		}
-	}
-	_ = t.Audits.Create(context.Background(), &audit.Log{OwnerID: ownerID, ActorID: ownerID, Action: action, ResourceType: "skill", ResourceID: resourceID, DetailJSON: detailJSON})
+	_ = t.Audits.Create(context.Background(), audit.NewLog(ownerID, ownerID, action, "skill", resourceID, detail, "", ""))
 }
 
 func loadSkillContentFromItem(workspaceRoot string, item *skill.Skill) (string, error) {

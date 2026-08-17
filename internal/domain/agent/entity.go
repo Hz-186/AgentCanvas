@@ -26,7 +26,78 @@ const (
 
 // Definition is the complete, transport-independent configuration used by an
 // Agent release. Resource references live here so a release stays reproducible.
+type ModelConfig struct {
+	ProviderID  int64    `json:"provider_id"`
+	Model       string   `json:"model"`
+	Temperature *float64 `json:"temperature,omitempty"`
+}
+
+type PromptConfig struct {
+	SystemPrompt            string          `json:"system_prompt"`
+	Role                    string          `json:"role,omitempty"`
+	Goal                    string          `json:"goal,omitempty"`
+	Backstory               string          `json:"backstory,omitempty"`
+	OutputSchemaJSON        json.RawMessage `json:"output_schema_json,omitempty"`
+	OutputMode              string          `json:"output_mode,omitempty"`
+	ReturnIntermediateSteps bool            `json:"return_intermediate_steps,omitempty"`
+}
+
+type ToolConfig struct {
+	ToolPackIDs     []int64         `json:"tool_pack_ids,omitempty"`
+	ToolIDs         []int64         `json:"tool_ids,omitempty"`
+	PythonToolNames []string        `json:"python_tool_names,omitempty"`
+	MCPServerIDs    []int64         `json:"mcp_server_ids,omitempty"`
+	ToolPolicyJSON  json.RawMessage `json:"tool_policy_json,omitempty"`
+}
+
+type ResourceRefs struct {
+	SkillIDs         []int64 `json:"skill_ids,omitempty"`
+	SkillLoadingMode string  `json:"skill_loading_mode,omitempty"`
+	KnowledgeIDs     []int64 `json:"knowledge_ids,omitempty"`
+	KnowledgeTopK    int     `json:"knowledge_top_k,omitempty"`
+	KnowledgeMode    string  `json:"knowledge_mode,omitempty"`
+}
+
+type MemoryPolicy struct {
+	MemoryEnabled        bool            `json:"memory_enabled,omitempty"`
+	ReflectionEnabled    bool            `json:"reflection_enabled,omitempty"`
+	MemoryPolicyJSON     json.RawMessage `json:"memory_policy_json,omitempty"`
+	ReflectionPolicyJSON json.RawMessage `json:"reflection_policy_json,omitempty"`
+	ContextPolicyJSON    json.RawMessage `json:"context_policy_json,omitempty"`
+	RulesJSON            json.RawMessage `json:"rules_json,omitempty"`
+}
+
+type ExecutionLimits struct {
+	Mode                      string `json:"mode"`
+	AllowSubagents            bool   `json:"allow_subagents,omitempty"`
+	MaxParallelSubAgents      int    `json:"max_parallel_sub_agents,omitempty"`
+	MaxSubagentDepth          int    `json:"max_subagent_depth,omitempty"`
+	MaxIterations             int    `json:"max_iterations,omitempty"`
+	MaxToolCalls              int    `json:"max_tool_calls,omitempty"`
+	MaxExecutionTimeMS        int    `json:"max_execution_time_ms,omitempty"`
+	MaxToolTimeoutMS          int    `json:"max_tool_timeout_ms,omitempty"`
+	MaxToolOutputBytes        int    `json:"max_tool_output_bytes,omitempty"`
+	MaxInputChars             int    `json:"max_input_chars,omitempty"`
+	MaxInputTokens            int    `json:"max_input_tokens,omitempty"`
+	ContextWindowTokens       int    `json:"context_window_tokens,omitempty"`
+	ReservedOutputTokens      int    `json:"reserved_output_tokens,omitempty"`
+	ContextSafetyMarginTokens int    `json:"context_safety_margin_tokens,omitempty"`
+	MaxRuleTokens             int    `json:"max_rule_tokens,omitempty"`
+}
+
 type Definition struct {
+	ModelConfig
+	PromptConfig
+	ToolConfig
+	ResourceRefs
+	MemoryPolicy
+	ExecutionLimits
+}
+
+// definitionFlat is the canonical release wire format. Its field order is
+// intentionally identical to the historical Definition layout because the
+// release checksum is computed from these bytes.
+type definitionFlat struct {
 	ProviderID                int64           `json:"provider_id"`
 	Model                     string          `json:"model"`
 	SystemPrompt              string          `json:"system_prompt"`
@@ -68,6 +139,82 @@ type Definition struct {
 	ReservedOutputTokens      int             `json:"reserved_output_tokens,omitempty"`
 	ContextSafetyMarginTokens int             `json:"context_safety_margin_tokens,omitempty"`
 	MaxRuleTokens             int             `json:"max_rule_tokens,omitempty"`
+}
+
+func (d Definition) MarshalJSON() ([]byte, error) { return json.Marshal(d.flat()) }
+
+func (d *Definition) UnmarshalJSON(data []byte) error {
+	var flat definitionFlat
+	if err := json.Unmarshal(data, &flat); err != nil {
+		return err
+	}
+	*d = definitionFromFlat(flat)
+	var nested struct {
+		ModelConfig     *ModelConfig     `json:"model_config"`
+		PromptConfig    *PromptConfig    `json:"prompt_config"`
+		ToolConfig      *ToolConfig      `json:"tool_config"`
+		ResourceRefs    *ResourceRefs    `json:"resource_refs"`
+		MemoryPolicy    *MemoryPolicy    `json:"memory_policy"`
+		ExecutionLimits *ExecutionLimits `json:"execution_limits"`
+	}
+	if err := json.Unmarshal(data, &nested); err != nil {
+		return err
+	}
+	if nested.ModelConfig != nil {
+		d.ModelConfig = *nested.ModelConfig
+	}
+	if nested.PromptConfig != nil {
+		d.PromptConfig = *nested.PromptConfig
+	}
+	if nested.ToolConfig != nil {
+		d.ToolConfig = *nested.ToolConfig
+	}
+	if nested.ResourceRefs != nil {
+		d.ResourceRefs = *nested.ResourceRefs
+	}
+	if nested.MemoryPolicy != nil {
+		d.MemoryPolicy = *nested.MemoryPolicy
+	}
+	if nested.ExecutionLimits != nil {
+		d.ExecutionLimits = *nested.ExecutionLimits
+	}
+	return nil
+}
+
+func (d Definition) flat() definitionFlat {
+	return definitionFlat{
+		ProviderID: d.ProviderID, Model: d.Model, SystemPrompt: d.SystemPrompt, Role: d.Role, Goal: d.Goal, Backstory: d.Backstory,
+		Mode: d.Mode, Temperature: d.Temperature, ToolPackIDs: d.ToolPackIDs, ToolIDs: d.ToolIDs, PythonToolNames: d.PythonToolNames,
+		SkillIDs: d.SkillIDs, SkillLoadingMode: d.SkillLoadingMode, KnowledgeIDs: d.KnowledgeIDs, KnowledgeTopK: d.KnowledgeTopK,
+		KnowledgeMode: d.KnowledgeMode, MCPServerIDs: d.MCPServerIDs, AllowSubagents: d.AllowSubagents,
+		MaxParallelSubAgents: d.MaxParallelSubAgents, MaxSubagentDepth: d.MaxSubagentDepth, MemoryEnabled: d.MemoryEnabled,
+		ReflectionEnabled: d.ReflectionEnabled, MemoryPolicyJSON: d.MemoryPolicyJSON, ReflectionPolicyJSON: d.ReflectionPolicyJSON,
+		ToolPolicyJSON: d.ToolPolicyJSON, ContextPolicyJSON: d.ContextPolicyJSON, RulesJSON: d.RulesJSON,
+		OutputSchemaJSON: d.OutputSchemaJSON, OutputMode: d.OutputMode, ReturnIntermediateSteps: d.ReturnIntermediateSteps,
+		MaxIterations: d.MaxIterations, MaxToolCalls: d.MaxToolCalls, MaxExecutionTimeMS: d.MaxExecutionTimeMS,
+		MaxToolTimeoutMS: d.MaxToolTimeoutMS, MaxToolOutputBytes: d.MaxToolOutputBytes, MaxInputChars: d.MaxInputChars,
+		MaxInputTokens: d.MaxInputTokens, ContextWindowTokens: d.ContextWindowTokens, ReservedOutputTokens: d.ReservedOutputTokens,
+		ContextSafetyMarginTokens: d.ContextSafetyMarginTokens, MaxRuleTokens: d.MaxRuleTokens,
+	}
+}
+
+func definitionFromFlat(f definitionFlat) Definition {
+	return Definition{
+		ModelConfig: ModelConfig{ProviderID: f.ProviderID, Model: f.Model, Temperature: f.Temperature},
+		PromptConfig: PromptConfig{SystemPrompt: f.SystemPrompt, Role: f.Role, Goal: f.Goal, Backstory: f.Backstory,
+			OutputSchemaJSON: f.OutputSchemaJSON, OutputMode: f.OutputMode, ReturnIntermediateSteps: f.ReturnIntermediateSteps},
+		ToolConfig: ToolConfig{ToolPackIDs: f.ToolPackIDs, ToolIDs: f.ToolIDs, PythonToolNames: f.PythonToolNames,
+			MCPServerIDs: f.MCPServerIDs, ToolPolicyJSON: f.ToolPolicyJSON},
+		ResourceRefs: ResourceRefs{SkillIDs: f.SkillIDs, SkillLoadingMode: f.SkillLoadingMode, KnowledgeIDs: f.KnowledgeIDs,
+			KnowledgeTopK: f.KnowledgeTopK, KnowledgeMode: f.KnowledgeMode},
+		MemoryPolicy: MemoryPolicy{MemoryEnabled: f.MemoryEnabled, ReflectionEnabled: f.ReflectionEnabled,
+			MemoryPolicyJSON: f.MemoryPolicyJSON, ReflectionPolicyJSON: f.ReflectionPolicyJSON, ContextPolicyJSON: f.ContextPolicyJSON, RulesJSON: f.RulesJSON},
+		ExecutionLimits: ExecutionLimits{Mode: f.Mode, AllowSubagents: f.AllowSubagents, MaxParallelSubAgents: f.MaxParallelSubAgents,
+			MaxSubagentDepth: f.MaxSubagentDepth, MaxIterations: f.MaxIterations, MaxToolCalls: f.MaxToolCalls,
+			MaxExecutionTimeMS: f.MaxExecutionTimeMS, MaxToolTimeoutMS: f.MaxToolTimeoutMS, MaxToolOutputBytes: f.MaxToolOutputBytes,
+			MaxInputChars: f.MaxInputChars, MaxInputTokens: f.MaxInputTokens, ContextWindowTokens: f.ContextWindowTokens,
+			ReservedOutputTokens: f.ReservedOutputTokens, ContextSafetyMarginTokens: f.ContextSafetyMarginTokens, MaxRuleTokens: f.MaxRuleTokens},
+	}
 }
 
 func (d Definition) Normalize() Definition {
