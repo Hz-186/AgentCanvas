@@ -1,6 +1,9 @@
 package audit
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 type Log struct {
 	ID           int64     `json:"id" gorm:"primaryKey;column:id"`
@@ -16,3 +19,17 @@ type Log struct {
 }
 
 func (Log) TableName() string { return "audit_logs" }
+
+func NewLog(ownerID, actorID int64, action, resourceType, resourceID string, detail map[string]any, ipAddress, userAgent string) *Log {
+	detailJSON := "{}"
+	if detail != nil {
+		if data, err := json.Marshal(detail); err == nil {
+			detailJSON = string(data)
+		}
+	}
+	return &Log{
+		OwnerID: ownerID, ActorID: actorID, Action: action,
+		ResourceType: resourceType, ResourceID: resourceID, DetailJSON: detailJSON,
+		IPAddress: ipAddress, UserAgent: userAgent,
+	}
+}
