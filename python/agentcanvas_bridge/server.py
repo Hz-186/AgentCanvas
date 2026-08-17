@@ -14,6 +14,7 @@ import grpc
 
 from agentcanvas.pythonbridge.v1 import bridge_pb2, bridge_pb2_grpc
 from agentcanvas_bridge.chunking import Block, chunk_document
+from agentcanvas_bridge.document_parsing import PARSER_METHOD, PARSER_VERSION, parse_document
 from agentcanvas_bridge.tools import TOOL_DEFINITIONS
 
 logger = logging.getLogger(__name__)
@@ -79,19 +80,52 @@ class PythonBridge(bridge_pb2_grpc.PythonBridgeServicer):
         return bridge_pb2.CapabilitiesResponse(
             protocol_version=PROTOCOL_VERSION,
             service_version=SERVICE_VERSION,
-            chunk_methods=["python:fixed_token", "python:recursive"],
+            chunk_methods=["python:fixed_token", "python:recursive", "python:langchain_recursive"],
+            parser_methods=[PARSER_METHOD],
             tools=[self._tool_capability(name, item) for name, item in TOOL_DEFINITIONS.items()],
             max_concurrency=self._limits.max_concurrency,
             max_input_bytes=self._limits.max_input_bytes,
             max_output_bytes=self._limits.max_output_bytes,
         )
 
+    def ParseDocument(self, request, context):  # noqa: N802
+        request_id = self._require_auth(context)
+        if not request.request_id or request.request_id != request_id:
+            context.abort(grpc.StatusCode.INVALID_ARGUMENT, "request_id does not match bridge metadata")
+        if not request.filename.strip() or not request.parser.strip():
+            context.abort(grpc.StatusCode.INVALID_ARGUMENT, "filename and parser are required")
+        if len(request.content) > self._limits.max_input_bytes:
+            context.abort(grpc.StatusCode.RESOURCE_EXHAUSTED, "document exceeds bridge input limit")
+        try:
+            text, blocks, requires_ocr, warnings = parse_document(request.content, request.filename, request.parser)
+            document = bridge_pb2.ParsedDocument(text=text, file_type="pdf")
+            for block in blocks:
+                item = document.blocks.add(id=block.block_id, type=block.block_type, text=block.text)
+                if block.page_no is not None:
+                    item.page_no = block.page_no
+                item.metadata_json = _metadata_json(block.metadata)
+            response = bridge_pb2.ParseDocumentResponse(
+                document=document,
+                parser=request.parser,
+                implementation_version=PARSER_VERSION,
+                requires_ocr=requires_ocr,
+                warnings=warnings,
+            )
+            if len(response.SerializeToString()) > self._limits.max_output_bytes:
+                context.abort(grpc.StatusCode.RESOURCE_EXHAUSTED, "parsed document exceeds bridge output limit")
+            return response
+        except ValueError as exc:
+            context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(exc))
+        except RuntimeError as exc:
+            context.abort(grpc.StatusCode.FAILED_PRECONDITION, str(exc))
+
     def ChunkDocument(self, request, context):  # noqa: N802
         request_id = self._require_auth(context)
         if not request.request_id or request.request_id != request_id:
             context.abort(grpc.StatusCode.INVALID_ARGUMENT, "request_id does not match bridge metadata")
-        raw_size = len(request.document.text.encode("utf-8")) + sum(len(block.text.encode("utf-8")) for block in request.document.blocks)
-        if raw_size > self._limits.max_input_bytes:
+        if not request.method.strip() or not request.HasField("document") or not request.HasField("policy"):
+            context.abort(grpc.StatusCode.INVALID_ARGUMENT, "method, document, and policy are required")
+        if request.ByteSize() > self._limits.max_input_bytes:
             context.abort(grpc.StatusCode.RESOURCE_EXHAUSTED, "document exceeds bridge input limit")
         try:
             blocks = [
@@ -125,6 +159,8 @@ class PythonBridge(bridge_pb2_grpc.PythonBridgeServicer):
             return response
         except ValueError as exc:
             context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(exc))
+        except RuntimeError as exc:
+            context.abort(grpc.StatusCode.FAILED_PRECONDITION, str(exc))
 
     def ListTools(self, request, context):  # noqa: N802
         self._require_auth(context)
@@ -211,10 +247,11 @@ def serve(host: str, port: int, token: str, limits: BridgeLimits | None = None) 
 
 
 def config_from_env() -> tuple[str, int, str, BridgeLimits]:
+    defaults = BridgeLimits()
     limits = BridgeLimits(
-        max_input_bytes=int(os.getenv("AGENTCANVAS_PYTHON_BRIDGE_MAX_INPUT_BYTES", str(BridgeLimits.max_input_bytes))),
-        max_output_bytes=int(os.getenv("AGENTCANVAS_PYTHON_BRIDGE_MAX_OUTPUT_BYTES", str(BridgeLimits.max_output_bytes))),
-        max_concurrency=int(os.getenv("AGENTCANVAS_PYTHON_BRIDGE_MAX_CONCURRENCY", str(BridgeLimits.max_concurrency))),
+        max_input_bytes=int(os.getenv("AGENTCANVAS_PYTHON_BRIDGE_MAX_INPUT_BYTES", str(defaults.max_input_bytes))),
+        max_output_bytes=int(os.getenv("AGENTCANVAS_PYTHON_BRIDGE_MAX_OUTPUT_BYTES", str(defaults.max_output_bytes))),
+        max_concurrency=int(os.getenv("AGENTCANVAS_PYTHON_BRIDGE_MAX_CONCURRENCY", str(defaults.max_concurrency))),
     )
     return (
         os.getenv("AGENTCANVAS_PYTHON_BRIDGE_HOST", "127.0.0.1"),

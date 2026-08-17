@@ -12,6 +12,8 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf16"
+
+	"agentcanvas/internal/pkg/textutil"
 )
 
 // BBox Bounding Box
@@ -192,69 +194,29 @@ func pageBlocks(pageNo int, pageText string) []Block {
 }
 
 func faqBlocks(pageNo int, pageText string) []Block {
-	lines := strings.Split(pageText, "\n")
-	blocks := make([]Block, 0)
-	for i := 0; i < len(lines); i++ {
-		question := strings.TrimSpace(lines[i])
-		if !isQuestionLine(question) {
-			continue
-		}
-		canonical := strings.TrimSpace(trimQuestionPrefix(question))
-		if canonical == "" {
-			continue
-		}
-		answerParts := make([]string, 0, 2)
-		aliases := make([]string, 0)
-		category := ""
-		j := i + 1
-		for ; j < len(lines); j++ {
-			line := strings.TrimSpace(lines[j])
-			if line == "" {
-				if len(answerParts) > 0 {
-					break
-				}
-				continue
-			}
-			if isQuestionLine(line) {
-				break
-			}
-			if values, ok := faqMetadataValues(line, "aliases:", "alias:", "别名:"); ok {
-				aliases = append(aliases, values...)
-				continue
-			}
-			if values, ok := faqMetadataValues(line, "category:", "分类:"); ok {
-				if len(values) > 0 {
-					category = values[0]
-				}
-				continue
-			}
-			answerParts = append(answerParts, strings.TrimSpace(trimAnswerPrefix(line)))
-		}
-		if len(answerParts) == 0 {
-			continue
-		}
-		answer := normalizeExtractedText(strings.Join(answerParts, "\n"))
+	faqs := textutil.ParseFAQs(pageText)
+	blocks := make([]Block, 0, len(faqs))
+	for _, faq := range faqs {
 		metadata := map[string]any{
 			"parser":         "deepdoc_pdf_text",
 			"parser_version": "deepdoc_pdf_text_v1",
 			"page_no":        pageNo,
 			"block_type":     "faq",
-			"faq_question":   canonical,
-			"faq_answer":     answer,
-			"faq_aliases":    aliases,
+			"faq_question":   faq.Question,
+			"faq_answer":     faq.Answer,
+			"faq_aliases":    faq.Aliases,
 			"chunk_hint":     "single_faq",
 		}
-		if category != "" {
-			metadata["faq_category"] = category
+		if faq.Category != "" {
+			metadata["faq_category"] = faq.Category
 		}
 		blocks = append(blocks, Block{
 			ID:       fmt.Sprintf("p%d_faq%d", pageNo, len(blocks)+1),
 			Type:     "faq",
-			Text:     canonical + "\n" + answer,
+			Text:     faq.Question + "\n" + faq.Answer,
 			PageNo:   pageNo,
 			Metadata: metadata,
 		})
-		i = j - 1
 	}
 	return blocks
 }
@@ -300,7 +262,7 @@ func classifyTextBlock(text string) string {
 	if listPattern.MatchString(trimmed) {
 		return "list"
 	}
-	if isQuestionLine(trimmed) {
+	if textutil.IsQuestionLine(trimmed) {
 		return "faq"
 	}
 	return "text"
@@ -650,48 +612,6 @@ func needsOCR(text string) bool {
 		return true
 	}
 	return nonSpace >= 20 && float64(letters)/float64(nonSpace) < 0.15
-}
-
-func faqMetadataValues(line string, prefixes ...string) ([]string, bool) {
-	lower := strings.ToLower(strings.TrimSpace(line))
-	for _, prefix := range prefixes {
-		if !strings.HasPrefix(lower, prefix) {
-			continue
-		}
-		value := strings.TrimSpace(line[len(prefix):])
-		if value == "" {
-			return nil, true
-		}
-		parts := strings.FieldsFunc(value, func(r rune) bool { return r == ',' || r == '，' || r == ';' || r == '；' })
-		out := make([]string, 0, len(parts))
-		for _, part := range parts {
-			part = strings.TrimSpace(part)
-			if part != "" {
-				out = append(out, part)
-			}
-		}
-		return out, true
-	}
-	return nil, false
-}
-
-func isQuestionLine(line string) bool {
-	line = strings.TrimSpace(line)
-	return strings.HasPrefix(line, "Q:") || strings.HasPrefix(line, "问:") || strings.HasSuffix(line, "?") || strings.HasSuffix(line, "？")
-}
-
-func trimQuestionPrefix(line string) string {
-	line = strings.TrimSpace(line)
-	line = strings.TrimPrefix(line, "Q:")
-	line = strings.TrimPrefix(line, "问:")
-	return strings.TrimSpace(line)
-}
-
-func trimAnswerPrefix(line string) string {
-	line = strings.TrimSpace(line)
-	line = strings.TrimPrefix(line, "A:")
-	line = strings.TrimPrefix(line, "答:")
-	return strings.TrimSpace(line)
 }
 
 func max(a, b int) int {

@@ -32,6 +32,7 @@ message CapabilitiesResponse {
   uint32 max_concurrency = 5;
   uint64 max_input_bytes = 6;
   uint64 max_output_bytes = 7;
+  repeated string parser_methods = 8;
 }
 
 message DocumentBlock {
@@ -47,6 +48,21 @@ message ParsedDocument {
   string text = 1;
   string file_type = 2;
   repeated DocumentBlock blocks = 3;
+}
+
+message ParseDocumentRequest {
+  string request_id = 1;
+  string filename = 2;
+  string parser = 3;
+  bytes content = 4;
+}
+
+message ParseDocumentResponse {
+  ParsedDocument document = 1;
+  string parser = 2;
+  string implementation_version = 3;
+  bool requires_ocr = 4;
+  repeated string warnings = 5;
 }
 
 message ChunkPolicy {
@@ -110,6 +126,7 @@ message ExecuteToolResponse {
 service PythonBridge {
   rpc Health(HealthRequest) returns (HealthResponse);
   rpc GetCapabilities(CapabilitiesRequest) returns (CapabilitiesResponse);
+  rpc ParseDocument(ParseDocumentRequest) returns (ParseDocumentResponse);
   rpc ChunkDocument(ChunkDocumentRequest) returns (ChunkDocumentResponse);
   rpc ListTools(ListToolsRequest) returns (ListToolsResponse);
   rpc ExecuteTool(ExecuteToolRequest) returns (ExecuteToolResponse);

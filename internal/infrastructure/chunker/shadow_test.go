@@ -45,4 +45,7 @@ func TestCompareChunksReportsBoundaryRatio(t *testing.T) {
 	if metrics["boundary_match_ratio"] != 0.5 {
 		t.Fatalf("boundary ratio = %v, want 0.5", metrics["boundary_match_ratio"])
 	}
+	if got := overlapCharacters([]Chunk{{Content: "abc中文"}, {Content: "中文def"}}); got != 2 {
+		t.Fatalf("overlap characters = %d, want 2", got)
+	}
 }

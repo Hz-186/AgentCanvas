@@ -21,6 +21,7 @@ const _ = grpc.SupportPackageIsVersion8
 const (
 	PythonBridge_Health_FullMethodName          = "/agentcanvas.pythonbridge.v1.PythonBridge/Health"
 	PythonBridge_GetCapabilities_FullMethodName = "/agentcanvas.pythonbridge.v1.PythonBridge/GetCapabilities"
+	PythonBridge_ParseDocument_FullMethodName   = "/agentcanvas.pythonbridge.v1.PythonBridge/ParseDocument"
 	PythonBridge_ChunkDocument_FullMethodName   = "/agentcanvas.pythonbridge.v1.PythonBridge/ChunkDocument"
 	PythonBridge_ListTools_FullMethodName       = "/agentcanvas.pythonbridge.v1.PythonBridge/ListTools"
 	PythonBridge_ExecuteTool_FullMethodName     = "/agentcanvas.pythonbridge.v1.PythonBridge/ExecuteTool"
@@ -32,6 +33,7 @@ const (
 type PythonBridgeClient interface {
 	Health(ctx context.Context, in *HealthRequest, opts ...grpc.CallOption) (*HealthResponse, error)
 	GetCapabilities(ctx context.Context, in *CapabilitiesRequest, opts ...grpc.CallOption) (*CapabilitiesResponse, error)
+	ParseDocument(ctx context.Context, in *ParseDocumentRequest, opts ...grpc.CallOption) (*ParseDocumentResponse, error)
 	ChunkDocument(ctx context.Context, in *ChunkDocumentRequest, opts ...grpc.CallOption) (*ChunkDocumentResponse, error)
 	ListTools(ctx context.Context, in *ListToolsRequest, opts ...grpc.CallOption) (*ListToolsResponse, error)
 	ExecuteTool(ctx context.Context, in *ExecuteToolRequest, opts ...grpc.CallOption) (*ExecuteToolResponse, error)
@@ -59,6 +61,16 @@ func (c *pythonBridgeClient) GetCapabilities(ctx context.Context, in *Capabiliti
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(CapabilitiesResponse)
 	err := c.cc.Invoke(ctx, PythonBridge_GetCapabilities_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *pythonBridgeClient) ParseDocument(ctx context.Context, in *ParseDocumentRequest, opts ...grpc.CallOption) (*ParseDocumentResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ParseDocumentResponse)
+	err := c.cc.Invoke(ctx, PythonBridge_ParseDocument_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -101,6 +113,7 @@ func (c *pythonBridgeClient) ExecuteTool(ctx context.Context, in *ExecuteToolReq
 type PythonBridgeServer interface {
 	Health(context.Context, *HealthRequest) (*HealthResponse, error)
 	GetCapabilities(context.Context, *CapabilitiesRequest) (*CapabilitiesResponse, error)
+	ParseDocument(context.Context, *ParseDocumentRequest) (*ParseDocumentResponse, error)
 	ChunkDocument(context.Context, *ChunkDocumentRequest) (*ChunkDocumentResponse, error)
 	ListTools(context.Context, *ListToolsRequest) (*ListToolsResponse, error)
 	ExecuteTool(context.Context, *ExecuteToolRequest) (*ExecuteToolResponse, error)
@@ -116,6 +129,9 @@ func (UnimplementedPythonBridgeServer) Health(context.Context, *HealthRequest) (
 }
 func (UnimplementedPythonBridgeServer) GetCapabilities(context.Context, *CapabilitiesRequest) (*CapabilitiesResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetCapabilities not implemented")
+}
+func (UnimplementedPythonBridgeServer) ParseDocument(context.Context, *ParseDocumentRequest) (*ParseDocumentResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ParseDocument not implemented")
 }
 func (UnimplementedPythonBridgeServer) ChunkDocument(context.Context, *ChunkDocumentRequest) (*ChunkDocumentResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ChunkDocument not implemented")
@@ -171,6 +187,24 @@ func _PythonBridge_GetCapabilities_Handler(srv interface{}, ctx context.Context,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(PythonBridgeServer).GetCapabilities(ctx, req.(*CapabilitiesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _PythonBridge_ParseDocument_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ParseDocumentRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PythonBridgeServer).ParseDocument(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PythonBridge_ParseDocument_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PythonBridgeServer).ParseDocument(ctx, req.(*ParseDocumentRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -243,6 +277,10 @@ var PythonBridge_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetCapabilities",
 			Handler:    _PythonBridge_GetCapabilities_Handler,
+		},
+		{
+			MethodName: "ParseDocument",
+			Handler:    _PythonBridge_ParseDocument_Handler,
 		},
 		{
 			MethodName: "ChunkDocument",

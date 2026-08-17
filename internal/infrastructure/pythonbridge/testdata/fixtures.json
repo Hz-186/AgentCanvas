@@ -30,6 +30,21 @@
     ]
   },
   {
+    "name": "langchain_chinese_metadata",
+    "method": "langchain_recursive",
+    "chunk_size": 32,
+    "overlap": 4,
+    "text": "ignored",
+    "blocks": [
+      {"id": "h1", "type": "heading", "text": "# LangChain 切片"},
+      {"id": "b1", "type": "paragraph", "text": "中文段落使用标点和字符边界稳定切片。", "page_no": 2, "metadata": {"source": "fixture"}}
+    ],
+    "queries": [
+      {"term": "中文段落", "expected": ["中文段落"]}
+    ],
+    "required_metadata": ["block_ids", "page_no", "splitter"]
+  },
+  {
     "name": "faq_with_page",
     "method": "recursive",
     "chunk_size": 64,

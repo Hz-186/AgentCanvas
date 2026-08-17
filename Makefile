@@ -22,7 +22,7 @@ test-web:
 	npm --prefix web test -- --run
 
 test-python:
-	PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=python python3 -m unittest discover -s python/tests -v
+	PYTHON_BIN=python3; if [ -x .venv-langchain/bin/python ]; then PYTHON_BIN=.venv-langchain/bin/python; fi; PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=python $$PYTHON_BIN -m unittest discover -s python/tests -v
 
 benchmark-python:
 	@test -n "$$AGENTCANVAS_PYTHON_BRIDGE_TEST_TARGET" || (echo "set AGENTCANVAS_PYTHON_BRIDGE_TEST_TARGET and AGENTCANVAS_PYTHON_BRIDGE_TOKEN"; exit 1)
@@ -31,6 +31,9 @@ benchmark-python:
 
 worker: migrate
 	go run ./cmd/worker
+
+agent-worker: migrate
+	AGENTCANVAS_WORKER_ROLE=agent go run ./cmd/worker
 
 workspace-pruner: migrate
 	go run ./cmd/workspace-pruner

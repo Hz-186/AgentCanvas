@@ -44,6 +44,11 @@ class PythonBridgeStub(object):
                 request_serializer=agentcanvas_dot_pythonbridge_dot_v1_dot_bridge__pb2.CapabilitiesRequest.SerializeToString,
                 response_deserializer=agentcanvas_dot_pythonbridge_dot_v1_dot_bridge__pb2.CapabilitiesResponse.FromString,
                 _registered_method=True)
+        self.ParseDocument = channel.unary_unary(
+                '/agentcanvas.pythonbridge.v1.PythonBridge/ParseDocument',
+                request_serializer=agentcanvas_dot_pythonbridge_dot_v1_dot_bridge__pb2.ParseDocumentRequest.SerializeToString,
+                response_deserializer=agentcanvas_dot_pythonbridge_dot_v1_dot_bridge__pb2.ParseDocumentResponse.FromString,
+                _registered_method=True)
         self.ChunkDocument = channel.unary_unary(
                 '/agentcanvas.pythonbridge.v1.PythonBridge/ChunkDocument',
                 request_serializer=agentcanvas_dot_pythonbridge_dot_v1_dot_bridge__pb2.ChunkDocumentRequest.SerializeToString,
@@ -71,6 +76,12 @@ class PythonBridgeServicer(object):
         raise NotImplementedError('Method not implemented!')
 
     def GetCapabilities(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ParseDocument(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -106,6 +117,11 @@ def add_PythonBridgeServicer_to_server(servicer, server):
                     servicer.GetCapabilities,
                     request_deserializer=agentcanvas_dot_pythonbridge_dot_v1_dot_bridge__pb2.CapabilitiesRequest.FromString,
                     response_serializer=agentcanvas_dot_pythonbridge_dot_v1_dot_bridge__pb2.CapabilitiesResponse.SerializeToString,
+            ),
+            'ParseDocument': grpc.unary_unary_rpc_method_handler(
+                    servicer.ParseDocument,
+                    request_deserializer=agentcanvas_dot_pythonbridge_dot_v1_dot_bridge__pb2.ParseDocumentRequest.FromString,
+                    response_serializer=agentcanvas_dot_pythonbridge_dot_v1_dot_bridge__pb2.ParseDocumentResponse.SerializeToString,
             ),
             'ChunkDocument': grpc.unary_unary_rpc_method_handler(
                     servicer.ChunkDocument,
@@ -177,6 +193,33 @@ class PythonBridge(object):
             '/agentcanvas.pythonbridge.v1.PythonBridge/GetCapabilities',
             agentcanvas_dot_pythonbridge_dot_v1_dot_bridge__pb2.CapabilitiesRequest.SerializeToString,
             agentcanvas_dot_pythonbridge_dot_v1_dot_bridge__pb2.CapabilitiesResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ParseDocument(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/agentcanvas.pythonbridge.v1.PythonBridge/ParseDocument',
+            agentcanvas_dot_pythonbridge_dot_v1_dot_bridge__pb2.ParseDocumentRequest.SerializeToString,
+            agentcanvas_dot_pythonbridge_dot_v1_dot_bridge__pb2.ParseDocumentResponse.FromString,
             options,
             channel_credentials,
             insecure,

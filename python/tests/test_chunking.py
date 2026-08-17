@@ -41,6 +41,34 @@ class ChunkingTest(unittest.TestCase):
         self.assertEqual(chunks[0].page_no, 7)
         self.assertEqual(chunks[0].metadata["page_no"], 7)
 
+    def test_langchain_recursive_preserves_metadata_and_cjk_budget(self):
+        blocks = [
+            Block("h1", "heading", "# 中文指南"),
+            Block("b1", "paragraph", "第一段介绍。第二段说明！第三段补充？", page_no=2, metadata={"source": "fixture"}),
+        ]
+        chunks, tokenizer = chunk_document("ignored", blocks, "python:langchain_recursive", 8, 2)
+        self.assertEqual(tokenizer, "estimated")
+        self.assertTrue(chunks)
+        self.assertTrue(all(chunk.token_count <= 8 for chunk in chunks))
+        self.assertTrue(all(chunk.section_title == "中文指南" for chunk in chunks))
+        self.assertTrue(all(chunk.page_no == 2 for chunk in chunks))
+        self.assertTrue(all(chunk.metadata["chunk_method"] == "python:langchain_recursive" for chunk in chunks))
+        self.assertIn("b1", chunks[0].metadata["block_ids"])
+        self.assertEqual(
+            [chunk.content for chunk in chunks],
+            [chunk.content for chunk in chunk_document("ignored", blocks, "python:langchain_recursive", 8, 2)[0]],
+        )
+
+    def test_langchain_recursive_keeps_structured_blocks_separate(self):
+        blocks = [
+            Block("faq", "faq", "问题：如何回滚？\n答案：切回 Go。", metadata={"chunk_hint": "single_faq"}),
+            Block("table", "table", "列 A | 列 B\n值 1 | 值 2"),
+            Block("list", "list", "- 第一步\n- 第二步"),
+        ]
+        chunks, _ = chunk_document("ignored", blocks, "python:langchain_recursive", 32, 0)
+        self.assertEqual(len(chunks), 3)
+        self.assertEqual([chunk.metadata["block_ids"] for chunk in chunks], [["faq"], ["table"], ["list"]])
+
     def test_empty_long_and_invalid_inputs(self):
         self.assertEqual(chunk_document("", [], "python:recursive", 8, 0)[0], [])
         chunks, _ = chunk_document("中文" * 1000, [], "python:recursive", 32, 4)

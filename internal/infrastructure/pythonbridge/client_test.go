@@ -23,6 +23,8 @@ import (
 
 type fakeBridgeClient struct {
 	chunkResponse  *bridgegen.ChunkDocumentResponse
+	parseResponse  *bridgegen.ParseDocumentResponse
+	parseRequest   *bridgegen.ParseDocumentRequest
 	executeRequest *bridgegen.ExecuteToolRequest
 	executeContext context.Context
 }
@@ -97,6 +99,41 @@ func TestLivePythonBridge(t *testing.T) {
 	if err != nil || response.GetIsError() || !json.Valid([]byte(response.GetContentJson())) {
 		t.Fatalf("unexpected tool response: response=%+v error=%v", response, err)
 	}
+}
+
+func TestLivePythonBridgeDocumentParser(t *testing.T) {
+	target := os.Getenv("AGENTCANVAS_PYTHON_BRIDGE_TEST_TARGET")
+	if target == "" {
+		t.Skip("AGENTCANVAS_PYTHON_BRIDGE_TEST_TARGET is not set")
+	}
+	client, err := NewClient(Config{
+		Enabled: true, Target: target, AuthToken: os.Getenv("AGENTCANVAS_PYTHON_BRIDGE_TOKEN"),
+		ConnectTimeout: 3 * time.Second, RequestTimeout: 3 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	capabilities, err := client.GetCapabilities(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsMethod(capabilities.ParserMethods, LangChainPDFParser) {
+		t.Skipf("sidecar does not advertise %s", LangChainPDFParser)
+	}
+	parsed, requiresOCR, _, err := client.ParseDocument(context.Background(), LangChainPDFParser, "scan.pdf", nil)
+	if err != nil || !requiresOCR || parsed != nil {
+		t.Fatalf("unexpected live parser response: document=%+v requires_ocr=%v error=%v", parsed, requiresOCR, err)
+	}
+}
+
+func containsMethod(methods []string, target string) bool {
+	for _, method := range methods {
+		if method == target {
+			return true
+		}
+	}
+	return false
 }
 
 func TestClientReportsUnavailableAndReconnectsAfterServerRestart(t *testing.T) {
@@ -196,6 +233,11 @@ func (f *fakeBridgeClient) ChunkDocument(_ context.Context, _ *bridgegen.ChunkDo
 	return f.chunkResponse, nil
 }
 
+func (f *fakeBridgeClient) ParseDocument(_ context.Context, request *bridgegen.ParseDocumentRequest, _ ...grpc.CallOption) (*bridgegen.ParseDocumentResponse, error) {
+	f.parseRequest = request
+	return f.parseResponse, nil
+}
+
 func (f *fakeBridgeClient) ListTools(context.Context, *bridgegen.ListToolsRequest, ...grpc.CallOption) (*bridgegen.ListToolsResponse, error) {
 	return nil, errors.New("not used")
 }
@@ -232,6 +274,33 @@ func TestChunkDocumentRejectsInvalidAlgorithmResponse(t *testing.T) {
 	client := &Client{stub: fake, config: Config{AuthToken: "token", RequestTimeout: time.Second}}
 	if _, err := client.ChunkDocument(context.Background(), "python:fixed_token", parser.ParsedDocument{Text: "hello"}, chunker.Policy{ChunkSize: 4}); err == nil {
 		t.Fatal("ChunkDocument accepted a response for a different algorithm")
+	}
+}
+
+func TestParseDocumentConvertsBlocksAndRequiresOCR(t *testing.T) {
+	page := int32(2)
+	fake := &fakeBridgeClient{parseResponse: &bridgegen.ParseDocumentResponse{
+		Parser: "python:langchain_pdf", ImplementationVersion: "langchain-pymupdf-v1",
+		Document: &bridgegen.ParsedDocument{FileType: "pdf", Text: "hello", Blocks: []*bridgegen.DocumentBlock{{
+			Id: "p2_b1", Type: "text", Text: "hello", PageNo: &page, BboxJson: `{"x":1,"y":2,"width":3,"height":4}`, MetadataJson: `{"page_no":2}`,
+		}}},
+	}}
+	client := &Client{stub: fake, config: Config{AuthToken: "token", MaxSendBytes: 100, RequestTimeout: time.Second}}
+	doc, requiresOCR, _, err := client.ParseDocument(context.Background(), "python:langchain_pdf", "guide.pdf", []byte("pdf"))
+	if err != nil || requiresOCR || doc == nil || len(doc.Blocks) != 1 || *doc.Blocks[0].PageNo != 2 || doc.Blocks[0].BBox == nil || doc.Blocks[0].BBox.Width != 3 {
+		t.Fatalf("unexpected parsed document: doc=%+v requiresOCR=%v error=%v", doc, requiresOCR, err)
+	}
+	fake.parseResponse = &bridgegen.ParseDocumentResponse{Parser: "python:langchain_pdf", ImplementationVersion: "v1", RequiresOcr: true}
+	doc, requiresOCR, _, err = client.ParseDocument(context.Background(), "python:langchain_pdf", "scan.pdf", []byte("pdf"))
+	if err != nil || !requiresOCR || doc != nil {
+		t.Fatalf("unexpected OCR response: doc=%+v requiresOCR=%v error=%v", doc, requiresOCR, err)
+	}
+	fake.parseResponse = &bridgegen.ParseDocumentResponse{
+		Parser: "python:langchain_pdf", ImplementationVersion: "v1",
+		Document: &bridgegen.ParsedDocument{FileType: "pdf", Text: "missing blocks"},
+	}
+	if _, _, _, err := client.ParseDocument(context.Background(), "python:langchain_pdf", "broken.pdf", []byte("pdf")); err == nil {
+		t.Fatal("ParseDocument accepted text without parsed blocks")
 	}
 }
 
