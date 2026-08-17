@@ -28,8 +28,11 @@ func TestQueueConfigDefaults(t *testing.T) {
 		cfg.ReflectionQueue.LeaseSeconds != 180 || cfg.ReflectionQueue.MaxAckPending != cfg.ReflectionQueue.Concurrency {
 		t.Fatalf("unexpected reflection queue defaults: %+v", cfg.ReflectionQueue)
 	}
-	if cfg.Milvus.Collection == "" || cfg.Milvus.M == 0 || cfg.Milvus.MetricType != "COSINE" {
+	if cfg.Milvus.Collection != "agentcanvas_chunks_v2" || cfg.Milvus.M == 0 || cfg.Milvus.MetricType != "COSINE" {
 		t.Fatalf("unexpected milvus defaults: %+v", cfg.Milvus)
+	}
+	if cfg.Retrieval.Backend != "elasticsearch" {
+		t.Fatalf("unexpected retrieval backend default: %+v", cfg.Retrieval)
 	}
 	if cfg.ContextIndex.BatchSize != 50 || cfg.ContextIndex.PollMilliseconds != 1000 || cfg.ContextIndex.LeaseSeconds != 60 {
 		t.Fatalf("unexpected context index defaults: %+v", cfg.ContextIndex)
@@ -43,8 +46,32 @@ func TestQueueConfigDefaults(t *testing.T) {
 		cfg.GitWorkspace.MaxWorkspacesPerProject != 64 || cfg.GitWorkspace.PruneTTLHours != 24 {
 		t.Fatalf("unexpected Git workspace defaults: %+v", cfg.GitWorkspace)
 	}
-	if cfg.PythonBridge.Target != "127.0.0.1:50051" || cfg.PythonBridge.MaxConcurrency != 8 {
+	if cfg.PythonBridge.Target != "127.0.0.1:50051" || cfg.PythonBridge.MaxConcurrency != 8 || cfg.PythonBridge.DocumentParser != "go" || cfg.PythonBridge.MaxDocumentBytes != 8*1024*1024 {
 		t.Fatalf("unexpected Python bridge defaults: %+v", cfg.PythonBridge)
+	}
+}
+
+func TestPythonBridgeConfigAcceptsLangChainMethods(t *testing.T) {
+	cfg := Config{
+		MySQL:    MySQLConfig{DSN: "dsn"},
+		Security: SecurityConfig{JWTSecret: "jwt", RefreshTokenPepper: "pepper", SecretEncryptKey: "secret"},
+		PythonBridge: PythonBridgeConfig{
+			Enabled: true, AllowExperimentalParsing: true, DocumentParser: "python:langchain_pdf",
+			AllowedParserMethods: []string{"python:langchain_pdf"},
+			AllowedChunkMethods:  []string{"python:langchain_recursive"},
+		},
+	}
+	cfg.setDefaults()
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
+func TestPythonBridgeConfigRejectsParserWithoutBridge(t *testing.T) {
+	cfg := Config{PythonBridge: PythonBridgeConfig{DocumentParser: "python:langchain_pdf"}}
+	cfg.setDefaults()
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected Python parser to require bridge")
 	}
 }
 
@@ -138,15 +165,36 @@ func TestQueueConfigRejectsUnsupportedBackend(t *testing.T) {
 	}
 }
 
-func TestMilvusRequiresAddressWhenEnabled(t *testing.T) {
+func TestMilvusRequiresAddressWhenSelected(t *testing.T) {
 	cfg := Config{
-		MySQL:    MySQLConfig{DSN: "dsn"},
-		Security: SecurityConfig{JWTSecret: "jwt", RefreshTokenPepper: "pepper", SecretEncryptKey: "secret"},
-		Milvus:   MilvusConfig{Enabled: true},
+		MySQL:     MySQLConfig{DSN: "dsn"},
+		Security:  SecurityConfig{JWTSecret: "jwt", RefreshTokenPepper: "pepper", SecretEncryptKey: "secret"},
+		Retrieval: RetrievalConfig{Backend: "milvus"},
 	}
 	cfg.setDefaults()
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("expected missing milvus address error")
+	}
+}
+
+func TestMilvusRequiresDimensionsWhenSelected(t *testing.T) {
+	cfg := Config{
+		MySQL:     MySQLConfig{DSN: "dsn"},
+		Security:  SecurityConfig{JWTSecret: "jwt", RefreshTokenPepper: "pepper", SecretEncryptKey: "secret"},
+		Retrieval: RetrievalConfig{Backend: "milvus"},
+		Milvus:    MilvusConfig{Address: "http://milvus:19530"},
+	}
+	cfg.setDefaults()
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected missing milvus dimensions error")
+	}
+}
+
+func TestRetrievalBackendRejectsUnsupportedValue(t *testing.T) {
+	cfg := Config{Retrieval: RetrievalConfig{Backend: "solr"}}
+	cfg.setDefaults()
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected unsupported retrieval backend error")
 	}
 }
 
@@ -163,6 +211,13 @@ func TestOCRRequiresEndpointWhenEnabled(t *testing.T) {
 }
 
 func TestDockerConfigLoadsWithNATSAndMilvus(t *testing.T) {
+	t.Setenv("AGENTCANVAS_MYSQL_DSN", "agentcanvas:password@tcp(mysql:3306)/agentcanvas")
+	t.Setenv("AGENTCANVAS_REDIS_PASSWORD", "redis-password")
+	t.Setenv("AGENTCANVAS_MINIO_ACCESS_KEY", "minio-access")
+	t.Setenv("AGENTCANVAS_MINIO_SECRET_KEY", "minio-secret")
+	t.Setenv("AGENTCANVAS_JWT_SECRET", "docker-jwt-secret")
+	t.Setenv("AGENTCANVAS_REFRESH_TOKEN_PEPPER", "docker-refresh-pepper")
+	t.Setenv("AGENTCANVAS_SECRET_ENCRYPT_KEY", "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=")
 	cfg, err := LoadConfig("../../../configs/config.yaml")
 	if err != nil {
 		t.Fatalf("LoadConfig(config.yaml) error = %v", err)
@@ -172,5 +227,61 @@ func TestDockerConfigLoadsWithNATSAndMilvus(t *testing.T) {
 	}
 	if !cfg.Milvus.Enabled || cfg.Milvus.Address != "http://milvus:19530" {
 		t.Fatalf("unexpected docker milvus config: %+v", cfg.Milvus)
+	}
+}
+
+func TestDockerConfigRejectsUnresolvedSecrets(t *testing.T) {
+	cfg := Config{
+		App:      AppConfig{Env: "docker", CORSAllowedOrigins: []string{"http://localhost:8080"}},
+		MySQL:    MySQLConfig{DSN: "${AGENTCANVAS_MYSQL_DSN}"},
+		Security: SecurityConfig{JWTSecret: "${AGENTCANVAS_JWT_SECRET}", RefreshTokenPepper: "pepper", SecretEncryptKey: "secret"},
+	}
+	cfg.setDefaults()
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("docker config accepted unresolved secrets")
+	}
+}
+
+func TestProductionConfigRejectsPlaceholderSecretsAndWildcardCORS(t *testing.T) {
+	base := Config{
+		App:      AppConfig{Env: "production", CORSAllowedOrigins: []string{"https://agentcanvas.example"}},
+		MySQL:    MySQLConfig{DSN: "dsn"},
+		Security: SecurityConfig{JWTSecret: "secure-jwt", RefreshTokenPepper: "secure-pepper", SecretEncryptKey: "secure-key"},
+	}
+	base.setDefaults()
+	if err := base.Validate(); err != nil {
+		t.Fatalf("valid production config rejected: %v", err)
+	}
+
+	placeholder := base
+	placeholder.Security.JWTSecret = "change-this-jwt-secret"
+	if err := placeholder.Validate(); err == nil {
+		t.Fatal("production placeholder secret was accepted")
+	}
+
+	wildcard := base
+	wildcard.App.CORSAllowedOrigins = []string{"*"}
+	if err := wildcard.Validate(); err == nil {
+		t.Fatal("production wildcard CORS was accepted")
+	}
+}
+
+func TestMemoryDreamRequiresUsableProviderConfiguration(t *testing.T) {
+	cfg := Config{
+		MySQL:       MySQLConfig{DSN: "dsn"},
+		Security:    SecurityConfig{JWTSecret: "jwt", RefreshTokenPepper: "pepper", SecretEncryptKey: "secret"},
+		MemoryDream: MemoryDreamConfig{Enabled: true},
+	}
+	cfg.setDefaults()
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("enabled memory dream without providers was accepted")
+	}
+
+	cfg.MemoryDream = MemoryDreamConfig{
+		Enabled: true, LLMProviderType: "openai", LLMBaseURL: "https://api.example/v1", LLMAPIKey: "key", LLMModel: "chat",
+		EmbeddingProviderType: "openai", EmbeddingBaseURL: "https://api.example/v1", EmbeddingModel: "embedding",
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("usable memory dream config rejected: %v", err)
 	}
 }
