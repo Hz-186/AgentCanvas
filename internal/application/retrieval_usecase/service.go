@@ -9,9 +9,7 @@ import (
 	providerdomain "agentcanvas/internal/domain/provider"
 	"agentcanvas/internal/domain/retrieval"
 	"agentcanvas/internal/domain/retrieval/fusion"
-	cryptoinfra "agentcanvas/internal/infrastructure/crypto"
 	"agentcanvas/internal/infrastructure/llm"
-	"agentcanvas/internal/observability"
 
 	"gorm.io/gorm"
 )
@@ -22,21 +20,38 @@ const (
 )
 
 type Service struct {
-	kbs       knowledge.KnowledgeBaseRepository
-	providers providerdomain.Repository
-	raw       retrieval.Retriever
-	embedder  llm.EmbeddingClient
-	reranker  llm.Reranker
-	secrets   *cryptoinfra.SecretBox
-	rewriter  QueryRewriter
+	kbs           knowledge.KnowledgeBaseRepository
+	providers     providerdomain.Repository
+	raw           retrieval.Retriever
+	backends      map[string]retrieval.Retriever
+	embedder      llm.EmbeddingClient
+	reranker      llm.Reranker
+	secrets       providerdomain.SecretCodec
+	rewriter      QueryRewriter
+	recordMetrics func(lowRecall, clarification, rewrite bool)
 }
 
-func NewService(kbs knowledge.KnowledgeBaseRepository, providers providerdomain.Repository, raw retrieval.Retriever, embedder llm.EmbeddingClient, reranker llm.Reranker, secrets *cryptoinfra.SecretBox) *Service {
+func NewService(kbs knowledge.KnowledgeBaseRepository, providers providerdomain.Repository, raw retrieval.Retriever, embedder llm.EmbeddingClient, reranker llm.Reranker, secrets providerdomain.SecretCodec) *Service {
 	return &Service{kbs: kbs, providers: providers, raw: raw, embedder: embedder, reranker: reranker, secrets: secrets}
 }
 
 func (s *Service) WithQueryRewriter(rewriter QueryRewriter) *Service {
 	s.rewriter = rewriter
+	return s
+}
+
+func (s *Service) WithBackends(backends map[string]retrieval.Retriever) *Service {
+	s.backends = make(map[string]retrieval.Retriever, len(backends))
+	for name, backend := range backends {
+		if backend != nil {
+			s.backends[strings.TrimSpace(name)] = backend
+		}
+	}
+	return s
+}
+
+func (s *Service) WithMetrics(record func(bool, bool, bool)) *Service {
+	s.recordMetrics = record
 	return s
 }
 
@@ -59,9 +74,11 @@ func (s *Service) Search(ctx context.Context, req retrieval.RetrievalRequest) (r
 		lowRecall := response.Diagnostics != nil && response.Diagnostics.LowRecall
 		clarification := response.Clarification != nil && response.Clarification.Required
 		rewrite := response.QueryPlan != nil && response.QueryPlan.RewriteInvoked
-		observability.ContextSystemMetrics.RecordRetrieval(lowRecall, clarification, rewrite)
+		if s.recordMetrics != nil {
+			s.recordMetrics(lowRecall, clarification, rewrite)
+		}
 	}()
-	if s.raw == nil {
+	if s.raw == nil && len(s.backends) == 0 {
 		return nil, fmt.Errorf("retriever is not configured")
 	}
 	if req.Mode == "" {
@@ -105,6 +122,7 @@ func (s *Service) Search(ctx context.Context, req retrieval.RetrievalRequest) (r
 	if kb.EmbeddingDimensions > 0 && len(req.QueryVector) != kb.EmbeddingDimensions {
 		return nil, fmt.Errorf("embedding dimensions mismatch: got %d, want %d", len(req.QueryVector), kb.EmbeddingDimensions)
 	}
+	req.EmbeddingProfile = kb.EmbeddingProfile().Key()
 	if req.HybridWeight == 0 {
 		req.HybridWeight = kb.HybridWeight
 	}
@@ -132,7 +150,11 @@ func (s *Service) Search(ctx context.Context, req retrieval.RetrievalRequest) (r
 }
 
 func (s *Service) searchWithDiagnostics(ctx context.Context, req retrieval.RetrievalRequest, trace []retrieval.RetrievalTraceRecord, plan *retrieval.QueryPlan) (*retrieval.RetrievalResponse, error) {
-	resp, err := s.raw.Search(ctx, req)
+	backend, err := s.backendFor(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := backend.Search(ctx, req)
 	if err != nil {
 		if fallbackResp, fallbackErr := s.tryFallbackSearch(ctx, req, nil, trace, "initial_recall_error"); fallbackErr == nil && fallbackResp != nil {
 			return fallbackResp, nil
@@ -147,7 +169,7 @@ func (s *Service) searchWithDiagnostics(ctx context.Context, req retrieval.Retri
 	resp.Trace = append(trace, retrieval.RetrievalTraceRecord{Stage: "recall", Mode: req.Mode, Message: "initial_recall", Metadata: map[string]any{"result_count": len(resp.Results), "candidate_k": req.CandidateK, "keyword_count": diagnostics.KeywordCount, "vector_count": diagnostics.VectorCount}})
 	if diagnostics.LowRecall && req.CandidateK < 100 {
 		expandedReq := expandedRecallRequest(req)
-		expandedResp, expandedErr := s.raw.Search(ctx, expandedReq)
+		expandedResp, expandedErr := backend.Search(ctx, expandedReq)
 		if expandedErr == nil && expandedResp != nil && len(expandedResp.Results) > len(resp.Results) {
 			expandedDiagnostics := analyzeRecall(expandedReq, expandedResp.Results)
 			expandedDiagnostics.Expanded = true
@@ -205,7 +227,11 @@ func (s *Service) rewriteSearch(ctx context.Context, req retrieval.RetrievalRequ
 			}
 			rewriteReq.QueryVector = vector
 		}
-		rewriteResp, err := s.raw.Search(ctx, rewriteReq)
+		backend, backendErr := s.backendFor(ctx, rewriteReq)
+		if backendErr != nil {
+			continue
+		}
+		rewriteResp, err := backend.Search(ctx, rewriteReq)
 		if err != nil || rewriteResp == nil {
 			continue
 		}
@@ -230,7 +256,11 @@ func (s *Service) tryFallbackSearch(ctx context.Context, req retrieval.Retrieval
 	if !ok || err != nil {
 		return nil, err
 	}
-	fallbackResp, err := s.raw.Search(ctx, fallbackReq)
+	backend, err := s.backendFor(ctx, fallbackReq)
+	if err != nil {
+		return nil, err
+	}
+	fallbackResp, err := backend.Search(ctx, fallbackReq)
 	if err != nil {
 		return nil, err
 	}
@@ -279,6 +309,7 @@ func (s *Service) fallbackRequest(ctx context.Context, req retrieval.RetrievalRe
 		}
 		fallback.Mode = retrieval.ModeVector
 		fallback.QueryVector = vector
+		fallback.EmbeddingProfile = kb.EmbeddingProfile().Key()
 		return fallback, true, nil
 	default:
 		return retrieval.RetrievalRequest{}, false, nil
@@ -312,7 +343,51 @@ func (s *Service) primaryKnowledgeBase(ctx context.Context, ownerID int64, kbIDs
 		}
 		return nil, err
 	}
+	profile := kb.EmbeddingProfile()
+	for _, id := range kbIDs[1:] {
+		candidate, err := s.kbs.FindByID(ctx, ownerID, id)
+		if err != nil {
+			return nil, err
+		}
+		if candidate.EmbeddingProfile() != profile {
+			return nil, fmt.Errorf("knowledge bases use incompatible embedding profiles")
+		}
+		if strings.TrimSpace(candidate.RetrievalBackend) != strings.TrimSpace(kb.RetrievalBackend) {
+			return nil, fmt.Errorf("knowledge bases use different retrieval backends")
+		}
+	}
 	return kb, nil
+}
+
+func (s *Service) backendFor(ctx context.Context, req retrieval.RetrievalRequest) (retrieval.Retriever, error) {
+	if len(req.KBIDs) == 0 {
+		if s.raw == nil {
+			return nil, fmt.Errorf("retriever is not configured")
+		}
+		return s.raw, nil
+	}
+	kb, err := s.kbs.FindByID(ctx, req.OwnerID, req.KBIDs[0])
+	if err != nil {
+		return nil, err
+	}
+	backendName := strings.TrimSpace(kb.RetrievalBackend)
+	for _, id := range req.KBIDs[1:] {
+		candidate, findErr := s.kbs.FindByID(ctx, req.OwnerID, id)
+		if findErr != nil {
+			return nil, findErr
+		}
+		if strings.TrimSpace(candidate.RetrievalBackend) != backendName {
+			return nil, fmt.Errorf("knowledge bases use different retrieval backends")
+		}
+	}
+	backend := s.backends[backendName]
+	if len(s.backends) == 0 && backendName == "" {
+		return s.raw, nil
+	}
+	if backend == nil {
+		return nil, fmt.Errorf("retriever for knowledge base backend %q is not configured", backendName)
+	}
+	return backend, nil
 }
 
 func (s *Service) embedQuery(ctx context.Context, ownerID int64, kb *knowledge.KnowledgeBase, query string, mode retrieval.Mode) ([]float32, error) {

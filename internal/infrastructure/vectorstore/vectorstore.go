@@ -32,16 +32,19 @@ func NormalizeHNSWConfig(config HNSWConfig) HNSWConfig {
 
 type VectorDocument struct {
 	ID       string         `json:"id"`
+	Text     string         `json:"text,omitempty"`
 	Vector   []float32      `json:"vector"`
 	Metadata map[string]any `json:"metadata,omitempty"`
 }
 
 type SearchRequest struct {
-	Collection string         `json:"collection"`
-	Vector     []float32      `json:"vector"`
-	TopK       int            `json:"top_k"`
-	Filter     map[string]any `json:"filter,omitempty"`
-	HNSW       HNSWConfig     `json:"hnsw,omitempty"`
+	Collection string           `json:"collection"`
+	QueryText  string           `json:"query_text,omitempty"`
+	Vector     []float32        `json:"vector"`
+	TopK       int              `json:"top_k"`
+	Filter     map[string]any   `json:"filter,omitempty"`
+	AnyFilters []map[string]any `json:"any_filters,omitempty"`
+	HNSW       HNSWConfig       `json:"hnsw,omitempty"`
 }
 
 type SearchResult struct {

@@ -56,8 +56,77 @@ func TestSearchEmbedsQueryAndAppliesRerank(t *testing.T) {
 	if raw.request.HybridWeight != 0.7 {
 		t.Fatalf("hybrid weight = %v, want 0.7", raw.request.HybridWeight)
 	}
+	if raw.request.EmbeddingProfile == "" {
+		t.Fatal("embedding profile was not propagated to the backend")
+	}
 	if resp.Results[0].ChunkID != 2 || resp.Results[1].ChunkID != 1 {
 		t.Fatalf("reranked results = %#v", resp.Results)
+	}
+}
+
+func TestSearchRejectsIncompatibleKnowledgeBaseEmbeddingProfiles(t *testing.T) {
+	providerID := int64(90)
+	service := NewService(
+		&fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{
+			10: {ID: 10, OwnerID: 1, EmbeddingProviderID: &providerID, EmbeddingModel: "model-a", EmbeddingDimensions: 2, EmbeddingMetric: knowledge.EmbeddingMetricCosine},
+			11: {ID: 11, OwnerID: 1, EmbeddingProviderID: &providerID, EmbeddingModel: "model-b", EmbeddingDimensions: 2, EmbeddingMetric: knowledge.EmbeddingMetricCosine},
+		}},
+		&fakeProviderRepo{}, &fakeRawRetriever{}, nil, nil, mustSecretBox(t),
+	)
+	_, err := service.Search(context.Background(), retrieval.RetrievalRequest{
+		OwnerID: 1, KBIDs: []int64{10, 11}, Query: "agent", Mode: retrieval.ModeVector, QueryVector: []float32{0.1, 0.2},
+	})
+	if err == nil || err.Error() != "knowledge bases use incompatible embedding profiles" {
+		t.Fatalf("Search() error = %v", err)
+	}
+}
+
+func TestSearchDispatchesVectorQueryToKnowledgeBaseBackend(t *testing.T) {
+	providerID := int64(90)
+	defaultBackend := &fakeRawRetriever{response: &retrieval.RetrievalResponse{}}
+	milvusBackend := &fakeRawRetriever{response: &retrieval.RetrievalResponse{Results: []retrieval.RetrievalResult{{ChunkID: 1, Score: 0.9}}}}
+	service := NewService(
+		&fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{10: {
+			ID: 10, OwnerID: 1, RetrievalBackend: knowledge.RetrievalBackendMilvus,
+			RetrievalMode: knowledge.RetrievalModeVector, EmbeddingProviderID: &providerID,
+			EmbeddingModel: "text-embedding", EmbeddingDimensions: 2,
+		}}},
+		&fakeProviderRepo{items: map[int64]*providerdomain.ModelProvider{90: {
+			ID: 90, OwnerID: 1, ProviderType: providerdomain.TypeOpenAICompatible, Status: providerdomain.StatusActive,
+		}}},
+		defaultBackend, &fakeEmbedder{vectors: [][]float32{{0.1, 0.2}}}, nil, mustSecretBox(t),
+	).WithBackends(map[string]retrieval.Retriever{
+		knowledge.RetrievalBackendElasticsearch: defaultBackend,
+		knowledge.RetrievalBackendMilvus:        milvusBackend,
+	})
+
+	if _, err := service.Search(context.Background(), retrieval.RetrievalRequest{
+		OwnerID: 1, KBIDs: []int64{10}, Query: "agent", TopK: 1, CandidateK: 100, Mode: retrieval.ModeVector,
+	}); err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if len(milvusBackend.request.QueryVector) != 2 || milvusBackend.request.EmbeddingProfile == "" {
+		t.Fatalf("milvus request = %+v", milvusBackend.request)
+	}
+	if len(defaultBackend.request.QueryVector) != 0 {
+		t.Fatalf("default backend was called: %+v", defaultBackend.request)
+	}
+}
+
+func TestSearchRejectsDeclaredBackendWithoutAdapter(t *testing.T) {
+	service := NewService(
+		&fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{10: {
+			ID: 10, OwnerID: 1, RetrievalBackend: knowledge.RetrievalBackendMilvus,
+		}}},
+		&fakeProviderRepo{},
+		&fakeRawRetriever{response: &retrieval.RetrievalResponse{}},
+		nil, nil, mustSecretBox(t),
+	)
+	_, err := service.Search(context.Background(), retrieval.RetrievalRequest{
+		OwnerID: 1, KBIDs: []int64{10}, Query: "agent", Mode: retrieval.ModeKeyword,
+	})
+	if err == nil || err.Error() != "retriever for knowledge base backend \"milvus\" is not configured" {
+		t.Fatalf("Search() error = %v", err)
 	}
 }
 

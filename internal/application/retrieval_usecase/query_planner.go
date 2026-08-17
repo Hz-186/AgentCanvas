@@ -12,7 +12,6 @@ import (
 	"agentcanvas/internal/domain/conversation"
 	providerdomain "agentcanvas/internal/domain/provider"
 	"agentcanvas/internal/domain/retrieval"
-	cryptoinfra "agentcanvas/internal/infrastructure/crypto"
 	"agentcanvas/internal/infrastructure/llm"
 
 	"golang.org/x/text/unicode/norm"
@@ -62,7 +61,7 @@ type QueryRewriter interface {
 type ProviderQueryRewriter struct {
 	Providers providerdomain.Repository
 	Client    llm.ChatClient
-	Secrets   *cryptoinfra.SecretBox
+	Secrets   providerdomain.SecretCodec
 }
 
 func (r ProviderQueryRewriter) Rewrite(ctx context.Context, req QueryRewriteRequest) (QueryRewriteResult, error) {

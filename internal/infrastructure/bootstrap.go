@@ -12,7 +12,6 @@ import (
 	queueinfra "agentcanvas/internal/infrastructure/queue"
 	redisinfra "agentcanvas/internal/infrastructure/redis"
 	memoryretrievalinfra "agentcanvas/internal/infrastructure/retrieval"
-	compositeretrieval "agentcanvas/internal/infrastructure/retrieval/composite"
 	esretrieval "agentcanvas/internal/infrastructure/retrieval/elasticsearch"
 	milvusretrieval "agentcanvas/internal/infrastructure/retrieval/milvus"
 	"agentcanvas/internal/infrastructure/vectorstore"
@@ -39,6 +38,7 @@ type InfraDeps struct {
 	MinIOClient             *minio.Client
 	ElasticsearchClient     *elasticsearch.Client
 	RetrievalStore          RetrievalStore
+	RetrievalStores         map[string]RetrievalStore
 	MemoryRetrievalStore    *memoryretrievalinfra.MemoryStore
 	MemoryRetrievalIndexErr error
 	JobQueue                queueinfra.JobQueue
@@ -67,14 +67,18 @@ func InitInfrastructure(ctx context.Context, cfg *config.Config, opts InitOption
 		return nil, fmt.Errorf("init elasticsearch: %w", err)
 	}
 	esStore := esretrieval.NewStore(esClient, cfg.Elasticsearch)
-	var retrievalStore RetrievalStore = compositeretrieval.NewShared(esStore)
-	if cfg.Milvus.Enabled {
+	retrievalStores := map[string]RetrievalStore{"elasticsearch": esStore}
+	if cfg.Milvus.Enabled || cfg.Retrieval.Backend == "milvus" {
 		milvusVector := vectorstore.NewMilvusStore(cfg.Milvus.Address, cfg.Milvus.Token, milvusHNSW(cfg))
 		milvusStore := milvusretrieval.NewStore(milvusVector, cfg.Milvus.Collection, cfg.Milvus.Dimensions, milvusHNSW(cfg))
-		retrievalStore = compositeretrieval.New(esStore, milvusStore)
+		retrievalStores["milvus"] = milvusStore
+	}
+	retrievalStore := retrievalStores[cfg.Retrieval.Backend]
+	if retrievalStore == nil {
+		return nil, fmt.Errorf("retrieval backend %q is not configured", cfg.Retrieval.Backend)
 	}
 	if err := retrievalStore.EnsureIndex(ctx); err != nil {
-		return nil, fmt.Errorf("ensure elasticsearch chunk index: %w", err)
+		return nil, fmt.Errorf("ensure %s retrieval index: %w", cfg.Retrieval.Backend, err)
 	}
 	secretBox, err := cryptoinfra.NewSecretBox(cfg.Security.SecretEncryptKey)
 	if err != nil {
@@ -86,6 +90,7 @@ func InitInfrastructure(ctx context.Context, cfg *config.Config, opts InitOption
 		MinIOClient:         minioClient,
 		ElasticsearchClient: esClient,
 		RetrievalStore:      retrievalStore,
+		RetrievalStores:     retrievalStores,
 		SecretBox:           secretBox,
 		FileStorage:         minioinfra.NewFileStorage(minioClient, cfg.MinIO.Bucket),
 	}

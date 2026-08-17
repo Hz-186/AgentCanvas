@@ -10,7 +10,6 @@ import (
 
 	providerdomain "agentcanvas/internal/domain/provider"
 	"agentcanvas/internal/domain/reflection"
-	cryptoinfra "agentcanvas/internal/infrastructure/crypto"
 	"agentcanvas/internal/infrastructure/llm"
 	"agentcanvas/internal/infrastructure/vectorstore"
 )
@@ -21,13 +20,13 @@ type ReflectionSemanticIndex struct {
 	Store       vectorstore.Store
 	Embedder    llm.EmbeddingClient
 	Providers   providerdomain.Repository
-	Secrets     *cryptoinfra.SecretBox
+	Secrets     providerdomain.SecretCodec
 	Reflections reflection.Repository
 	HNSW        vectorstore.HNSWConfig
 	collections sync.Map
 }
 
-func NewReflectionSemanticIndex(store vectorstore.Store, embedder llm.EmbeddingClient, providers providerdomain.Repository, secrets *cryptoinfra.SecretBox, reflections reflection.Repository, hnsw vectorstore.HNSWConfig) *ReflectionSemanticIndex {
+func NewReflectionSemanticIndex(store vectorstore.Store, embedder llm.EmbeddingClient, providers providerdomain.Repository, secrets providerdomain.SecretCodec, reflections reflection.Repository, hnsw vectorstore.HNSWConfig) *ReflectionSemanticIndex {
 	return &ReflectionSemanticIndex{Store: store, Embedder: embedder, Providers: providers, Secrets: secrets, Reflections: reflections, HNSW: vectorstore.NormalizeHNSWConfig(hnsw)}
 }
 

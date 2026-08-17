@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -23,8 +24,32 @@ type MilvusStore struct {
 
 type milvusEntityRecord struct {
 	ID       string         `json:"id"`
+	Text     string         `json:"text"`
 	Vector   []float32      `json:"vector"`
-	Metadata map[string]any `json:"metadata"`
+	Metadata milvusMetadata `json:"metadata"`
+}
+
+type milvusMetadata map[string]any
+
+func (m *milvusMetadata) UnmarshalJSON(data []byte) error {
+	data = bytes.TrimSpace(data)
+	if len(data) == 0 || bytes.Equal(data, []byte("null")) {
+		*m = nil
+		return nil
+	}
+	if data[0] == '"' {
+		var encoded string
+		if err := json.Unmarshal(data, &encoded); err != nil {
+			return err
+		}
+		data = []byte(encoded)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*m = decoded
+	return nil
 }
 
 func NewMilvusStore(address, token string, hnsw HNSWConfig) *MilvusStore {
@@ -33,45 +58,70 @@ func NewMilvusStore(address, token string, hnsw HNSWConfig) *MilvusStore {
 
 func (s *MilvusStore) EnsureCollection(ctx context.Context, name string, dimensions int, hnsw HNSWConfig) error {
 	name = strings.TrimSpace(name)
-	if name == "" || dimensions <= 0 {
-		return fmt.Errorf("milvus collection name and dimensions are required")
+	if name == "" {
+		return fmt.Errorf("milvus collection name is required")
 	}
 	if err := s.validate(); err != nil {
 		return err
 	}
 	config := s.hnsw(hnsw)
 	var has struct {
-		Data bool `json:"data"`
+		Data struct {
+			Has bool `json:"has"`
+		} `json:"data"`
 	}
 	if err := s.do(ctx, "/v2/vectordb/collections/has", map[string]any{"collectionName": name}, &has); err != nil {
 		return err
 	}
-	if !has.Data {
+	if !has.Data.Has {
 		create := map[string]any{
 			"collectionName": name,
 			"schema": map[string]any{
 				"autoId":             false,
 				"enableDynamicField": true,
+				"functions": []map[string]any{{
+					"name":             "text_bm25_emb",
+					"type":             "BM25",
+					"inputFieldNames":  []string{"text"},
+					"outputFieldNames": []string{"sparse"},
+				}},
 				"fields": []map[string]any{
 					{"fieldName": "id", "dataType": "VarChar", "isPrimary": true, "elementTypeParams": map[string]any{"max_length": "128"}},
-					{"fieldName": "vector", "dataType": "FloatVector", "elementTypeParams": map[string]any{"dim": fmt.Sprintf("%d", dimensions)}},
+					{"fieldName": "text", "dataType": "VarChar", "elementTypeParams": map[string]any{"max_length": "65535", "enable_analyzer": true}},
+					{"fieldName": "sparse", "dataType": "SparseFloatVector"},
 					{"fieldName": "metadata", "dataType": "JSON"},
 				},
 			},
+		}
+		if dimensions > 0 {
+			schema := create["schema"].(map[string]any)
+			fields := schema["fields"].([]map[string]any)
+			fields = append(fields, map[string]any{"fieldName": "vector", "dataType": "FloatVector", "elementTypeParams": map[string]any{"dim": fmt.Sprintf("%d", dimensions)}})
+			schema["fields"] = fields
 		}
 		if err := s.do(ctx, "/v2/vectordb/collections/create", create, nil); err != nil {
 			return err
 		}
 	}
-	index := map[string]any{
-		"collectionName": name,
-		"indexParams": []map[string]any{{
+	indexParams := []map[string]any{{
+		"fieldName":  "sparse",
+		"indexName":  "sparse_bm25_idx",
+		"indexType":  "SPARSE_INVERTED_INDEX",
+		"metricType": "BM25",
+		"params":     map[string]any{"inverted_index_algo": "DAAT_MAXSCORE", "bm25_k1": 1.2, "bm25_b": 0.75},
+	}}
+	if dimensions > 0 {
+		indexParams = append(indexParams, map[string]any{
 			"fieldName":  "vector",
 			"indexName":  "vector_hnsw_idx",
 			"indexType":  "HNSW",
 			"metricType": strings.ToUpper(config.MetricType),
 			"params":     map[string]any{"M": config.M, "efConstruction": config.EFConstruction},
-		}},
+		})
+	}
+	index := map[string]any{
+		"collectionName": name,
+		"indexParams":    indexParams,
 	}
 	if err := s.do(ctx, "/v2/vectordb/indexes/create", index, nil); err != nil && !isMilvusAlreadyExists(err) {
 		return err
@@ -110,16 +160,20 @@ func (s *MilvusStore) Upsert(ctx context.Context, collection string, docs []Vect
 	data := make([]map[string]any, 0, len(docs))
 	dimensions := 0
 	for _, doc := range docs {
-		if strings.TrimSpace(doc.ID) == "" || len(doc.Vector) == 0 {
-			return fmt.Errorf("milvus document id and vector are required")
+		if strings.TrimSpace(doc.ID) == "" || (len(doc.Vector) == 0 && strings.TrimSpace(doc.Text) == "") {
+			return fmt.Errorf("milvus document id and text or vector are required")
 		}
-		if dimensions == 0 {
+		if len(doc.Vector) > 0 && dimensions == 0 {
 			dimensions = len(doc.Vector)
 		}
-		if len(doc.Vector) != dimensions {
+		if len(doc.Vector) > 0 && len(doc.Vector) != dimensions {
 			return fmt.Errorf("milvus vector dimensions mismatch")
 		}
-		data = append(data, map[string]any{"id": doc.ID, "vector": doc.Vector, "metadata": doc.Metadata})
+		item := map[string]any{"id": doc.ID, "text": doc.Text, "metadata": doc.Metadata}
+		if len(doc.Vector) > 0 {
+			item["vector"] = doc.Vector
+		}
+		data = append(data, item)
 	}
 	return s.do(ctx, "/v2/vectordb/entities/upsert", map[string]any{"collectionName": collection, "data": data}, nil)
 }
@@ -164,6 +218,27 @@ func (s *MilvusStore) DeleteByFilter(ctx context.Context, collection string, fil
 	return s.do(ctx, "/v2/vectordb/entities/delete", map[string]any{"collectionName": collection, "filter": expr}, nil)
 }
 
+func (s *MilvusStore) DeleteByFilterExcept(ctx context.Context, collection string, filter map[string]any, field string, value any) error {
+	collection = strings.TrimSpace(collection)
+	field = strings.TrimSpace(field)
+	if collection == "" || len(filter) == 0 || !milvusFilterFieldPattern.MatchString(field) {
+		return fmt.Errorf("milvus collection, filter, and exclusion field are required")
+	}
+	if err := s.validate(); err != nil {
+		return err
+	}
+	base, err := milvusFilter(filter)
+	if err != nil {
+		return err
+	}
+	literal, ok := milvusLiteral(value)
+	if !ok {
+		return fmt.Errorf("unsupported milvus exclusion value %T", value)
+	}
+	expr := base + fmt.Sprintf(" && metadata['%s'] != %s", field, literal)
+	return s.do(ctx, "/v2/vectordb/entities/delete", map[string]any{"collectionName": collection, "filter": expr}, nil)
+}
+
 func (s *MilvusStore) QueryByFilter(ctx context.Context, collection string, filter map[string]any, limit int) ([]VectorDocument, error) {
 	collection = strings.TrimSpace(collection)
 	if collection == "" || len(filter) == 0 {
@@ -182,17 +257,21 @@ func (s *MilvusStore) QueryByFilter(ctx context.Context, collection string, filt
 	var resp struct {
 		Data []milvusEntityRecord `json:"data"`
 	}
-	if err := s.do(ctx, "/v2/vectordb/entities/query", map[string]any{
+	query := map[string]any{
 		"collectionName": collection,
 		"filter":         expr,
 		"limit":          limit,
-		"outputFields":   []string{"id", "vector", "metadata"},
-	}, &resp); err != nil {
-		return nil, err
+		"outputFields":   []string{"id", "text", "vector", "metadata"},
+	}
+	if err := s.do(ctx, "/v2/vectordb/entities/query", query, &resp); err != nil {
+		query["outputFields"] = []string{"id", "text", "metadata"}
+		if retryErr := s.do(ctx, "/v2/vectordb/entities/query", query, &resp); retryErr != nil {
+			return nil, retryErr
+		}
 	}
 	results := make([]VectorDocument, 0, len(resp.Data))
 	for _, item := range resp.Data {
-		results = append(results, VectorDocument{ID: item.ID, Vector: item.Vector, Metadata: item.Metadata})
+		results = append(results, VectorDocument{ID: item.ID, Text: item.Text, Vector: item.Vector, Metadata: map[string]any(item.Metadata)})
 	}
 	return results, nil
 }
@@ -212,7 +291,7 @@ func (s *MilvusStore) UpdateMetadataByFilter(ctx context.Context, collection str
 	for _, doc := range docs {
 		metadata := cloneMetadata(doc.Metadata)
 		metadata = mutate(metadata)
-		updated = append(updated, VectorDocument{ID: doc.ID, Vector: doc.Vector, Metadata: metadata})
+		updated = append(updated, VectorDocument{ID: doc.ID, Text: doc.Text, Vector: doc.Vector, Metadata: metadata})
 	}
 	return s.Upsert(ctx, collection, updated)
 }
@@ -237,8 +316,8 @@ func (s *MilvusStore) Search(ctx context.Context, req SearchRequest) ([]SearchRe
 		"outputFields":   []string{"id", "metadata"},
 		"searchParams":   map[string]any{"metricType": strings.ToUpper(config.MetricType), "params": map[string]any{"ef": config.EFSearch}},
 	}
-	if len(req.Filter) > 0 {
-		expr, err := milvusFilter(req.Filter)
+	if len(req.Filter) > 0 || len(req.AnyFilters) > 0 {
+		expr, err := milvusSearchFilter(req.Filter, req.AnyFilters)
 		if err != nil {
 			return nil, err
 		}
@@ -251,7 +330,7 @@ func (s *MilvusStore) Search(ctx context.Context, req SearchRequest) ([]SearchRe
 			ID       string         `json:"id"`
 			Distance float64        `json:"distance"`
 			Score    float64        `json:"score"`
-			Metadata map[string]any `json:"metadata"`
+			Metadata milvusMetadata `json:"metadata"`
 		} `json:"data"`
 	}
 	if err := s.do(ctx, "/v2/vectordb/entities/search", body, &resp); err != nil {
@@ -263,7 +342,58 @@ func (s *MilvusStore) Search(ctx context.Context, req SearchRequest) ([]SearchRe
 		if score == 0 {
 			score = item.Distance
 		}
-		results = append(results, SearchResult{ID: item.ID, Score: score, Metadata: item.Metadata})
+		results = append(results, SearchResult{ID: item.ID, Score: score, Metadata: map[string]any(item.Metadata)})
+	}
+	return results, nil
+}
+
+// SearchText performs Milvus BM25 full-text search using the collection's
+// internally generated sparse vector field.
+func (s *MilvusStore) SearchText(ctx context.Context, req SearchRequest) ([]SearchResult, error) {
+	req.Collection = strings.TrimSpace(req.Collection)
+	if req.Collection == "" || strings.TrimSpace(req.QueryText) == "" {
+		return nil, fmt.Errorf("milvus collection and query text are required")
+	}
+	if err := s.validate(); err != nil {
+		return nil, err
+	}
+	if req.TopK <= 0 {
+		req.TopK = 8
+	}
+	body := map[string]any{
+		"collectionName": req.Collection,
+		"data":           []string{req.QueryText},
+		"limit":          req.TopK,
+		"annsField":      "sparse",
+		"outputFields":   []string{"id", "text", "metadata"},
+	}
+	if len(req.Filter) > 0 || len(req.AnyFilters) > 0 {
+		expr, err := milvusSearchFilter(req.Filter, req.AnyFilters)
+		if err != nil {
+			return nil, err
+		}
+		if expr != "" {
+			body["filter"] = expr
+		}
+	}
+	var resp struct {
+		Data []struct {
+			ID       string         `json:"id"`
+			Distance float64        `json:"distance"`
+			Score    float64        `json:"score"`
+			Metadata milvusMetadata `json:"metadata"`
+		} `json:"data"`
+	}
+	if err := s.do(ctx, "/v2/vectordb/entities/search", body, &resp); err != nil {
+		return nil, err
+	}
+	results := make([]SearchResult, 0, len(resp.Data))
+	for _, item := range resp.Data {
+		score := item.Score
+		if score == 0 {
+			score = item.Distance
+		}
+		results = append(results, SearchResult{ID: item.ID, Score: score, Metadata: map[string]any(item.Metadata)})
 	}
 	return results, nil
 }
@@ -353,10 +483,9 @@ func milvusFilter(filter map[string]any) (string, error) {
 			return "", fmt.Errorf("invalid milvus filter field: %s", key)
 		}
 		switch v := value.(type) {
-		case string:
-			parts = append(parts, fmt.Sprintf("metadata['%s'] == '%s'", key, escapeMilvusString(v)))
-		case int, int64, int32, float64, float32, bool:
-			parts = append(parts, fmt.Sprintf("metadata['%s'] == %v", key, v))
+		case string, int, int64, int32, float64, float32, bool:
+			literal, _ := milvusLiteral(v)
+			parts = append(parts, fmt.Sprintf("metadata['%s'] == %s", key, literal))
 		case []int64:
 			if len(v) > 0 {
 				parts = append(parts, fmt.Sprintf("metadata['%s'] in [%s]", key, joinMilvusValues(v)))
@@ -376,6 +505,52 @@ func milvusFilter(filter map[string]any) (string, error) {
 		}
 	}
 	return strings.Join(parts, " && "), nil
+}
+
+func milvusLiteral(value any) (string, bool) {
+	switch v := value.(type) {
+	case string:
+		return "'" + escapeMilvusString(v) + "'", true
+	case int:
+		return strconv.Itoa(v), true
+	case int64:
+		return strconv.FormatInt(v, 10), true
+	case int32:
+		return strconv.FormatInt(int64(v), 10), true
+	case float64:
+		return strconv.FormatFloat(v, 'g', -1, 64), true
+	case float32:
+		return strconv.FormatFloat(float64(v), 'g', -1, 32), true
+	case bool:
+		return strconv.FormatBool(v), true
+	default:
+		return "", false
+	}
+}
+
+func milvusSearchFilter(filter map[string]any, anyFilters []map[string]any) (string, error) {
+	base, err := milvusFilter(filter)
+	if err != nil {
+		return "", err
+	}
+	groups := make([]string, 0, len(anyFilters))
+	for _, candidate := range anyFilters {
+		expr, err := milvusFilter(candidate)
+		if err != nil {
+			return "", err
+		}
+		if expr != "" {
+			groups = append(groups, "("+expr+")")
+		}
+	}
+	if len(groups) == 0 {
+		return base, nil
+	}
+	any := "(" + strings.Join(groups, " || ") + ")"
+	if base == "" {
+		return any, nil
+	}
+	return base + " && " + any, nil
 }
 
 var milvusFilterFieldPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)

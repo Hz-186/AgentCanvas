@@ -1,6 +1,10 @@
 package knowledge
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"strings"
 	"time"
 
 	"agentcanvas/internal/domain"
@@ -8,11 +12,15 @@ import (
 
 const (
 	RetrievalBackendElasticsearch = "elasticsearch"
+	RetrievalBackendMilvus        = "milvus"
 	RetrievalModeKeyword          = "keyword"
 	RetrievalModeVector           = "vector"
 	RetrievalModeHybrid           = "hybrid"
 	ChunkMethodFixedToken         = "fixed_token"
 	ChunkMethodRecursive          = "recursive"
+	EmbeddingMetricCosine         = "COSINE"
+	EmbeddingMetricIP             = "IP"
+	EmbeddingMetricL2             = "L2"
 )
 
 const (
@@ -30,6 +38,7 @@ type KnowledgeBase struct {
 	EmbeddingProviderID *int64     `json:"embedding_provider_id" gorm:"column:embedding_provider_id"`
 	EmbeddingModel      string     `json:"embedding_model" gorm:"column:embedding_model"`
 	EmbeddingDimensions int        `json:"embedding_dimensions" gorm:"column:embedding_dimensions"`
+	EmbeddingMetric     string     `json:"embedding_metric" gorm:"column:embedding_metric"`
 	HybridWeight        float64    `json:"hybrid_weight" gorm:"column:hybrid_weight"`
 	RerankEnabled       bool       `json:"rerank_enabled" gorm:"column:rerank_enabled"`
 	RerankProviderID    *int64     `json:"rerank_provider_id" gorm:"column:rerank_provider_id"`
@@ -46,3 +55,48 @@ type KnowledgeBase struct {
 }
 
 func (KnowledgeBase) TableName() string { return "knowledge_bases" }
+
+type EmbeddingProfile struct {
+	ProviderID int64  `json:"provider_id"`
+	Model      string `json:"model"`
+	Dimensions int    `json:"dimensions"`
+	Metric     string `json:"metric"`
+}
+
+func (k KnowledgeBase) EmbeddingProfile() EmbeddingProfile {
+	providerID := int64(0)
+	if k.EmbeddingProviderID != nil {
+		providerID = *k.EmbeddingProviderID
+	}
+	return EmbeddingProfile{
+		ProviderID: providerID,
+		Model:      strings.TrimSpace(k.EmbeddingModel),
+		Dimensions: k.EmbeddingDimensions,
+		Metric:     NormalizeEmbeddingMetric(k.EmbeddingMetric),
+	}
+}
+
+func (p EmbeddingProfile) Key() string {
+	p.Model = strings.TrimSpace(p.Model)
+	p.Metric = NormalizeEmbeddingMetric(p.Metric)
+	data, _ := json.Marshal(p)
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
+func NormalizeEmbeddingMetric(metric string) string {
+	metric = strings.ToUpper(strings.TrimSpace(metric))
+	if metric == "" {
+		return EmbeddingMetricCosine
+	}
+	return metric
+}
+
+func ValidEmbeddingMetric(metric string) bool {
+	switch NormalizeEmbeddingMetric(metric) {
+	case EmbeddingMetricCosine, EmbeddingMetricIP, EmbeddingMetricL2:
+		return true
+	default:
+		return false
+	}
+}

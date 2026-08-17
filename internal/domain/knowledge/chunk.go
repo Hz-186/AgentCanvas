@@ -7,6 +7,7 @@ type DocumentChunk struct {
 	OwnerID      int64     `json:"owner_id" gorm:"column:owner_id"`
 	KBID         int64     `json:"kb_id" gorm:"column:kb_id"`
 	DocumentID   int64     `json:"document_id" gorm:"column:document_id"`
+	Generation   string    `json:"generation,omitempty" gorm:"column:generation"`
 	ChunkIndex   int       `json:"chunk_index" gorm:"column:chunk_index"`
 	Content      string    `json:"content" gorm:"column:content"`
 	ContentHash  string    `json:"content_hash" gorm:"column:content_hash"`

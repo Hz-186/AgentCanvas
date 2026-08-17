@@ -13,6 +13,7 @@ import (
 	"agentcanvas/internal/domain/knowledge"
 	"agentcanvas/internal/domain/retrieval"
 	"agentcanvas/internal/infrastructure/queue"
+	agenterrors "agentcanvas/internal/pkg/errors"
 
 	"gorm.io/gorm"
 )
@@ -123,8 +124,19 @@ func TestCreateKnowledgeBaseDefaultsToRecursiveChunkMethod(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateKnowledgeBase() error = %v", err)
 	}
-	if kb.ChunkMethod != knowledge.ChunkMethodRecursive {
-		t.Fatalf("ChunkMethod = %q, want recursive", kb.ChunkMethod)
+	if kb.ChunkMethod != knowledge.ChunkMethodRecursive || kb.EmbeddingMetric != knowledge.EmbeddingMetricCosine {
+		t.Fatalf("unexpected defaults: %+v", kb)
+	}
+}
+
+func TestCreateKnowledgeBaseRejectsBackendMetricMismatch(t *testing.T) {
+	providerID := int64(9)
+	service := NewService(&fakeKBRepo{}, &fakeDocumentRepo{}, &fakeChunkRepo{}, &fakeJobRepo{}, &fakeRetrievalLogRepo{}, nil, &fakeWriteStorage{}, &fakeRetriever{}, &fakeIndexer{})
+	_, err := service.CreateKnowledgeBase(context.Background(), 1, CreateKnowledgeBaseRequest{
+		Name: "Vector Docs", RetrievalMode: knowledge.RetrievalModeVector, EmbeddingProviderID: &providerID, EmbeddingMetric: knowledge.EmbeddingMetricIP,
+	}, ClientInfo{})
+	if err == nil {
+		t.Fatal("CreateKnowledgeBase() accepted a metric that the configured backend cannot execute")
 	}
 }
 
@@ -149,6 +161,14 @@ func TestCreateKnowledgeBaseRequiresExperimentalPythonChunkingFlag(t *testing.T)
 	}
 	if kb.ChunkMethod != "python:recursive" {
 		t.Fatalf("ChunkMethod = %q, want python:recursive", kb.ChunkMethod)
+	}
+	service.ConfigurePythonChunking(true, "python:langchain_recursive")
+	kb, err = service.CreateKnowledgeBase(context.Background(), 1, CreateKnowledgeBaseRequest{Name: "LangChain", ChunkMethod: "python:langchain_recursive"}, ClientInfo{})
+	if err != nil || kb.ChunkMethod != "python:langchain_recursive" {
+		t.Fatalf("LangChain chunk method = %q error=%v", kb.ChunkMethod, err)
+	}
+	if _, err := service.CreateKnowledgeBase(context.Background(), 1, CreateKnowledgeBaseRequest{Name: "Blocked", ChunkMethod: "python:recursive"}, ClientInfo{}); err == nil {
+		t.Fatal("Python method outside the configured allowlist was accepted")
 	}
 }
 
@@ -210,6 +230,39 @@ func TestUploadDocumentMarksDocumentFailedWhenStorageFails(t *testing.T) {
 	}
 }
 
+func TestUploadDocumentReturnsFailureStatePersistenceErrors(t *testing.T) {
+	storageErr := errors.New("storage unavailable")
+	updateErr := errors.New("document update unavailable")
+	documents := &fakeDocumentRepo{updateErr: updateErr, updateErrAt: 1}
+	service := NewService(
+		&fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{10: {ID: 10, OwnerID: 1}}},
+		documents, &fakeChunkRepo{}, &fakeJobRepo{}, &fakeRetrievalLogRepo{}, nil,
+		&fakeWriteStorage{err: storageErr}, &fakeRetriever{}, &fakeIndexer{},
+	)
+
+	header := mustMultipartFileHeader(t, "guide.md", "text/markdown", "# Intro")
+	_, err := service.UploadDocument(context.Background(), 1, 10, UploadDocumentRequest{FileHeader: header}, ClientInfo{})
+	if !errors.Is(err, storageErr) || !errors.Is(err, updateErr) {
+		t.Fatalf("UploadDocument() error = %v, want storage and persistence errors", err)
+	}
+}
+
+func TestUploadDocumentMarksDocumentFailedWhenOpenFails(t *testing.T) {
+	documents := &fakeDocumentRepo{}
+	service := NewService(
+		&fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{10: {ID: 10, OwnerID: 1}}},
+		documents, &fakeChunkRepo{}, &fakeJobRepo{}, &fakeRetrievalLogRepo{}, nil,
+		&fakeWriteStorage{}, &fakeRetriever{}, &fakeIndexer{},
+	)
+
+	_, err := service.UploadDocument(context.Background(), 1, 10, UploadDocumentRequest{
+		FileHeader: &multipart.FileHeader{Filename: "guide.md", Size: 1},
+	}, ClientInfo{})
+	if err == nil || documents.items[1].ParserStatus != knowledge.DocumentStatusFailed || documents.items[1].ParserError == "" {
+		t.Fatalf("open failure was not persisted: document=%+v error=%v", documents.items[1], err)
+	}
+}
+
 func TestUploadDocumentMarksDocumentFailedWhenJobCreateFails(t *testing.T) {
 	ctx := context.Background()
 	documents := &fakeDocumentRepo{}
@@ -245,6 +298,23 @@ func TestUploadDocumentMarksDocumentFailedWhenJobCreateFails(t *testing.T) {
 	}
 }
 
+func TestUploadDocumentReturnsJobAndFailureStatePersistenceErrors(t *testing.T) {
+	jobErr := errors.New("job table unavailable")
+	updateErr := errors.New("document update unavailable")
+	documents := &fakeDocumentRepo{updateErr: updateErr, updateErrAt: 2}
+	service := NewService(
+		&fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{10: {ID: 10, OwnerID: 1}}},
+		documents, &fakeChunkRepo{}, &fakeJobRepo{createErr: jobErr}, &fakeRetrievalLogRepo{}, nil,
+		&fakeWriteStorage{objects: map[string]string{}}, &fakeRetriever{}, &fakeIndexer{},
+	)
+
+	header := mustMultipartFileHeader(t, "guide.md", "text/markdown", "# Intro")
+	_, err := service.UploadDocument(context.Background(), 1, 10, UploadDocumentRequest{FileHeader: header}, ClientInfo{})
+	if !errors.Is(err, jobErr) || !errors.Is(err, updateErr) {
+		t.Fatalf("UploadDocument() error = %v, want job and persistence errors", err)
+	}
+}
+
 func TestSearchCallsRetrieverAndWritesRetrievalLog(t *testing.T) {
 	ctx := context.Background()
 	logs := &fakeRetrievalLogRepo{}
@@ -274,7 +344,7 @@ func TestSearchCallsRetrieverAndWritesRetrievalLog(t *testing.T) {
 		&fakeWriteStorage{},
 		retriever,
 		&fakeIndexer{},
-	)
+	).ConfigureRetrievalBackend(knowledge.RetrievalBackendMilvus)
 
 	resp, err := service.Search(ctx, 1, 10, SearchRequest{Query: " AgentCanvas ", TopK: 5})
 	if err != nil {
@@ -289,11 +359,44 @@ func TestSearchCallsRetrieverAndWritesRetrievalLog(t *testing.T) {
 	if retriever.request.Query != "AgentCanvas" {
 		t.Fatalf("retriever query = %q, want trimmed query", retriever.request.Query)
 	}
+	if retriever.request.EmbeddingProfile != "" {
+		t.Fatalf("keyword retrieval must not filter by embedding profile: %q", retriever.request.EmbeddingProfile)
+	}
 	if len(logs.items) != 1 {
 		t.Fatalf("retrieval logs = %d, want 1", len(logs.items))
 	}
-	if logs.items[0].ResultCount != 1 || logs.items[0].LatencyMS != 12 {
+	if logs.items[0].ResultCount != 1 || logs.items[0].LatencyMS != 12 || logs.items[0].RetrievalBackend != knowledge.RetrievalBackendMilvus {
 		t.Fatalf("retrieval log = %#v", logs.items[0])
+	}
+}
+
+func TestSearchDispatchesRetrieverAndLogsKnowledgeBaseBackend(t *testing.T) {
+	logs := &fakeRetrievalLogRepo{}
+	defaultRetriever := &fakeRetriever{}
+	milvusRetriever := &fakeRetriever{}
+	documents := &fakeDocumentRepo{items: map[int64]*knowledge.Document{20: {
+		ID: 20, OwnerID: 1, KBID: 10, ActiveGeneration: "gen-active",
+	}}}
+	service := NewService(
+		&fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{10: {
+			ID: 10, OwnerID: 1, RetrievalBackend: knowledge.RetrievalBackendMilvus,
+		}}},
+		documents, &fakeChunkRepo{}, &fakeJobRepo{}, logs, nil, &fakeWriteStorage{}, defaultRetriever, &fakeIndexer{},
+	).ConfigureRetrievalBackends(map[string]retrieval.Retriever{
+		knowledge.RetrievalBackendMilvus: milvusRetriever,
+	}, nil)
+
+	if _, err := service.Search(context.Background(), 1, 10, SearchRequest{Query: "AgentCanvas"}); err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if !milvusRetriever.called || defaultRetriever.called {
+		t.Fatalf("retriever dispatch: default=%v milvus=%v", defaultRetriever.called, milvusRetriever.called)
+	}
+	if milvusRetriever.request.ActiveGenerations[20] != "gen-active" {
+		t.Fatalf("active generations = %+v", milvusRetriever.request.ActiveGenerations)
+	}
+	if len(logs.items) != 1 || logs.items[0].RetrievalBackend != knowledge.RetrievalBackendMilvus {
+		t.Fatalf("retrieval logs = %+v", logs.items)
 	}
 }
 
@@ -393,6 +496,24 @@ func TestSetDocumentEnabledIsNoopWhenUnchanged(t *testing.T) {
 	}
 }
 
+func TestSetDocumentEnabledReturnsIndexAndRollbackErrors(t *testing.T) {
+	indexErr := errors.New("index unavailable")
+	rollbackErr := errors.New("rollback unavailable")
+	documents := &fakeDocumentRepo{items: map[int64]*knowledge.Document{
+		20: {ID: 20, OwnerID: 1, KBID: 10, Enabled: true},
+	}, setEnabledErr: rollbackErr, setEnabledErrAt: 2}
+	service := NewService(
+		&fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{10: {ID: 10, OwnerID: 1}}},
+		documents, &fakeChunkRepo{}, &fakeJobRepo{}, &fakeRetrievalLogRepo{}, nil,
+		&fakeWriteStorage{}, &fakeRetriever{}, &fakeIndexer{setEnabledErr: indexErr},
+	)
+
+	_, err := service.SetDocumentEnabled(context.Background(), 1, 20, false, ClientInfo{})
+	if !errors.Is(err, indexErr) || !errors.Is(err, rollbackErr) {
+		t.Fatalf("SetDocumentEnabled() error = %v, want index and rollback errors", err)
+	}
+}
+
 func TestUpdateKnowledgeBaseResetsDimensionsWhenEmbeddingChanges(t *testing.T) {
 	ctx := context.Background()
 	providerID := int64(5)
@@ -426,6 +547,23 @@ func TestUpdateKnowledgeBaseKeepsDimensionsWhenEmbeddingUnchanged(t *testing.T) 
 	}
 	if kb.EmbeddingDimensions != 1024 {
 		t.Fatalf("EmbeddingDimensions = %d, want 1024 preserved", kb.EmbeddingDimensions)
+	}
+}
+
+func TestUpdateKnowledgeBaseRejectsIndexedVectorSpaceChange(t *testing.T) {
+	providerID := int64(5)
+	kbs := &fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{
+		10: {ID: 10, OwnerID: 1, RetrievalBackend: knowledge.RetrievalBackendElasticsearch, RetrievalMode: knowledge.RetrievalModeVector,
+			EmbeddingProviderID: &providerID, EmbeddingModel: "model-a", EmbeddingDimensions: 2, EmbeddingMetric: knowledge.EmbeddingMetricCosine,
+			ChunkSize: 800, ChunkOverlap: 100},
+	}}
+	documents := &fakeDocumentRepo{items: map[int64]*knowledge.Document{20: {ID: 20, OwnerID: 1, KBID: 10}}}
+	service := NewService(kbs, documents, &fakeChunkRepo{}, &fakeJobRepo{}, &fakeRetrievalLogRepo{}, nil, &fakeWriteStorage{}, &fakeRetriever{}, &fakeIndexer{})
+	model := "model-b"
+
+	_, err := service.UpdateKnowledgeBase(context.Background(), 1, 10, UpdateKnowledgeBaseRequest{EmbeddingModel: &model}, ClientInfo{})
+	if !errors.Is(err, agenterrors.ErrConflict) {
+		t.Fatalf("indexed vector-space change error = %v, want conflict", err)
 	}
 }
 
@@ -526,7 +664,8 @@ func (r *fakeRetriever) Search(_ context.Context, req retrieval.RetrievalRequest
 }
 
 type fakeIndexer struct {
-	enabledCalls []enabledCall
+	enabledCalls  []enabledCall
+	setEnabledErr error
 }
 
 type fakeQueue struct {
@@ -573,7 +712,7 @@ func (i *fakeIndexer) DeleteByKnowledgeBase(context.Context, int64, int64) error
 
 func (i *fakeIndexer) SetDocumentEnabled(_ context.Context, _ int64, documentID int64, enabled bool) error {
 	i.enabledCalls = append(i.enabledCalls, enabledCall{documentID: documentID, enabled: enabled})
-	return nil
+	return i.setEnabledErr
 }
 
 type fakeRetrievalLogRepo struct {
@@ -629,8 +768,14 @@ func (r *fakeKBRepo) AdjustCounts(_ context.Context, _ int64, _ int64, documentD
 }
 
 type fakeDocumentRepo struct {
-	nextID int64
-	items  map[int64]*knowledge.Document
+	nextID          int64
+	items           map[int64]*knowledge.Document
+	updateCalls     int
+	updateErr       error
+	updateErrAt     int
+	setEnabledCalls int
+	setEnabledErr   error
+	setEnabledErrAt int
 }
 
 func (r *fakeDocumentRepo) Create(_ context.Context, doc *knowledge.Document) error {
@@ -644,8 +789,14 @@ func (r *fakeDocumentRepo) Create(_ context.Context, doc *knowledge.Document) er
 	return nil
 }
 
-func (r *fakeDocumentRepo) ListByKnowledgeBase(context.Context, int64, int64) ([]knowledge.Document, error) {
-	return nil, nil
+func (r *fakeDocumentRepo) ListByKnowledgeBase(_ context.Context, ownerID, kbID int64) ([]knowledge.Document, error) {
+	items := make([]knowledge.Document, 0)
+	for _, item := range r.items {
+		if item.OwnerID == ownerID && item.KBID == kbID {
+			items = append(items, *item)
+		}
+	}
+	return items, nil
 }
 
 func (r *fakeDocumentRepo) FindByID(_ context.Context, ownerID, id int64) (*knowledge.Document, error) {
@@ -657,6 +808,10 @@ func (r *fakeDocumentRepo) FindByID(_ context.Context, ownerID, id int64) (*know
 }
 
 func (r *fakeDocumentRepo) Update(_ context.Context, doc *knowledge.Document) error {
+	r.updateCalls++
+	if r.updateErr != nil && (r.updateErrAt == 0 || r.updateCalls == r.updateErrAt) {
+		return r.updateErr
+	}
 	if r.items == nil {
 		r.items = make(map[int64]*knowledge.Document)
 	}
@@ -666,6 +821,10 @@ func (r *fakeDocumentRepo) Update(_ context.Context, doc *knowledge.Document) er
 }
 
 func (r *fakeDocumentRepo) SetEnabled(_ context.Context, ownerID, id int64, enabled bool) error {
+	r.setEnabledCalls++
+	if r.setEnabledErr != nil && (r.setEnabledErrAt == 0 || r.setEnabledCalls == r.setEnabledErrAt) {
+		return r.setEnabledErr
+	}
 	item, ok := r.items[id]
 	if !ok || item.OwnerID != ownerID {
 		return gorm.ErrRecordNotFound
@@ -730,6 +889,10 @@ func (r *fakeJobRepo) FindByID(context.Context, int64, int64) (*knowledge.Ingest
 
 func (r *fakeJobRepo) ClaimNext(context.Context, string) (*knowledge.IngestionJob, error) {
 	return nil, gorm.ErrRecordNotFound
+}
+
+func (r *fakeJobRepo) ClaimByID(context.Context, int64, int64, string) (*knowledge.IngestionJob, bool, error) {
+	return nil, false, gorm.ErrRecordNotFound
 }
 
 func (r *fakeJobRepo) MarkCompleted(context.Context, int64) error {

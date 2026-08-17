@@ -36,8 +36,13 @@ type Service struct {
 	storage               FileStorage
 	retriever             retrieval.Retriever
 	indexer               retrieval.Indexer
+	retrievers            map[string]retrieval.Retriever
+	indexers              map[string]retrieval.Indexer
 	jobQueue              queue.JobQueue
 	pythonChunkingEnabled bool
+	pythonChunkMethods    map[string]struct{}
+	retrievalBackend      string
+	embeddingMetric       string
 }
 
 type ClientInfo struct {
@@ -50,20 +55,67 @@ func (s *Service) WithJobQueue(jobQueue queue.JobQueue) *Service {
 	return s
 }
 
+func (s *Service) ConfigureRetrievalBackend(backend string) *Service {
+	backend = strings.TrimSpace(backend)
+	if backend == knowledge.RetrievalBackendElasticsearch || backend == knowledge.RetrievalBackendMilvus {
+		s.retrievalBackend = backend
+	}
+	return s
+}
+
+func (s *Service) ConfigureEmbeddingMetric(metric string) *Service {
+	if knowledge.ValidEmbeddingMetric(metric) {
+		s.embeddingMetric = knowledge.NormalizeEmbeddingMetric(metric)
+	}
+	return s
+}
+
+func (s *Service) ConfigureRetrievalBackends(retrievers map[string]retrieval.Retriever, indexers map[string]retrieval.Indexer) *Service {
+	s.retrievers = make(map[string]retrieval.Retriever, len(retrievers))
+	for name, backend := range retrievers {
+		if backend != nil {
+			s.retrievers[strings.TrimSpace(name)] = backend
+		}
+	}
+	s.indexers = make(map[string]retrieval.Indexer, len(indexers))
+	for name, backend := range indexers {
+		if backend != nil {
+			s.indexers[strings.TrimSpace(name)] = backend
+		}
+	}
+	return s
+}
+
 // ConfigurePythonChunking enables explicit python:* selection after the
 // shadow benchmark has been reviewed.
-func (s *Service) ConfigurePythonChunking(enabled bool) *Service {
+func (s *Service) ConfigurePythonChunking(enabled bool, methods ...string) *Service {
 	s.pythonChunkingEnabled = enabled
+	s.pythonChunkMethods = nil
+	if !enabled {
+		return s
+	}
+	if len(methods) == 0 {
+		methods = []string{"python:fixed_token", "python:recursive"}
+	}
+	s.pythonChunkMethods = make(map[string]struct{}, len(methods))
+	for _, method := range methods {
+		method = strings.TrimSpace(method)
+		if validChunkMethod(method) && strings.HasPrefix(method, "python:") {
+			s.pythonChunkMethods[method] = struct{}{}
+		}
+	}
 	return s
 }
 
 type CreateKnowledgeBaseRequest struct {
 	Name                string  `json:"name" binding:"required"`
 	Description         string  `json:"description"`
+	RetrievalBackend    string  `json:"retrieval_backend"`
 	RetrievalMode       string  `json:"retrieval_mode"`
 	EmbeddingProviderID *int64  `json:"embedding_provider_id"`
 	EmbeddingModel      string  `json:"embedding_model"`
 	EmbeddingDimensions int     `json:"embedding_dimensions"`
+	EmbeddingMetric     string  `json:"embedding_metric"`
 	HybridWeight        float64 `json:"hybrid_weight"`
 	RerankEnabled       bool    `json:"rerank_enabled"`
 	RerankProviderID    *int64  `json:"rerank_provider_id"`
@@ -76,10 +128,12 @@ type CreateKnowledgeBaseRequest struct {
 type UpdateKnowledgeBaseRequest struct {
 	Name                *string  `json:"name"`
 	Description         *string  `json:"description"`
+	RetrievalBackend    *string  `json:"retrieval_backend"`
 	RetrievalMode       *string  `json:"retrieval_mode"`
 	EmbeddingProviderID *int64   `json:"embedding_provider_id"`
 	EmbeddingModel      *string  `json:"embedding_model"`
 	EmbeddingDimensions *int     `json:"embedding_dimensions"`
+	EmbeddingMetric     *string  `json:"embedding_metric"`
 	HybridWeight        *float64 `json:"hybrid_weight"`
 	RerankEnabled       *bool    `json:"rerank_enabled"`
 	RerankProviderID    *int64   `json:"rerank_provider_id"`
@@ -123,15 +177,16 @@ func NewService(
 	indexer retrieval.Indexer,
 ) *Service {
 	return &Service{
-		kbs:       kbs,
-		documents: documents,
-		chunks:    chunks,
-		jobs:      jobs,
-		logs:      logs,
-		audits:    audits,
-		storage:   storage,
-		retriever: retriever,
-		indexer:   indexer,
+		kbs:             kbs,
+		documents:       documents,
+		chunks:          chunks,
+		jobs:            jobs,
+		logs:            logs,
+		audits:          audits,
+		storage:         storage,
+		retriever:       retriever,
+		indexer:         indexer,
+		embeddingMetric: knowledge.EmbeddingMetricCosine,
 	}
 }
 
@@ -175,16 +230,37 @@ func (s *Service) CreateKnowledgeBase(ctx context.Context, ownerID int64, req Cr
 	if requiresEmbedding(retrievalMode) && req.EmbeddingProviderID == nil {
 		return nil, agenterrors.ErrInvalidInput
 	}
+	embeddingMetric := knowledge.NormalizeEmbeddingMetric(req.EmbeddingMetric)
+	if !knowledge.ValidEmbeddingMetric(embeddingMetric) {
+		return nil, agenterrors.ErrInvalidInput
+	}
+	if strings.TrimSpace(req.EmbeddingMetric) == "" {
+		embeddingMetric = s.embeddingMetric
+	}
 
+	retrievalBackend := strings.TrimSpace(req.RetrievalBackend)
+	if retrievalBackend == "" {
+		retrievalBackend = s.retrievalBackend
+	}
+	if retrievalBackend == "" {
+		retrievalBackend = knowledge.RetrievalBackendElasticsearch
+	}
+	if _, ok := s.retrievers[retrievalBackend]; len(s.retrievers) > 0 && !ok {
+		return nil, fmt.Errorf("retrieval backend %q is not configured", retrievalBackend)
+	}
+	if requiresEmbedding(retrievalMode) && embeddingMetric != knowledge.NormalizeEmbeddingMetric(s.embeddingMetric) {
+		return nil, fmt.Errorf("embedding metric %q does not match configured backend metric %q", embeddingMetric, knowledge.NormalizeEmbeddingMetric(s.embeddingMetric))
+	}
 	kb := &knowledge.KnowledgeBase{
 		OwnerID:             ownerID,
 		Name:                name,
 		Description:         strings.TrimSpace(req.Description),
-		RetrievalBackend:    knowledge.RetrievalBackendElasticsearch,
+		RetrievalBackend:    retrievalBackend,
 		RetrievalMode:       retrievalMode,
 		EmbeddingProviderID: req.EmbeddingProviderID,
 		EmbeddingModel:      strings.TrimSpace(req.EmbeddingModel),
 		EmbeddingDimensions: req.EmbeddingDimensions,
+		EmbeddingMetric:     embeddingMetric,
 		HybridWeight:        hybridWeight,
 		RerankEnabled:       req.RerankEnabled,
 		RerankProviderID:    req.RerankProviderID,
@@ -218,9 +294,9 @@ func (s *Service) UpdateKnowledgeBase(ctx context.Context, ownerID, id int64, re
 	if err != nil {
 		return nil, err
 	}
+	oldBackend := kb.RetrievalBackend
 	oldMode := kb.RetrievalMode
-	oldModel := kb.EmbeddingModel
-	oldProvider := int64PtrValue(kb.EmbeddingProviderID)
+	oldProfile := kb.EmbeddingProfile()
 	if req.Name != nil {
 		name := strings.TrimSpace(*req.Name)
 		if name == "" {
@@ -230,6 +306,18 @@ func (s *Service) UpdateKnowledgeBase(ctx context.Context, ownerID, id int64, re
 	}
 	if req.Description != nil {
 		kb.Description = strings.TrimSpace(*req.Description)
+	}
+	if req.RetrievalBackend != nil {
+		backend := strings.TrimSpace(*req.RetrievalBackend)
+		if backend != knowledge.RetrievalBackendElasticsearch && backend != knowledge.RetrievalBackendMilvus {
+			return nil, agenterrors.ErrInvalidInput
+		}
+		if len(s.retrievers) > 0 {
+			if _, ok := s.retrievers[backend]; !ok {
+				return nil, fmt.Errorf("retrieval backend %q is not configured", backend)
+			}
+		}
+		kb.RetrievalBackend = backend
 	}
 	if req.RetrievalMode != nil {
 		mode := strings.TrimSpace(*req.RetrievalMode)
@@ -249,6 +337,12 @@ func (s *Service) UpdateKnowledgeBase(ctx context.Context, ownerID, id int64, re
 			return nil, agenterrors.ErrInvalidInput
 		}
 		kb.EmbeddingDimensions = *req.EmbeddingDimensions
+	}
+	if req.EmbeddingMetric != nil {
+		if !knowledge.ValidEmbeddingMetric(*req.EmbeddingMetric) {
+			return nil, agenterrors.ErrInvalidInput
+		}
+		kb.EmbeddingMetric = knowledge.NormalizeEmbeddingMetric(*req.EmbeddingMetric)
 	}
 	if req.HybridWeight != nil {
 		if *req.HybridWeight < 0 || *req.HybridWeight > 1 {
@@ -294,14 +388,30 @@ func (s *Service) UpdateKnowledgeBase(ctx context.Context, ownerID, id int64, re
 	// 使下一次重建索引能按新模型重新推断维度,避免维度校验死锁。
 	if req.EmbeddingDimensions == nil {
 		embeddingChanged := kb.RetrievalMode != oldMode ||
-			kb.EmbeddingModel != oldModel ||
-			int64PtrValue(kb.EmbeddingProviderID) != oldProvider
+			kb.EmbeddingProfile().ProviderID != oldProfile.ProviderID ||
+			kb.EmbeddingProfile().Model != oldProfile.Model ||
+			kb.EmbeddingProfile().Metric != oldProfile.Metric
 		if embeddingChanged {
 			kb.EmbeddingDimensions = 0
 		}
 	}
 	if requiresEmbedding(kb.RetrievalMode) && kb.EmbeddingProviderID == nil {
 		return nil, agenterrors.ErrInvalidInput
+	}
+	if requiresEmbedding(kb.RetrievalMode) && knowledge.NormalizeEmbeddingMetric(kb.EmbeddingMetric) != knowledge.NormalizeEmbeddingMetric(s.embeddingMetric) {
+		return nil, fmt.Errorf("embedding metric %q does not match configured backend metric %q", kb.EmbeddingMetric, knowledge.NormalizeEmbeddingMetric(s.embeddingMetric))
+	}
+	indexCompatibilityChanged := kb.RetrievalBackend != oldBackend ||
+		requiresEmbedding(kb.RetrievalMode) != requiresEmbedding(oldMode) ||
+		kb.EmbeddingProfile() != oldProfile
+	if indexCompatibilityChanged {
+		documents, listErr := s.documents.ListByKnowledgeBase(ctx, ownerID, id)
+		if listErr != nil {
+			return nil, listErr
+		}
+		if len(documents) > 0 {
+			return nil, fmt.Errorf("%w: retrieval backend or embedding profile changes require an explicit knowledge base rebuild", agenterrors.ErrConflict)
+		}
 	}
 	if err := s.kbs.Update(ctx, kb); err != nil {
 		return nil, err
@@ -400,7 +510,9 @@ func (s *Service) UploadDocument(ctx context.Context, ownerID, kbID int64, req U
 	objectKey := objectKey(ownerID, kbID, doc.ID, originalFilename)
 	file, err := req.FileHeader.Open()
 	if err != nil {
-		return nil, err
+		doc.ParserStatus = knowledge.DocumentStatusFailed
+		doc.ParserError = err.Error()
+		return nil, errors.Join(err, s.documents.Update(ctx, doc))
 	}
 	defer file.Close()
 
@@ -409,8 +521,7 @@ func (s *Service) UploadDocument(ctx context.Context, ownerID, kbID int64, req U
 	if err := s.storage.Put(ctx, objectKey, reader, req.FileHeader.Size, req.ContentType); err != nil {
 		doc.ParserStatus = knowledge.DocumentStatusFailed
 		doc.ParserError = err.Error()
-		_ = s.documents.Update(ctx, doc)
-		return nil, err
+		return nil, errors.Join(err, s.documents.Update(ctx, doc))
 	}
 	doc.ObjectKey = objectKey
 	doc.ContentHash = hex.EncodeToString(hash.Sum(nil))
@@ -430,8 +541,7 @@ func (s *Service) UploadDocument(ctx context.Context, ownerID, kbID int64, req U
 	if err := s.createIngestionJob(ctx, job); err != nil {
 		doc.ParserStatus = knowledge.DocumentStatusFailed
 		doc.ParserError = err.Error()
-		_ = s.documents.Update(ctx, doc)
-		return nil, err
+		return nil, errors.Join(err, s.documents.Update(ctx, doc))
 	}
 	if err := s.kbs.AdjustCounts(ctx, ownerID, kbID, 1, 0); err != nil {
 		return nil, err
@@ -506,11 +616,10 @@ func (s *Service) SetDocumentEnabled(ctx context.Context, ownerID, id int64, ena
 	if err := s.documents.SetEnabled(ctx, ownerID, id, enabled); err != nil {
 		return nil, err
 	}
-	// 同步更新 ES 中该文档所有 chunk 的 enabled 标记;禁用后检索不再命中,启用后恢复命中。
+	// 同步更新当前检索后端中该文档所有 chunk 的 enabled 标记；禁用后不再命中，启用后恢复命中。
 	if err := s.indexer.SetDocumentEnabled(ctx, ownerID, id, enabled); err != nil {
 		// MySQL 已更新,ES 同步失败时回滚 MySQL 以保持一致。
-		_ = s.documents.SetEnabled(ctx, ownerID, id, doc.Enabled)
-		return nil, err
+		return nil, errors.Join(err, s.documents.SetEnabled(ctx, ownerID, id, doc.Enabled))
 	}
 	doc.Enabled = enabled
 	action := "document.disable"
@@ -555,18 +664,38 @@ func (s *Service) Search(ctx context.Context, ownerID, kbID int64, req SearchReq
 		return nil, agenterrors.ErrInvalidInput
 	}
 
-	resp, err := s.retriever.Search(ctx, retrieval.RetrievalRequest{
-		OwnerID:         ownerID,
-		KBIDs:           []int64{kbID},
-		Query:           query,
-		TopK:            topK,
-		Mode:            mode,
-		EnableHighlight: true,
-	})
+	rawRetriever := s.retriever
+	if backend, ok := s.retrievers[strings.TrimSpace(kb.RetrievalBackend)]; ok {
+		rawRetriever = backend
+	}
+	if rawRetriever == nil {
+		return nil, fmt.Errorf("retriever for knowledge base backend %q is not configured", kb.RetrievalBackend)
+	}
+	activeGenerations := make(map[int64]string)
+	if docs, listErr := s.documents.ListByKnowledgeBase(ctx, ownerID, kbID); listErr == nil {
+		for _, doc := range docs {
+			if strings.TrimSpace(doc.ActiveGeneration) != "" {
+				activeGenerations[doc.ID] = doc.ActiveGeneration
+			}
+		}
+	}
+	retrievalRequest := retrieval.RetrievalRequest{
+		OwnerID:           ownerID,
+		KBIDs:             []int64{kbID},
+		ActiveGenerations: activeGenerations,
+		Query:             query,
+		TopK:              topK,
+		Mode:              mode,
+		EnableHighlight:   true,
+	}
+	if mode != retrieval.ModeKeyword {
+		retrievalRequest.EmbeddingProfile = kb.EmbeddingProfile().Key()
+	}
+	resp, err := rawRetriever.Search(ctx, retrievalRequest)
 	if err != nil {
 		return nil, err
 	}
-	_ = s.logRetrieval(ctx, ownerID, kbID, query, topK, mode, resp)
+	_ = s.logRetrieval(ctx, ownerID, kbID, kb.RetrievalBackend, query, topK, mode, resp)
 	return resp, nil
 }
 
@@ -585,7 +714,7 @@ func requiresEmbedding(mode string) bool {
 
 func validChunkMethod(method string) bool {
 	switch method {
-	case knowledge.ChunkMethodFixedToken, knowledge.ChunkMethodRecursive, "python:fixed_token", "python:recursive":
+	case knowledge.ChunkMethodFixedToken, knowledge.ChunkMethodRecursive, "python:fixed_token", "python:recursive", "python:langchain_recursive":
 		return true
 	default:
 		return false
@@ -593,8 +722,12 @@ func validChunkMethod(method string) bool {
 }
 
 func (s *Service) validChunkMethod(method string) bool {
-	if strings.HasPrefix(method, "python:") && !s.pythonChunkingEnabled {
-		return false
+	if strings.HasPrefix(method, "python:") {
+		if !s.pythonChunkingEnabled {
+			return false
+		}
+		_, allowed := s.pythonChunkMethods[method]
+		return allowed
 	}
 	return validChunkMethod(method)
 }
@@ -607,14 +740,21 @@ func (s *Service) GetIngestionJob(ctx context.Context, ownerID, id int64) (*know
 	return job, nil
 }
 
-func (s *Service) logRetrieval(ctx context.Context, ownerID, kbID int64, query string, topK int, mode retrieval.Mode, resp *retrieval.RetrievalResponse) error {
+func (s *Service) logRetrieval(ctx context.Context, ownerID, kbID int64, backend, query string, topK int, mode retrieval.Mode, resp *retrieval.RetrievalResponse) error {
 	kbIDsJSON, _ := json.Marshal([]int64{kbID})
 	resultsJSON, _ := json.Marshal(resp.Results)
+	backend = strings.TrimSpace(backend)
+	if backend == "" {
+		backend = s.retrievalBackend
+		if backend == "" {
+			backend = knowledge.RetrievalBackendElasticsearch
+		}
+	}
 	return s.logs.Create(ctx, &knowledge.RetrievalLog{
 		OwnerID:          ownerID,
 		KBIDsJSON:        string(kbIDsJSON),
 		QueryText:        query,
-		RetrievalBackend: knowledge.RetrievalBackendElasticsearch,
+		RetrievalBackend: backend,
 		RetrievalMode:    string(mode),
 		TopK:             topK,
 		ResultCount:      len(resp.Results),
@@ -633,22 +773,7 @@ func (s *Service) audit(
 	if s.audits == nil {
 		return nil
 	}
-	detailJSON := "{}"
-	if detail != nil {
-		if data, err := json.Marshal(detail); err == nil {
-			detailJSON = string(data)
-		}
-	}
-	return s.audits.Create(ctx, &audit.Log{
-		OwnerID:      ownerID,
-		ActorID:      actorID,
-		Action:       action,
-		ResourceType: resourceType,
-		ResourceID:   resourceID,
-		DetailJSON:   detailJSON,
-		IPAddress:    client.IPAddress,
-		UserAgent:    client.UserAgent,
-	})
+	return s.audits.Create(ctx, audit.NewLog(ownerID, actorID, action, resourceType, resourceID, detail, client.IPAddress, client.UserAgent))
 }
 
 func normalizeFileType(ext string) string {

@@ -37,10 +37,10 @@ func TestProcessJobViaLivePythonBridge(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = bridge.Close() })
 	registry := chunker.NewDefaultRegistry()
-	registry.Register(pythonbridgeinfra.NewChunker(bridge, "python:recursive"))
+	registry.Register(pythonbridgeinfra.NewChunker(bridge, "python:langchain_recursive"))
 	kbs := &fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{10: {
 		ID: 10, OwnerID: 1, RetrievalMode: knowledge.RetrievalModeKeyword,
-		ChunkMethod: "python:recursive", ChunkSize: 12, ChunkOverlap: 2,
+		ChunkMethod: "python:langchain_recursive", ChunkSize: 12, ChunkOverlap: 2,
 	}}}
 	docs := &fakeDocumentRepo{items: map[int64]*knowledge.Document{20: {
 		ID: 20, OwnerID: 1, KBID: 10, Name: "Bridge", OriginalFilename: "bridge.md", FileType: "md",
@@ -59,7 +59,7 @@ func TestProcessJobViaLivePythonBridge(t *testing.T) {
 		t.Fatalf("Python ingestion did not complete: doc=%+v chunks=%+v indexed=%+v", docs.items[20], chunks.byDocument[20], indexer.indexed)
 	}
 	var metadata map[string]any
-	if err := json.Unmarshal([]byte(chunks.byDocument[20][0].MetadataJSON), &metadata); err != nil || metadata["chunk_method"] != "python:recursive" {
+	if err := json.Unmarshal([]byte(chunks.byDocument[20][0].MetadataJSON), &metadata); err != nil || metadata["chunk_method"] != "python:langchain_recursive" {
 		t.Fatalf("unexpected Python chunk metadata: metadata=%+v error=%v", metadata, err)
 	}
 }
@@ -361,6 +361,23 @@ func TestProcessNextRetriesJobBeforeMaxAttempts(t *testing.T) {
 	}
 }
 
+func TestProcessNextReturnsJobStatePersistenceError(t *testing.T) {
+	jobs := &fakeJobRepo{
+		next:          &knowledge.IngestionJob{ID: 30, OwnerID: 1, KBID: 10, DocumentID: 20},
+		markFailedErr: errors.New("persist failed state"),
+	}
+	service := NewService(
+		&fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{10: {ID: 10, OwnerID: 1, ChunkSize: 20}}},
+		&fakeDocumentRepo{items: map[int64]*knowledge.Document{20: {ID: 20, OwnerID: 1, KBID: 10, OriginalFilename: "guide.md", ObjectKey: "missing.md"}}},
+		&fakeChunkRepo{}, jobs, nil, fakeReadStorage{}, parser.NewTextParser(), chunker.NewDefaultRegistry(), &fakeIndexer{}, nil, nil, "test_chunks",
+	)
+
+	processed, err := service.ProcessNext(context.Background(), "worker")
+	if !processed || err == nil || !strings.Contains(err.Error(), "object not found") || !strings.Contains(err.Error(), "persist failed state") {
+		t.Fatalf("ProcessNext() = %v, %v", processed, err)
+	}
+}
+
 func TestProcessNextFromQueueProcessesDirectPayloadAndAcks(t *testing.T) {
 	ctx := context.Background()
 	kbs := &fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{10: {ID: 10, OwnerID: 1, ChunkSize: 20, ChunkOverlap: 0}}}
@@ -393,6 +410,50 @@ func TestProcessNextFromQueueProcessesDirectPayloadAndAcks(t *testing.T) {
 	}
 	if docs.items[20].ParserStatus != knowledge.DocumentStatusCompleted {
 		t.Fatalf("document status = %s, want completed", docs.items[20].ParserStatus)
+	}
+}
+
+func TestProcessNextFromQueueAcksTerminalDatabaseJob(t *testing.T) {
+	jobs := &fakeJobRepo{items: map[int64]*knowledge.IngestionJob{30: {
+		ID: 30, OwnerID: 1, KBID: 10, DocumentID: 20, Status: knowledge.IngestionJobStatusCompleted,
+	}}}
+	service := NewService(nil, nil, nil, jobs, nil, nil, nil, nil, nil, nil, nil, "")
+	q := &fakeQueue{jobs: []queue.Job{{ID: "stream-1", Type: knowledge.IngestionJobTypeDocument, Payload: map[string]any{
+		"owner_id": int64(1), "ingestion_job_id": int64(30),
+	}}}}
+
+	processed, err := service.ProcessNextFromQueue(context.Background(), q, "worker")
+	if err != nil || !processed || len(q.acked) != 1 || len(q.nacked) != 0 {
+		t.Fatalf("ProcessNextFromQueue() = %v, %v ack=%+v nack=%+v", processed, err, q.acked, q.nacked)
+	}
+}
+
+func TestProcessNextFromQueueReturnsNackError(t *testing.T) {
+	service := NewService(nil, nil, nil, &fakeJobRepo{}, nil, nil, nil, nil, nil, nil, nil, "")
+	q := &fakeQueue{
+		jobs:    []queue.Job{{ID: "stream-1", Type: knowledge.IngestionJobTypeDocument, Payload: map[string]any{}}},
+		nackErr: errors.New("nack failed"),
+	}
+
+	processed, err := service.ProcessNextFromQueue(context.Background(), q, "worker")
+	if !processed || err == nil || !strings.Contains(err.Error(), "payload") || !strings.Contains(err.Error(), "nack failed") {
+		t.Fatalf("ProcessNextFromQueue() = %v, %v", processed, err)
+	}
+}
+
+func TestClaimedIngestionJobUsesOwnedTerminalUpdates(t *testing.T) {
+	repo := &fakeReliableJobRepo{fakeJobRepo: &fakeJobRepo{}}
+	service := NewService(nil, nil, nil, repo, nil, nil, nil, nil, nil, nil, nil, "")
+	job := &knowledge.IngestionJob{ID: 30, LockedBy: "worker-1"}
+	if err := service.markJobCompleted(context.Background(), job); err != nil {
+		t.Fatal(err)
+	}
+	if repo.completedBy != "worker-1" || !repo.completed[30] {
+		t.Fatalf("owned completion = worker %q completed=%+v", repo.completedBy, repo.completed)
+	}
+	repo.leaseErr = knowledge.ErrIngestionLeaseLost
+	if err := service.markJobCompleted(context.Background(), job); !errors.Is(err, knowledge.ErrIngestionLeaseLost) {
+		t.Fatalf("lost lease completion error = %v", err)
 	}
 }
 
@@ -450,7 +511,7 @@ func TestProcessJobIndexesEmbeddingVectors(t *testing.T) {
 		t.Fatalf("indexed chunks = %d, want 1", len(indexer.indexed))
 	}
 	indexed := indexer.indexed[0]
-	if indexed.EmbeddingModel != "text-embedding" || indexed.EmbeddingDimensions != 2 {
+	if indexed.EmbeddingModel != "text-embedding" || indexed.EmbeddingDimensions != 2 || indexed.EmbeddingProviderID != 90 || indexed.EmbeddingMetric != knowledge.EmbeddingMetricCosine || indexed.EmbeddingProfile == "" {
 		t.Fatalf("embedding metadata = %#v", indexed)
 	}
 	if len(indexed.EmbeddingVector) != 2 || indexed.EmbeddingVector[0] != 0.1 {
@@ -517,6 +578,285 @@ func TestProcessJobKeywordDoesNotRequireEmbeddingProvider(t *testing.T) {
 	}
 }
 
+func TestProcessJobGenerationFailureKeepsActiveGeneration(t *testing.T) {
+	kbs := &fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{10: {
+		ID: 10, OwnerID: 1, RetrievalBackend: knowledge.RetrievalBackendElasticsearch,
+		RetrievalMode: knowledge.RetrievalModeKeyword, ChunkSize: 20,
+	}}}
+	docs := &fakeDocumentRepo{items: map[int64]*knowledge.Document{20: {
+		ID: 20, OwnerID: 1, KBID: 10, Name: "Guide", OriginalFilename: "guide.md", FileType: "md",
+		ObjectKey: "raw/guide.md", ParserStatus: knowledge.DocumentStatusCompleted, ActiveGeneration: "gen-old", ChunkCount: 1,
+	}}}
+	oldChunk := knowledge.DocumentChunk{ID: 1, OwnerID: 1, KBID: 10, DocumentID: 20, Generation: "gen-old", Content: "old searchable content"}
+	chunks := &fakeChunkRepo{nextID: 1, byDocument: map[int64][]knowledge.DocumentChunk{20: {oldChunk}}}
+	indexer := &fakeIndexer{indexErr: errors.New("index failed")}
+	service := NewService(
+		kbs, docs, chunks, &fakeJobRepo{}, nil,
+		fakeReadStorage{objects: map[string]string{"raw/guide.md": "new content that must not replace the active generation"}},
+		parser.NewTextParser(), chunker.NewDefaultRegistry(), indexer, nil, nil, "test_chunks",
+	)
+
+	err := service.ProcessJob(context.Background(), &knowledge.IngestionJob{ID: 30, OwnerID: 1, KBID: 10, DocumentID: 20})
+	if err == nil || !strings.Contains(err.Error(), "index failed") {
+		t.Fatalf("ProcessJob() error = %v", err)
+	}
+	if docs.items[20].ActiveGeneration != "gen-old" {
+		t.Fatalf("active generation = %q, want gen-old", docs.items[20].ActiveGeneration)
+	}
+	if chunks.deletedByDocument[20] != 0 || indexer.deletedByDocument[20] != 0 {
+		t.Fatalf("old generation was deleted: chunk deletes=%d index deletes=%d", chunks.deletedByDocument[20], indexer.deletedByDocument[20])
+	}
+	foundOld := false
+	for _, chunk := range chunks.byDocument[20] {
+		if chunk.ID == oldChunk.ID && chunk.Generation == "gen-old" {
+			foundOld = true
+		}
+	}
+	if !foundOld {
+		t.Fatalf("old generation chunk was lost: %+v", chunks.byDocument[20])
+	}
+}
+
+func TestGenerationFailuresAcrossPipelineKeepActiveGeneration(t *testing.T) {
+	pipelineErr := errors.New("pipeline failed")
+	tests := []struct {
+		name    string
+		backend string
+		mode    string
+		setup   func(*Service, *fakeChunkRepo, *fakeIndexer, *fakeEmbedder, *fakeGenerationCommitter)
+	}{
+		{name: "parse", setup: func(service *Service, _ *fakeChunkRepo, _ *fakeIndexer, _ *fakeEmbedder, _ *fakeGenerationCommitter) {
+			service.parser = failingParser{pipelineErr}
+		}},
+		{name: "chunk", setup: func(service *Service, _ *fakeChunkRepo, _ *fakeIndexer, _ *fakeEmbedder, _ *fakeGenerationCommitter) {
+			service.chunkers = failingChunker{pipelineErr}
+		}},
+		{name: "mysql chunks", setup: func(_ *Service, chunks *fakeChunkRepo, _ *fakeIndexer, _ *fakeEmbedder, _ *fakeGenerationCommitter) {
+			chunks.createErr = pipelineErr
+		}},
+		{name: "embedding", mode: knowledge.RetrievalModeVector, setup: func(_ *Service, _ *fakeChunkRepo, _ *fakeIndexer, embedder *fakeEmbedder, _ *fakeGenerationCommitter) {
+			embedder.err = pipelineErr
+		}},
+		{name: "elasticsearch", backend: knowledge.RetrievalBackendElasticsearch, setup: func(_ *Service, _ *fakeChunkRepo, indexer *fakeIndexer, _ *fakeEmbedder, _ *fakeGenerationCommitter) {
+			indexer.indexErr = pipelineErr
+		}},
+		{name: "milvus", backend: knowledge.RetrievalBackendMilvus, setup: func(_ *Service, _ *fakeChunkRepo, indexer *fakeIndexer, _ *fakeEmbedder, _ *fakeGenerationCommitter) {
+			indexer.indexErr = pipelineErr
+		}},
+		{name: "mysql index refs", setup: func(_ *Service, chunks *fakeChunkRepo, _ *fakeIndexer, _ *fakeEmbedder, _ *fakeGenerationCommitter) {
+			chunks.updateRefsErr = pipelineErr
+		}},
+		{name: "generation commit", setup: func(_ *Service, _ *fakeChunkRepo, _ *fakeIndexer, _ *fakeEmbedder, committer *fakeGenerationCommitter) {
+			committer.err = pipelineErr
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			backend := test.backend
+			if backend == "" {
+				backend = knowledge.RetrievalBackendElasticsearch
+			}
+			mode := test.mode
+			if mode == "" {
+				mode = knowledge.RetrievalModeKeyword
+			}
+			providerID := int64(90)
+			kb := &knowledge.KnowledgeBase{ID: 10, OwnerID: 1, RetrievalBackend: backend, RetrievalMode: mode, ChunkSize: 20}
+			if mode == knowledge.RetrievalModeVector {
+				kb.EmbeddingProviderID, kb.EmbeddingModel, kb.EmbeddingDimensions = &providerID, "embedding", 2
+			}
+			kbs := &fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{10: kb}}
+			docs := &fakeDocumentRepo{items: map[int64]*knowledge.Document{20: {
+				ID: 20, OwnerID: 1, KBID: 10, Name: "Guide", OriginalFilename: "guide.md", FileType: "md",
+				ObjectKey: "raw/guide.md", ParserStatus: knowledge.DocumentStatusCompleted, ActiveGeneration: "gen-old", ChunkCount: 1,
+			}}}
+			oldChunk := knowledge.DocumentChunk{ID: 1, OwnerID: 1, KBID: 10, DocumentID: 20, Generation: "gen-old", Content: "old searchable content"}
+			chunks := &fakeChunkRepo{nextID: 1, byDocument: map[int64][]knowledge.DocumentChunk{20: {oldChunk}}}
+			indexer := &fakeIndexer{}
+			embedder := &fakeEmbedder{vectors: [][]float32{{0.1, 0.2}}}
+			jobs := &fakeJobRepo{}
+			committer := &fakeGenerationCommitter{documents: docs, kbs: kbs, jobs: jobs}
+			service := NewService(
+				kbs, docs, chunks, jobs,
+				&fakeProviderRepo{items: map[int64]*providerdomain.ModelProvider{providerID: {ID: providerID, OwnerID: 1, ProviderType: providerdomain.TypeOpenAICompatible, Status: providerdomain.StatusActive}}},
+				fakeReadStorage{objects: map[string]string{"raw/guide.md": "new content"}}, parser.NewTextParser(), chunker.NewDefaultRegistry(), indexer, embedder, mustSecretBox(t), "test_chunks",
+			).ConfigureIndexers(map[string]retrieval.Indexer{backend: indexer}).ConfigureGenerationCommitter(committer)
+			test.setup(service, chunks, indexer, embedder, committer)
+
+			if err := service.ProcessJob(context.Background(), &knowledge.IngestionJob{ID: 30, OwnerID: 1, KBID: 10, DocumentID: 20}); !errors.Is(err, pipelineErr) {
+				t.Fatalf("ProcessJob() error = %v, want %v", err, pipelineErr)
+			}
+			if docs.items[20].ActiveGeneration != "gen-old" || chunks.deletedByDocument[20] != 0 || indexer.deletedByDocument[20] != 0 {
+				t.Fatalf("active data changed: doc=%+v chunk_deletes=%d index_deletes=%d", docs.items[20], chunks.deletedByDocument[20], indexer.deletedByDocument[20])
+			}
+			foundOld := false
+			for _, chunk := range chunks.byDocument[20] {
+				foundOld = foundOld || chunk.ID == oldChunk.ID && chunk.Generation == "gen-old"
+			}
+			if !foundOld {
+				t.Fatalf("old generation chunk was lost: %+v", chunks.byDocument[20])
+			}
+		})
+	}
+}
+
+type failingParser struct{ err error }
+
+func (p failingParser) Parse(context.Context, string, io.Reader) (*parser.ParsedDocument, error) {
+	return nil, p.err
+}
+
+type failingChunker struct{ err error }
+
+func (c failingChunker) Chunk(context.Context, string, parser.ParsedDocument, chunker.Policy) ([]chunker.Chunk, error) {
+	return nil, c.err
+}
+
+func TestProcessJobDispatchesIndexerByKnowledgeBaseBackend(t *testing.T) {
+	kbs := &fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{10: {
+		ID: 10, OwnerID: 1, RetrievalBackend: knowledge.RetrievalBackendMilvus,
+		RetrievalMode: knowledge.RetrievalModeKeyword, ChunkSize: 20,
+	}}}
+	docs := &fakeDocumentRepo{items: map[int64]*knowledge.Document{20: {
+		ID: 20, OwnerID: 1, KBID: 10, Name: "Guide", OriginalFilename: "guide.md", FileType: "md", ObjectKey: "raw/guide.md",
+	}}}
+	defaultIndexer := &fakeIndexer{}
+	milvusIndexer := &fakeIndexer{}
+	service := NewService(
+		kbs, docs, &fakeChunkRepo{}, &fakeJobRepo{}, nil,
+		fakeReadStorage{objects: map[string]string{"raw/guide.md": "backend-specific indexing"}},
+		parser.NewTextParser(), chunker.NewDefaultRegistry(), defaultIndexer, nil, nil, "test_chunks",
+	).ConfigureIndexers(map[string]retrieval.Indexer{knowledge.RetrievalBackendMilvus: milvusIndexer})
+
+	if err := service.ProcessJob(context.Background(), &knowledge.IngestionJob{ID: 30, OwnerID: 1, KBID: 10, DocumentID: 20}); err != nil {
+		t.Fatalf("ProcessJob() error = %v", err)
+	}
+	if !milvusIndexer.ensureCalled || len(milvusIndexer.indexed) == 0 {
+		t.Fatalf("Milvus indexer was not used: %+v", milvusIndexer)
+	}
+	if defaultIndexer.ensureCalled || len(defaultIndexer.indexed) != 0 {
+		t.Fatalf("default indexer was used: %+v", defaultIndexer)
+	}
+}
+
+func TestProcessJobRejectsDeclaredBackendWithoutIndexer(t *testing.T) {
+	kbs := &fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{10: {
+		ID: 10, OwnerID: 1, RetrievalBackend: knowledge.RetrievalBackendElasticsearch,
+		RetrievalMode: knowledge.RetrievalModeKeyword, ChunkSize: 20,
+	}}}
+	docs := &fakeDocumentRepo{items: map[int64]*knowledge.Document{20: {
+		ID: 20, OwnerID: 1, KBID: 10, Name: "Guide", OriginalFilename: "guide.md", FileType: "md", ObjectKey: "raw/guide.md",
+	}}}
+	service := NewService(
+		kbs, docs, &fakeChunkRepo{}, &fakeJobRepo{}, nil,
+		fakeReadStorage{objects: map[string]string{"raw/guide.md": "backend must be configured"}},
+		parser.NewTextParser(), chunker.NewDefaultRegistry(), &fakeIndexer{}, nil, nil, "test_chunks",
+	).ConfigureIndexers(map[string]retrieval.Indexer{knowledge.RetrievalBackendMilvus: &fakeIndexer{}})
+
+	err := service.ProcessJob(context.Background(), &knowledge.IngestionJob{ID: 30, OwnerID: 1, KBID: 10, DocumentID: 20})
+	if err == nil || !strings.Contains(err.Error(), "retrieval indexer for backend \"elasticsearch\" is not configured") {
+		t.Fatalf("ProcessJob() error = %v", err)
+	}
+}
+
+func TestProcessJobCommitsGenerationAndSchedulesCleanup(t *testing.T) {
+	kbs := &fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{10: {
+		ID: 10, OwnerID: 1, RetrievalBackend: knowledge.RetrievalBackendElasticsearch,
+		RetrievalMode: knowledge.RetrievalModeKeyword, ChunkSize: 20,
+	}}}
+	docs := &fakeDocumentRepo{items: map[int64]*knowledge.Document{20: {
+		ID: 20, OwnerID: 1, KBID: 10, Name: "Guide", OriginalFilename: "guide.md", FileType: "md",
+		ObjectKey: "raw/guide.md", ParserStatus: knowledge.DocumentStatusCompleted, ActiveGeneration: "gen-old", ChunkCount: 1,
+	}}}
+	chunks := &fakeChunkRepo{nextID: 1, byDocument: map[int64][]knowledge.DocumentChunk{20: {{
+		ID: 1, OwnerID: 1, KBID: 10, DocumentID: 20, Generation: "gen-old", Content: "old content",
+	}}}}
+	jobs := &fakeJobRepo{}
+	committer := &fakeGenerationCommitter{documents: docs, kbs: kbs, jobs: jobs}
+	service := NewService(
+		kbs, docs, chunks, jobs, nil,
+		fakeReadStorage{objects: map[string]string{"raw/guide.md": "new active generation content"}},
+		parser.NewTextParser(), chunker.NewDefaultRegistry(), &fakeIndexer{}, nil, nil, "test_chunks",
+	).ConfigureGenerationCommitter(committer)
+
+	if err := service.ProcessJob(context.Background(), &knowledge.IngestionJob{ID: 30, OwnerID: 1, KBID: 10, DocumentID: 20}); err != nil {
+		t.Fatalf("ProcessJob() error = %v", err)
+	}
+	active := docs.items[20].ActiveGeneration
+	if active == "" || active == "gen-old" || committer.calls != 1 {
+		t.Fatalf("generation commit: active=%q calls=%d", active, committer.calls)
+	}
+	if len(jobs.items) != 1 {
+		t.Fatalf("cleanup jobs = %+v", jobs.items)
+	}
+	for _, cleanup := range jobs.items {
+		if cleanup.JobType != knowledge.IngestionJobTypeGenerationCleanup || cleanup.DocumentID != 20 || cleanup.Status != knowledge.IngestionJobStatusPending {
+			t.Fatalf("cleanup job = %+v", cleanup)
+		}
+	}
+	if kbs.chunkDelta != docs.items[20].ChunkCount-1 {
+		t.Fatalf("KB chunk delta = %d", kbs.chunkDelta)
+	}
+	if chunks.deletedByDocument[20] != 0 {
+		t.Fatal("old generation was synchronously deleted")
+	}
+}
+
+func TestProcessGenerationCleanupDeletesOnlyInactiveGenerations(t *testing.T) {
+	kbs := &fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{10: {
+		ID: 10, OwnerID: 1, RetrievalBackend: knowledge.RetrievalBackendElasticsearch,
+	}}}
+	docs := &fakeDocumentRepo{items: map[int64]*knowledge.Document{20: {
+		ID: 20, OwnerID: 1, KBID: 10, ParserStatus: knowledge.DocumentStatusCompleted, ActiveGeneration: "gen-new",
+	}}}
+	chunks := &fakeChunkRepo{byDocument: map[int64][]knowledge.DocumentChunk{20: {
+		{ID: 1, OwnerID: 1, DocumentID: 20, Generation: "gen-old"},
+		{ID: 2, OwnerID: 1, DocumentID: 20, Generation: "gen-new"},
+	}}}
+	jobs := &fakeJobRepo{}
+	indexer := &fakeIndexer{}
+	service := NewService(kbs, docs, chunks, jobs, nil, nil, nil, nil, indexer, nil, nil, "")
+
+	cleanup := &knowledge.IngestionJob{ID: 31, OwnerID: 1, KBID: 10, DocumentID: 20, JobType: knowledge.IngestionJobTypeGenerationCleanup}
+	if err := service.ProcessJob(context.Background(), cleanup); err != nil {
+		t.Fatalf("ProcessJob(cleanup) error = %v", err)
+	}
+	if err := service.ProcessJob(context.Background(), cleanup); err != nil {
+		t.Fatalf("ProcessJob(cleanup retry) error = %v", err)
+	}
+	remaining := chunks.byDocument[20]
+	if len(remaining) != 1 || remaining[0].Generation != "gen-new" {
+		t.Fatalf("remaining chunks = %+v", remaining)
+	}
+	if indexer.cleanedGeneration != "gen-new" || !jobs.completed[31] {
+		t.Fatalf("cleanup index/job state: generation=%q completed=%+v", indexer.cleanedGeneration, jobs.completed)
+	}
+}
+
+func TestGenerationCleanupFailureDoesNotFailDocument(t *testing.T) {
+	docs := &fakeDocumentRepo{items: map[int64]*knowledge.Document{20: {
+		ID: 20, OwnerID: 1, KBID: 10, ParserStatus: knowledge.DocumentStatusCompleted, ActiveGeneration: "gen-new",
+	}}}
+	jobs := &fakeJobRepo{next: &knowledge.IngestionJob{
+		ID: 31, OwnerID: 1, KBID: 10, DocumentID: 20, JobType: knowledge.IngestionJobTypeGenerationCleanup, MaxAttempts: 3,
+	}}
+	service := NewService(
+		&fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{10: {ID: 10, OwnerID: 1, RetrievalBackend: knowledge.RetrievalBackendElasticsearch}}},
+		docs, &fakeChunkRepo{}, jobs, nil, nil, nil, nil, &fakeIndexer{cleanupErr: errors.New("cleanup failed")}, nil, nil, "",
+	)
+
+	processed, err := service.ProcessNext(context.Background(), "worker")
+	if !processed || err == nil || !strings.Contains(err.Error(), "cleanup failed") {
+		t.Fatalf("ProcessNext() = %v, %v", processed, err)
+	}
+	if docs.items[20].ParserStatus != knowledge.DocumentStatusCompleted || docs.items[20].ParserError != "" {
+		t.Fatalf("cleanup failure changed document: %+v", docs.items[20])
+	}
+	if jobs.retrying[31] == "" {
+		t.Fatalf("cleanup job was not released for retry: %+v", jobs)
+	}
+}
+
 type fakeReadStorage struct {
 	objects map[string]string
 }
@@ -533,6 +873,9 @@ type fakeIndexer struct {
 	ensureCalled      bool
 	indexed           []retrieval.ChunkIndexDocument
 	deletedByDocument map[int64]int
+	indexErr          error
+	cleanupErr        error
+	cleanedGeneration string
 }
 
 func (i *fakeIndexer) EnsureIndex(context.Context) error {
@@ -541,6 +884,9 @@ func (i *fakeIndexer) EnsureIndex(context.Context) error {
 }
 
 func (i *fakeIndexer) IndexChunks(_ context.Context, docs []retrieval.ChunkIndexDocument) error {
+	if i.indexErr != nil {
+		return i.indexErr
+	}
 	i.indexed = append(i.indexed, docs...)
 	return nil
 }
@@ -558,6 +904,14 @@ func (i *fakeIndexer) DeleteByKnowledgeBase(context.Context, int64, int64) error
 }
 
 func (i *fakeIndexer) SetDocumentEnabled(context.Context, int64, int64, bool) error {
+	return nil
+}
+
+func (i *fakeIndexer) DeleteInactiveGenerations(_ context.Context, _, _ int64, activeGeneration string) error {
+	if i.cleanupErr != nil {
+		return i.cleanupErr
+	}
+	i.cleanedGeneration = activeGeneration
 	return nil
 }
 
@@ -615,11 +969,13 @@ func (r *fakeDocumentRepo) FindByID(_ context.Context, ownerID, id int64) (*know
 	if !ok || item.OwnerID != ownerID {
 		return nil, gorm.ErrRecordNotFound
 	}
-	return item, nil
+	clone := *item
+	return &clone, nil
 }
 
 func (r *fakeDocumentRepo) Update(_ context.Context, doc *knowledge.Document) error {
-	r.items[doc.ID] = doc
+	clone := *doc
+	r.items[doc.ID] = &clone
 	return nil
 }
 
@@ -642,9 +998,14 @@ type fakeChunkRepo struct {
 	nextID            int64
 	byDocument        map[int64][]knowledge.DocumentChunk
 	deletedByDocument map[int64]int
+	createErr         error
+	updateRefsErr     error
 }
 
 func (r *fakeChunkRepo) CreateBatch(_ context.Context, chunks []knowledge.DocumentChunk) error {
+	if r.createErr != nil {
+		return r.createErr
+	}
 	if r.byDocument == nil {
 		r.byDocument = make(map[int64][]knowledge.DocumentChunk)
 	}
@@ -661,6 +1022,9 @@ func (r *fakeChunkRepo) ListByDocument(_ context.Context, _ int64, documentID in
 }
 
 func (r *fakeChunkRepo) UpdateIndexRefs(_ context.Context, chunks []knowledge.DocumentChunk) error {
+	if r.updateRefsErr != nil {
+		return r.updateRefsErr
+	}
 	if r.byDocument == nil {
 		return nil
 	}
@@ -692,13 +1056,79 @@ func (r *fakeChunkRepo) DeleteByKnowledgeBase(context.Context, int64, int64) err
 	return nil
 }
 
-type fakeJobRepo struct {
-	next      *knowledge.IngestionJob
-	claimed   *knowledge.IngestionJob
-	completed map[int64]bool
-	failed    map[int64]string
-	retrying  map[int64]string
+func (r *fakeChunkRepo) DeleteInactiveGenerations(_ context.Context, _ int64, documentID int64, activeGeneration string) error {
+	stored := r.byDocument[documentID]
+	remaining := stored[:0]
+	for _, chunk := range stored {
+		if chunk.Generation == activeGeneration {
+			remaining = append(remaining, chunk)
+		}
+	}
+	r.byDocument[documentID] = remaining
+	return nil
 }
+
+type fakeGenerationCommitter struct {
+	documents *fakeDocumentRepo
+	kbs       *fakeKBRepo
+	jobs      *fakeJobRepo
+	err       error
+	calls     int
+}
+
+func (c *fakeGenerationCommitter) Activate(ctx context.Context, doc *knowledge.Document, cleanup *knowledge.IngestionJob, chunkDelta int) error {
+	c.calls++
+	if c.err != nil {
+		return c.err
+	}
+	if err := c.documents.Update(ctx, doc); err != nil {
+		return err
+	}
+	if err := c.kbs.AdjustCounts(ctx, doc.OwnerID, doc.KBID, 0, chunkDelta); err != nil {
+		return err
+	}
+	return c.jobs.Create(ctx, cleanup)
+}
+
+type fakeJobRepo struct {
+	nextID        int64
+	next          *knowledge.IngestionJob
+	claimed       *knowledge.IngestionJob
+	items         map[int64]*knowledge.IngestionJob
+	completed     map[int64]bool
+	failed        map[int64]string
+	retrying      map[int64]string
+	markFailedErr error
+}
+
+type fakeReliableJobRepo struct {
+	*fakeJobRepo
+	completedBy string
+	failedBy    string
+	leaseErr    error
+}
+
+func (r *fakeReliableJobRepo) RenewLock(context.Context, int64, string, time.Time) error {
+	return r.leaseErr
+}
+
+func (r *fakeReliableJobRepo) MarkCompletedOwned(_ context.Context, id int64, workerID string) error {
+	if r.leaseErr != nil {
+		return r.leaseErr
+	}
+	r.completedBy = workerID
+	return r.MarkCompleted(context.Background(), id)
+}
+
+func (r *fakeReliableJobRepo) MarkFailedOwned(ctx context.Context, id int64, workerID, message string) (bool, error) {
+	if r.leaseErr != nil {
+		return false, r.leaseErr
+	}
+	r.failedBy = workerID
+	return r.MarkFailed(ctx, id, message)
+}
+
+var _ knowledge.ReliableIngestionJobRepository = (*fakeReliableJobRepo)(nil)
 
 type fakeProviderRepo struct {
 	items map[int64]*providerdomain.ModelProvider
@@ -731,9 +1161,13 @@ func (r *fakeProviderRepo) SoftDelete(context.Context, int64, int64) error {
 
 type fakeEmbedder struct {
 	vectors [][]float32
+	err     error
 }
 
 func (e *fakeEmbedder) Embed(context.Context, llm.EmbeddingProviderConfig, llm.EmbeddingRequest) (*llm.EmbeddingResponse, error) {
+	if e.err != nil {
+		return nil, e.err
+	}
 	return &llm.EmbeddingResponse{Embeddings: e.vectors}, nil
 }
 
@@ -746,12 +1180,24 @@ func mustSecretBox(t *testing.T) *cryptoinfra.SecretBox {
 	return box
 }
 
-func (r *fakeJobRepo) Create(context.Context, *knowledge.IngestionJob) error {
+func (r *fakeJobRepo) Create(_ context.Context, job *knowledge.IngestionJob) error {
+	r.nextID++
+	job.ID = r.nextID
+	if r.items == nil {
+		r.items = map[int64]*knowledge.IngestionJob{}
+	}
+	clone := *job
+	r.items[job.ID] = &clone
 	return nil
 }
 
-func (r *fakeJobRepo) FindByID(context.Context, int64, int64) (*knowledge.IngestionJob, error) {
-	return nil, nil
+func (r *fakeJobRepo) FindByID(_ context.Context, ownerID, id int64) (*knowledge.IngestionJob, error) {
+	item, ok := r.items[id]
+	if !ok || item.OwnerID != ownerID {
+		return nil, gorm.ErrRecordNotFound
+	}
+	clone := *item
+	return &clone, nil
 }
 
 func (r *fakeJobRepo) ClaimNext(context.Context, string) (*knowledge.IngestionJob, error) {
@@ -765,6 +1211,21 @@ func (r *fakeJobRepo) ClaimNext(context.Context, string) (*knowledge.IngestionJo
 	return job, nil
 }
 
+func (r *fakeJobRepo) ClaimByID(_ context.Context, ownerID, id int64, workerID string) (*knowledge.IngestionJob, bool, error) {
+	item, err := r.FindByID(context.Background(), ownerID, id)
+	if err != nil {
+		return nil, false, err
+	}
+	if item.Status == knowledge.IngestionJobStatusCompleted || item.Status == knowledge.IngestionJobStatusFailed || item.Status == knowledge.IngestionJobStatusProcessing {
+		return item, false, nil
+	}
+	item.Status = knowledge.IngestionJobStatusProcessing
+	item.AttemptCount++
+	item.LockedBy = workerID
+	r.items[id] = item
+	return item, true, nil
+}
+
 func (r *fakeJobRepo) MarkCompleted(_ context.Context, id int64) error {
 	if r.completed == nil {
 		r.completed = make(map[int64]bool)
@@ -774,6 +1235,9 @@ func (r *fakeJobRepo) MarkCompleted(_ context.Context, id int64) error {
 }
 
 func (r *fakeJobRepo) MarkFailed(_ context.Context, id int64, message string) (bool, error) {
+	if r.markFailedErr != nil {
+		return false, r.markFailedErr
+	}
 	job := r.claimed
 	if job == nil || job.ID != id {
 		job = r.next
@@ -803,9 +1267,10 @@ func (r *fakeJobRepo) MarkFailed(_ context.Context, id int64, message string) (b
 }
 
 type fakeQueue struct {
-	jobs   []queue.Job
-	acked  []string
-	nacked []string
+	jobs    []queue.Job
+	acked   []string
+	nacked  []string
+	nackErr error
 }
 
 func (q *fakeQueue) Publish(context.Context, queue.Job) error {
@@ -828,5 +1293,5 @@ func (q *fakeQueue) Ack(_ context.Context, jobID string) error {
 
 func (q *fakeQueue) Nack(_ context.Context, jobID string, retryAt time.Time) error {
 	q.nacked = append(q.nacked, jobID)
-	return nil
+	return q.nackErr
 }

@@ -22,6 +22,7 @@ type Document struct {
 	FileSize         int64      `json:"file_size" gorm:"column:file_size"`
 	ObjectKey        string     `json:"object_key" gorm:"column:object_key"`
 	ContentHash      string     `json:"content_hash" gorm:"column:content_hash"`
+	ActiveGeneration string     `json:"active_generation,omitempty" gorm:"column:active_generation"`
 	ParserStatus     string     `json:"parser_status" gorm:"column:parser_status"`
 	ParserError      string     `json:"parser_error,omitempty" gorm:"column:parser_error"`
 	Enabled          bool       `json:"enabled" gorm:"column:enabled"`

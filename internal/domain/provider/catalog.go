@@ -17,6 +17,14 @@ type CatalogProvider struct {
 	DocURL       string         `json:"doc_url,omitempty" yaml:"doc_url"`
 	Rank         int            `json:"rank" yaml:"rank"`
 	Models       []CatalogModel `json:"models" yaml:"models"`
+	Capabilities Capabilities   `json:"capabilities" yaml:"capabilities"`
+}
+
+type Capabilities struct {
+	Chat        bool `json:"chat" yaml:"chat"`
+	ToolCalling bool `json:"tool_calling" yaml:"tool_calling"`
+	Streaming   bool `json:"streaming" yaml:"streaming"`
+	Embedding   bool `json:"embedding" yaml:"embedding"`
 }
 
 // CatalogRepository 提供对内置供应商目录的只读访问。

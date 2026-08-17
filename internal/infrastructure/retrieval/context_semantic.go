@@ -8,18 +8,20 @@ import (
 
 	"agentcanvas/internal/domain/contextresource"
 	providerdomain "agentcanvas/internal/domain/provider"
-	cryptoinfra "agentcanvas/internal/infrastructure/crypto"
 	"agentcanvas/internal/infrastructure/llm"
 	"agentcanvas/internal/infrastructure/vectorstore"
 )
 
-const contextResourceCollectionPrefix = "agentcanvas_context_resources_v1"
+const (
+	contextResourceCollectionPrefix  = "agentcanvas_context_resources_v1"
+	contextResourceKeywordCollection = contextResourceCollectionPrefix + "_keyword"
+)
 
 type ContextSemanticIndex struct {
 	Store             vectorstore.Store
 	Embedder          llm.EmbeddingClient
 	Providers         providerdomain.Repository
-	Secrets           *cryptoinfra.SecretBox
+	Secrets           providerdomain.SecretCodec
 	DefaultProviderID int64
 	DefaultModel      string
 	HNSW              vectorstore.HNSWConfig
@@ -29,7 +31,7 @@ func NewContextSemanticIndex(
 	store vectorstore.Store,
 	embedder llm.EmbeddingClient,
 	providers providerdomain.Repository,
-	secrets *cryptoinfra.SecretBox,
+	secrets providerdomain.SecretCodec,
 	defaultProviderID int64,
 	defaultModel string,
 	hnsw vectorstore.HNSWConfig,
@@ -65,14 +67,29 @@ func (s *ContextSemanticIndex) Upsert(ctx context.Context, document contextresou
 	metadata["resource_id"] = document.ResourceID
 	metadata["content_hash"] = document.ContentHash
 	metadata["embedding_profile_hash"] = profile.Hash
-	err = s.Store.Upsert(ctx, collection, []vectorstore.VectorDocument{
-		{
-			ID:       contextresource.DocumentID(document.OwnerID, document.ResourceType, document.ResourceID),
-			Vector:   vector,
-			Metadata: metadata,
-		},
-	})
-	return profile, err
+	vectorDocument := vectorstore.VectorDocument{
+		ID:       contextresource.DocumentID(document.OwnerID, document.ResourceType, document.ResourceID),
+		Text:     document.Content,
+		Vector:   vector,
+		Metadata: metadata,
+	}
+	err = s.Store.Upsert(ctx, collection, []vectorstore.VectorDocument{vectorDocument})
+	if err != nil {
+		return profile, err
+	}
+	if _, supportsText := s.Store.(interface {
+		SearchText(context.Context, vectorstore.SearchRequest) ([]vectorstore.SearchResult, error)
+	}); supportsText {
+		if err := s.Store.EnsureCollection(ctx, contextResourceKeywordCollection, 0, s.HNSW); err != nil {
+			return profile, err
+		}
+		return profile, s.Store.Upsert(ctx, contextResourceKeywordCollection, []vectorstore.VectorDocument{{
+			ID:       vectorDocument.ID,
+			Text:     vectorDocument.Text,
+			Metadata: vectorDocument.Metadata,
+		}})
+	}
+	return profile, nil
 }
 
 func (s *ContextSemanticIndex) Delete(ctx context.Context, item contextresource.OutboxItem) error {
@@ -85,32 +102,72 @@ func (s *ContextSemanticIndex) Delete(ctx context.Context, item contextresource.
 		// addressable vector to remove.
 		return nil
 	}
-	return s.Store.Delete(ctx, contextResourceCollection(profile), []string{contextresource.DocumentID(item.OwnerID, item.ResourceType, item.ResourceID)})
+	id := contextresource.DocumentID(item.OwnerID, item.ResourceType, item.ResourceID)
+	if err := s.Store.Delete(ctx, contextResourceCollection(profile), []string{id}); err != nil {
+		return err
+	}
+	if _, supportsText := s.Store.(interface {
+		SearchText(context.Context, vectorstore.SearchRequest) ([]vectorstore.SearchResult, error)
+	}); supportsText {
+		return s.Store.Delete(ctx, contextResourceKeywordCollection, []string{id})
+	}
+	return nil
 }
 
 func (s *ContextSemanticIndex) Search(ctx context.Context, request contextresource.SearchRequest) ([]contextresource.SearchResult, error) {
 	if s == nil || s.Store == nil || request.OwnerID <= 0 || strings.TrimSpace(request.Query) == "" {
 		return nil, nil
 	}
-	vector, profile, err := s.embed(ctx, request.OwnerID, request.Profile, request.Query)
-	if err != nil {
-		return nil, err
-	}
 	limit := request.TopK
 	if limit <= 0 {
 		limit = 12
 	}
 	filter := contextScopeFilter(request)
-	hits, err := s.Store.Search(ctx, vectorstore.SearchRequest{
-		Collection: contextResourceCollection(profile),
-		Vector:     vector,
-		TopK:       limit * 4,
-		Filter:     filter,
-		HNSW:       s.HNSW,
-	})
+	mode := strings.ToLower(strings.TrimSpace(request.Mode))
+	switch mode {
+	case "keyword":
+		return s.searchKeyword(ctx, request, filter, limit)
+	case "", "vector", "hybrid":
+	default:
+		return nil, fmt.Errorf("unsupported context retrieval mode: %s", request.Mode)
+	}
+	vector, profile, err := s.embed(ctx, request.OwnerID, request.Profile, request.Query)
 	if err != nil {
 		return nil, err
 	}
+	vectorHits, err := s.Store.Search(ctx, vectorstore.SearchRequest{Collection: contextResourceCollection(profile), Vector: vector, TopK: limit * 4, Filter: filter, HNSW: s.HNSW})
+	if err != nil {
+		return nil, err
+	}
+	vectorResults := s.contextResults(request, vectorHits, limit*4)
+	if mode != "hybrid" {
+		if len(vectorResults) > limit {
+			vectorResults = vectorResults[:limit]
+		}
+		return vectorResults, nil
+	}
+	keywordResults, keywordErr := s.searchKeyword(ctx, request, filter, limit*4)
+	if keywordErr != nil {
+		return nil, keywordErr
+	}
+	return fuseContextResults(keywordResults, vectorResults, limit), nil
+}
+
+func (s *ContextSemanticIndex) searchKeyword(ctx context.Context, request contextresource.SearchRequest, filter map[string]any, limit int) ([]contextresource.SearchResult, error) {
+	searcher, ok := s.Store.(interface {
+		SearchText(context.Context, vectorstore.SearchRequest) ([]vectorstore.SearchResult, error)
+	})
+	if !ok {
+		return nil, fmt.Errorf("context keyword search is not configured")
+	}
+	hits, err := searcher.SearchText(ctx, vectorstore.SearchRequest{Collection: contextResourceKeywordCollection, QueryText: request.Query, TopK: limit, Filter: filter})
+	if err != nil {
+		return nil, err
+	}
+	return s.contextResults(request, hits, limit), nil
+}
+
+func (s *ContextSemanticIndex) contextResults(request contextresource.SearchRequest, hits []vectorstore.SearchResult, limit int) []contextresource.SearchResult {
 	results := make([]contextresource.SearchResult, 0, limit)
 	for _, hit := range hits {
 		agentID := contextMetadataInt64(hit.Metadata["agent_id"])
@@ -137,7 +194,7 @@ func (s *ContextSemanticIndex) Search(ctx context.Context, request contextresour
 			break
 		}
 	}
-	return results, nil
+	return results
 }
 
 // contextScopeFilter is deliberately shared by the semantic and keyword

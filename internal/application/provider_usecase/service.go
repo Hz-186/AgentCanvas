@@ -3,11 +3,10 @@ package provider_usecase
 import (
 	"agentcanvas/internal/domain/audit"
 	providerdomain "agentcanvas/internal/domain/provider"
-	cryptoinfra "agentcanvas/internal/infrastructure/crypto"
 	"agentcanvas/internal/infrastructure/llm"
 	agenterrors "agentcanvas/internal/pkg/errors"
 	"context"
-	"encoding/json"
+	"errors"
 	"strconv"
 	"strings"
 	"time"
@@ -18,7 +17,7 @@ import (
 type Service struct {
 	providers providerdomain.Repository
 	audits    audit.Repository
-	secrets   *cryptoinfra.SecretBox
+	secrets   providerdomain.SecretCodec
 	tester    llm.ProviderTester
 }
 
@@ -46,7 +45,7 @@ type UpdateProviderRequest struct {
 	Status                *int    `json:"status"`
 }
 
-func NewService(providers providerdomain.Repository, audits audit.Repository, secrets *cryptoinfra.SecretBox, tester llm.ProviderTester) *Service {
+func NewService(providers providerdomain.Repository, audits audit.Repository, secrets providerdomain.SecretCodec, tester llm.ProviderTester) *Service {
 	return &Service{
 		providers: providers,
 		audits:    audits,
@@ -169,14 +168,18 @@ func (s *Service) Test(ctx context.Context, ownerID, id int64, client ClientInfo
 	}
 	now := time.Now().UTC()
 	p.LastTestAt = &now
-	if err := s.tester.Test(ctx, llm.ProviderTestConfig{
-		ProviderType: p.ProviderType,
-		BaseURL:      p.BaseURL,
-		APIKey:       apiKey,
-	}); err != nil {
+	if testErr := s.tester.Test(ctx, llm.ProviderTestConfig{
+		ProviderType:   p.ProviderType,
+		BaseURL:        p.BaseURL,
+		APIKey:         apiKey,
+		ChatModel:      p.DefaultChatModel,
+		EmbeddingModel: p.DefaultEmbeddingModel,
+	}); testErr != nil {
 		p.LastTestStatus = "failed"
-		p.LastTestError = err.Error()
-		_ = s.providers.Update(ctx, p)
+		p.LastTestError = testErr.Error()
+		if updateErr := s.providers.Update(ctx, p); updateErr != nil {
+			return nil, errors.Join(testErr, updateErr)
+		}
 		return sanitizeProvider(p), nil
 	}
 	p.LastTestStatus = "success"
@@ -197,12 +200,12 @@ func (s *Service) encryptKey(apiKey string) (encrypted string, mask string, err 
 	if err != nil {
 		return "", "", err
 	}
-	return encrypted, cryptoinfra.MaskSecret(apiKey), nil
+	return encrypted, providerdomain.MaskSecret(apiKey), nil
 }
 
 func validProviderType(providerType string) bool {
 	switch providerType {
-	case providerdomain.TypeOpenAICompatible, providerdomain.TypeDeepSeek, providerdomain.TypeQwen, providerdomain.TypeOllama, providerdomain.TypeAzureOpenAI, providerdomain.TypeLocal:
+	case providerdomain.TypeOpenAICompatible, providerdomain.TypeDeepSeek, providerdomain.TypeQwen, providerdomain.TypeAzureOpenAI:
 		return true
 	default:
 		return false
@@ -216,20 +219,5 @@ func sanitizeProvider(p *providerdomain.ModelProvider) *providerdomain.ModelProv
 }
 
 func (s *Service) audit(ctx context.Context, ownerID, actorID int64, action, resourceType, resourceID string, detail map[string]any, client ClientInfo) error {
-	detailJSON := "{}"
-	if detail != nil {
-		if data, err := json.Marshal(detail); err == nil {
-			detailJSON = string(data)
-		}
-	}
-	return s.audits.Create(ctx, &audit.Log{
-		OwnerID:      ownerID,
-		ActorID:      actorID,
-		Action:       action,
-		ResourceType: resourceType,
-		ResourceID:   resourceID,
-		DetailJSON:   detailJSON,
-		IPAddress:    client.IPAddress,
-		UserAgent:    client.UserAgent,
-	})
+	return s.audits.Create(ctx, audit.NewLog(ownerID, actorID, action, resourceType, resourceID, detail, client.IPAddress, client.UserAgent))
 }

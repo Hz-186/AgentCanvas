@@ -38,6 +38,9 @@ const chunkIndexMapping = `{
       },
       "embedding_model": { "type": "keyword" },
       "embedding_dimensions": { "type": "integer" },
+	  "embedding_provider_id": { "type": "long" },
+	  "embedding_metric": { "type": "keyword" },
+	  "embedding_profile": { "type": "keyword" },
       "page_no": { "type": "integer" },
       "token_count": { "type": "integer" },
       "metadata": { "type": "object", "enabled": true },
@@ -56,7 +59,10 @@ const chunkVectorMapping = `{
       "similarity": "cosine"
     },
     "embedding_model": { "type": "keyword" },
-    "embedding_dimensions": { "type": "integer" }
+    "embedding_dimensions": { "type": "integer" },
+    "embedding_provider_id": { "type": "long" },
+    "embedding_metric": { "type": "keyword" },
+    "embedding_profile": { "type": "keyword" }
   }
 }`
 
@@ -64,6 +70,9 @@ const chunkVectorMappingWithoutVector = `{
   "properties": {
     "enabled": { "type": "boolean" },
     "embedding_model": { "type": "keyword" },
-    "embedding_dimensions": { "type": "integer" }
+    "embedding_dimensions": { "type": "integer" },
+    "embedding_provider_id": { "type": "long" },
+    "embedding_metric": { "type": "keyword" },
+    "embedding_profile": { "type": "keyword" }
   }
 }`

@@ -67,3 +67,9 @@ func (r *ChunkRepository) DeleteByKnowledgeBase(ctx context.Context, ownerID, kb
 		Where("owner_id = ? AND kb_id = ?", ownerID, kbID).
 		Delete(&knowledge.DocumentChunk{}).Error
 }
+
+func (r *ChunkRepository) DeleteInactiveGenerations(ctx context.Context, ownerID, documentID int64, activeGeneration string) error {
+	return r.db.WithContext(ctx).
+		Where("owner_id = ? AND document_id = ? AND (generation <> ? OR generation IS NULL)", ownerID, documentID, activeGeneration).
+		Delete(&knowledge.DocumentChunk{}).Error
+}

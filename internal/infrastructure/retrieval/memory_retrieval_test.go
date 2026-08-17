@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"agentcanvas/internal/domain/memory"
+	"agentcanvas/internal/infrastructure/llm"
+	"agentcanvas/internal/infrastructure/vectorstore"
 
 	esclient "github.com/elastic/go-elasticsearch/v8"
 )
@@ -64,6 +66,63 @@ func TestMemoryStoreSearchFiltersByOwnerAndType(t *testing.T) {
 	if !strings.Contains(body, "owner_id") || !strings.Contains(body, "memory_type") || !strings.Contains(body, memory.TypeProfile) {
 		t.Fatalf("search body missing owner/type filters: %s", body)
 	}
+}
+
+func TestArchivalMemoryIndexSeparatesEmbeddingProfiles(t *testing.T) {
+	store := &archivalCollectionStore{}
+	indexes := []ArchivalMemoryIndex{
+		{Store: store, Embedder: archivalEmbeddingClient{}, ProviderID: 1, Model: "embedding-a"},
+		{Store: store, Embedder: archivalEmbeddingClient{}, ProviderID: 2, Model: "embedding-a"},
+		{Store: store, Embedder: archivalEmbeddingClient{}, ProviderID: 1, Model: "embedding-b"},
+	}
+	for _, index := range indexes {
+		if err := index.Index(context.Background(), memory.Memory{ID: 1, OwnerID: 1, Content: "memory"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(store.collections) != len(indexes) {
+		t.Fatalf("collections = %v", store.collections)
+	}
+	seen := map[string]struct{}{}
+	for _, collection := range store.collections {
+		seen[collection] = struct{}{}
+	}
+	if len(seen) != len(indexes) {
+		t.Fatalf("embedding profiles shared a collection: %v", store.collections)
+	}
+	if err := indexes[0].Delete(context.Background(), 1); err != nil {
+		t.Fatal(err)
+	}
+	if store.deletedCollection != store.collections[0] {
+		t.Fatalf("delete collection = %q, index collection = %q", store.deletedCollection, store.collections[0])
+	}
+}
+
+type archivalEmbeddingClient struct{}
+
+func (archivalEmbeddingClient) Embed(context.Context, llm.EmbeddingProviderConfig, llm.EmbeddingRequest) (*llm.EmbeddingResponse, error) {
+	return &llm.EmbeddingResponse{Embeddings: [][]float32{{1, 2, 3}}}, nil
+}
+
+type archivalCollectionStore struct {
+	collections       []string
+	deletedCollection string
+}
+
+func (s *archivalCollectionStore) EnsureCollection(_ context.Context, collection string, _ int, _ vectorstore.HNSWConfig) error {
+	s.collections = append(s.collections, collection)
+	return nil
+}
+func (*archivalCollectionStore) Upsert(context.Context, string, []vectorstore.VectorDocument) error {
+	return nil
+}
+func (*archivalCollectionStore) Delete(context.Context, string, []string) error { return nil }
+func (s *archivalCollectionStore) DeleteByFilter(_ context.Context, collection string, _ map[string]any) error {
+	s.deletedCollection = collection
+	return nil
+}
+func (*archivalCollectionStore) Search(context.Context, vectorstore.SearchRequest) ([]vectorstore.SearchResult, error) {
+	return nil, nil
 }
 
 func newTestMemoryStore(t *testing.T, handler http.HandlerFunc) *MemoryStore {
