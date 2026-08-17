@@ -320,7 +320,7 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 				if archivalVecStore == nil || strings.TrimSpace(provider.EmbeddingModel) == "" {
 					return nil
 				}
-				return contextretrieval.ArchivalMemoryIndex{Store: archivalVecStore, Embedder: embeddingClient, Provider: provider.EmbeddingConfig, ProviderID: provider.ProviderID, Model: provider.EmbeddingModel}
+				return contextretrieval.ArchivalMemoryIndex{Store: archivalVecStore, Embedder: embeddingClient, Provider: provider.EmbeddingConfig, Model: provider.EmbeddingModel}
 			}),
 		},
 		Tooling:       agentruntime.Tooling{ToolRegistry: toolRegistry, PythonToolAllowlist: cfg.PythonBridge.AllowedTools},
