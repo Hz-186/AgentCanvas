@@ -2,6 +2,9 @@ package mysql
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"strconv"
 	"time"
 
 	agentdomain "agentcanvas/internal/domain/agent"
@@ -55,7 +58,7 @@ func (r *ApprovalRepository) ListApprovalRequests(ctx context.Context, ownerID i
 	return items, err
 }
 
-func (r *ApprovalRepository) DecideApprovalAndClaimResume(ctx context.Context, item *agentdomain.ApprovalRequest) error {
+func (r *ApprovalRepository) DecideApprovalAndClaimResume(ctx context.Context, item *agentdomain.ApprovalRequest, turnInput []byte) error {
 	if item == nil {
 		return gorm.ErrInvalidData
 	}
@@ -66,6 +69,13 @@ func (r *ApprovalRepository) DecideApprovalAndClaimResume(ctx context.Context, i
 			return err
 		}
 		if current.Status != agentdomain.ApprovalStatusPending || current.RunID != item.RunID {
+			return gorm.ErrInvalidData
+		}
+		var run agentdomain.Run
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND owner_id = ?", item.RunID, item.OwnerID).First(&run).Error; err != nil {
+			return err
+		}
+		if run.Status != agentdomain.RunStatusWaitingHuman && run.Status != agentdomain.RunStatusPaused {
 			return gorm.ErrInvalidData
 		}
 		now := time.Now().UTC()
@@ -87,6 +97,9 @@ func (r *ApprovalRepository) DecideApprovalAndClaimResume(ctx context.Context, i
 		if runResult.RowsAffected != 1 {
 			return gorm.ErrInvalidData
 		}
+		if err := queueResumeTurn(tx, &run, turnInput, now); err != nil {
+			return err
+		}
 		item.UpdatedAt = now
 		return nil
 	})
@@ -97,6 +110,50 @@ func (r *ApprovalRepository) CreateCheckpoint(ctx context.Context, item *agentdo
 	item.CreatedAt = now
 	item.UpdatedAt = now
 	return r.db.WithContext(ctx).Create(item).Error
+}
+
+func (r *ApprovalRepository) SavePausedRun(ctx context.Context, turn *agentdomain.Turn, run *agentdomain.Run, approval *agentdomain.ApprovalRequest, checkpoint *agentdomain.RunCheckpoint) error {
+	if turn == nil || run == nil || checkpoint == nil || turn.LeaseToken == "" {
+		return gorm.ErrInvalidData
+	}
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var ownedTurn agentdomain.Turn
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("id = ? AND owner_id = ? AND lease_token = ? AND status = ?", turn.ID, turn.OwnerID, turn.LeaseToken, agentdomain.TurnStatusRunning).
+			First(&ownedTurn).Error; err != nil {
+			return err
+		}
+		var ownedRun agentdomain.Run
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("id = ? AND owner_id = ? AND status IN ?", run.ID, run.OwnerID, []string{agentdomain.RunStatusRunning, agentdomain.RunStatusResuming}).
+			First(&ownedRun).Error; err != nil {
+			return err
+		}
+		now := time.Now().UTC()
+		turn.UpdatedAt, run.UpdatedAt = now, now
+		clearTurnLease(turn)
+		if err := tx.Save(turn).Error; err != nil {
+			return err
+		}
+		if err := tx.Save(run).Error; err != nil {
+			return err
+		}
+		if approval != nil {
+			approval.CreatedAt, approval.UpdatedAt = now, now
+			if approval.Status == "" {
+				approval.Status = agentdomain.ApprovalStatusPending
+			}
+			if err := tx.Create(approval).Error; err != nil {
+				return err
+			}
+		}
+		checkpoint.CreatedAt, checkpoint.UpdatedAt = now, now
+		return tx.Create(checkpoint).Error
+	})
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return agentdomain.ErrLeaseLost
+	}
+	return err
 }
 
 func (r *ApprovalRepository) FindLatestCheckpointByRun(ctx context.Context, ownerID, runID int64) (*agentdomain.RunCheckpoint, error) {
@@ -111,7 +168,7 @@ func (r *ApprovalRepository) FindLatestCheckpointByRun(ctx context.Context, owne
 	return &item, nil
 }
 
-func (r *ApprovalRepository) ClaimResume(ctx context.Context, ownerID, runID int64) error {
+func (r *ApprovalRepository) ClaimResume(ctx context.Context, ownerID, runID int64, turnInput []byte) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var run agentdomain.Run
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND owner_id = ?", runID, ownerID).First(&run).Error; err != nil {
@@ -129,6 +186,42 @@ func (r *ApprovalRepository) ClaimResume(ctx context.Context, ownerID, runID int
 		if result.RowsAffected != 1 {
 			return gorm.ErrInvalidData
 		}
-		return nil
+		return queueResumeTurn(tx, &run, turnInput, time.Now().UTC())
 	})
+}
+
+func queueResumeTurn(tx *gorm.DB, run *agentdomain.Run, input []byte, now time.Time) error {
+	if run == nil {
+		return gorm.ErrInvalidData
+	}
+	if len(input) == 0 || !json.Valid(input) {
+		return gorm.ErrInvalidData
+	}
+	result := tx.Model(&agentdomain.Turn{}).
+		Where("owner_id = ? AND run_id = ? AND status IN ?", run.OwnerID, run.ID, []string{agentdomain.TurnStatusPaused, agentdomain.TurnStatusWaitingHuman}).
+		Updates(map[string]any{
+			"status": agentdomain.TurnStatusQueued, "input_json": input, "error_message": "", "finished_at": nil, "retry_at": nil,
+			"worker_id": "", "lease_token": "", "lease_expires_at": nil, "last_heartbeat_at": nil, "updated_at": now,
+		})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != 1 {
+		if run.RunType != agentdomain.RunTypeSubagent {
+			return gorm.ErrInvalidData
+		}
+		releaseID, conversationID := int64(0), int64(0)
+		if run.AgentReleaseID != nil {
+			releaseID = *run.AgentReleaseID
+		}
+		if run.ConversationID != nil {
+			conversationID = *run.ConversationID
+		}
+		return tx.Create(&agentdomain.Turn{
+			OwnerID: run.OwnerID, AgentID: run.AgentID, AgentReleaseID: releaseID, ConversationID: conversationID,
+			RunID: &run.ID, IdempotencyKey: "subagent-resume-" + strconv.FormatInt(run.ID, 10), Status: agentdomain.TurnStatusQueued,
+			InputJSON: input, MaxAttempts: 3, CreatedAt: now, UpdatedAt: now,
+		}).Error
+	}
+	return nil
 }

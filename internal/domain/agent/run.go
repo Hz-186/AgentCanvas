@@ -78,9 +78,18 @@ func canTransitionRunStatus(from, to string) bool {
 	case RunStatusWaitingHuman, RunStatusPaused:
 		return to == RunStatusResuming || to == RunStatusCancelled || to == RunStatusFailed
 	case RunStatusResuming:
-		return to == RunStatusRunning || to == RunStatusWaitingHuman || to == RunStatusPaused || to == RunStatusSucceeded || to == RunStatusFailed || to == RunStatusCancelled
+		return to == RunStatusQueued || to == RunStatusRunning || to == RunStatusWaitingHuman || to == RunStatusPaused || to == RunStatusSucceeded || to == RunStatusFailed || to == RunStatusCancelled
 	case RunStatusSucceeded, RunStatusFailed, RunStatusCancelled, RunStatusTimeout:
 		return false
+	default:
+		return false
+	}
+}
+
+func IsActiveRunStatus(status string) bool {
+	switch status {
+	case RunStatusQueued, RunStatusRunning, RunStatusResuming, RunStatusWaitingHuman, RunStatusPaused:
+		return true
 	default:
 		return false
 	}

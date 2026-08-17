@@ -224,6 +224,14 @@ func (r *handlerRunRepository) Update(_ context.Context, item *agentdomain.Run) 
 	r.items[item.ID] = *item
 	return nil
 }
+func (r *handlerRunRepository) CancelActive(_ context.Context, item *agentdomain.Run, finishedAt time.Time) (bool, error) {
+	if !agentdomain.IsActiveRunStatus(item.Status) {
+		return false, nil
+	}
+	item.Status, item.FinishedAt = agentdomain.RunStatusCancelled, &finishedAt
+	r.items[item.ID] = *item
+	return true, nil
+}
 
 func handlerGitRepository(t *testing.T) (string, string) {
 	t.Helper()

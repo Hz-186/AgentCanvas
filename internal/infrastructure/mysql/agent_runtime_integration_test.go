@@ -98,6 +98,106 @@ func TestAgentRuntimeRunPersistenceIntegration(t *testing.T) {
 	}
 }
 
+func TestAgentTurnClaimLeaseRecoveryIntegration(t *testing.T) {
+	dsn := os.Getenv("AGENTCANVAS_TEST_MYSQL_DSN")
+	if dsn == "" {
+		t.Skip("set AGENTCANVAS_TEST_MYSQL_DSN to run MySQL integration tests")
+	}
+	db, err := gorm.Open(gormmysql.Open(dsn), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	ownerID := time.Now().UnixNano()
+	cleanup := func() {
+		_ = db.Exec("DELETE FROM agent_turns WHERE owner_id = ?", ownerID).Error
+		_ = db.Exec("DELETE FROM agent_runs WHERE owner_id = ?", ownerID).Error
+	}
+	cleanup()
+	t.Cleanup(cleanup)
+
+	runRepo := NewRunRepository(db)
+	turnRepo := NewAgentTurnRepository(db)
+	now := time.Now().UTC()
+	releaseID := int64(1)
+	run := &agentdomain.Run{OwnerID: ownerID, AgentID: 1, AgentReleaseID: &releaseID, RunType: agentdomain.RunTypeTurn,
+		Status: agentdomain.RunStatusQueued, DefinitionJSON: []byte(`{}`), InputJSON: []byte(`{}`), StartedAt: now}
+	if err := runRepo.Create(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	turn := &agentdomain.Turn{OwnerID: ownerID, AgentID: 1, AgentReleaseID: 1, ConversationID: ownerID,
+		RunID: &run.ID, UserMessageID: 1, IdempotencyKey: "claim-once", Status: agentdomain.TurnStatusQueued, InputJSON: []byte(`{}`)}
+	if err := turnRepo.Create(ctx, turn); err != nil {
+		t.Fatal(err)
+	}
+
+	type claimResult struct {
+		turn *agentdomain.Turn
+		err  error
+	}
+	results := make(chan claimResult, 2)
+	start := make(chan struct{})
+	for index := 0; index < 2; index++ {
+		index := index
+		go func() {
+			<-start
+			claimed, claimErr := turnRepo.ClaimNext(ctx, fmt.Sprintf("worker-%d", index), fmt.Sprintf("lease-%d", index), now.Add(time.Minute))
+			results <- claimResult{turn: claimed, err: claimErr}
+		}()
+	}
+	close(start)
+	var claimed *agentdomain.Turn
+	noTurn := 0
+	for index := 0; index < 2; index++ {
+		result := <-results
+		if result.err == nil {
+			if claimed != nil {
+				t.Fatalf("turn was claimed twice: first=%+v second=%+v", claimed, result.turn)
+			}
+			claimed = result.turn
+		} else if errors.Is(result.err, agentdomain.ErrNoTurnAvailable) {
+			noTurn++
+		} else {
+			t.Fatal(result.err)
+		}
+	}
+	if claimed == nil || noTurn != 1 || claimed.AttemptCount != 1 || claimed.LeaseToken == "" {
+		t.Fatalf("unexpected concurrent claim result: claimed=%+v no_turn=%d", claimed, noTurn)
+	}
+
+	if err := turnRepo.RenewLease(ctx, claimed.ID, claimed.LeaseToken, now.Add(2*time.Minute)); err != nil {
+		t.Fatalf("renew owned lease: %v", err)
+	}
+	if err := turnRepo.RenewLease(ctx, claimed.ID, "stale-lease", now.Add(3*time.Minute)); !errors.Is(err, gorm.ErrRecordNotFound) {
+		t.Fatalf("stale heartbeat error = %v, want record not found", err)
+	}
+	expiredAt := time.Now().UTC().Add(-time.Minute)
+	if err := db.Model(&agentdomain.Turn{}).Where("id = ?", claimed.ID).Update("lease_expires_at", expiredAt).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&agentdomain.Run{}).Where("id = ?", run.ID).Update("status", agentdomain.RunStatusRunning).Error; err != nil {
+		t.Fatal(err)
+	}
+	expired, err := turnRepo.ListExpiredRunning(ctx, time.Now().UTC(), 10)
+	if err != nil || len(expired) != 1 || expired[0].ID != claimed.ID {
+		t.Fatalf("expired turns=%+v error=%v", expired, err)
+	}
+	retryAt := time.Now().UTC().Add(time.Minute)
+	claimed.Status, claimed.RetryAt, claimed.LeaseExpiresAt = agentdomain.TurnStatusRetryWait, &retryAt, &expiredAt
+	run.Status = agentdomain.RunStatusQueued
+	if err := turnRepo.RecoverExpired(ctx, claimed, run); err != nil {
+		t.Fatalf("recover expired turn: %v", err)
+	}
+	stored, err := turnRepo.FindByID(ctx, ownerID, claimed.ID)
+	if err != nil || stored.Status != agentdomain.TurnStatusRetryWait || stored.LeaseToken != "" || stored.RetryAt == nil {
+		t.Fatalf("recovered turn=%+v error=%v", stored, err)
+	}
+	storedRun, err := runRepo.FindByID(ctx, ownerID, run.ID)
+	if err != nil || storedRun.Status != agentdomain.RunStatusQueued {
+		t.Fatalf("recovered run=%+v error=%v", storedRun, err)
+	}
+}
+
 func TestProjectWorkspaceRepositoriesIntegration(t *testing.T) {
 	dsn := os.Getenv("AGENTCANVAS_TEST_MYSQL_DSN")
 	if dsn == "" {
@@ -221,6 +321,24 @@ func TestGitWorkspaceMigrationRoundTripIntegration(t *testing.T) {
 	applyIntegrationMigration(t, testDB, filepath.Join(migrationRoot, "000001_agent_only_baseline.up.sql"))
 	applyIntegrationMigration(t, testDB, filepath.Join(migrationRoot, "000002_git_workspace.up.sql"))
 	assertGitWorkspaceMigrationState(t, testDB, true)
+	if _, err := testDB.Exec(`INSERT INTO documents (owner_id, kb_id, name, original_filename, object_key) VALUES (1, 1, 'legacy', 'legacy.md', 'raw/legacy.md')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := testDB.Exec(`INSERT INTO document_chunks (owner_id, kb_id, document_id, chunk_index, content, content_hash) VALUES (1, 1, 1, 0, 'legacy', 'legacy')`); err != nil {
+		t.Fatal(err)
+	}
+	applyIntegrationMigration(t, testDB, filepath.Join(migrationRoot, "000003_document_generations.up.sql"))
+	applyIntegrationMigration(t, testDB, filepath.Join(migrationRoot, "000004_embedding_profiles.up.sql"))
+	applyIntegrationMigration(t, testDB, filepath.Join(migrationRoot, "000005_ingestion_retry_at.up.sql"))
+	assertAdditiveMigrationState(t, testDB, true)
+	applyIntegrationMigration(t, testDB, filepath.Join(migrationRoot, "000005_ingestion_retry_at.down.sql"))
+	applyIntegrationMigration(t, testDB, filepath.Join(migrationRoot, "000004_embedding_profiles.down.sql"))
+	applyIntegrationMigration(t, testDB, filepath.Join(migrationRoot, "000003_document_generations.down.sql"))
+	assertAdditiveMigrationState(t, testDB, false)
+	applyIntegrationMigration(t, testDB, filepath.Join(migrationRoot, "000003_document_generations.up.sql"))
+	applyIntegrationMigration(t, testDB, filepath.Join(migrationRoot, "000004_embedding_profiles.up.sql"))
+	applyIntegrationMigration(t, testDB, filepath.Join(migrationRoot, "000005_ingestion_retry_at.up.sql"))
+	assertAdditiveMigrationState(t, testDB, true)
 	applyIntegrationMigration(t, testDB, filepath.Join(migrationRoot, "000002_git_workspace.down.sql"))
 	assertGitWorkspaceMigrationState(t, testDB, false)
 	applyIntegrationMigration(t, testDB, filepath.Join(migrationRoot, "000002_git_workspace.up.sql"))
@@ -301,5 +419,48 @@ func assertGitWorkspaceMigrationState(t *testing.T, db *sql.DB, expected bool) {
 		if !strings.Contains(strings.ToUpper(extra), "STORED GENERATED") {
 			t.Fatalf("agent_workspaces.%s is not stored generated: %q", column, extra)
 		}
+	}
+}
+
+func assertAdditiveMigrationState(t *testing.T, db *sql.DB, expected bool) {
+	t.Helper()
+	for table, column := range map[string]string{
+		"documents":       "active_generation",
+		"document_chunks": "generation",
+		"knowledge_bases": "embedding_metric",
+		"ingestion_jobs":  "retry_at",
+	} {
+		var count int
+		if err := db.QueryRow("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?", table, column).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if (count == 1) != expected {
+			t.Fatalf("column %s.%s existence = %v, want %v", table, column, count == 1, expected)
+		}
+	}
+	for _, index := range []string{"uk_doc_generation_chunk_index", "idx_document_generation", "idx_ingestion_retry_at"} {
+		var count int
+		if err := db.QueryRow("SELECT COUNT(DISTINCT index_name) FROM information_schema.statistics WHERE table_schema = DATABASE() AND index_name = ?", index).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if (count == 1) != expected {
+			t.Fatalf("index %s existence = %v, want %v", index, count == 1, expected)
+		}
+	}
+	if !expected {
+		return
+	}
+	var activeGeneration, generation, metric string
+	if err := db.QueryRow("SELECT active_generation FROM documents WHERE id = 1").Scan(&activeGeneration); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow("SELECT generation FROM document_chunks WHERE document_id = 1 AND chunk_index = 0").Scan(&generation); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow("SELECT column_default FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'knowledge_bases' AND column_name = 'embedding_metric'").Scan(&metric); err != nil {
+		t.Fatal(err)
+	}
+	if activeGeneration != "legacy" || generation != "legacy" || metric != "COSINE" {
+		t.Fatalf("unexpected additive migration backfill/defaults: active_generation=%q generation=%q embedding_metric=%q", activeGeneration, generation, metric)
 	}
 }
