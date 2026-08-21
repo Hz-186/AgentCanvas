@@ -23,3 +23,23 @@ type APITokenRepository interface {
 	FindActiveByHash(ctx context.Context, tokenHash string, now time.Time) (*APIToken, error)
 	RevokeByID(ctx context.Context, ownerID, id int64, revokedAt time.Time) error
 }
+
+type PasswordHasher interface {
+	Hash(string) (string, error)
+	Verify(hash, password string) bool
+}
+
+type AccessTokenService interface {
+	IssueAccessToken(userID int64) (string, time.Time, error)
+	VerifyAccessToken(token string) (*AccessTokenClaims, error)
+}
+
+type TokenHasher interface {
+	Hash(string) string
+}
+
+type GitHubOAuthClient interface {
+	AuthCodeURL(state string) (string, error)
+	ExchangeCode(context.Context, string) (*GitHubOAuthToken, error)
+	GetUser(context.Context, string) (*GitHubUser, error)
+}

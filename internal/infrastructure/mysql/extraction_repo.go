@@ -32,6 +32,80 @@ func (r *ExtractionJobRepository) Update(ctx context.Context, job *memory.Extrac
 	return r.db.WithContext(ctx).Save(job).Error
 }
 
+func (r *ExtractionJobRepository) ClaimByID(ctx context.Context, ownerID, id int64, workerID string, leaseUntil time.Time) (*memory.ExtractionJob, bool, error) {
+	var job memory.ExtractionJob
+	claimed := false
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("owner_id = ? AND id = ?", ownerID, id).First(&job).Error; err != nil {
+			return err
+		}
+		if job.Status == string(memory.ExtractionCompleted) || job.Status == string(memory.ExtractionFailed) {
+			return nil
+		}
+		now := time.Now().UTC()
+		if job.Status == string(memory.ExtractionRunning) && job.LockedBy != "" && job.LeaseExpiresAt != nil && job.LeaseExpiresAt.After(now) {
+			return nil
+		}
+		if job.AttemptCount >= 5 {
+			job.Status = string(memory.ExtractionFailed)
+			job.ErrorMessage = "maximum extraction attempts exceeded"
+			job.LockedBy, job.LockedAt, job.LeaseExpiresAt = "", nil, nil
+			return tx.Save(&job).Error
+		}
+		job.Status = string(memory.ExtractionRunning)
+		job.AttemptCount++
+		job.LockedBy, job.LockedAt, job.LeaseExpiresAt = workerID, &now, &leaseUntil
+		job.UpdatedAt = now
+		if err := tx.Save(&job).Error; err != nil {
+			return err
+		}
+		claimed = true
+		return nil
+	})
+	return &job, claimed, err
+}
+
+func (r *ExtractionJobRepository) RenewLease(ctx context.Context, id int64, workerID string, leaseUntil time.Time) error {
+	result := r.db.WithContext(ctx).Model(&memory.ExtractionJob{}).
+		Where("id = ? AND locked_by = ? AND status = ?", id, workerID, string(memory.ExtractionRunning)).
+		Updates(map[string]any{"lease_expires_at": leaseUntil.UTC(), "updated_at": time.Now().UTC()})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != 1 {
+		return memory.ErrExtractionLeaseLost
+	}
+	return nil
+}
+
+func (r *ExtractionJobRepository) UpdateOwned(ctx context.Context, job *memory.ExtractionJob, workerID string) error {
+	if job == nil || workerID == "" {
+		return gorm.ErrInvalidData
+	}
+	now := time.Now().UTC()
+	job.UpdatedAt = now
+	if job.Status == string(memory.ExtractionCompleted) || job.Status == string(memory.ExtractionFailed) {
+		job.CompletedAt = &now
+	}
+	updates := map[string]any{
+		"status": job.Status, "due_at": job.DueAt, "result_json": job.ResultJSON,
+		"error_message": job.ErrorMessage, "completed_at": job.CompletedAt, "updated_at": now,
+	}
+	if job.Status != string(memory.ExtractionRunning) {
+		updates["locked_by"], updates["locked_at"], updates["lease_expires_at"] = "", nil, nil
+	}
+	result := r.db.WithContext(ctx).Model(&memory.ExtractionJob{}).
+		Where("id = ? AND owner_id = ? AND locked_by = ? AND status = ? AND lease_expires_at > ?", job.ID, job.OwnerID, workerID, string(memory.ExtractionRunning), now).
+		Updates(updates)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != 1 {
+		return memory.ErrExtractionLeaseLost
+	}
+	return nil
+}
+
 func (r *ExtractionJobRepository) FindByID(ctx context.Context, ownerID, id int64) (*memory.ExtractionJob, error) {
 	var job memory.ExtractionJob
 	err := r.db.WithContext(ctx).Where("owner_id = ? AND id = ?", ownerID, id).First(&job).Error
@@ -65,30 +139,14 @@ func (r *ExtractionJobRepository) ListPending(ctx context.Context, limit int) ([
 		limit = 10
 	}
 	var jobs []memory.ExtractionJob
-	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		now := time.Now().UTC()
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE", Options: "SKIP LOCKED"}).
-			Where("((status IN ?) AND (due_at IS NULL OR due_at <= ?)) OR (status = ? AND lease_expires_at < ?)", []string{string(memory.ExtractionPending), "analyzed"}, now, memory.ExtractionRunning, now).
-			Order("id ASC").Limit(limit).Find(&jobs).Error; err != nil {
-			return err
-		}
-		if len(jobs) == 0 {
-			return nil
-		}
-		ids := make([]int64, 0, len(jobs))
-		for i := range jobs {
-			ids = append(ids, jobs[i].ID)
-			jobs[i].Status = string(memory.ExtractionRunning)
-			jobs[i].AttemptCount++
-			lease := now.Add(2 * time.Minute)
-			jobs[i].LeaseExpiresAt = &lease
-		}
-		return tx.Model(&memory.ExtractionJob{}).
-			Where("id IN ?", ids).
-			Updates(map[string]any{"status": string(memory.ExtractionRunning), "attempt_count": gorm.Expr("attempt_count + 1"), "lease_expires_at": now.Add(2 * time.Minute)}).Error
-	})
+	now := time.Now().UTC()
+	err := r.db.WithContext(ctx).
+		Where("(status = ? AND (due_at IS NULL OR due_at <= ?)) OR (status = ? AND lease_expires_at < ?)", string(memory.ExtractionPending), now, string(memory.ExtractionRunning), now).
+		Order("id ASC").Limit(limit).Find(&jobs).Error
 	return jobs, err
 }
+
+var _ memory.ExtractionLeaseRepository = (*ExtractionJobRepository)(nil)
 
 type MergeLogRepository struct{ db *gorm.DB }
 

@@ -18,6 +18,10 @@ func TestNATSJetStreamQueuePublishesClaimsAndAcks(t *testing.T) {
 	if client.publishedSubject != "jobs.ingestion" || client.publishedMsgID != "job-1" {
 		t.Fatalf("publish subject/msgID = %s/%s", client.publishedSubject, client.publishedMsgID)
 	}
+	var envelope Job
+	if err := json.Unmarshal(client.publishedData, &envelope); err != nil || envelope.SchemaVersion != JobSchemaVersion {
+		t.Fatalf("published envelope = %+v, error=%v", envelope, err)
+	}
 	client.messages = []NATSMessage{&fakeNATSMessage{data: client.publishedData}}
 
 	claimed, err := q.Claim(context.Background(), ClaimOptions{WorkerID: "worker-1", Limit: 1})
@@ -69,6 +73,17 @@ func TestNATSJetStreamQueueNacksMalformedPayload(t *testing.T) {
 	}
 }
 
+func TestNATSJetStreamQueueRejectsUnsupportedEnvelopeVersion(t *testing.T) {
+	data, _ := json.Marshal(Job{SchemaVersion: JobSchemaVersion + 1, ID: "future", Type: "ingestion"})
+	msg := &fakeNATSMessage{data: data}
+	client := &fakeNATSJetStream{messages: []NATSMessage{msg}}
+	q := NewNATSJetStreamQueue(client, "jobs", "jobs.ingestion", "workers", "workers", time.Minute)
+
+	if _, err := q.Claim(context.Background(), ClaimOptions{Limit: 1}); err == nil || !msg.nacked {
+		t.Fatalf("unknown envelope version error=%v nacked=%v", err, msg.nacked)
+	}
+}
+
 func TestNATSJetStreamQueueNackUsesDelay(t *testing.T) {
 	data, _ := json.Marshal(Job{ID: "retry", Type: "ingestion"})
 	msg := &fakeNATSMessage{data: data}
@@ -84,6 +99,24 @@ func TestNATSJetStreamQueueNackUsesDelay(t *testing.T) {
 	}
 	if msg.delay <= 0 {
 		t.Fatalf("expected delayed nack, got %v", msg.delay)
+	}
+}
+
+func TestNATSJetStreamQueueHonorsJobMaxAttempts(t *testing.T) {
+	data, _ := json.Marshal(Job{ID: "retry", Type: "ingestion", Attempts: 1, MaxAttempts: 2})
+	msg := &fakeNATSMessage{data: data}
+	client := &fakeNATSJetStream{messages: []NATSMessage{msg}}
+	q := NewNATSJetStreamQueue(client, "jobs", "jobs.ingestion", "workers", "workers", time.Minute)
+
+	claimed, err := q.Claim(context.Background(), ClaimOptions{Limit: 1})
+	if err != nil || len(claimed) != 1 || claimed[0].Attempts != 2 {
+		t.Fatalf("Claim() = %+v, %v", claimed, err)
+	}
+	if err := q.Nack(context.Background(), "retry", time.Now()); err != nil {
+		t.Fatalf("Nack() error = %v", err)
+	}
+	if !msg.acked || msg.nacked || msg.delay != 0 {
+		t.Fatalf("exhausted job delivery state = %+v", msg)
 	}
 }
 
@@ -128,7 +161,8 @@ type fakeNATSMessage struct {
 	delay  time.Duration
 }
 
-func (m *fakeNATSMessage) Data() []byte { return m.data }
+func (m *fakeNATSMessage) Data() []byte         { return m.data }
+func (m *fakeNATSMessage) DeliveryAttempt() int { return 0 }
 func (m *fakeNATSMessage) Ack() error {
 	m.acked = true
 	return nil

@@ -7,12 +7,16 @@ import (
 	"time"
 )
 
+const JobSchemaVersion = 1
+
 type Job struct {
-	ID          string         `json:"id"`
-	Type        string         `json:"type"`
-	Payload     map[string]any `json:"payload,omitempty"`
-	Attempts    int            `json:"attempts"`
-	AvailableAt time.Time      `json:"available_at,omitempty"`
+	SchemaVersion int            `json:"schema_version"`
+	ID            string         `json:"id"`
+	Type          string         `json:"type"`
+	Payload       map[string]any `json:"payload,omitempty"`
+	Attempts      int            `json:"attempts"`
+	MaxAttempts   int            `json:"max_attempts,omitempty"`
+	AvailableAt   time.Time      `json:"available_at,omitempty"`
 }
 
 type ClaimOptions struct {
@@ -115,6 +119,20 @@ func (q *MemoryQueue) Nack(ctx context.Context, jobID string, retryAt time.Time)
 	}
 	delete(q.claimed, jobID)
 	job.AvailableAt = retryAt
+	if job.MaxAttempts > 0 && job.Attempts >= job.MaxAttempts {
+		q.deadJobs[job.ID] = job
+		return nil
+	}
 	q.pending = append(q.pending, job)
 	return nil
+}
+
+func (q *MemoryQueue) DeadJobs() []Job {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	dead := make([]Job, 0, len(q.deadJobs))
+	for _, job := range q.deadJobs {
+		dead = append(dead, job)
+	}
+	return dead
 }

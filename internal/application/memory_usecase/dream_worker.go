@@ -11,8 +11,11 @@ import (
 	"agentcanvas/internal/domain/memory"
 	"agentcanvas/internal/infrastructure/llm"
 	"agentcanvas/internal/infrastructure/vectorstore"
+	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 )
+
+const dreamLeaseDuration = 2 * time.Minute
 
 type DreamPayload struct {
 	JobID          int64 `json:"job_id"`
@@ -64,20 +67,56 @@ func (w *DreamWorker) ConfigureCandidates(candidates memory.CandidateWriter) {
 	w.candidates = candidates
 }
 
-func (w *DreamWorker) HandleDreamJob(ctx context.Context, payload DreamPayload) error {
+func (w *DreamWorker) HandleDreamJob(ctx context.Context, payload DreamPayload) (retErr error) {
 	if !w.dreamCfg.Enabled || payload.OwnerID <= 0 || payload.ConversationID <= 0 {
 		return nil
 	}
 	var job *memory.ExtractionJob
 	var err error
 	if payload.JobID > 0 && w.jobs != nil {
-		job, err = w.jobs.FindByID(ctx, payload.OwnerID, payload.JobID)
-		if err != nil {
-			return err
+		if leased, ok := w.jobs.(memory.ExtractionLeaseRepository); ok {
+			var claimed bool
+			job, claimed, err = leased.ClaimByID(ctx, payload.OwnerID, payload.JobID, w.workerID, time.Now().UTC().Add(dreamLeaseDuration))
+			if err != nil || !claimed {
+				return err
+			}
+			execCtx, cancel := context.WithCancel(ctx)
+			ctx = execCtx
+			defer cancel()
+			go w.heartbeatLease(execCtx, leased, job.ID, cancel)
+		} else {
+			job, err = w.jobs.FindByID(ctx, payload.OwnerID, payload.JobID)
+			if err != nil {
+				return err
+			}
+			if job.Status == string(memory.ExtractionCompleted) || job.Status == string(memory.ExtractionFailed) {
+				return nil
+			}
+			job.Status = string(memory.ExtractionRunning)
+			job.AttemptCount++
+			lease := time.Now().UTC().Add(dreamLeaseDuration)
+			job.LeaseExpiresAt = &lease
+			if err := w.jobs.Update(ctx, job); err != nil {
+				return err
+			}
 		}
-		if job.Status == string(memory.ExtractionCompleted) || job.Status == "superseded" {
-			return nil
-		}
+		defer func() {
+			if retErr == nil || w.jobs == nil {
+				return
+			}
+			job.ErrorMessage = retErr.Error()
+			job.LockedBy, job.LockedAt, job.LeaseExpiresAt = "", nil, nil
+			if job.AttemptCount >= 5 {
+				job.Status = string(memory.ExtractionFailed)
+			} else {
+				job.Status = string(memory.ExtractionPending)
+				retryAt := time.Now().UTC().Add(time.Duration(job.AttemptCount) * time.Minute)
+				job.DueAt = &retryAt
+			}
+			if updateErr := w.updateJob(context.WithoutCancel(ctx), job); updateErr != nil {
+				retErr = fmt.Errorf("%v; persist dream retry state: %w", retErr, updateErr)
+			}
+		}()
 		payload.ConversationID = job.ConversationID
 	}
 	unlock, err := w.acquireLock(ctx, payload.OwnerID, payload.ConversationID)
@@ -96,8 +135,10 @@ func (w *DreamWorker) HandleDreamJob(ctx context.Context, payload DreamPayload) 
 				return activeErr
 			}
 			if len(active) > 0 && active[len(active)-1].ID > job.ThroughMessageID {
-				job.Status = "superseded"
-				return w.jobs.Update(ctx, job)
+				job.Status = string(memory.ExtractionCompleted)
+				job.ErrorMessage = "superseded by newer conversation messages"
+				job.LockedBy, job.LockedAt, job.LeaseExpiresAt = "", nil, nil
+				return w.updateJob(ctx, job)
 			}
 		}
 		messages, err = w.messages.ListActiveThrough(ctx, payload.OwnerID, payload.ConversationID, job.ThroughMessageID)
@@ -127,9 +168,7 @@ func (w *DreamWorker) HandleDreamJob(ctx context.Context, payload DreamPayload) 
 			if err != nil {
 				return fmt.Errorf("marshal dream analysis: %w", err)
 			}
-			job.Status = "analyzed"
-			job.LeaseExpiresAt = nil
-			if err := w.jobs.Update(ctx, job); err != nil {
+			if err := w.updateJob(ctx, job); err != nil {
 				return err
 			}
 		}
@@ -148,8 +187,8 @@ func (w *DreamWorker) HandleDreamJob(ctx context.Context, payload DreamPayload) 
 	if job != nil {
 		job.Status = string(memory.ExtractionCompleted)
 		job.ErrorMessage = ""
-		job.LeaseExpiresAt = nil
-		return w.jobs.Update(ctx, job)
+		job.LockedBy, job.LockedAt, job.LeaseExpiresAt = "", nil, nil
+		return w.updateJob(ctx, job)
 	}
 	return nil
 }
@@ -198,11 +237,41 @@ func (w *DreamWorker) acquireLock(ctx context.Context, ownerID, conversationID i
 		return func() {}, nil
 	}
 	lockKey := fmt.Sprintf("dream:lock:%d:%d", ownerID, conversationID)
-	locked, err := w.redis.SetNX(ctx, lockKey, w.workerID, 120*time.Second).Result()
-	if err != nil || !locked {
+	lockToken := w.workerID + ":" + uuid.NewString()
+	locked, err := w.redis.SetNX(ctx, lockKey, lockToken, 120*time.Second).Result()
+	if err != nil {
 		return nil, err
 	}
-	return func() { _, _ = w.redis.Del(context.Background(), lockKey).Result() }, nil
+	if !locked {
+		return nil, fmt.Errorf("dream extraction lock is already held")
+	}
+	return func() {
+		const releaseLock = `if redis.call("get", KEYS[1]) == ARGV[1] then return redis.call("del", KEYS[1]) else return 0 end`
+		_, _ = w.redis.Eval(context.Background(), releaseLock, []string{lockKey}, lockToken).Result()
+	}, nil
+}
+
+func (w *DreamWorker) updateJob(ctx context.Context, job *memory.ExtractionJob) error {
+	if leased, ok := w.jobs.(memory.ExtractionLeaseRepository); ok {
+		return leased.UpdateOwned(ctx, job, w.workerID)
+	}
+	return w.jobs.Update(ctx, job)
+}
+
+func (w *DreamWorker) heartbeatLease(ctx context.Context, jobs memory.ExtractionLeaseRepository, jobID int64, cancel context.CancelFunc) {
+	ticker := time.NewTicker(dreamLeaseDuration / 3)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := jobs.RenewLease(ctx, jobID, w.workerID, time.Now().UTC().Add(dreamLeaseDuration)); err != nil {
+				cancel()
+				return
+			}
+		}
+	}
 }
 
 func (w *DreamWorker) analyze(ctx context.Context, payload DreamPayload, messages []conversation.Message, coreItems []memory.Memory) (*dreamLLMResult, error) {

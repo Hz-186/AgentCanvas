@@ -3,6 +3,7 @@ package queue
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -21,6 +22,7 @@ type RedisStreamClient interface {
 	EnsureGroup(ctx context.Context, stream, group string) error
 	Add(ctx context.Context, stream string, values map[string]any) (string, error)
 	ReadGroup(ctx context.Context, stream, group, consumer string, count int64, block time.Duration) ([]RedisStreamMessage, error)
+	AutoClaim(ctx context.Context, stream, group, consumer string, minIdle time.Duration, count int64) ([]RedisStreamMessage, error)
 	Ack(ctx context.Context, stream, group string, ids ...string) (int64, error)
 }
 
@@ -66,6 +68,26 @@ func (c GoRedisStreamClient) ReadGroup(ctx context.Context, stream, group, consu
 	return out, nil
 }
 
+func (c GoRedisStreamClient) AutoClaim(ctx context.Context, stream, group, consumer string, minIdle time.Duration, count int64) ([]RedisStreamMessage, error) {
+	if c.Client == nil {
+		return nil, fmt.Errorf("redis client is not configured")
+	}
+	items, _, err := c.Client.XAutoClaim(ctx, &goredis.XAutoClaimArgs{
+		Stream: stream, Group: group, Consumer: consumer, MinIdle: minIdle, Start: "0-0", Count: count,
+	}).Result()
+	if err != nil {
+		if err == goredis.Nil {
+			return nil, nil
+		}
+		return nil, err
+	}
+	out := make([]RedisStreamMessage, 0, len(items))
+	for _, message := range items {
+		out = append(out, RedisStreamMessage{ID: message.ID, Values: message.Values})
+	}
+	return out, nil
+}
+
 func (c GoRedisStreamClient) Ack(ctx context.Context, stream, group string, ids ...string) (int64, error) {
 	if c.Client == nil {
 		return 0, fmt.Errorf("redis client is not configured")
@@ -74,13 +96,14 @@ func (c GoRedisStreamClient) Ack(ctx context.Context, stream, group string, ids 
 }
 
 type RedisStreamQueue struct {
-	Client   RedisStreamClient
-	Stream   string
-	Group    string
-	Consumer string
-	Block    time.Duration
-	mu       sync.Mutex
-	inflight map[string]Job
+	Client    RedisStreamClient
+	Stream    string
+	Group     string
+	Consumer  string
+	Block     time.Duration
+	ClaimIdle time.Duration
+	mu        sync.Mutex
+	inflight  map[string]Job
 }
 
 func NewRedisStreamQueue(client *goredis.Client, stream, group, consumer string) *RedisStreamQueue {
@@ -97,7 +120,7 @@ func NewRedisStreamQueueWithClient(client RedisStreamClient, stream, group, cons
 	if consumer == "" {
 		consumer = "worker"
 	}
-	return &RedisStreamQueue{Client: client, Stream: stream, Group: group, Consumer: consumer, Block: time.Second, inflight: map[string]Job{}}
+	return &RedisStreamQueue{Client: client, Stream: stream, Group: group, Consumer: consumer, Block: time.Second, ClaimIdle: time.Minute, inflight: map[string]Job{}}
 }
 
 func (q *RedisStreamQueue) Publish(ctx context.Context, job Job) error {
@@ -124,16 +147,32 @@ func (q *RedisStreamQueue) Claim(ctx context.Context, opts ClaimOptions) ([]Job,
 	if consumer == "" {
 		consumer = q.Consumer
 	}
-	messages, err := q.Client.ReadGroup(ctx, q.Stream, q.Group, consumer, int64(limit), q.Block)
+	messages, err := q.Client.AutoClaim(ctx, q.Stream, q.Group, consumer, q.ClaimIdle, int64(limit))
 	if err != nil {
 		return nil, err
+	}
+	if len(messages) < limit {
+		fresh, readErr := q.Client.ReadGroup(ctx, q.Stream, q.Group, consumer, int64(limit-len(messages)), q.Block)
+		if readErr != nil {
+			return nil, readErr
+		}
+		messages = append(messages, fresh...)
+	}
+	now := opts.Now
+	if now.IsZero() {
+		now = time.Now()
 	}
 	jobs := make([]Job, 0, len(messages))
 	for _, message := range messages {
 		job, err := jobFromRedisValues(message.ID, message.Values)
 		if err != nil {
-			return nil, err
+			_, ackErr := q.Client.Ack(ctx, q.Stream, q.Group, message.ID)
+			return nil, errors.Join(err, ackErr)
 		}
+		if !job.AvailableAt.IsZero() && job.AvailableAt.After(now) {
+			continue
+		}
+		job.Attempts++
 		jobs = append(jobs, job)
 		q.mu.Lock()
 		q.inflight[job.ID] = job
@@ -169,6 +208,9 @@ func (q *RedisStreamQueue) Nack(ctx context.Context, jobID string, retryAt time.
 		return q.Publish(ctx, Job{ID: jobID, Type: "retry", AvailableAt: retryAt, Payload: map[string]any{"retry_of": jobID}})
 	}
 	job.AvailableAt = retryAt
+	if job.MaxAttempts > 0 && job.Attempts >= job.MaxAttempts {
+		return nil
+	}
 	return q.Publish(ctx, job)
 }
 
@@ -192,6 +234,7 @@ func redisValuesFromJob(job Job) (map[string]any, error) {
 		"type":         job.Type,
 		"payload":      string(payload),
 		"attempts":     strconv.Itoa(job.Attempts),
+		"max_attempts": strconv.Itoa(job.MaxAttempts),
 		"available_at": job.AvailableAt.Format(time.RFC3339Nano),
 	}
 	return values, nil
@@ -207,6 +250,9 @@ func jobFromRedisValues(messageID string, values map[string]any) (Job, error) {
 	}
 	if attempts, err := strconv.Atoi(fmt.Sprint(values["attempts"])); err == nil {
 		job.Attempts = attempts
+	}
+	if maxAttempts, err := strconv.Atoi(fmt.Sprint(values["max_attempts"])); err == nil {
+		job.MaxAttempts = maxAttempts
 	}
 	if rawAvailable := fmt.Sprint(values["available_at"]); rawAvailable != "" && rawAvailable != "<nil>" {
 		if parsed, err := time.Parse(time.RFC3339Nano, rawAvailable); err == nil {

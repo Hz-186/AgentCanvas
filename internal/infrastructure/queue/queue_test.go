@@ -58,3 +58,25 @@ func TestMemoryQueueNackDelaysRetry(t *testing.T) {
 		t.Fatalf("expected retry claim, got %+v", jobs)
 	}
 }
+
+func TestMemoryQueueMovesExhaustedJobToDeadJobs(t *testing.T) {
+	q := NewMemoryQueue()
+	if err := q.Publish(context.Background(), Job{ID: "job1", Type: "ingest", MaxAttempts: 1}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	jobs, err := q.Claim(context.Background(), ClaimOptions{Limit: 1})
+	if err != nil || len(jobs) != 1 {
+		t.Fatalf("Claim() = %+v, %v", jobs, err)
+	}
+	if err := q.Nack(context.Background(), "job1", time.Now()); err != nil {
+		t.Fatalf("Nack() error = %v", err)
+	}
+	jobs, err = q.Claim(context.Background(), ClaimOptions{Limit: 1})
+	if err != nil || len(jobs) != 0 {
+		t.Fatalf("exhausted job was requeued: %+v, %v", jobs, err)
+	}
+	dead := q.DeadJobs()
+	if len(dead) != 1 || dead[0].ID != "job1" || dead[0].Attempts != 1 {
+		t.Fatalf("dead jobs = %+v", dead)
+	}
+}

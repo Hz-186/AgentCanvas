@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"encoding/json"
 	"net/http"
 	"strconv"
 
@@ -57,7 +56,7 @@ func (h *SkillHandler) Create(c *gin.Context) {
 }
 
 func (h *SkillHandler) Get(c *gin.Context) {
-	ownerID, id, ok := h.ownerAndID(c)
+	ownerID, id, ok := ownerAndID(c, "id")
 	if !ok {
 		return
 	}
@@ -71,7 +70,7 @@ func (h *SkillHandler) Get(c *gin.Context) {
 }
 
 func (h *SkillHandler) Update(c *gin.Context) {
-	ownerID, id, ok := h.ownerAndID(c)
+	ownerID, id, ok := ownerAndID(c, "id")
 	if !ok {
 		return
 	}
@@ -89,7 +88,7 @@ func (h *SkillHandler) Update(c *gin.Context) {
 }
 
 func (h *SkillHandler) Delete(c *gin.Context) {
-	ownerID, id, ok := h.ownerAndID(c)
+	ownerID, id, ok := ownerAndID(c, "id")
 	if !ok {
 		return
 	}
@@ -102,7 +101,7 @@ func (h *SkillHandler) Delete(c *gin.Context) {
 }
 
 func (h *SkillHandler) Validate(c *gin.Context) {
-	ownerID, id, ok := h.ownerAndID(c)
+	ownerID, id, ok := ownerAndID(c, "id")
 	if !ok {
 		return
 	}
@@ -115,38 +114,9 @@ func (h *SkillHandler) Validate(c *gin.Context) {
 	response.OK(c, item)
 }
 
-func (h *SkillHandler) ownerAndID(c *gin.Context) (int64, int64, bool) {
-	ownerID, ok := currentUserID(c)
-	if !ok {
-		response.Error(c, http.StatusUnauthorized, agenterrors.CodeUnauthorized, agenterrors.ErrUnauthorized.Error())
-		return 0, 0, false
-	}
-	id, err := parseInt64Param(c, "id")
-	if err != nil {
-		writeAppError(c, agenterrors.ErrInvalidInput)
-		return 0, 0, false
-	}
-	return ownerID, id, true
-}
-
 func (h *SkillHandler) audit(c *gin.Context, ownerID int64, action, resourceID string, detail map[string]any) {
 	if h.audits == nil || ownerID <= 0 {
 		return
 	}
-	detailJSON := "{}"
-	if detail != nil {
-		if data, err := json.Marshal(detail); err == nil {
-			detailJSON = string(data)
-		}
-	}
-	_ = h.audits.Create(c.Request.Context(), &audit.Log{
-		OwnerID:      ownerID,
-		ActorID:      ownerID,
-		Action:       action,
-		ResourceType: "skill",
-		ResourceID:   resourceID,
-		DetailJSON:   detailJSON,
-		IPAddress:    realIP(c),
-		UserAgent:    c.Request.UserAgent(),
-	})
+	_ = h.audits.Create(c.Request.Context(), audit.NewLog(ownerID, ownerID, action, "skill", resourceID, detail, realIP(c), c.Request.UserAgent()))
 }

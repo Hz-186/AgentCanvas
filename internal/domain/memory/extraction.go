@@ -3,8 +3,11 @@ package memory
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"time"
 )
+
+var ErrExtractionLeaseLost = errors.New("memory extraction worker lease lost")
 
 type ExtractionStatus string
 
@@ -71,6 +74,12 @@ type ExtractionJobRepository interface {
 	FindByIdempotencyKey(ctx context.Context, ownerID int64, key string) (*ExtractionJob, error)
 	ListByStatus(ctx context.Context, ownerID int64, status string, limit int) ([]ExtractionJob, error)
 	ListPending(ctx context.Context, limit int) ([]ExtractionJob, error)
+}
+
+type ExtractionLeaseRepository interface {
+	ClaimByID(ctx context.Context, ownerID, id int64, workerID string, leaseUntil time.Time) (*ExtractionJob, bool, error)
+	RenewLease(ctx context.Context, id int64, workerID string, leaseUntil time.Time) error
+	UpdateOwned(ctx context.Context, job *ExtractionJob, workerID string) error
 }
 
 type MergeLogRepository interface {

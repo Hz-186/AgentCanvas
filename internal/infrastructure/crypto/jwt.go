@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	authdomain "agentcanvas/internal/domain/auth"
 )
 
 type JWTService struct {
@@ -16,10 +18,7 @@ type JWTService struct {
 	ttl    time.Duration
 }
 
-type JWTClaims struct {
-	UserID    int64     `json:"user_id"`
-	ExpiresAt time.Time `json:"expires_at"`
-}
+type JWTClaims = authdomain.AccessTokenClaims
 
 type jwtHeader struct {
 	Alg string `json:"alg"`

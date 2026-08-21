@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	authusecase "agentcanvas/internal/application/auth_usecase"
+	"agentcanvas/internal/domain/audit"
 	authdomain "agentcanvas/internal/domain/auth"
 	"log/slog"
 
@@ -34,6 +35,8 @@ type RouterDeps struct {
 	ResourceHandler   *handler.ResourceHandler
 	AuthService       *authusecase.Service
 	APITokens         authdomain.APITokenRepository
+	Audits            audit.Repository
+	CORSOrigins       []string
 }
 
 func NewRouter(deps RouterDeps) *gin.Engine {
@@ -42,7 +45,7 @@ func NewRouter(deps RouterDeps) *gin.Engine {
 	// middleware
 	r.Use(middleware.RequestID())
 	r.Use(middleware.Recovery(deps.Logger))
-	r.Use(middleware.CORS())
+	r.Use(middleware.CORS(deps.CORSOrigins))
 
 	v1 := r.Group("/api/v1")
 	{
@@ -53,6 +56,7 @@ func NewRouter(deps RouterDeps) *gin.Engine {
 		v1.GET("/health/es", deps.HealthHandler.Elasticsearch)
 		v1.GET("/health/reflection-system", deps.HealthHandler.ReflectionSystem)
 		v1.GET("/health/context-system", deps.HealthHandler.ContextSystem)
+		v1.GET("/health/memory-system", deps.HealthHandler.MemorySystem)
 
 		authGroup := v1.Group("/auth")
 		{
@@ -66,7 +70,8 @@ func NewRouter(deps RouterDeps) *gin.Engine {
 		}
 
 		protected := v1.Group("")
-		protected.Use(middleware.Auth(deps.AuthService, deps.APITokens))
+		protected.Use(middleware.Auth(deps.AuthService, deps.APITokens, deps.Audits))
+		protected.Use(middleware.RequireRouteScope())
 		{
 			protected.GET("/auth/me", deps.AuthHandler.Me)
 			protected.GET("/resource-summaries/:kind", deps.ResourceHandler.List)

@@ -16,6 +16,7 @@ import (
 
 type NATSMessage interface {
 	Data() []byte
+	DeliveryAttempt() int
 	Ack() error
 	Nak() error
 	NakWithDelay(time.Duration) error
@@ -29,17 +30,28 @@ type NATSJetStream interface {
 	Close() error
 }
 
+type natsConsumerDeliveryConfigurer interface {
+	EnsureConsumerWithMax(ctx context.Context, stream, durable string, ackWait time.Duration, maxDeliver int) error
+}
+
+type natsInflight struct {
+	message     NATSMessage
+	attempts    int
+	maxAttempts int
+}
+
 type NATSJetStreamQueue struct {
-	Client   NATSJetStream
-	Stream   string
-	Subject  string
-	Consumer string
-	Durable  string
-	AckWait  time.Duration
-	MaxWait  time.Duration
+	Client      NATSJetStream
+	Stream      string
+	Subject     string
+	Consumer    string
+	Durable     string
+	AckWait     time.Duration
+	MaxWait     time.Duration
+	MaxAttempts int
 
 	mu       sync.Mutex
-	inflight map[string]NATSMessage
+	inflight map[string]natsInflight
 }
 
 func NewNATSJetStreamQueue(client NATSJetStream, stream, subject, consumer, durable string, ackWait time.Duration) *NATSJetStreamQueue {
@@ -58,7 +70,7 @@ func NewNATSJetStreamQueue(client NATSJetStream, stream, subject, consumer, dura
 	if ackWait <= 0 {
 		ackWait = time.Minute
 	}
-	return &NATSJetStreamQueue{Client: client, Stream: stream, Subject: subject, Consumer: consumer, Durable: durable, AckWait: ackWait, MaxWait: time.Second, inflight: map[string]NATSMessage{}}
+	return &NATSJetStreamQueue{Client: client, Stream: stream, Subject: subject, Consumer: consumer, Durable: durable, AckWait: ackWait, MaxWait: time.Second, MaxAttempts: 5, inflight: map[string]natsInflight{}}
 }
 
 func NewNATSJetStreamQueueFromConfig(cfg config.NATSConfig) (*NATSJetStreamQueue, error) {
@@ -75,6 +87,12 @@ func (q *NATSJetStreamQueue) Publish(ctx context.Context, job Job) error {
 	}
 	if job.Type == "" {
 		return fmt.Errorf("job type is required")
+	}
+	if job.SchemaVersion == 0 {
+		job.SchemaVersion = JobSchemaVersion
+	}
+	if job.SchemaVersion != JobSchemaVersion {
+		return fmt.Errorf("unsupported job schema version %d", job.SchemaVersion)
 	}
 	data, err := json.Marshal(job)
 	if err != nil {
@@ -111,6 +129,13 @@ func (q *NATSJetStreamQueue) Claim(ctx context.Context, opts ClaimOptions) ([]Jo
 			_ = message.Nak()
 			return nil, err
 		}
+		if job.SchemaVersion == 0 {
+			job.SchemaVersion = JobSchemaVersion
+		}
+		if job.SchemaVersion != JobSchemaVersion {
+			_ = message.Nak()
+			return nil, fmt.Errorf("unsupported job schema version %d", job.SchemaVersion)
+		}
 		if job.ID == "" {
 			job.ID = fmt.Sprintf("nats:%p", message)
 		}
@@ -118,9 +143,16 @@ func (q *NATSJetStreamQueue) Claim(ctx context.Context, opts ClaimOptions) ([]Jo
 			_ = message.NakWithDelay(time.Until(job.AvailableAt))
 			continue
 		}
-		job.Attempts++
+		if deliveryAttempt := message.DeliveryAttempt(); deliveryAttempt > 0 {
+			job.Attempts = deliveryAttempt
+		} else {
+			job.Attempts++
+		}
+		if job.MaxAttempts == 0 {
+			job.MaxAttempts = q.MaxAttempts
+		}
 		q.mu.Lock()
-		q.inflight[job.ID] = message
+		q.inflight[job.ID] = natsInflight{message: message, attempts: job.Attempts, maxAttempts: job.MaxAttempts}
 		q.mu.Unlock()
 		jobs = append(jobs, job)
 	}
@@ -133,11 +165,11 @@ func (q *NATSJetStreamQueue) Ack(ctx context.Context, jobID string) error {
 		return ctx.Err()
 	default:
 	}
-	message, err := q.popInflight(jobID)
+	delivery, err := q.popInflight(jobID)
 	if err != nil {
 		return err
 	}
-	return message.Ack()
+	return delivery.message.Ack()
 }
 
 func (q *NATSJetStreamQueue) Nack(ctx context.Context, jobID string, retryAt time.Time) error {
@@ -146,14 +178,17 @@ func (q *NATSJetStreamQueue) Nack(ctx context.Context, jobID string, retryAt tim
 		return ctx.Err()
 	default:
 	}
-	message, err := q.popInflight(jobID)
+	delivery, err := q.popInflight(jobID)
 	if err != nil {
 		return err
 	}
-	if retryAt.After(time.Now()) {
-		return message.NakWithDelay(time.Until(retryAt))
+	if delivery.maxAttempts > 0 && delivery.attempts >= delivery.maxAttempts {
+		return delivery.message.Ack()
 	}
-	return message.Nak()
+	if retryAt.After(time.Now()) {
+		return delivery.message.NakWithDelay(time.Until(retryAt))
+	}
+	return delivery.message.Nak()
 }
 
 func (q *NATSJetStreamQueue) Close() error {
@@ -170,18 +205,21 @@ func (q *NATSJetStreamQueue) ensure(ctx context.Context) error {
 	if err := q.Client.EnsureStream(ctx, q.Stream, q.Subject); err != nil {
 		return err
 	}
+	if configured, ok := q.Client.(natsConsumerDeliveryConfigurer); ok {
+		return configured.EnsureConsumerWithMax(ctx, q.Stream, q.Durable, q.AckWait, q.MaxAttempts)
+	}
 	return q.Client.EnsureConsumer(ctx, q.Stream, q.Durable, q.AckWait)
 }
 
-func (q *NATSJetStreamQueue) popInflight(jobID string) (NATSMessage, error) {
+func (q *NATSJetStreamQueue) popInflight(jobID string) (natsInflight, error) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	message, ok := q.inflight[jobID]
+	delivery, ok := q.inflight[jobID]
 	if !ok {
-		return nil, fmt.Errorf("claimed nats job %s not found", jobID)
+		return natsInflight{}, fmt.Errorf("claimed nats job %s not found", jobID)
 	}
 	delete(q.inflight, jobID)
-	return message, nil
+	return delivery, nil
 }
 
 type natsJetStreamClient struct {
@@ -218,10 +256,14 @@ func (c *natsJetStreamClient) EnsureStream(_ context.Context, stream, subject st
 }
 
 func (c *natsJetStreamClient) EnsureConsumer(_ context.Context, stream, durable string, ackWait time.Duration) error {
+	return c.EnsureConsumerWithMax(context.Background(), stream, durable, ackWait, 5)
+}
+
+func (c *natsJetStreamClient) EnsureConsumerWithMax(_ context.Context, stream, durable string, ackWait time.Duration, maxDeliver int) error {
 	if _, err := c.js.ConsumerInfo(stream, durable); err == nil {
 		return nil
 	}
-	_, err := c.js.AddConsumer(stream, &nats.ConsumerConfig{Durable: durable, AckPolicy: nats.AckExplicitPolicy, AckWait: ackWait})
+	_, err := c.js.AddConsumer(stream, &nats.ConsumerConfig{Durable: durable, AckPolicy: nats.AckExplicitPolicy, AckWait: ackWait, MaxDeliver: maxDeliver})
 	return err
 }
 
@@ -282,8 +324,15 @@ type natsMessage struct {
 }
 
 func (m natsMessage) Data() []byte { return m.message.Data }
-func (m natsMessage) Ack() error   { return m.message.Ack() }
-func (m natsMessage) Nak() error   { return m.message.Nak() }
+func (m natsMessage) DeliveryAttempt() int {
+	metadata, err := m.message.Metadata()
+	if err != nil || metadata == nil {
+		return 0
+	}
+	return int(metadata.NumDelivered)
+}
+func (m natsMessage) Ack() error { return m.message.Ack() }
+func (m natsMessage) Nak() error { return m.message.Nak() }
 func (m natsMessage) NakWithDelay(delay time.Duration) error {
 	return m.message.NakWithDelay(delay)
 }

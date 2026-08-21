@@ -5,12 +5,14 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
 	independentagentusecase "agentcanvas/internal/application/agent_usecase"
 	auditusecase "agentcanvas/internal/application/audit_usecase"
 	authusecase "agentcanvas/internal/application/auth_usecase"
+	healthusecase "agentcanvas/internal/application/health_usecase"
 	knowledgeusecase "agentcanvas/internal/application/knowledge_usecase"
 	memoryusecase "agentcanvas/internal/application/memory_usecase"
 	providerusecase "agentcanvas/internal/application/provider_usecase"
@@ -21,14 +23,16 @@ import (
 	toolusecase "agentcanvas/internal/application/tool_usecase"
 	workspaceusecase "agentcanvas/internal/application/workspace_usecase"
 	"agentcanvas/internal/domain/contextresource"
+	"agentcanvas/internal/domain/knowledge"
 	"agentcanvas/internal/domain/memory"
 	"agentcanvas/internal/domain/resource"
+	domainretrieval "agentcanvas/internal/domain/retrieval"
 	"agentcanvas/internal/infrastructure"
 	cacheinfra "agentcanvas/internal/infrastructure/cache"
 	cataloginfra "agentcanvas/internal/infrastructure/catalog"
 	cryptoinfra "agentcanvas/internal/infrastructure/crypto"
 	gitinfra "agentcanvas/internal/infrastructure/git"
-	jobinfra "agentcanvas/internal/infrastructure/job"
+	healthinfra "agentcanvas/internal/infrastructure/health"
 	"agentcanvas/internal/infrastructure/llm"
 	mysqlinfra "agentcanvas/internal/infrastructure/mysql"
 	oauthinfra "agentcanvas/internal/infrastructure/oauth"
@@ -39,6 +43,7 @@ import (
 	"agentcanvas/internal/infrastructure/vectorstore"
 	httpserver "agentcanvas/internal/interface/http"
 	"agentcanvas/internal/interface/http/handler"
+	"agentcanvas/internal/observability"
 	"agentcanvas/internal/pkg/config"
 	agentruntime "agentcanvas/internal/runtime/agentruntime"
 	"agentcanvas/internal/runtime/eventhub"
@@ -49,9 +54,11 @@ import (
 )
 
 type App struct {
-	Config *config.Config
-	Logger *slog.Logger
-	Router *gin.Engine
+	Config             *config.Config
+	Logger             *slog.Logger
+	Router             *gin.Engine
+	AgentService       *independentagentusecase.Service
+	ImprovementService *independentagentusecase.ImprovementService
 }
 
 func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, error) {
@@ -76,6 +83,12 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 	}
 	indexCancel()
 	retrievalStore := infraDeps.RetrievalStore
+	retrievalBackends := make(map[string]domainretrieval.Retriever, len(infraDeps.RetrievalStores))
+	retrievalIndexers := make(map[string]domainretrieval.Indexer, len(infraDeps.RetrievalStores))
+	for name, backend := range infraDeps.RetrievalStores {
+		retrievalBackends[name] = backend
+		retrievalIndexers[name] = backend
+	}
 	memoryRetrievalStore := infraDeps.MemoryRetrievalStore
 	secretBox := infraDeps.SecretBox
 	fileStorage := infraDeps.FileStorage
@@ -122,6 +135,7 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 	agentImprovementRepo := mysqlinfra.NewAgentImprovementRepository(db)
 	conversationRepo := mysqlinfra.NewConversationRepository(db)
 	messageRepo := mysqlinfra.NewMessageRepository(db)
+	extractionJobRepo := mysqlinfra.NewExtractionJobRepository(db)
 	compactionRepo := mysqlinfra.NewConversationCompactionRepository(db)
 	reflectionRepo := mysqlinfra.NewReflectionRepository(db)
 	reflectionJobRepo := mysqlinfra.NewReflectionJobRepository(db)
@@ -198,7 +212,7 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 	var chatClient llm.ChatClient = baseChatClient
 	embeddingClient := llm.NewOpenAICompatibleEmbeddingClient()
 	var archivalVecStore vectorstore.Store
-	if cfg.Milvus.Enabled {
+	if cfg.Retrieval.Backend == "milvus" {
 		archivalVecStore = vectorstore.NewMilvusStore(
 			cfg.Milvus.Address,
 			cfg.Milvus.Token,
@@ -209,25 +223,32 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 				MetricType:     cfg.Milvus.MetricType,
 			},
 		)
+	} else {
+		archivalVecStore = vectorstore.NewElasticsearchStore(esClient)
 	}
 	var contextIndex contextresource.Index
-	if cfg.ContextIndex.Enabled && archivalVecStore != nil {
+	if cfg.ContextIndex.Enabled {
 		providerID := cfg.ContextIndex.EmbeddingProviderID
 		model := strings.TrimSpace(cfg.ContextIndex.EmbeddingModel)
 		semanticIndex := contextretrieval.NewContextSemanticIndex(archivalVecStore, embeddingClient, providerRepo, secretBox, providerID, model, vectorstore.HNSWConfig{
 			M: cfg.Milvus.M, EFConstruction: cfg.Milvus.EFConstruction, EFSearch: cfg.Milvus.EFSearch, MetricType: cfg.Milvus.MetricType,
 		})
-		keywordIndex := esretrieval.NewContextKeywordIndex(esClient, cfg.Elasticsearch.ContextIndex)
-		ensureContext, cancelContext := context.WithTimeout(ctx, 10*time.Second)
-		if err := keywordIndex.EnsureIndex(ensureContext); err != nil {
-			log.Warn("ensure context keyword index failed; outbox worker will retry", "error", err)
+		if cfg.Retrieval.Backend == "milvus" {
+			contextIndex = semanticIndex
+		} else {
+			keywordIndex := esretrieval.NewContextKeywordIndex(esClient, cfg.Elasticsearch.ContextIndex)
+			ensureContext, cancelContext := context.WithTimeout(ctx, 10*time.Second)
+			if err := keywordIndex.EnsureIndex(ensureContext); err != nil {
+				log.Warn("ensure context keyword index failed; outbox worker will retry", "error", err)
+			}
+			cancelContext()
+			contextIndex = contextretrieval.ContextBackendIndex{Keyword: keywordIndex, Semantic: semanticIndex}
 		}
-		cancelContext()
-		contextIndex = contextretrieval.ContextHybridIndex{Keyword: keywordIndex, Semantic: semanticIndex, RRFK: 60}
 		if cfg.ContextIndex.WorkerEnabled {
 			contextWorker := &contextresource.Worker{Repository: mysqlinfra.NewContextResourceRepository(db), Index: contextIndex,
 				WorkerID: fmt.Sprintf("context-api-%d", os.Getpid()), BatchSize: cfg.ContextIndex.BatchSize,
-				Lease: time.Duration(cfg.ContextIndex.LeaseSeconds) * time.Second, PollInterval: time.Duration(cfg.ContextIndex.PollMilliseconds) * time.Millisecond, Logger: log}
+				Lease: time.Duration(cfg.ContextIndex.LeaseSeconds) * time.Second, PollInterval: time.Duration(cfg.ContextIndex.PollMilliseconds) * time.Millisecond,
+				Logger: log, Metrics: observability.ContextSystemMetrics}
 			go contextWorker.Run(ctx)
 		}
 	}
@@ -241,7 +262,8 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 	reranker := llm.NewChatReranker(chatClient)
 	retrievalService := retrievalusecase.NewService(
 		knowledgeRepo, providerRepo, retrievalStore, embeddingClient, reranker, secretBox,
-	).WithQueryRewriter(retrievalusecase.ProviderQueryRewriter{Providers: providerRepo, Client: chatClient, Secrets: secretBox})
+	).WithBackends(retrievalBackends).
+		WithQueryRewriter(retrievalusecase.ProviderQueryRewriter{Providers: providerRepo, Client: chatClient, Secrets: secretBox})
 	providerService := providerusecase.NewService(providerRepo, auditRepo, secretBox, llm.NewHTTPProviderTester())
 	auditService := auditusecase.NewService(auditRepo)
 	memoryService := memoryusecase.NewServiceWithCacheAndRetriever(memoryRepo, memoryCache, memoryRetrievalStore)
@@ -263,8 +285,21 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 		retrievalService,
 		retrievalStore,
 	)
-	knowledgeService.ConfigurePythonChunking(cfg.PythonBridge.AllowExperimentalChunking)
+	knowledgeService.ConfigureRetrievalBackend(cfg.Retrieval.Backend)
+	if cfg.Retrieval.Backend == knowledge.RetrievalBackendMilvus {
+		knowledgeService.ConfigureEmbeddingMetric(cfg.Milvus.MetricType)
+	}
+	applicationRetrievers := make(map[string]domainretrieval.Retriever, len(retrievalBackends))
+	for name := range retrievalBackends {
+		applicationRetrievers[name] = retrievalService
+	}
+	knowledgeService.ConfigureRetrievalBackends(applicationRetrievers, retrievalIndexers)
+	knowledgeService.ConfigurePythonChunking(cfg.PythonBridge.AllowExperimentalChunking, cfg.PythonBridge.AllowedChunkMethods...)
 	jobQueue := infraDeps.JobQueue
+	dreamQueue := jobQueue
+	if cfg.Queue.Backend == "mysql" {
+		dreamQueue = nil
+	}
 	dreamCfg := memoryusecase.NewDreamConfig(cfg.MemoryDream)
 	if jobQueue != nil {
 		knowledgeService.WithJobQueue(jobQueue)
@@ -297,9 +332,18 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 		if err != nil {
 			return nil, fmt.Errorf("init Python bridge: %w", err)
 		}
-		if _, err := pythonBridge.GetCapabilities(ctx); err != nil {
+		capabilities, capabilityErr := pythonBridge.GetCapabilities(ctx)
+		if capabilityErr != nil {
 			_ = pythonBridge.Close()
-			return nil, fmt.Errorf("handshake with Python bridge: %w", err)
+			return nil, fmt.Errorf("handshake with Python bridge: %w", capabilityErr)
+		}
+		if cfg.PythonBridge.AllowExperimentalChunking || cfg.PythonBridge.ShadowEnabled {
+			for _, method := range cfg.PythonBridge.AllowedChunkMethods {
+				if !slices.Contains(capabilities.ChunkMethods, method) {
+					_ = pythonBridge.Close()
+					return nil, fmt.Errorf("Python bridge does not advertise configured chunk method %q", method)
+				}
+			}
 		}
 		go func() {
 			<-ctx.Done()
@@ -320,14 +364,14 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 				if archivalVecStore == nil || strings.TrimSpace(provider.EmbeddingModel) == "" {
 					return nil
 				}
-				return contextretrieval.ArchivalMemoryIndex{Store: archivalVecStore, Embedder: embeddingClient, Provider: provider.EmbeddingConfig, Model: provider.EmbeddingModel}
+				return contextretrieval.ArchivalMemoryIndex{Store: archivalVecStore, Embedder: embeddingClient, Provider: provider.EmbeddingConfig, ProviderID: provider.ProviderID, Model: provider.EmbeddingModel}
 			}),
 		},
 		Tooling:       agentruntime.Tooling{ToolRegistry: toolRegistry, PythonToolAllowlist: cfg.PythonBridge.AllowedTools},
 		Workspace:     agentruntime.Workspace{Sandbox: sandbox.NewDockerRunner(), Git: gitService},
 		Observability: agentruntime.Observability{Audits: auditRepo, Reflections: reflectionService},
 		Policies: agentruntime.Policies{
-			MemoryExtractionTrigger: memoryusecase.NewDreamTrigger(jobQueue, redisClient, dreamCfg),
+			MemoryExtractionTrigger: memoryusecase.NewDreamTrigger(dreamQueue, redisClient, dreamCfg, extractionJobRepo),
 			FileReadMaxChars:        cfg.GitWorkspace.FileReadMaxChars, MaxOutputBytes: cfg.GitWorkspace.MaxOutputBytes,
 			WorkspaceTimeout: time.Duration(cfg.GitWorkspace.GitCommandTimeoutSeconds) * time.Second,
 		},
@@ -366,7 +410,7 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 		}
 	}
 
-	healthHandler := handler.NewHealthHandler(db, redisClient, minioClient, esClient, cfg.MinIO.Bucket)
+	healthHandler := handler.NewHealthHandler(healthusecase.NewService(healthinfra.NewChecker(db, redisClient, minioClient, esClient, cfg.MinIO.Bucket)))
 	authHandler := handler.NewAuthHandler(authService)
 	oauthHandler := handler.NewOAuthHandler(authService)
 	providerHandler := handler.NewProviderHandler(providerService, providerCatalog)
@@ -382,12 +426,6 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 	projectHandler := handler.NewProjectHandler(workspaceService)
 	reflectionHandler := handler.NewReflectionHandler(reflectionService)
 	resourceHandler := handler.NewResourceHandler(resourceusecase.NewService(resourceQuery))
-
-	memoryScheduler := jobinfra.NewMemoryScheduler(memoryRepo, jobinfra.MemorySchedulerConfig{
-		ConsolidationInterval: 1 * time.Hour,
-		Logger:                log,
-	})
-	memoryScheduler.Start(ctx)
 
 	router := httpserver.NewRouter(httpserver.RouterDeps{
 		Logger:            log,
@@ -407,7 +445,9 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 		ResourceHandler:   resourceHandler,
 		AuthService:       authService,
 		APITokens:         apiTokenRepo,
+		Audits:            auditRepo,
+		CORSOrigins:       cfg.App.CORSAllowedOrigins,
 	})
 
-	return &App{Config: cfg, Logger: log, Router: router}, nil
+	return &App{Config: cfg, Logger: log, Router: router, AgentService: agentService, ImprovementService: improvementService}, nil
 }

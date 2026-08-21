@@ -2,9 +2,18 @@ package memory_usecase
 
 import (
 	"context"
+	"errors"
+	"io"
+	"log/slog"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"agentcanvas/internal/domain/memory"
+	"agentcanvas/internal/observability"
+
+	miniredis "github.com/alicebob/miniredis/v2"
+	"github.com/redis/go-redis/v9"
 )
 
 func TestConsolidationService_UpgradeShortTerm(t *testing.T) {
@@ -68,12 +77,81 @@ func TestConsolidationService_RunFullCycle(t *testing.T) {
 	})
 
 	svc := NewConsolidationService(repo)
-	result := svc.RunConsolidationCycle(context.Background(), 100)
+	result, err := svc.RunConsolidationCycle(context.Background(), 100)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	if result.Upgraded != 1 {
 		t.Fatalf("expected 1 upgraded, got %d", result.Upgraded)
 	}
 	if result.Downgraded != 1 {
 		t.Fatalf("expected 1 downgraded, got %d", result.Downgraded)
+	}
+}
+
+type blockingOwnerRepository struct {
+	memory.Repository
+	calls   atomic.Int32
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (r *blockingOwnerRepository) ListActiveOwnerIDs(ctx context.Context, _ int) ([]int64, error) {
+	if r.calls.Add(1) == 1 {
+		close(r.entered)
+	}
+	select {
+	case <-r.release:
+		return nil, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func TestSchedulerDistributedLockAllowsOnlyOneInstance(t *testing.T) {
+	server := miniredis.RunT(t)
+	redisClient := redis.NewClient(&redis.Options{Addr: server.Addr()})
+	t.Cleanup(func() { _ = redisClient.Close() })
+	repository := &blockingOwnerRepository{entered: make(chan struct{}), release: make(chan struct{})}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	first := NewScheduler(repository, redisClient, time.Hour, logger)
+	second := NewScheduler(repository, redisClient, time.Hour, logger)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		first.runOnce(context.Background())
+	}()
+	select {
+	case <-repository.entered:
+	case <-time.After(time.Second):
+		t.Fatal("first scheduler did not enter the cycle")
+	}
+	second.runOnce(context.Background())
+	close(repository.release)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("first scheduler did not finish")
+	}
+	if calls := repository.calls.Load(); calls != 1 {
+		t.Fatalf("scheduler cycle calls = %d, want 1", calls)
+	}
+}
+
+type failingOwnerRepository struct{ memory.Repository }
+
+func (failingOwnerRepository) ListActiveOwnerIDs(context.Context, int) ([]int64, error) {
+	return nil, errors.New("owners unavailable")
+}
+
+func TestSchedulerFailureIsExposedByMemoryMetrics(t *testing.T) {
+	before := observability.MemoryRuntimeMetrics.Snapshot()
+	scheduler := NewScheduler(failingOwnerRepository{}, nil, time.Hour, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	scheduler.runOnce(context.Background())
+	after := observability.MemoryRuntimeMetrics.Snapshot()
+	if after["scheduler_runs"] != before["scheduler_runs"]+1 || after["scheduler_failures"] != before["scheduler_failures"]+1 {
+		t.Fatalf("scheduler metrics before=%v after=%v", before, after)
 	}
 }

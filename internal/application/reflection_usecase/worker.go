@@ -12,7 +12,6 @@ import (
 	"agentcanvas/internal/domain/conversation"
 	"agentcanvas/internal/domain/provider"
 	"agentcanvas/internal/domain/reflection"
-	cryptoinfra "agentcanvas/internal/infrastructure/crypto"
 	"agentcanvas/internal/infrastructure/llm"
 	"agentcanvas/internal/observability"
 
@@ -23,7 +22,7 @@ type Worker struct {
 	Service         Service
 	Jobs            reflection.JobRepository
 	Providers       provider.Repository
-	Secrets         *cryptoinfra.SecretBox
+	Secrets         provider.SecretCodec
 	LLM             llm.ChatClient
 	DispatchEnabled bool
 }
@@ -61,23 +60,21 @@ func (w Worker) ProcessNext(ctx context.Context, workerID string) (bool, error) 
 	}
 	results, err := w.analyze(ctx, job)
 	if err != nil {
-		w.handleFailure(ctx, job, err)
-		return true, err
+		return true, errors.Join(err, w.scheduleFailure(ctx, job, err))
 	}
 	if jobs, ok := w.Jobs.(reflection.ReliableJobRepository); ok && job.LockToken != "" {
 		err = jobs.CommitResult(ctx, job.ID, job.LockToken, results)
 	} else {
 		for i := range results {
 			if _, storeErr := w.Service.Store(ctx, &results[i]); storeErr != nil {
-				w.handleFailure(ctx, job, storeErr)
-				return true, storeErr
+				return true, errors.Join(storeErr, w.scheduleFailure(ctx, job, storeErr))
 			}
 		}
 		err = w.Jobs.Complete(ctx, job)
 	}
 	if err != nil {
 		observability.ReflectionSystemMetrics.RecordJobFailure(false)
-		return true, err
+		return true, errors.Join(err, w.scheduleFailure(ctx, job, err))
 	}
 	observability.ReflectionSystemMetrics.RecordJobCompleted()
 	return true, nil
@@ -179,10 +176,6 @@ type permanentReflectionError struct{ cause error }
 
 func (e permanentReflectionError) Error() string { return e.cause.Error() }
 func (e permanentReflectionError) Unwrap() error { return e.cause }
-
-func (w Worker) handleFailure(ctx context.Context, job *reflection.Job, cause error) {
-	_ = w.scheduleFailure(ctx, job, cause)
-}
 
 func (w Worker) scheduleFailure(ctx context.Context, job *reflection.Job, cause error) error {
 	jobs, reliable := w.Jobs.(reflection.ReliableJobRepository)
