@@ -68,7 +68,7 @@ func InitInfrastructure(ctx context.Context, cfg *config.Config, opts InitOption
 	}
 	esStore := esretrieval.NewStore(esClient, cfg.Elasticsearch)
 	retrievalStores := map[string]RetrievalStore{"elasticsearch": esStore}
-	if cfg.Milvus.Enabled || cfg.Retrieval.Backend == "milvus" {
+	if cfg.Retrieval.Backend == "milvus" {
 		milvusVector := vectorstore.NewMilvusStore(cfg.Milvus.Address, cfg.Milvus.Token, milvusHNSW(cfg))
 		milvusStore := milvusretrieval.NewStore(milvusVector, cfg.Milvus.Collection, cfg.Milvus.Dimensions, milvusHNSW(cfg))
 		retrievalStores["milvus"] = milvusStore

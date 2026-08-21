@@ -92,7 +92,7 @@ HTTP / SPA / future Gateway
 
 ### RAG 与统一上下文
 
-知识库支持 `keyword`、`vector`、`hybrid` 三种检索模式；每个知识库保存自己的 `retrieval_backend`，检索和 ingestion 会按知识库 dispatch，未配置的 backend 会明确报错，不会静默回退到全局配置。文档重建使用 `active_generation`/`generation` 追加式切换：解析、切块、embedding 和索引全部成功后才切换活动版本，旧版本异步清理。Milvus 使用 BM25 sparse full-text search，Elasticsearch 使用 BM25 与 dense_vector。切换到 Milvus 时必须配置 `milvus.dimensions`，并重建版本化 collection（默认 `agentcanvas_chunks_v2`）。统一上下文索引按 `owner_id`、`agent_id` 与 `conversation_id` 隔离，并使用 Outbox、lease、重试和 dead letter 保证最终一致性。
+知识库支持 `keyword`、`vector`、`hybrid` 三种检索模式。通过 `retrieval.backend` 选择默认的 Elasticsearch 或 Milvus，每个知识库持久化自己的 `retrieval_backend`，检索和 ingestion 会按知识库 dispatch；选中的后端独立负责三种模式，两个后端不会跨系统融合，未配置的 backend 会明确报错。文档重建使用 `active_generation`/`generation` 追加式切换：解析、切块、embedding 和索引全部成功后才切换活动版本，旧版本异步清理。Milvus 使用 BM25 sparse full-text search，Elasticsearch 使用 BM25 与 dense_vector。切换到 Milvus 时必须配置 `milvus.dimensions`，并重建版本化 collection（默认 `agentcanvas_chunks_v2`），不进行 ES/Milvus 双写。统一上下文索引按 `owner_id`、`agent_id` 与 `conversation_id` 隔离，并使用 Outbox、lease、重试和 dead letter 保证最终一致性。
 
 Embedding provider、model、dimensions 与 profile hash 会被持久化；不同向量空间不会混用。
 
