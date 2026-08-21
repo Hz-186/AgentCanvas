@@ -91,7 +91,13 @@ export interface ProviderCatalog {
   base_url: string;
   doc_url?: string;
   rank: number;
-  models: CatalogModel[];
+	models: CatalogModel[];
+	capabilities?: {
+		chat: boolean;
+		tool_calling: boolean;
+		streaming: boolean;
+		embedding: boolean;
+	};
 }
 
 // —— API Token ——
@@ -318,6 +324,7 @@ export interface KnowledgeBase {
   embedding_provider_id: number | null;
   embedding_model: string;
   embedding_dimensions: number;
+  embedding_metric?: 'COSINE' | 'IP' | 'L2';
   hybrid_weight: number;
   rerank_enabled: boolean;
   rerank_provider_id: number | null;

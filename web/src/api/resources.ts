@@ -136,6 +136,7 @@ export const knowledgeApi = {
     embedding_provider_id?: number;
     embedding_model?: string;
     embedding_dimensions?: number;
+    embedding_metric?: 'COSINE' | 'IP' | 'L2';
     hybrid_weight?: number;
     rerank_enabled?: boolean;
     rerank_provider_id?: number;
@@ -154,6 +155,7 @@ export const knowledgeApi = {
       embedding_provider_id?: number;
       embedding_model?: string;
       embedding_dimensions?: number;
+      embedding_metric?: 'COSINE' | 'IP' | 'L2';
       hybrid_weight?: number;
       rerank_enabled?: boolean;
       rerank_provider_id?: number;
