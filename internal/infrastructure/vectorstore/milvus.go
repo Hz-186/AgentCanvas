@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -217,6 +218,27 @@ func (s *MilvusStore) DeleteByFilter(ctx context.Context, collection string, fil
 	return s.do(ctx, "/v2/vectordb/entities/delete", map[string]any{"collectionName": collection, "filter": expr}, nil)
 }
 
+func (s *MilvusStore) DeleteByFilterExcept(ctx context.Context, collection string, filter map[string]any, field string, value any) error {
+	collection = strings.TrimSpace(collection)
+	field = strings.TrimSpace(field)
+	if collection == "" || len(filter) == 0 || !milvusFilterFieldPattern.MatchString(field) {
+		return fmt.Errorf("milvus collection, filter, and exclusion field are required")
+	}
+	if err := s.validate(); err != nil {
+		return err
+	}
+	base, err := milvusFilter(filter)
+	if err != nil {
+		return err
+	}
+	literal, ok := milvusLiteral(value)
+	if !ok {
+		return fmt.Errorf("unsupported milvus exclusion value %T", value)
+	}
+	expr := base + fmt.Sprintf(" && metadata['%s'] != %s", field, literal)
+	return s.do(ctx, "/v2/vectordb/entities/delete", map[string]any{"collectionName": collection, "filter": expr}, nil)
+}
+
 func (s *MilvusStore) QueryByFilter(ctx context.Context, collection string, filter map[string]any, limit int) ([]VectorDocument, error) {
 	collection = strings.TrimSpace(collection)
 	if collection == "" || len(filter) == 0 {
@@ -294,8 +316,8 @@ func (s *MilvusStore) Search(ctx context.Context, req SearchRequest) ([]SearchRe
 		"outputFields":   []string{"id", "metadata"},
 		"searchParams":   map[string]any{"metricType": strings.ToUpper(config.MetricType), "params": map[string]any{"ef": config.EFSearch}},
 	}
-	if len(req.Filter) > 0 {
-		expr, err := milvusFilter(req.Filter)
+	if len(req.Filter) > 0 || len(req.AnyFilters) > 0 {
+		expr, err := milvusSearchFilter(req.Filter, req.AnyFilters)
 		if err != nil {
 			return nil, err
 		}
@@ -345,8 +367,8 @@ func (s *MilvusStore) SearchText(ctx context.Context, req SearchRequest) ([]Sear
 		"annsField":      "sparse",
 		"outputFields":   []string{"id", "text", "metadata"},
 	}
-	if len(req.Filter) > 0 {
-		expr, err := milvusFilter(req.Filter)
+	if len(req.Filter) > 0 || len(req.AnyFilters) > 0 {
+		expr, err := milvusSearchFilter(req.Filter, req.AnyFilters)
 		if err != nil {
 			return nil, err
 		}
@@ -461,10 +483,9 @@ func milvusFilter(filter map[string]any) (string, error) {
 			return "", fmt.Errorf("invalid milvus filter field: %s", key)
 		}
 		switch v := value.(type) {
-		case string:
-			parts = append(parts, fmt.Sprintf("metadata['%s'] == '%s'", key, escapeMilvusString(v)))
-		case int, int64, int32, float64, float32, bool:
-			parts = append(parts, fmt.Sprintf("metadata['%s'] == %v", key, v))
+		case string, int, int64, int32, float64, float32, bool:
+			literal, _ := milvusLiteral(v)
+			parts = append(parts, fmt.Sprintf("metadata['%s'] == %s", key, literal))
 		case []int64:
 			if len(v) > 0 {
 				parts = append(parts, fmt.Sprintf("metadata['%s'] in [%s]", key, joinMilvusValues(v)))
@@ -484,6 +505,52 @@ func milvusFilter(filter map[string]any) (string, error) {
 		}
 	}
 	return strings.Join(parts, " && "), nil
+}
+
+func milvusLiteral(value any) (string, bool) {
+	switch v := value.(type) {
+	case string:
+		return "'" + escapeMilvusString(v) + "'", true
+	case int:
+		return strconv.Itoa(v), true
+	case int64:
+		return strconv.FormatInt(v, 10), true
+	case int32:
+		return strconv.FormatInt(int64(v), 10), true
+	case float64:
+		return strconv.FormatFloat(v, 'g', -1, 64), true
+	case float32:
+		return strconv.FormatFloat(float64(v), 'g', -1, 32), true
+	case bool:
+		return strconv.FormatBool(v), true
+	default:
+		return "", false
+	}
+}
+
+func milvusSearchFilter(filter map[string]any, anyFilters []map[string]any) (string, error) {
+	base, err := milvusFilter(filter)
+	if err != nil {
+		return "", err
+	}
+	groups := make([]string, 0, len(anyFilters))
+	for _, candidate := range anyFilters {
+		expr, err := milvusFilter(candidate)
+		if err != nil {
+			return "", err
+		}
+		if expr != "" {
+			groups = append(groups, "("+expr+")")
+		}
+	}
+	if len(groups) == 0 {
+		return base, nil
+	}
+	any := "(" + strings.Join(groups, " || ") + ")"
+	if base == "" {
+		return any, nil
+	}
+	return base + " && " + any, nil
 }
 
 var milvusFilterFieldPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)

@@ -9,3 +9,8 @@ type Repository interface {
 	Update(ctx context.Context, p *ModelProvider) error
 	SoftDelete(ctx context.Context, ownerID, id int64) error
 }
+
+type SecretCodec interface {
+	Encrypt(string) (string, error)
+	Decrypt(string) (string, error)
+}

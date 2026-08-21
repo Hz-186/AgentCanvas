@@ -70,7 +70,6 @@ func (q *MySQLIngestionQueue) Ack(ctx context.Context, jobID string) error {
 }
 
 func (q *MySQLIngestionQueue) Nack(ctx context.Context, jobID string, retryAt time.Time) error {
-	_ = retryAt
 	if q == nil || q.Repo == nil {
 		return fmt.Errorf("ingestion job repository is not configured")
 	}
@@ -78,7 +77,11 @@ func (q *MySQLIngestionQueue) Nack(ctx context.Context, jobID string, retryAt ti
 	if err != nil {
 		return fmt.Errorf("invalid ingestion job id %s", jobID)
 	}
-	_, err = q.Repo.MarkFailed(ctx, id, "job nacked by queue adapter")
+	if retryable, ok := q.Repo.(knowledge.RetryableIngestionJobRepository); ok {
+		_, err = retryable.MarkFailedAt(ctx, id, "job nacked by queue adapter", retryAt)
+	} else {
+		_, err = q.Repo.MarkFailed(ctx, id, "job nacked by queue adapter")
+	}
 	return err
 }
 
@@ -87,9 +90,11 @@ func jobFromIngestion(item *knowledge.IngestionJob) Job {
 		return Job{}
 	}
 	return Job{
-		ID:       strconv.FormatInt(item.ID, 10),
-		Type:     item.JobType,
-		Attempts: item.AttemptCount,
+		ID:          strconv.FormatInt(item.ID, 10),
+		Type:        item.JobType,
+		Attempts:    item.AttemptCount,
+		MaxAttempts: item.MaxAttempts,
+		AvailableAt: valueOrZeroTime(item.RetryAt),
 		Payload: map[string]any{
 			"owner_id":     item.OwnerID,
 			"kb_id":        item.KBID,
@@ -99,6 +104,13 @@ func jobFromIngestion(item *knowledge.IngestionJob) Job {
 			"max_attempts": item.MaxAttempts,
 		},
 	}
+}
+
+func valueOrZeroTime(value *time.Time) time.Time {
+	if value == nil {
+		return time.Time{}
+	}
+	return value.UTC()
 }
 
 func int64Payload(payload map[string]any, key string) int64 {

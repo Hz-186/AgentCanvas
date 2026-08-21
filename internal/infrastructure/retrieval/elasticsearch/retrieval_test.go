@@ -25,12 +25,13 @@ func TestVectorSearchBuildsKNNBody(t *testing.T) {
 	})
 
 	resp, err := store.Search(context.Background(), retrieval.RetrievalRequest{
-		OwnerID:     1,
-		KBIDs:       []int64{10},
-		Query:       "agent canvas",
-		TopK:        3,
-		Mode:        retrieval.ModeVector,
-		QueryVector: []float32{0.1, 0.2, 0.3},
+		OwnerID:          1,
+		KBIDs:            []int64{10},
+		Query:            "agent canvas",
+		TopK:             3,
+		Mode:             retrieval.ModeVector,
+		QueryVector:      []float32{0.1, 0.2, 0.3},
+		EmbeddingProfile: "profile-a",
 	})
 	if err != nil {
 		t.Fatalf("Search() error = %v", err)
@@ -47,6 +48,10 @@ func TestVectorSearchBuildsKNNBody(t *testing.T) {
 	}
 	if _, ok := knn["filter"].([]any); !ok {
 		t.Fatalf("knn filter missing: %#v", knn)
+	}
+	raw, _ := json.Marshal(knn["filter"])
+	if !strings.Contains(string(raw), "embedding_profile") || !strings.Contains(string(raw), "profile-a") {
+		t.Fatalf("embedding profile filter missing: %s", raw)
 	}
 }
 
@@ -124,6 +129,28 @@ func TestSearchExcludesDisabledDocuments(t *testing.T) {
 	}
 }
 
+func TestSearchFiltersEachDocumentToItsActiveGeneration(t *testing.T) {
+	var captured map[string]any
+	store := newTestStore(t, func(w http.ResponseWriter, r *http.Request) {
+		data, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(data, &captured)
+		writeSearchHits(w, nil)
+	})
+
+	if _, err := store.Search(context.Background(), retrieval.RetrievalRequest{
+		OwnerID: 1, KBIDs: []int64{10}, Query: "agent canvas", TopK: 3, Mode: retrieval.ModeKeyword,
+		ActiveGenerations: map[int64]string{20: "gen-a", 21: "gen-b"},
+	}); err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	raw, _ := json.Marshal(captured)
+	for _, value := range []string{"minimum_should_match", "document_id", "generation", "gen-a", "gen-b"} {
+		if !strings.Contains(string(raw), value) {
+			t.Fatalf("active generation filter missing %q: %s", value, raw)
+		}
+	}
+}
+
 func TestSetDocumentEnabledIssuesUpdateByQuery(t *testing.T) {
 	var path string
 	var captured map[string]any
@@ -144,6 +171,26 @@ func TestSetDocumentEnabledIssuesUpdateByQuery(t *testing.T) {
 	raw, _ := json.Marshal(captured)
 	if !strings.Contains(string(raw), "ctx._source.enabled") {
 		t.Fatalf("update body should set enabled via painless script: %s", raw)
+	}
+}
+
+func TestDeleteInactiveGenerationsKeepsActiveGeneration(t *testing.T) {
+	var captured map[string]any
+	store := newTestStore(t, func(w http.ResponseWriter, r *http.Request) {
+		data, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(data, &captured)
+		w.Header().Set("X-Elastic-Product", "Elasticsearch")
+		_ = json.NewEncoder(w).Encode(map[string]any{"deleted": 2})
+	})
+
+	if err := store.DeleteInactiveGenerations(context.Background(), 1, 20, "gen-active"); err != nil {
+		t.Fatalf("DeleteInactiveGenerations() error = %v", err)
+	}
+	raw, _ := json.Marshal(captured)
+	for _, value := range []string{"owner_id", "document_id", "must_not", "generation", "gen-active"} {
+		if !strings.Contains(string(raw), value) {
+			t.Fatalf("cleanup query missing %q: %s", value, raw)
+		}
 	}
 }
 

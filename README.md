@@ -92,7 +92,7 @@ HTTP / SPA / future Gateway
 
 ### RAG 与统一上下文
 
-知识库支持 `keyword`、`vector`、`hybrid` 三种检索模式。通过 `retrieval.backend` 全局选择 Elasticsearch 或 Milvus；选中的后端独立负责 keyword/vector/hybrid，两个后端不会跨系统融合。Milvus 使用 BM25 sparse full-text search，Elasticsearch 使用 BM25 与 dense_vector。切换到 Milvus 时必须配置 `milvus.dimensions`，并重建版本化 collection（默认 `agentcanvas_chunks_v2`），不进行 ES/Milvus 双写。统一上下文索引按 `owner_id`、`agent_id` 与 `conversation_id` 隔离，并使用 Outbox、lease、重试和 dead letter 保证最终一致性。
+知识库支持 `keyword`、`vector`、`hybrid` 三种检索模式。通过 `retrieval.backend` 选择默认的 Elasticsearch 或 Milvus，每个知识库持久化自己的 `retrieval_backend`，检索和 ingestion 会按知识库 dispatch；选中的后端独立负责三种模式，两个后端不会跨系统融合，未配置的 backend 会明确报错。文档重建使用 `active_generation`/`generation` 追加式切换：解析、切块、embedding 和索引全部成功后才切换活动版本，旧版本异步清理。Milvus 使用 BM25 sparse full-text search，Elasticsearch 使用 BM25 与 dense_vector。切换到 Milvus 时必须配置 `milvus.dimensions`，并重建版本化 collection（默认 `agentcanvas_chunks_v2`），不进行 ES/Milvus 双写。统一上下文索引按 `owner_id`、`agent_id` 与 `conversation_id` 隔离，并使用 Outbox、lease、重试和 dead letter 保证最终一致性。
 
 Embedding provider、model、dimensions 与 profile hash 会被持久化；不同向量空间不会混用。
 
@@ -158,7 +158,7 @@ internal/
     toolruntime/          RuntimeTool、MCP、Skills、Memory、Subagent
     sandbox/              Docker 代码沙箱
     conversationcontext/  会话压缩与滚动快照
-migrations/               单一 Agent-only 数据库基线
+migrations/               基线与 additive generation 迁移
 proto/                    Python Bridge Protobuf v1 合约
 python/                   Python 常驻侧车、工具与切片实现
 web/                      React SPA
@@ -186,14 +186,14 @@ docker compose -f deployments/docker-compose.yml -f deployments/docker-compose.d
 
 Docker 内的 Project 路径应填写为 `/workspaces/<repo>`；不要把用户仓库放入临时 Sandbox。AgentCanvas 不会自动 commit、push 或 merge，worktree branch 默认保留供人工审查。
 
-Python Bridge 默认关闭。需要试用 Python 工具或切片时，在启动 Compose 前设置同一进程级令牌，并将 `configs/config.local.yaml` 的 `python_bridge.enabled` 改为 `true`。Python 切片还必须在 shadow 基准达标并人工审阅后显式打开 `python_bridge.allow_experimental_chunking`：
+Python Bridge 默认关闭。需要试用 Python 工具、LangChain PDF 解析或切片时，在启动 Compose 前设置同一进程级令牌，并将 `configs/config.local.yaml` 的 `python_bridge.enabled` 改为 `true`。Python 切片和 PDF 解析还必须在 shadow 基准达标并人工审阅后分别显式打开 `allow_experimental_chunking` 与 `allow_experimental_parsing`：
 
 ```bash
 export AGENTCANVAS_PYTHON_BRIDGE_TOKEN="$(openssl rand -hex 32)"
 make docker-up
 ```
 
-本地 Go 进程使用 `127.0.0.1:50051`；Compose 内 API/Worker 使用 `python-bridge:50051`。知识库可显式选择 `python:recursive` 或 `python:fixed_token`，Agent 设置通过 `python_tool_names` 选择全局 `allowed_tools` 白名单内的 Python 工具。
+本地 Go 进程使用 `127.0.0.1:50051`；Compose 内 API/Worker 使用 `python-bridge:50051`。知识库可显式选择 `python:recursive`、`python:fixed_token` 或实验性的 `python:langchain_recursive`。将 `python_bridge.document_parser` 设为 `python:langchain_pdf` 后，PDF 会由 LangChain `PyMuPDFLoader` 按页解析；扫描件可通过 `fallback_to_go_ocr` 回到现有 Go DeepDoc/OCR。txt/md 仍使用 Go Parser。Agent 设置通过 `python_tool_names` 选择全局 `allowed_tools` 白名单内的 Python 工具。
 
 本地运行 Python 测试前可创建独立虚拟环境：
 
@@ -204,11 +204,25 @@ python -m pip install -r python/requirements-dev.txt
 make test-python
 ```
 
+部署镜像只安装带哈希的 `python/requirements.lock`；修改 `python/requirements.txt` 后，使用 `uv pip compile python/requirements.txt --universal --generate-hashes --output-file python/requirements.lock` 重新生成锁文件。
+
 侧车运行后可执行 `make benchmark-python`，它读取固定 fixture 并输出跨语言边界、p50/p95、分配量及 Recall@K/Precision@K；设置 `AGENTCANVAS_ELASTICSEARCH_URL` 时会额外对真实 Elasticsearch 索引测量，否则使用确定性的本地检索代理。
 
-评估新切片策略时可同时设置 `python_bridge.shadow_enabled: true`。Worker 会保留 Go 的 `fixed_token`/`recursive` 结果，只限时调用 Python 并输出边界、token、元数据和延迟对比日志；shadow 失败不会污染入库结果。
+评估新切片策略时可同时设置 `python_bridge.shadow_enabled: true`；评估 PDF 解析时设置 `shadow_document_parser: true`。Worker 会保留 Go 结果，只限时调用 Python 并输出块数、字符覆盖率、边界、token、元数据和延迟对比日志；shadow 失败不会污染入库结果。Python 侧只接收受限文件字节，不访问数据库、对象存储、宿主机文件或用户密钥。
 
-数据库基线不提供旧数据升级能力。部署和本地切换必须使用空 MySQL 数据库，并重新初始化本项目的 Redis key、Elasticsearch index 与 Milvus collection。不要对无法确认归属的外部实例执行清理。
+数据库迁移按版本执行；`000003_document_generations` 只增加 generation 字段并回填 `legacy`，`000004_embedding_profiles` 只增加 embedding metric/profile 元数据，`000005_ingestion_retry_at` 为失败任务增加持久化退避时间，均不会删除文档或 chunk 数据。执行前仍需确认迁移窗口，并重新检查 Elasticsearch/Milvus 的向量维度、metric 与 collection。不要对无法确认归属的外部实例执行清理。
+
+生产拓扑中 API 的 `agent_runtime.worker_enabled` 必须保持 `false`。普通 `worker` 处理 ingestion、generation cleanup、Memory Dream/Consolidation 与 Reflection；`agent-worker` 使用 `AGENTCANVAS_WORKER_ROLE=agent`，只通过 MySQL `agent_turns` claim/lease 执行 Agent Turn 和 Review。Compose 开发配置已分别启动两个进程；本地需要显式内嵌执行时，才在 `configs/config.local.yaml` 打开 `worker_enabled`。
+
+## 能力边界（与 Hermes-Agent）
+
+| 能力 | 状态 | 说明 |
+| --- | --- | --- |
+| Go Agent Runtime、Run/Turn、Worker lease | 已实现 | API 只入队，独立 Worker 执行；恢复和审批复用同一 Turn 队列 |
+| RAG、generation、Memory、Reflection、审批恢复 | 已实现/持续加固 | 可靠状态以 MySQL 为准，队列只传递 job envelope |
+| React 管理 SPA、Provider、Token、Tools、Skills、MCP | 已实现 | 生产环境需配置非通配 CORS 和 API Token scopes |
+| CLI/TUI、多渠道 Gateway、Cron automation | 未实现 | 不复制 Hermes 外围能力，待 Run/Queue/RAG/Auth 稳定后评估 |
+| 远程 terminal backend、跨会话搜索、自我改进技能生成 | 实验性/局部实现 | 当前仅提供受控 Workspace、Session Search 和 Change Proposal |
 
 ## 常用命令
 
@@ -216,6 +230,7 @@ make test-python
 make dev                    # 本地开发
 make run                    # 迁移、构建前端并启动 API
 make worker                 # 启动异步 Worker
+make agent-worker           # 启动 Agent Turn / Review Worker
 make migrate                # 执行数据库基线
 make backfill-context-index # 登记统一上下文索引 Outbox
 make test                   # Go 测试
@@ -347,12 +362,12 @@ export AGENTCANVAS_CONFIG_PATH="/absolute/path/to/config.yaml"
 - `memory_dream`、`working_memory`：记忆提取与运行缓存。
 - `reflection_queue`：Reflection Outbox、JetStream、lease 与 DLQ。
 - `minio`、`ocr`：文档存储与解析。
-- `python_bridge`：侧车开关、gRPC target、令牌环境变量、超时、消息/并发限制以及切片和工具白名单。
+- `python_bridge`：侧车开关、gRPC target、令牌环境变量、超时、消息/并发限制、LangChain PDF 解析开关、解析/切片白名单以及工具白名单。
 - `security`、`oauth`：密钥、Token 与 GitHub OAuth。
 - `git_workspace`：允许的绝对仓库根目录、worktree 目录、Git/fetch 超时、输出与文件读取上限、prune TTL、自动初始化和 Git identity。API、Worker 与 Pruner 必须使用完全相同的 `allowed_roots` 与挂载。
 
 ## 多语言扩展边界
 
-当前由 Go `agentruntime.AgentRuntime` 保留运行、审批、事件、Memory、Reflection 与 Checkpoint 的权威状态；Python Bridge 只提供窄领域 Chunker 和低风险 Tool。Python 不直接访问 AgentCanvas 数据库、对象存储、宿主机文件或用户密钥。
+当前由 Go `agentruntime.AgentRuntime` 保留运行、审批、事件、Memory、Reflection 与 Checkpoint 的权威状态；Python Bridge 只提供窄领域文档解析、Chunker 和低风险 Tool。Python 不直接访问 AgentCanvas 数据库、对象存储、宿主机文件或用户密钥。首期使用 LangChain 文档组件和 PyMuPDF，不引入 LangGraph Agent Loop、Retriever 或第二套向量存储。
 
 未来若引入 Python Agent Loop 或 LangGraph，应作为可选 Workflow Runtime 或远程子 Agent，继续复用 Go 的 Run/Event/Approval/Checkpoint 契约，不建立第二套持久化模型。详细计划见 `doc/python-bridge-plan.md`。

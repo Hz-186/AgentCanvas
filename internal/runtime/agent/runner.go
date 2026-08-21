@@ -885,65 +885,15 @@ func toolResultContent(result *toolruntime.ToolResult, toolErr error) string {
 }
 
 func toolExecutionContext(ctx context.Context, metadata toolruntime.ToolMetadata, policy ToolPolicy) (context.Context, context.CancelFunc, error) {
-	if err := validateAllowedHosts(metadata.AllowedHosts, policy.AllowedHosts); err != nil {
+	if err := toolruntime.ValidateAllowedHosts(metadata.AllowedHosts, policy.AllowedHosts, false); err != nil {
 		return ctx, nil, err
 	}
-	timeoutMS := effectiveTimeoutMS(metadata, policy)
+	timeoutMS := toolruntime.EffectiveLimit(metadata.TimeoutMS, policy.MaxToolTimeoutMS)
 	if timeoutMS <= 0 {
 		return ctx, nil, nil
 	}
 	execCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutMS)*time.Millisecond)
 	return execCtx, cancel, nil
-}
-
-func effectiveTimeoutMS(metadata toolruntime.ToolMetadata, policy ToolPolicy) int {
-	timeoutMS := metadata.TimeoutMS
-	if policy.MaxToolTimeoutMS > 0 && (timeoutMS <= 0 || policy.MaxToolTimeoutMS < timeoutMS) {
-		timeoutMS = policy.MaxToolTimeoutMS
-	}
-	return timeoutMS
-}
-
-func validateAllowedHosts(toolHosts []string, policyHosts []string) error {
-	allowed := normalizedSet(policyHosts)
-	if len(allowed) == 0 || len(toolHosts) == 0 {
-		return nil
-	}
-	for _, host := range toolHosts {
-		normalized := normalizeHost(host)
-		if normalized == "" {
-			continue
-		}
-		if !slices.Contains(allowed, normalized) {
-			return fmt.Errorf("tool host %s is not allowed by policy", normalized)
-		}
-	}
-	return nil
-}
-
-func normalizedSet(hosts []string) []string {
-	out := make([]string, 0, len(hosts))
-	for _, host := range hosts {
-		normalized := normalizeHost(host)
-		if normalized == "" || slices.Contains(out, normalized) {
-			continue
-		}
-		out = append(out, normalized)
-	}
-	return out
-}
-
-func normalizeHost(host string) string {
-	host = strings.TrimSpace(strings.ToLower(host))
-	host = strings.TrimPrefix(host, "http://")
-	host = strings.TrimPrefix(host, "https://")
-	if idx := strings.IndexByte(host, '/'); idx >= 0 {
-		host = host[:idx]
-	}
-	if idx := strings.LastIndexByte(host, ':'); idx > 0 {
-		host = host[:idx]
-	}
-	return host
 }
 
 func summarizeMessages(messages []llm.ChatMessage) string {
@@ -1050,8 +1000,8 @@ func CompactSteps(steps []RunStep, maxContentBytes int) []RunStep {
 	for i := range out {
 		var contentCompressed bool
 		var jsonCompressed bool
-		out[i].Content, contentCompressed = compactStringWithFlag(out[i].Content, maxContentBytes)
-		out[i].OutputJSON, jsonCompressed = compactRawJSONWithFlag(out[i].OutputJSON, maxContentBytes)
+		out[i].Content, contentCompressed = strutil.TruncateWithSuffixFlag(out[i].Content, maxContentBytes, "...[truncated]")
+		out[i].OutputJSON, jsonCompressed = strutil.TruncateRawJSONWithSuffix(out[i].OutputJSON, maxContentBytes, "...[truncated]")
 		out[i].Compressed = out[i].Compressed || contentCompressed || jsonCompressed
 	}
 	return out
@@ -1059,14 +1009,6 @@ func CompactSteps(steps []RunStep, maxContentBytes int) []RunStep {
 
 func compactString(value string, maxBytes int) string {
 	return strutil.TruncateWithSuffix(value, maxBytes, "...[truncated]")
-}
-
-func compactStringWithFlag(value string, maxBytes int) (string, bool) {
-	return strutil.TruncateWithSuffixFlag(value, maxBytes, "...[truncated]")
-}
-
-func compactRawJSONWithFlag(raw json.RawMessage, maxBytes int) (json.RawMessage, bool) {
-	return strutil.TruncateRawJSONWithSuffix(raw, maxBytes, "...[truncated]")
 }
 
 func findUnresolvedToolCalls(messages []llm.ChatMessage, toolByName map[string]toolruntime.RuntimeTool) []llm.ToolCall {

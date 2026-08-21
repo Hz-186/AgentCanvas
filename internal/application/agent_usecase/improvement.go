@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"regexp"
 	"strings"
 	"time"
@@ -114,6 +115,7 @@ func (s *ImprovementService) workerLoop(ctx context.Context, workerID string) {
 			continue
 		}
 		if err != nil {
+			slog.Default().Error("claim improvement review failed", "worker_id", workerID, "error", err)
 			continue
 		}
 		if err := s.processReview(ctx, review); err != nil {
@@ -122,7 +124,9 @@ func (s *ImprovementService) workerLoop(ctx context.Context, workerID string) {
 				next := time.Now().UTC().Add(time.Duration(review.AttemptCount*review.AttemptCount) * time.Second)
 				retryAt = &next
 			}
-			_ = s.repository.FailReview(ctx, review, err, retryAt)
+			if failErr := s.repository.FailReview(context.WithoutCancel(ctx), review, err, retryAt); failErr != nil {
+				slog.Default().Error("persist improvement review failure failed", "worker_id", workerID, "review_id", review.ID, "error", failErr)
+			}
 		}
 	}
 }

@@ -2,8 +2,10 @@ package chunker
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"log/slog"
+	"slices"
 	"time"
 
 	"agentcanvas/internal/infrastructure/parser"
@@ -48,8 +50,11 @@ func (s *ShadowChunker) ChunkDocument(ctx context.Context, doc parser.ParsedDocu
 	defer cancel()
 	shadowStarted := time.Now()
 	shadow, shadowErr := s.Shadow.ChunkDocument(shadowCtx, doc, policy)
+	digest := sha256.Sum256([]byte(doc.Text))
 	attrs := []any{
 		"method", s.Method(),
+		"shadow_method", s.Shadow.Method(),
+		"content_sha256", fmt.Sprintf("%x", digest[:]),
 		"primary_chunks", len(primary),
 		"shadow_duration_ms", time.Since(shadowStarted).Milliseconds(),
 		"primary_duration_ms", primaryDuration.Milliseconds(),
@@ -97,9 +102,28 @@ func compareChunks(primary, shadow []Chunk) map[string]any {
 		"boundary_match_ratio":    boundaryRatio,
 		"primary_token_count":     primaryTokens,
 		"shadow_token_count":      shadowTokens,
+		"primary_overlap_chars":   overlapCharacters(primary),
+		"shadow_overlap_chars":    overlapCharacters(shadow),
 		"primary_metadata_chunks": metadataChunks(primary),
 		"shadow_metadata_chunks":  metadataChunks(shadow),
 	}
+}
+
+func overlapCharacters(chunks []Chunk) int {
+	total := 0
+	for index := 1; index < len(chunks); index++ {
+		left := []rune(chunks[index-1].Content)
+		right := []rune(chunks[index].Content)
+		limit := min(len(left), len(right))
+		// ponytail: shadow-only quadratic scan; use rolling hashes if chunk sizes become large.
+		for size := limit; size > 0; size-- {
+			if slices.Equal(left[len(left)-size:], right[:size]) {
+				total += size
+				break
+			}
+		}
+	}
+	return total
 }
 
 func metadataChunks(chunks []Chunk) int {

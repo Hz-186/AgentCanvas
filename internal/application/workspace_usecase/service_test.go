@@ -167,12 +167,13 @@ type updateFailWorkspaceRepository struct {
 	*memoryWorkspaceRepository
 	updateCalls int
 	failAt      int
+	alwaysFail  bool
 	err         error
 }
 
 func (r *updateFailWorkspaceRepository) Update(ctx context.Context, item *workspacedomain.Workspace) error {
 	r.updateCalls++
-	if r.failAt > 0 && r.updateCalls == r.failAt {
+	if r.alwaysFail || r.failAt > 0 && r.updateCalls == r.failAt {
 		return r.err
 	}
 	return r.memoryWorkspaceRepository.Update(ctx, item)
@@ -752,6 +753,25 @@ func TestSharedChildCommitDoesNotRebindPhysicalWorkspaceRow(t *testing.T) {
 	}
 	if stored.RunID != rootWorkspace.RunID || childView.RunID != 31 || childView.HeadSHA == rootWorkspace.HeadSHA {
 		t.Fatalf("shared child commit corrupted workspace ownership or status: root=%#v child=%#v stored=%#v", rootWorkspace, childView, stored)
+	}
+}
+
+func TestCommitReturnsPostCommitStatusPersistenceFailure(t *testing.T) {
+	ctx := context.Background()
+	service, repository, _, root := testWorkspaceService(t)
+	item, err := service.PrepareRunWorkspace(ctx, 7, 1, 32, workspacedomain.KindShared, "demo", "commit-persistence", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "persist.txt"), []byte("persist\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	persistErr := errors.New("workspace update unavailable")
+	service.workspaces = &updateFailWorkspaceRepository{memoryWorkspaceRepository: repository, alwaysFail: true, err: persistErr}
+
+	result, err := service.Commit(ctx, item, "test: persist commit status", []string{"persist.txt"})
+	if result.Hash == "" || !errors.Is(err, persistErr) {
+		t.Fatalf("Commit() result=%+v error=%v, want committed hash and persistence error", result, err)
 	}
 }
 

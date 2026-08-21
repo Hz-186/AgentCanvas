@@ -89,6 +89,27 @@ func TestResourceSummaryCacheFallsBackWhenRedisUnavailable(t *testing.T) {
 	}
 }
 
+func TestResourceSummaryCacheCoalescesConcurrentRedisFailures(t *testing.T) {
+	client := redisclient.NewClient(&redisclient.Options{Addr: "127.0.0.1:1", DialTimeout: time.Millisecond})
+	next := &fakeResourceQuery{page: resource.Page{Items: []resource.Summary{{ID: 1}}}}
+	cache := NewResourceSummaryCache(client, next, "test", time.Minute, testResourceLogger())
+	var wg sync.WaitGroup
+	for range 100 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			page, err := cache.List(context.Background(), 10, resource.KindSkills, resource.ListOptions{})
+			if err != nil || len(page.Items) != 1 {
+				t.Errorf("List() page=%+v err=%v", page, err)
+			}
+		}()
+	}
+	wg.Wait()
+	if next.calls != 1 {
+		t.Fatalf("expected one database query while Redis is unavailable, got %d", next.calls)
+	}
+}
+
 func TestResourceSummaryCacheCoalescesConcurrentMisses(t *testing.T) {
 	mr := miniredis.RunT(t)
 	client := redisclient.NewClient(&redisclient.Options{Addr: mr.Addr()})
@@ -110,5 +131,33 @@ func TestResourceSummaryCacheCoalescesConcurrentMisses(t *testing.T) {
 	wg.Wait()
 	if next.calls != 1 {
 		t.Fatalf("expected one database query, got %d", next.calls)
+	}
+}
+
+func TestResourceSummaryCacheCoalescesConcurrentMixedCacheKeys(t *testing.T) {
+	mr := miniredis.RunT(t)
+	client := redisclient.NewClient(&redisclient.Options{Addr: mr.Addr()})
+	next := &fakeResourceQuery{page: resource.Page{Items: []resource.Summary{{ID: 1}}}}
+	cache := NewResourceSummaryCache(client, next, "test", time.Minute, testResourceLogger())
+	options := resource.ListOptions{Limit: 25}
+
+	var wg sync.WaitGroup
+	for i := range 100 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			cacheKey := "cache-a"
+			if i%2 != 0 {
+				cacheKey = "cache-b"
+			}
+			page, err := cache.load(context.Background(), "same-query", cacheKey, 10, resource.KindSkills, options)
+			if err != nil || len(page.Items) != 1 {
+				t.Errorf("load() page=%+v err=%v", page, err)
+			}
+		}()
+	}
+	wg.Wait()
+	if next.calls != 1 {
+		t.Fatalf("expected one database query across mixed cache keys, got %d", next.calls)
 	}
 }

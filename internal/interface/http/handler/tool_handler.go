@@ -1,8 +1,6 @@
 package handler
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -11,6 +9,7 @@ import (
 	toolusecase "agentcanvas/internal/application/tool_usecase"
 	"agentcanvas/internal/domain/tool"
 	agenterrors "agentcanvas/internal/pkg/errors"
+	"agentcanvas/internal/pkg/jsonutil"
 	"agentcanvas/internal/pkg/response"
 	"agentcanvas/internal/runtime/toolruntime"
 
@@ -62,7 +61,7 @@ func (h *ToolHandler) Create(c *gin.Context) {
 }
 
 func (h *ToolHandler) Get(c *gin.Context) {
-	ownerID, id, ok := h.ownerAndID(c)
+	ownerID, id, ok := ownerAndID(c, "id")
 	if !ok {
 		return
 	}
@@ -75,7 +74,7 @@ func (h *ToolHandler) Get(c *gin.Context) {
 }
 
 func (h *ToolHandler) Update(c *gin.Context) {
-	ownerID, id, ok := h.ownerAndID(c)
+	ownerID, id, ok := ownerAndID(c, "id")
 	if !ok {
 		return
 	}
@@ -93,7 +92,7 @@ func (h *ToolHandler) Update(c *gin.Context) {
 }
 
 func (h *ToolHandler) Delete(c *gin.Context) {
-	ownerID, id, ok := h.ownerAndID(c)
+	ownerID, id, ok := ownerAndID(c, "id")
 	if !ok {
 		return
 	}
@@ -105,7 +104,7 @@ func (h *ToolHandler) Delete(c *gin.Context) {
 }
 
 func (h *ToolHandler) Test(c *gin.Context) {
-	ownerID, id, ok := h.ownerAndID(c)
+	ownerID, id, ok := ownerAndID(c, "id")
 	if !ok {
 		return
 	}
@@ -122,20 +121,6 @@ func (h *ToolHandler) Test(c *gin.Context) {
 		return
 	}
 	response.OK(c, output)
-}
-
-func (h *ToolHandler) ownerAndID(c *gin.Context) (int64, int64, bool) {
-	ownerID, ok := currentUserID(c)
-	if !ok {
-		response.Error(c, http.StatusUnauthorized, agenterrors.CodeUnauthorized, agenterrors.ErrUnauthorized.Error())
-		return 0, 0, false
-	}
-	id, err := parseInt64Param(c, "id")
-	if err != nil {
-		writeAppError(c, agenterrors.ErrInvalidInput)
-		return 0, 0, false
-	}
-	return ownerID, id, true
 }
 
 func (h *ToolHandler) CreatePolicy(c *gin.Context) {
@@ -159,7 +144,7 @@ func (h *ToolHandler) CreatePolicy(c *gin.Context) {
 }
 
 func (h *ToolHandler) GetPolicy(c *gin.Context) {
-	ownerID, id, ok := h.ownerAndID(c)
+	ownerID, id, ok := ownerAndID(c, "id")
 	if !ok {
 		return
 	}
@@ -186,7 +171,7 @@ func (h *ToolHandler) ListPolicies(c *gin.Context) {
 }
 
 func (h *ToolHandler) UpdatePolicy(c *gin.Context) {
-	ownerID, id, ok := h.ownerAndID(c)
+	ownerID, id, ok := ownerAndID(c, "id")
 	if !ok {
 		return
 	}
@@ -205,7 +190,7 @@ func (h *ToolHandler) UpdatePolicy(c *gin.Context) {
 }
 
 func (h *ToolHandler) DeletePolicy(c *gin.Context) {
-	ownerID, id, ok := h.ownerAndID(c)
+	ownerID, id, ok := ownerAndID(c, "id")
 	if !ok {
 		return
 	}
@@ -237,7 +222,7 @@ func (h *ToolHandler) CreatePack(c *gin.Context) {
 }
 
 func (h *ToolHandler) GetPack(c *gin.Context) {
-	ownerID, id, ok := h.ownerAndID(c)
+	ownerID, id, ok := ownerAndID(c, "id")
 	if !ok {
 		return
 	}
@@ -264,7 +249,7 @@ func (h *ToolHandler) ListPacks(c *gin.Context) {
 }
 
 func (h *ToolHandler) UpdatePack(c *gin.Context) {
-	ownerID, id, ok := h.ownerAndID(c)
+	ownerID, id, ok := ownerAndID(c, "id")
 	if !ok {
 		return
 	}
@@ -283,7 +268,7 @@ func (h *ToolHandler) UpdatePack(c *gin.Context) {
 }
 
 func (h *ToolHandler) DeletePack(c *gin.Context) {
-	ownerID, id, ok := h.ownerAndID(c)
+	ownerID, id, ok := ownerAndID(c, "id")
 	if !ok {
 		return
 	}
@@ -399,7 +384,7 @@ func (h *ToolHandler) ListMCPServers(c *gin.Context) {
 }
 
 func (h *ToolHandler) GetMCPServer(c *gin.Context) {
-	ownerID, id, ok := h.ownerAndID(c)
+	ownerID, id, ok := ownerAndID(c, "id")
 	if !ok {
 		return
 	}
@@ -412,7 +397,7 @@ func (h *ToolHandler) GetMCPServer(c *gin.Context) {
 }
 
 func (h *ToolHandler) UpdateMCPServer(c *gin.Context) {
-	ownerID, id, ok := h.ownerAndID(c)
+	ownerID, id, ok := ownerAndID(c, "id")
 	if !ok {
 		return
 	}
@@ -459,7 +444,7 @@ func (h *ToolHandler) UpdateMCPServer(c *gin.Context) {
 }
 
 func (h *ToolHandler) DeleteMCPServer(c *gin.Context) {
-	ownerID, id, ok := h.ownerAndID(c)
+	ownerID, id, ok := ownerAndID(c, "id")
 	if !ok {
 		return
 	}
@@ -471,7 +456,7 @@ func (h *ToolHandler) DeleteMCPServer(c *gin.Context) {
 }
 
 func (h *ToolHandler) RefreshMCPServer(c *gin.Context) {
-	ownerID, id, ok := h.ownerAndID(c)
+	ownerID, id, ok := ownerAndID(c, "id")
 	if !ok {
 		return
 	}
@@ -497,7 +482,7 @@ func (h *ToolHandler) RefreshMCPServer(c *gin.Context) {
 			ToolName:       def.Name,
 			Description:    def.Description,
 			ParametersJSON: def.Parameters,
-			SchemaHash:     hashJSON(def.Parameters),
+			SchemaHash:     jsonutil.Hash(def.Parameters),
 			CachedAt:       now,
 		})
 	}
@@ -515,7 +500,7 @@ func (h *ToolHandler) RefreshMCPServer(c *gin.Context) {
 }
 
 func (h *ToolHandler) ListMCPTools(c *gin.Context) {
-	ownerID, id, ok := h.ownerAndID(c)
+	ownerID, id, ok := ownerAndID(c, "id")
 	if !ok {
 		return
 	}
@@ -557,9 +542,4 @@ func normalizeMCPServerRequest(item *tool.MCPServer) error {
 		item.EnvJSON = json.RawMessage("{}")
 	}
 	return nil
-}
-
-func hashJSON(raw json.RawMessage) string {
-	sum := sha256.Sum256(raw)
-	return hex.EncodeToString(sum[:])
 }

@@ -22,20 +22,48 @@ type Runtime interface {
 // Definition is the normalized runtime form of an immutable Agent release.
 type Definition agentRuntimeConfig
 
-type RunRequest struct {
-	OwnerID         int64
-	AgentID         int64
-	AgentReleaseID  int64
-	RunID           int64
-	ParentRunID     *int64
+type RunIdentity struct {
+	OwnerID        int64
+	AgentID        int64
+	AgentReleaseID int64
+	RunID          int64
+	ParentRunID    *int64
+}
+
+type ConversationContext struct {
+	ConversationID *int64
+	ContextBlocks  []runtimeagent.ContextBlock
+}
+
+type ExecutionTask struct {
+	Task string
+}
+
+type RuntimeResources struct {
+	Definition Definition
+}
+
+type RuntimePolicy struct {
 	DelegationDepth int
 	RuleHash        string
-	ConversationID  *int64
-	Task            string
-	Definition      Definition
-	StepRecorder    AgentStepRecorder
-	ContextBlocks   []runtimeagent.ContextBlock
-	Workspace       *toolruntime.WorkspaceContext
+}
+
+type WorkspaceContext struct {
+	Workspace *toolruntime.WorkspaceContext
+}
+
+type PersistenceHooks struct {
+	StepRecorder AgentStepRecorder
+}
+
+type RunRequest struct {
+	RunIdentity
+	ConversationContext
+	ExecutionTask
+	RuntimeResources
+	RuntimePolicy
+	WorkspaceContext
+	PersistenceHooks
 }
 
 type ResumeRequest struct {

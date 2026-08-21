@@ -24,7 +24,7 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n(agentcanvas/pythonbridge/v1/bridge.proto\x12\x1b\x61gentcanvas.pythonbridge.v1\"\x0f\n\rHealthRequest\"d\n\x0eHealthResponse\x12\x0e\n\x06status\x18\x01 \x01(\t\x12\x17\n\x0fservice_version\x18\x02 \x01(\t\x12\x18\n\x10protocol_version\x18\x03 \x01(\t\x12\x0f\n\x07message\x18\x04 \x01(\t\"\x15\n\x13\x43\x61pabilitiesRequest\"\x86\x01\n\x0eToolCapability\x12\x0c\n\x04name\x18\x01 \x01(\t\x12\x13\n\x0b\x64\x65scription\x18\x02 \x01(\t\x12\x17\n\x0fparameters_json\x18\x03 \x01(\t\x12\x12\n\nrisk_level\x18\x04 \x01(\t\x12\x13\n\x0bside_effect\x18\x05 \x01(\t\x12\x0f\n\x07version\x18\x06 \x01(\t\"\xe8\x01\n\x14\x43\x61pabilitiesResponse\x12\x18\n\x10protocol_version\x18\x01 \x01(\t\x12\x17\n\x0fservice_version\x18\x02 \x01(\t\x12\x15\n\rchunk_methods\x18\x03 \x03(\t\x12:\n\x05tools\x18\x04 \x03(\x0b\x32+.agentcanvas.pythonbridge.v1.ToolCapability\x12\x17\n\x0fmax_concurrency\x18\x05 \x01(\r\x12\x17\n\x0fmax_input_bytes\x18\x06 \x01(\x04\x12\x18\n\x10max_output_bytes\x18\x07 \x01(\x04\"\x83\x01\n\rDocumentBlock\x12\n\n\x02id\x18\x01 \x01(\t\x12\x0c\n\x04type\x18\x02 \x01(\t\x12\x0c\n\x04text\x18\x03 \x01(\t\x12\x14\n\x07page_no\x18\x04 \x01(\x05H\x00\x88\x01\x01\x12\x11\n\tbbox_json\x18\x05 \x01(\t\x12\x15\n\rmetadata_json\x18\x06 \x01(\tB\n\n\x08_page_no\"m\n\x0eParsedDocument\x12\x0c\n\x04text\x18\x01 \x01(\t\x12\x11\n\tfile_type\x18\x02 \x01(\t\x12:\n\x06\x62locks\x18\x03 \x03(\x0b\x32*.agentcanvas.pythonbridge.v1.DocumentBlock\"2\n\x0b\x43hunkPolicy\x12\x12\n\nchunk_size\x18\x01 \x01(\x05\x12\x0f\n\x07overlap\x18\x02 \x01(\x05\"\xb3\x01\n\x14\x43hunkDocumentRequest\x12\x12\n\nrequest_id\x18\x01 \x01(\t\x12\x0e\n\x06method\x18\x02 \x01(\t\x12=\n\x08\x64ocument\x18\x03 \x01(\x0b\x32+.agentcanvas.pythonbridge.v1.ParsedDocument\x12\x38\n\x06policy\x18\x04 \x01(\x0b\x32(.agentcanvas.pythonbridge.v1.ChunkPolicy\"\xa0\x01\n\x05\x43hunk\x12\r\n\x05index\x18\x01 \x01(\x05\x12\x0f\n\x07\x63ontent\x18\x02 \x01(\t\x12\x13\n\x0btoken_count\x18\x03 \x01(\x05\x12\x12\n\nchar_count\x18\x04 \x01(\x05\x12\x15\n\rsection_title\x18\x05 \x01(\t\x12\x14\n\x07page_no\x18\x06 \x01(\x05H\x00\x88\x01\x01\x12\x15\n\rmetadata_json\x18\x07 \x01(\tB\n\n\x08_page_no\"\x91\x01\n\x15\x43hunkDocumentResponse\x12\x32\n\x06\x63hunks\x18\x01 \x03(\x0b\x32\".agentcanvas.pythonbridge.v1.Chunk\x12\x11\n\talgorithm\x18\x02 \x01(\t\x12\x11\n\ttokenizer\x18\x03 \x01(\t\x12\x1e\n\x16implementation_version\x18\x04 \x01(\t\"\x91\x01\n\x0eToolRunContext\x12\x10\n\x08owner_id\x18\x01 \x01(\x03\x12\x10\n\x08\x61gent_id\x18\x02 \x01(\x03\x12\x18\n\x10\x61gent_release_id\x18\x03 \x01(\x03\x12\x0e\n\x06run_id\x18\x04 \x01(\x03\x12\x17\n\x0f\x63onversation_id\x18\x05 \x01(\x03\x12\x18\n\x10\x64\x65legation_depth\x18\x06 \x01(\x05\"\x12\n\x10ListToolsRequest\"O\n\x11ListToolsResponse\x12:\n\x05tools\x18\x01 \x03(\x0b\x32+.agentcanvas.pythonbridge.v1.ToolCapability\"\x91\x01\n\x12\x45xecuteToolRequest\x12\x12\n\nrequest_id\x18\x01 \x01(\t\x12\x11\n\ttool_name\x18\x02 \x01(\t\x12\x16\n\x0e\x61rguments_json\x18\x03 \x01(\t\x12<\n\x07\x63ontext\x18\x04 \x01(\x0b\x32+.agentcanvas.pythonbridge.v1.ToolRunContext\"j\n\x13\x45xecuteToolResponse\x12\x14\n\x0c\x63ontent_json\x18\x01 \x01(\t\x12\x14\n\x0c\x63ontent_text\x18\x02 \x01(\t\x12\x10\n\x08is_error\x18\x03 \x01(\x08\x12\x15\n\rmetadata_json\x18\x04 \x01(\t2\xbf\x04\n\x0cPythonBridge\x12\x61\n\x06Health\x12*.agentcanvas.pythonbridge.v1.HealthRequest\x1a+.agentcanvas.pythonbridge.v1.HealthResponse\x12v\n\x0fGetCapabilities\x12\x30.agentcanvas.pythonbridge.v1.CapabilitiesRequest\x1a\x31.agentcanvas.pythonbridge.v1.CapabilitiesResponse\x12v\n\rChunkDocument\x12\x31.agentcanvas.pythonbridge.v1.ChunkDocumentRequest\x1a\x32.agentcanvas.pythonbridge.v1.ChunkDocumentResponse\x12j\n\tListTools\x12-.agentcanvas.pythonbridge.v1.ListToolsRequest\x1a..agentcanvas.pythonbridge.v1.ListToolsResponse\x12p\n\x0b\x45xecuteTool\x12/.agentcanvas.pythonbridge.v1.ExecuteToolRequest\x1a\x30.agentcanvas.pythonbridge.v1.ExecuteToolResponseBCZAagentcanvas/internal/infrastructure/pythonbridge/gen;pythonbridgeb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n(agentcanvas/pythonbridge/v1/bridge.proto\x12\x1b\x61gentcanvas.pythonbridge.v1\"\x0f\n\rHealthRequest\"d\n\x0eHealthResponse\x12\x0e\n\x06status\x18\x01 \x01(\t\x12\x17\n\x0fservice_version\x18\x02 \x01(\t\x12\x18\n\x10protocol_version\x18\x03 \x01(\t\x12\x0f\n\x07message\x18\x04 \x01(\t\"\x15\n\x13\x43\x61pabilitiesRequest\"\x86\x01\n\x0eToolCapability\x12\x0c\n\x04name\x18\x01 \x01(\t\x12\x13\n\x0b\x64\x65scription\x18\x02 \x01(\t\x12\x17\n\x0fparameters_json\x18\x03 \x01(\t\x12\x12\n\nrisk_level\x18\x04 \x01(\t\x12\x13\n\x0bside_effect\x18\x05 \x01(\t\x12\x0f\n\x07version\x18\x06 \x01(\t\"\x80\x02\n\x14\x43\x61pabilitiesResponse\x12\x18\n\x10protocol_version\x18\x01 \x01(\t\x12\x17\n\x0fservice_version\x18\x02 \x01(\t\x12\x15\n\rchunk_methods\x18\x03 \x03(\t\x12:\n\x05tools\x18\x04 \x03(\x0b\x32+.agentcanvas.pythonbridge.v1.ToolCapability\x12\x17\n\x0fmax_concurrency\x18\x05 \x01(\r\x12\x17\n\x0fmax_input_bytes\x18\x06 \x01(\x04\x12\x18\n\x10max_output_bytes\x18\x07 \x01(\x04\x12\x16\n\x0eparser_methods\x18\x08 \x03(\t\"\x83\x01\n\rDocumentBlock\x12\n\n\x02id\x18\x01 \x01(\t\x12\x0c\n\x04type\x18\x02 \x01(\t\x12\x0c\n\x04text\x18\x03 \x01(\t\x12\x14\n\x07page_no\x18\x04 \x01(\x05H\x00\x88\x01\x01\x12\x11\n\tbbox_json\x18\x05 \x01(\t\x12\x15\n\rmetadata_json\x18\x06 \x01(\tB\n\n\x08_page_no\"m\n\x0eParsedDocument\x12\x0c\n\x04text\x18\x01 \x01(\t\x12\x11\n\tfile_type\x18\x02 \x01(\t\x12:\n\x06\x62locks\x18\x03 \x03(\x0b\x32*.agentcanvas.pythonbridge.v1.DocumentBlock\"]\n\x14ParseDocumentRequest\x12\x12\n\nrequest_id\x18\x01 \x01(\t\x12\x10\n\x08\x66ilename\x18\x02 \x01(\t\x12\x0e\n\x06parser\x18\x03 \x01(\t\x12\x0f\n\x07\x63ontent\x18\x04 \x01(\x0c\"\xae\x01\n\x15ParseDocumentResponse\x12=\n\x08\x64ocument\x18\x01 \x01(\x0b\x32+.agentcanvas.pythonbridge.v1.ParsedDocument\x12\x0e\n\x06parser\x18\x02 \x01(\t\x12\x1e\n\x16implementation_version\x18\x03 \x01(\t\x12\x14\n\x0crequires_ocr\x18\x04 \x01(\x08\x12\x10\n\x08warnings\x18\x05 \x03(\t\"2\n\x0b\x43hunkPolicy\x12\x12\n\nchunk_size\x18\x01 \x01(\x05\x12\x0f\n\x07overlap\x18\x02 \x01(\x05\"\xb3\x01\n\x14\x43hunkDocumentRequest\x12\x12\n\nrequest_id\x18\x01 \x01(\t\x12\x0e\n\x06method\x18\x02 \x01(\t\x12=\n\x08\x64ocument\x18\x03 \x01(\x0b\x32+.agentcanvas.pythonbridge.v1.ParsedDocument\x12\x38\n\x06policy\x18\x04 \x01(\x0b\x32(.agentcanvas.pythonbridge.v1.ChunkPolicy\"\xa0\x01\n\x05\x43hunk\x12\r\n\x05index\x18\x01 \x01(\x05\x12\x0f\n\x07\x63ontent\x18\x02 \x01(\t\x12\x13\n\x0btoken_count\x18\x03 \x01(\x05\x12\x12\n\nchar_count\x18\x04 \x01(\x05\x12\x15\n\rsection_title\x18\x05 \x01(\t\x12\x14\n\x07page_no\x18\x06 \x01(\x05H\x00\x88\x01\x01\x12\x15\n\rmetadata_json\x18\x07 \x01(\tB\n\n\x08_page_no\"\x91\x01\n\x15\x43hunkDocumentResponse\x12\x32\n\x06\x63hunks\x18\x01 \x03(\x0b\x32\".agentcanvas.pythonbridge.v1.Chunk\x12\x11\n\talgorithm\x18\x02 \x01(\t\x12\x11\n\ttokenizer\x18\x03 \x01(\t\x12\x1e\n\x16implementation_version\x18\x04 \x01(\t\"\x91\x01\n\x0eToolRunContext\x12\x10\n\x08owner_id\x18\x01 \x01(\x03\x12\x10\n\x08\x61gent_id\x18\x02 \x01(\x03\x12\x18\n\x10\x61gent_release_id\x18\x03 \x01(\x03\x12\x0e\n\x06run_id\x18\x04 \x01(\x03\x12\x17\n\x0f\x63onversation_id\x18\x05 \x01(\x03\x12\x18\n\x10\x64\x65legation_depth\x18\x06 \x01(\x05\"\x12\n\x10ListToolsRequest\"O\n\x11ListToolsResponse\x12:\n\x05tools\x18\x01 \x03(\x0b\x32+.agentcanvas.pythonbridge.v1.ToolCapability\"\x91\x01\n\x12\x45xecuteToolRequest\x12\x12\n\nrequest_id\x18\x01 \x01(\t\x12\x11\n\ttool_name\x18\x02 \x01(\t\x12\x16\n\x0e\x61rguments_json\x18\x03 \x01(\t\x12<\n\x07\x63ontext\x18\x04 \x01(\x0b\x32+.agentcanvas.pythonbridge.v1.ToolRunContext\"j\n\x13\x45xecuteToolResponse\x12\x14\n\x0c\x63ontent_json\x18\x01 \x01(\t\x12\x14\n\x0c\x63ontent_text\x18\x02 \x01(\t\x12\x10\n\x08is_error\x18\x03 \x01(\x08\x12\x15\n\rmetadata_json\x18\x04 \x01(\t2\xb7\x05\n\x0cPythonBridge\x12\x61\n\x06Health\x12*.agentcanvas.pythonbridge.v1.HealthRequest\x1a+.agentcanvas.pythonbridge.v1.HealthResponse\x12v\n\x0fGetCapabilities\x12\x30.agentcanvas.pythonbridge.v1.CapabilitiesRequest\x1a\x31.agentcanvas.pythonbridge.v1.CapabilitiesResponse\x12v\n\rParseDocument\x12\x31.agentcanvas.pythonbridge.v1.ParseDocumentRequest\x1a\x32.agentcanvas.pythonbridge.v1.ParseDocumentResponse\x12v\n\rChunkDocument\x12\x31.agentcanvas.pythonbridge.v1.ChunkDocumentRequest\x1a\x32.agentcanvas.pythonbridge.v1.ChunkDocumentResponse\x12j\n\tListTools\x12-.agentcanvas.pythonbridge.v1.ListToolsRequest\x1a..agentcanvas.pythonbridge.v1.ListToolsResponse\x12p\n\x0b\x45xecuteTool\x12/.agentcanvas.pythonbridge.v1.ExecuteToolRequest\x1a\x30.agentcanvas.pythonbridge.v1.ExecuteToolResponseBCZAagentcanvas/internal/infrastructure/pythonbridge/gen;pythonbridgeb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -41,29 +41,33 @@ if not _descriptor._USE_C_DESCRIPTORS:
   _globals['_TOOLCAPABILITY']._serialized_start=216
   _globals['_TOOLCAPABILITY']._serialized_end=350
   _globals['_CAPABILITIESRESPONSE']._serialized_start=353
-  _globals['_CAPABILITIESRESPONSE']._serialized_end=585
-  _globals['_DOCUMENTBLOCK']._serialized_start=588
-  _globals['_DOCUMENTBLOCK']._serialized_end=719
-  _globals['_PARSEDDOCUMENT']._serialized_start=721
-  _globals['_PARSEDDOCUMENT']._serialized_end=830
-  _globals['_CHUNKPOLICY']._serialized_start=832
-  _globals['_CHUNKPOLICY']._serialized_end=882
-  _globals['_CHUNKDOCUMENTREQUEST']._serialized_start=885
-  _globals['_CHUNKDOCUMENTREQUEST']._serialized_end=1064
-  _globals['_CHUNK']._serialized_start=1067
-  _globals['_CHUNK']._serialized_end=1227
-  _globals['_CHUNKDOCUMENTRESPONSE']._serialized_start=1230
-  _globals['_CHUNKDOCUMENTRESPONSE']._serialized_end=1375
-  _globals['_TOOLRUNCONTEXT']._serialized_start=1378
-  _globals['_TOOLRUNCONTEXT']._serialized_end=1523
-  _globals['_LISTTOOLSREQUEST']._serialized_start=1525
-  _globals['_LISTTOOLSREQUEST']._serialized_end=1543
-  _globals['_LISTTOOLSRESPONSE']._serialized_start=1545
-  _globals['_LISTTOOLSRESPONSE']._serialized_end=1624
-  _globals['_EXECUTETOOLREQUEST']._serialized_start=1627
-  _globals['_EXECUTETOOLREQUEST']._serialized_end=1772
-  _globals['_EXECUTETOOLRESPONSE']._serialized_start=1774
-  _globals['_EXECUTETOOLRESPONSE']._serialized_end=1880
-  _globals['_PYTHONBRIDGE']._serialized_start=1883
-  _globals['_PYTHONBRIDGE']._serialized_end=2458
+  _globals['_CAPABILITIESRESPONSE']._serialized_end=609
+  _globals['_DOCUMENTBLOCK']._serialized_start=612
+  _globals['_DOCUMENTBLOCK']._serialized_end=743
+  _globals['_PARSEDDOCUMENT']._serialized_start=745
+  _globals['_PARSEDDOCUMENT']._serialized_end=854
+  _globals['_PARSEDOCUMENTREQUEST']._serialized_start=856
+  _globals['_PARSEDOCUMENTREQUEST']._serialized_end=949
+  _globals['_PARSEDOCUMENTRESPONSE']._serialized_start=952
+  _globals['_PARSEDOCUMENTRESPONSE']._serialized_end=1126
+  _globals['_CHUNKPOLICY']._serialized_start=1128
+  _globals['_CHUNKPOLICY']._serialized_end=1178
+  _globals['_CHUNKDOCUMENTREQUEST']._serialized_start=1181
+  _globals['_CHUNKDOCUMENTREQUEST']._serialized_end=1360
+  _globals['_CHUNK']._serialized_start=1363
+  _globals['_CHUNK']._serialized_end=1523
+  _globals['_CHUNKDOCUMENTRESPONSE']._serialized_start=1526
+  _globals['_CHUNKDOCUMENTRESPONSE']._serialized_end=1671
+  _globals['_TOOLRUNCONTEXT']._serialized_start=1674
+  _globals['_TOOLRUNCONTEXT']._serialized_end=1819
+  _globals['_LISTTOOLSREQUEST']._serialized_start=1821
+  _globals['_LISTTOOLSREQUEST']._serialized_end=1839
+  _globals['_LISTTOOLSRESPONSE']._serialized_start=1841
+  _globals['_LISTTOOLSRESPONSE']._serialized_end=1920
+  _globals['_EXECUTETOOLREQUEST']._serialized_start=1923
+  _globals['_EXECUTETOOLREQUEST']._serialized_end=2068
+  _globals['_EXECUTETOOLRESPONSE']._serialized_start=2070
+  _globals['_EXECUTETOOLRESPONSE']._serialized_end=2176
+  _globals['_PYTHONBRIDGE']._serialized_start=2179
+  _globals['_PYTHONBRIDGE']._serialized_end=2874
 # @@protoc_insertion_point(module_scope)

@@ -38,6 +38,7 @@ type InfraDeps struct {
 	MinIOClient             *minio.Client
 	ElasticsearchClient     *elasticsearch.Client
 	RetrievalStore          RetrievalStore
+	RetrievalStores         map[string]RetrievalStore
 	MemoryRetrievalStore    *memoryretrievalinfra.MemoryStore
 	MemoryRetrievalIndexErr error
 	JobQueue                queueinfra.JobQueue
@@ -66,11 +67,15 @@ func InitInfrastructure(ctx context.Context, cfg *config.Config, opts InitOption
 		return nil, fmt.Errorf("init elasticsearch: %w", err)
 	}
 	esStore := esretrieval.NewStore(esClient, cfg.Elasticsearch)
-	var retrievalStore RetrievalStore = esStore
+	retrievalStores := map[string]RetrievalStore{"elasticsearch": esStore}
 	if cfg.Retrieval.Backend == "milvus" {
 		milvusVector := vectorstore.NewMilvusStore(cfg.Milvus.Address, cfg.Milvus.Token, milvusHNSW(cfg))
 		milvusStore := milvusretrieval.NewStore(milvusVector, cfg.Milvus.Collection, cfg.Milvus.Dimensions, milvusHNSW(cfg))
-		retrievalStore = milvusStore
+		retrievalStores["milvus"] = milvusStore
+	}
+	retrievalStore := retrievalStores[cfg.Retrieval.Backend]
+	if retrievalStore == nil {
+		return nil, fmt.Errorf("retrieval backend %q is not configured", cfg.Retrieval.Backend)
 	}
 	if err := retrievalStore.EnsureIndex(ctx); err != nil {
 		return nil, fmt.Errorf("ensure %s retrieval index: %w", cfg.Retrieval.Backend, err)
@@ -85,6 +90,7 @@ func InitInfrastructure(ctx context.Context, cfg *config.Config, opts InitOption
 		MinIOClient:         minioClient,
 		ElasticsearchClient: esClient,
 		RetrievalStore:      retrievalStore,
+		RetrievalStores:     retrievalStores,
 		SecretBox:           secretBox,
 		FileStorage:         minioinfra.NewFileStorage(minioClient, cfg.MinIO.Bucket),
 	}

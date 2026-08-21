@@ -7,9 +7,11 @@ import (
 	"math"
 	"math/rand"
 	"time"
-
-	"agentcanvas/internal/observability"
 )
+
+type WorkerMetrics interface {
+	RecordOutbox(success bool)
+}
 
 type Worker struct {
 	Repository   Repository
@@ -19,6 +21,7 @@ type Worker struct {
 	Lease        time.Duration
 	PollInterval time.Duration
 	Logger       *slog.Logger
+	Metrics      WorkerMetrics
 }
 
 func (w *Worker) Run(ctx context.Context) {
@@ -63,10 +66,12 @@ func (w *Worker) ProcessBatch(ctx context.Context) (int, error) {
 	var joined error
 	for i := range items {
 		if err := w.processWithLease(ctx, items[i]); err != nil {
-			observability.ContextSystemMetrics.RecordOutbox(false)
+			if w.Metrics != nil {
+				w.Metrics.RecordOutbox(false)
+			}
 			joined = errors.Join(joined, err)
-		} else {
-			observability.ContextSystemMetrics.RecordOutbox(true)
+		} else if w.Metrics != nil {
+			w.Metrics.RecordOutbox(true)
 		}
 	}
 	return len(items), joined

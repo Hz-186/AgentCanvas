@@ -64,10 +64,11 @@ type AgentRuntimeConfig struct {
 }
 
 type AppConfig struct {
-	Name    string `yaml:"name"`
-	Env     string `yaml:"env"`
-	Port    int    `yaml:"port"`
-	BaseURL string `yaml:"base_url"`
+	Name               string   `yaml:"name"`
+	Env                string   `yaml:"env"`
+	Port               int      `yaml:"port"`
+	BaseURL            string   `yaml:"base_url"`
+	CORSAllowedOrigins []string `yaml:"cors_allowed_origins"`
 }
 
 type MySQLConfig struct {
@@ -207,6 +208,10 @@ type PythonBridgeConfig struct {
 	Enabled                   bool     `yaml:"enabled"`
 	ShadowEnabled             bool     `yaml:"shadow_enabled"`
 	AllowExperimentalChunking bool     `yaml:"allow_experimental_chunking"`
+	DocumentParser            string   `yaml:"document_parser"`
+	ShadowDocumentParser      bool     `yaml:"shadow_document_parser"`
+	AllowExperimentalParsing  bool     `yaml:"allow_experimental_parsing"`
+	FallbackToGoOCR           bool     `yaml:"fallback_to_go_ocr"`
 	Target                    string   `yaml:"target"`
 	AuthTokenEnv              string   `yaml:"auth_token_env"`
 	ConnectTimeoutSeconds     int      `yaml:"connect_timeout_seconds"`
@@ -215,6 +220,8 @@ type PythonBridgeConfig struct {
 	MaxReceiveBytes           int      `yaml:"max_receive_bytes"`
 	MaxConcurrency            int      `yaml:"max_concurrency"`
 	AllowedChunkMethods       []string `yaml:"allowed_chunk_methods"`
+	AllowedParserMethods      []string `yaml:"allowed_parser_methods"`
+	MaxDocumentBytes          int      `yaml:"max_document_bytes"`
 	AllowedTools              []string `yaml:"allowed_tools"`
 }
 
@@ -244,6 +251,12 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	var cfg Config
 
+	data = []byte(os.Expand(string(data), func(key string) string {
+		if value, ok := os.LookupEnv(key); ok {
+			return value
+		}
+		return "${" + key + "}"
+	}))
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, err
 	}
@@ -261,6 +274,9 @@ func (c *Config) setDefaults() {
 	}
 	if c.App.Port == 0 {
 		c.App.Port = 8080
+	}
+	if len(c.App.CORSAllowedOrigins) == 0 && c.App.BaseURL != "" {
+		c.App.CORSAllowedOrigins = []string{c.App.BaseURL}
 	}
 	if c.Security.AccessTokenTTLMinutes == 0 {
 		c.Security.AccessTokenTTLMinutes = 30
@@ -481,6 +497,12 @@ func (c *Config) setDefaults() {
 	if c.PythonBridge.MaxConcurrency == 0 {
 		c.PythonBridge.MaxConcurrency = 8
 	}
+	if c.PythonBridge.DocumentParser == "" {
+		c.PythonBridge.DocumentParser = "go"
+	}
+	if c.PythonBridge.MaxDocumentBytes == 0 {
+		c.PythonBridge.MaxDocumentBytes = c.PythonBridge.MaxSendBytes
+	}
 }
 
 func (c *Config) Validate() error {
@@ -495,6 +517,33 @@ func (c *Config) Validate() error {
 	}
 	if c.Security.SecretEncryptKey == "" {
 		return fmt.Errorf("security.secret_encrypt_key is required")
+	}
+	productionLike := strings.EqualFold(c.App.Env, "production") || strings.EqualFold(c.App.Env, "docker")
+	for _, origin := range c.App.CORSAllowedOrigins {
+		if strings.TrimSpace(origin) == "" {
+			return fmt.Errorf("app.cors_allowed_origins must not contain empty origins")
+		}
+		if strings.TrimSpace(origin) == "*" && productionLike {
+			return fmt.Errorf("wildcard CORS origin is forbidden in production")
+		}
+	}
+	for name, value := range map[string]string{
+		"mysql.dsn": c.MySQL.DSN, "redis.password": c.Redis.Password,
+		"minio.access_key": c.MinIO.AccessKey, "minio.secret_key": c.MinIO.SecretKey,
+		"security.jwt_secret": c.Security.JWTSecret, "security.refresh_token_pepper": c.Security.RefreshTokenPepper,
+		"security.secret_encrypt_key": c.Security.SecretEncryptKey,
+	} {
+		if isPlaceholderConfigValue(value) {
+			return fmt.Errorf("%s must not use an unresolved or placeholder value", name)
+		}
+	}
+	if c.MemoryDream.Enabled {
+		if strings.TrimSpace(c.MemoryDream.LLMProviderType) == "" || strings.TrimSpace(c.MemoryDream.LLMBaseURL) == "" || strings.TrimSpace(c.MemoryDream.LLMAPIKey) == "" || strings.TrimSpace(c.MemoryDream.LLMModel) == "" {
+			return fmt.Errorf("memory_dream LLM provider, base URL, API key, and model are required when enabled")
+		}
+		if strings.TrimSpace(c.MemoryDream.EmbeddingProviderType) == "" || strings.TrimSpace(c.MemoryDream.EmbeddingBaseURL) == "" || strings.TrimSpace(c.MemoryDream.EmbeddingModel) == "" {
+			return fmt.Errorf("memory_dream embedding provider, base URL, and model are required when enabled")
+		}
 	}
 	if c.Queue.Backend != "mysql" && c.Queue.Backend != "redis_stream" && c.Queue.Backend != "nats" {
 		return fmt.Errorf("queue.backend must be mysql, redis_stream, or nats")
@@ -573,8 +622,22 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("python_bridge limits must be positive")
 		}
 		for _, method := range c.PythonBridge.AllowedChunkMethods {
-			if method != "python:fixed_token" && method != "python:recursive" {
+			if method != "python:fixed_token" && method != "python:recursive" && method != "python:langchain_recursive" {
 				return fmt.Errorf("python_bridge.allowed_chunk_methods contains unsupported method %q", method)
+			}
+		}
+		if c.PythonBridge.DocumentParser != "go" && c.PythonBridge.DocumentParser != "python:langchain_pdf" {
+			return fmt.Errorf("python_bridge.document_parser contains unsupported parser %q", c.PythonBridge.DocumentParser)
+		}
+		if (c.PythonBridge.DocumentParser != "go" || c.PythonBridge.ShadowDocumentParser) && !c.PythonBridge.AllowExperimentalParsing {
+			return fmt.Errorf("python_bridge document parsing requires allow_experimental_parsing")
+		}
+		if c.PythonBridge.MaxDocumentBytes <= 0 || c.PythonBridge.MaxDocumentBytes > c.PythonBridge.MaxSendBytes {
+			return fmt.Errorf("python_bridge.max_document_bytes must be positive and no larger than max_send_bytes")
+		}
+		for _, method := range c.PythonBridge.AllowedParserMethods {
+			if method != "python:langchain_pdf" {
+				return fmt.Errorf("python_bridge.allowed_parser_methods contains unsupported parser %q", method)
 			}
 		}
 		for _, name := range c.PythonBridge.AllowedTools {
@@ -585,8 +648,8 @@ func (c *Config) Validate() error {
 				return fmt.Errorf("python_bridge.allowed_tools must use the python_ namespace")
 			}
 		}
-	} else if c.PythonBridge.ShadowEnabled || c.PythonBridge.AllowExperimentalChunking {
-		return fmt.Errorf("python_bridge shadow and experimental chunking require python_bridge.enabled")
+	} else if c.PythonBridge.ShadowEnabled || c.PythonBridge.AllowExperimentalChunking || c.PythonBridge.ShadowDocumentParser || c.PythonBridge.AllowExperimentalParsing || c.PythonBridge.DocumentParser != "go" {
+		return fmt.Errorf("python_bridge shadow and experimental features require python_bridge.enabled")
 	}
 	if c.ResourceCache.TTLSeconds < 1 {
 		return fmt.Errorf("resource_cache.ttl_seconds must be positive")
@@ -601,6 +664,11 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("agent_runtime.review_worker_concurrency is invalid")
 	}
 	return nil
+}
+
+func isPlaceholderConfigValue(value string) bool {
+	lower := strings.ToLower(strings.TrimSpace(value))
+	return strings.Contains(lower, "${") || strings.HasPrefix(lower, "change-this-") || strings.HasPrefix(lower, "replace-me-") || lower == "default"
 }
 
 func (c SecurityConfig) AccessTokenTTL() time.Duration {

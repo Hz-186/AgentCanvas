@@ -37,6 +37,20 @@ func NewLoader() (*Loader, error) {
 		if p.Key == "" || p.Name == "" {
 			return nil, fmt.Errorf("provider file %s missing key or name", entry.Name())
 		}
+		if !p.Capabilities.Chat && !p.Capabilities.Embedding {
+			for _, model := range p.Models {
+				switch model.ModelType {
+				case "chat":
+					p.Capabilities.Chat = true
+				case "embedding":
+					p.Capabilities.Embedding = true
+				}
+			}
+		}
+		if p.Capabilities.Chat && (p.ProviderType == provider.TypeOpenAICompatible || p.ProviderType == provider.TypeDeepSeek || p.ProviderType == provider.TypeQwen || p.ProviderType == provider.TypeAzureOpenAI) {
+			p.Capabilities.ToolCalling = true
+			p.Capabilities.Streaming = true
+		}
 		providers = append(providers, p)
 	}
 

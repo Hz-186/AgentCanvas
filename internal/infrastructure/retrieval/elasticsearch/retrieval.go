@@ -63,24 +63,28 @@ func (s *Store) EnsureIndex(ctx context.Context) error {
 func (s *Store) IndexChunks(ctx context.Context, docs []retrieval.ChunkIndexDocument) error {
 	for _, doc := range docs {
 		payload := map[string]any{
-			"owner_id":             doc.OwnerID,
-			"kb_id":                doc.KBID,
-			"document_id":          doc.DocumentID,
-			"chunk_id":             doc.ChunkID,
-			"chunk_index":          doc.ChunkIndex,
-			"document_name":        doc.DocumentName,
-			"file_type":            doc.FileType,
-			"section_title":        doc.SectionTitle,
-			"content":              doc.Content,
-			"content_hash":         doc.ContentHash,
-			"enabled":              doc.Enabled,
-			"embedding_model":      doc.EmbeddingModel,
-			"embedding_dimensions": doc.EmbeddingDimensions,
-			"page_no":              doc.PageNo,
-			"token_count":          doc.TokenCount,
-			"metadata":             doc.Metadata,
-			"created_at":           doc.CreatedAt,
-			"updated_at":           doc.UpdatedAt,
+			"owner_id":              doc.OwnerID,
+			"kb_id":                 doc.KBID,
+			"document_id":           doc.DocumentID,
+			"generation":            doc.Generation,
+			"chunk_id":              doc.ChunkID,
+			"chunk_index":           doc.ChunkIndex,
+			"document_name":         doc.DocumentName,
+			"file_type":             doc.FileType,
+			"section_title":         doc.SectionTitle,
+			"content":               doc.Content,
+			"content_hash":          doc.ContentHash,
+			"enabled":               doc.Enabled,
+			"embedding_model":       doc.EmbeddingModel,
+			"embedding_dimensions":  doc.EmbeddingDimensions,
+			"embedding_provider_id": doc.EmbeddingProviderID,
+			"embedding_metric":      doc.EmbeddingMetric,
+			"embedding_profile":     doc.EmbeddingProfile,
+			"page_no":               doc.PageNo,
+			"token_count":           doc.TokenCount,
+			"metadata":              doc.Metadata,
+			"created_at":            doc.CreatedAt,
+			"updated_at":            doc.UpdatedAt,
 		}
 		if len(doc.EmbeddingVector) > 0 {
 			payload["embedding_vector"] = doc.EmbeddingVector
@@ -157,6 +161,18 @@ func (s *Store) DeleteByKnowledgeBase(ctx context.Context, ownerID, kbID int64) 
 	return s.deleteByQuery(ctx, []map[string]any{
 		{"term": map[string]any{"owner_id": ownerID}},
 		{"term": map[string]any{"kb_id": kbID}},
+	})
+}
+
+func (s *Store) DeleteInactiveGenerations(ctx context.Context, ownerID, documentID int64, activeGeneration string) error {
+	return s.deleteQuery(ctx, map[string]any{
+		"bool": map[string]any{
+			"filter": []map[string]any{
+				{"term": map[string]any{"owner_id": ownerID}},
+				{"term": map[string]any{"document_id": documentID}},
+			},
+			"must_not": map[string]any{"term": map[string]any{"generation": activeGeneration}},
+		},
 	})
 }
 
@@ -296,6 +312,7 @@ func (s *Store) searchBody(ctx context.Context, body map[string]any) ([]retrieva
 		results = append(results, retrieval.RetrievalResult{
 			ChunkID:      hit.Source.ChunkID,
 			DocumentID:   hit.Source.DocumentID,
+			Generation:   hit.Source.Generation,
 			KBID:         hit.Source.KBID,
 			Score:        hit.Score,
 			Content:      hit.Source.Content,
@@ -313,6 +330,27 @@ func (s *Store) filters(req retrieval.RetrievalRequest) []map[string]any {
 	if len(req.KBIDs) > 0 {
 		filters = append(filters, map[string]any{"terms": map[string]any{"kb_id": req.KBIDs}})
 	}
+	if strings.TrimSpace(req.Generation) != "" {
+		filters = append(filters, map[string]any{"term": map[string]any{"generation": req.Generation}})
+	}
+	if strings.TrimSpace(req.EmbeddingProfile) != "" {
+		filters = append(filters, map[string]any{"term": map[string]any{"embedding_profile": req.EmbeddingProfile}})
+	}
+	if len(req.ActiveGenerations) > 0 {
+		should := make([]map[string]any, 0, len(req.ActiveGenerations))
+		for documentID, generation := range req.ActiveGenerations {
+			if strings.TrimSpace(generation) == "" {
+				continue
+			}
+			should = append(should, map[string]any{"bool": map[string]any{"filter": []map[string]any{
+				{"term": map[string]any{"document_id": documentID}},
+				{"term": map[string]any{"generation": generation}},
+			}}})
+		}
+		if len(should) > 0 {
+			filters = append(filters, map[string]any{"bool": map[string]any{"should": should, "minimum_should_match": 1}})
+		}
+	}
 	for k, v := range req.Filters {
 		if strings.TrimSpace(k) == "" || v == nil {
 			continue
@@ -329,13 +367,11 @@ func (s *Store) filters(req retrieval.RetrievalRequest) []map[string]any {
 }
 
 func (s *Store) deleteByQuery(ctx context.Context, filters []map[string]any) error {
-	body, err := json.Marshal(map[string]any{
-		"query": map[string]any{
-			"bool": map[string]any{
-				"filter": filters,
-			},
-		},
-	})
+	return s.deleteQuery(ctx, map[string]any{"bool": map[string]any{"filter": filters}})
+}
+
+func (s *Store) deleteQuery(ctx context.Context, query map[string]any) error {
+	body, err := json.Marshal(map[string]any{"query": query})
 	if err != nil {
 		return err
 	}
@@ -408,6 +444,7 @@ type chunkSearchDocument struct {
 	OwnerID             int64          `json:"owner_id"`
 	KBID                int64          `json:"kb_id"`
 	DocumentID          int64          `json:"document_id"`
+	Generation          string         `json:"generation"`
 	ChunkID             int64          `json:"chunk_id"`
 	ChunkIndex          int            `json:"chunk_index"`
 	DocumentName        string         `json:"document_name"`
@@ -417,6 +454,9 @@ type chunkSearchDocument struct {
 	ContentHash         string         `json:"content_hash"`
 	EmbeddingModel      string         `json:"embedding_model"`
 	EmbeddingDimensions int            `json:"embedding_dimensions"`
+	EmbeddingProviderID int64          `json:"embedding_provider_id"`
+	EmbeddingMetric     string         `json:"embedding_metric"`
+	EmbeddingProfile    string         `json:"embedding_profile"`
 	PageNo              *int           `json:"page_no"`
 	TokenCount          int            `json:"token_count"`
 	Metadata            map[string]any `json:"metadata"`

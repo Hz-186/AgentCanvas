@@ -38,12 +38,13 @@ type VectorDocument struct {
 }
 
 type SearchRequest struct {
-	Collection string         `json:"collection"`
-	QueryText  string         `json:"query_text,omitempty"`
-	Vector     []float32      `json:"vector"`
-	TopK       int            `json:"top_k"`
-	Filter     map[string]any `json:"filter,omitempty"`
-	HNSW       HNSWConfig     `json:"hnsw,omitempty"`
+	Collection string           `json:"collection"`
+	QueryText  string           `json:"query_text,omitempty"`
+	Vector     []float32        `json:"vector"`
+	TopK       int              `json:"top_k"`
+	Filter     map[string]any   `json:"filter,omitempty"`
+	AnyFilters []map[string]any `json:"any_filters,omitempty"`
+	HNSW       HNSWConfig       `json:"hnsw,omitempty"`
 }
 
 type SearchResult struct {

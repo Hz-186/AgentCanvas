@@ -87,7 +87,11 @@ func TestMilvusStoreUsesRESTAPIForCollectionAndSearch(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("UpdateMetadataByFilter() error = %v", err)
 	}
-	got, err := store.Search(context.Background(), SearchRequest{Collection: "docs", Vector: []float32{0.1, 0.2}, TopK: 3, Filter: map[string]any{"kb_id": []int64{10, 11}, "enabled": true}})
+	got, err := store.Search(context.Background(), SearchRequest{
+		Collection: "docs", Vector: []float32{0.1, 0.2}, TopK: 3,
+		Filter:     map[string]any{"kb_id": []int64{10, 11}, "enabled": true},
+		AnyFilters: []map[string]any{{"document_id": int64(20), "generation": "gen-a"}, {"document_id": int64(21), "generation": "gen-b"}},
+	})
 	if err != nil {
 		t.Fatalf("Search() error = %v", err)
 	}
@@ -133,7 +137,7 @@ func TestMilvusStoreUsesRESTAPIForCollectionAndSearch(t *testing.T) {
 	}
 	searchReq := requests[9]
 	filter := searchReq["filter"].(string)
-	if filter == "" || searchReq["limit"].(float64) != 3 || !strings.Contains(filter, "metadata['kb_id'] in [10, 11]") || !strings.Contains(filter, "metadata['enabled'] == true") {
+	if filter == "" || searchReq["limit"].(float64) != 3 || !strings.Contains(filter, "metadata['kb_id'] in [10, 11]") || !strings.Contains(filter, "metadata['enabled'] == true") || !strings.Contains(filter, "metadata['document_id'] == 20") || !strings.Contains(filter, "metadata['generation'] == 'gen-a'") || !strings.Contains(filter, " || ") {
 		t.Fatalf("unexpected search request: %+v", searchReq)
 	}
 }
@@ -148,6 +152,25 @@ func TestMilvusStoreRejectsUnsafeFilterField(t *testing.T) {
 	_, err := store.Search(context.Background(), SearchRequest{Collection: "docs", Vector: []float32{0.1}, Filter: map[string]any{"kb_id'] == 1 || metadata['owner_id": 2}})
 	if err == nil || !strings.Contains(err.Error(), "invalid milvus filter field") {
 		t.Fatalf("expected invalid filter field error, got %v", err)
+	}
+}
+
+func TestMilvusStoreDeleteByFilterExceptBuildsSafeExpression(t *testing.T) {
+	var filter string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&payload)
+		filter, _ = payload["filter"].(string)
+		_, _ = w.Write([]byte(`{"code":0,"data":{}}`))
+	}))
+	defer server.Close()
+
+	store := NewMilvusStore(server.URL, "", HNSWConfig{})
+	if err := store.DeleteByFilterExcept(context.Background(), "docs", map[string]any{"owner_id": int64(1), "document_id": int64(20)}, "generation", "gen-active"); err != nil {
+		t.Fatalf("DeleteByFilterExcept() error = %v", err)
+	}
+	if !strings.Contains(filter, "metadata['owner_id'] == 1") || !strings.Contains(filter, "metadata['document_id'] == 20") || !strings.Contains(filter, "metadata['generation'] != 'gen-active'") {
+		t.Fatalf("delete filter = %q", filter)
 	}
 }
 

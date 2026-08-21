@@ -31,6 +31,18 @@ func TestDecodeDefinitionBuildsIdentityAndCapabilities(t *testing.T) {
 	}
 }
 
+func TestDecodeDefinitionAcceptsNestedRuntimeConfig(t *testing.T) {
+	raw := json.RawMessage(`{"model_config":{"provider_id":2,"model":"m","mode":"react"},"prompt_config":{"system_prompt":"base"},"tool_config":{"tool_pack_ids":[3],"allow_subagents":true,"max_subagent_depth":3},"memory_policy":{"memory_enabled":false}}`)
+	definition, err := DecodeDefinition(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := agentRuntimeConfig(definition)
+	if cfg.ProviderID != 2 || cfg.Model != "m" || cfg.Mode != "react" || cfg.SystemPrompt != "base" || len(cfg.ToolPackIDs) != 1 || !cfg.AllowSubagents || cfg.MemoryEnabled {
+		t.Fatalf("nested runtime definition was not decoded: %+v", cfg)
+	}
+}
+
 func TestWorkspaceCodingContextTreatsCommitsBeyondWorktreeBaseAsUnpushed(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
@@ -48,7 +60,7 @@ func TestWorkspaceCodingContextTreatsCommitsBeyondWorktreeBaseAsUnpushed(t *test
 	if _, err := gitService.Commit(ctx, root, "feat: add change", []string{"change.txt"}); err != nil {
 		t.Fatal(err)
 	}
-	block := (runtimeCore{Git: gitService}).workspaceCodingContext(ctx, &RunContext{Workspace: &toolruntime.WorkspaceContext{
+	block := (runtimeCore{coreWorkspace: coreWorkspace{Git: gitService}}).workspaceCodingContext(ctx, &RunContext{Workspace: &toolruntime.WorkspaceContext{
 		Kind: "worktree", RepositoryRoot: root, WorkspacePath: root, BranchName: gitService.CurrentBranch(ctx, root), BaseSHA: base, GitEnabled: true,
 	}})
 	if block == nil || !strings.Contains(block.Content, "unpushed=true") {
@@ -61,8 +73,8 @@ type configuredMemoryRepository struct {
 }
 
 func TestAgentRuntimeMemoryRequiresUnifiedContextIndex(t *testing.T) {
-	n := runtimeCore{Memories: configuredMemoryRepository{}}
-	_, err := n.loadTools(context.Background(), 1, agentRuntimeConfig{MemoryEnabled: true}, nil)
+	n := runtimeCore{coreRepositories: coreRepositories{Memories: configuredMemoryRepository{}}}
+	_, err := n.loadTools(context.Background(), 1, agentRuntimeConfig{RuntimeMemoryPolicy: RuntimeMemoryPolicy{MemoryEnabled: true}}, nil)
 	if err == nil || !strings.Contains(err.Error(), "unified context index is not configured") {
 		t.Fatalf("expected unified context index configuration error, got %v", err)
 	}

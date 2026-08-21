@@ -113,20 +113,6 @@ func (s *ExtractionService) ProcessNextDream(ctx context.Context, dream *DreamWo
 	}
 	job := jobs[0]
 	if err := dream.HandleDreamJob(ctx, DreamPayload{JobID: job.ID, OwnerID: job.OwnerID, ConversationID: job.ConversationID}); err != nil {
-		job.ErrorMessage = err.Error()
-		job.LeaseExpiresAt = nil
-		if job.AttemptCount >= 5 {
-			job.Status = string(memory.ExtractionFailed)
-		} else if len(job.ResultJSON) > 0 {
-			job.Status = "analyzed"
-		} else {
-			job.Status = string(memory.ExtractionPending)
-			retryAt := time.Now().UTC().Add(time.Duration(job.AttemptCount) * time.Minute)
-			job.DueAt = &retryAt
-		}
-		if updateErr := s.extractions.Update(ctx, &job); updateErr != nil {
-			return true, fmt.Errorf("dream job failed: %v; persist retry state: %w", err, updateErr)
-		}
 		return true, err
 	}
 	return true, nil

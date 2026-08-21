@@ -8,7 +8,6 @@ import (
 
 	"agentcanvas/internal/domain/contextresource"
 	providerdomain "agentcanvas/internal/domain/provider"
-	cryptoinfra "agentcanvas/internal/infrastructure/crypto"
 	"agentcanvas/internal/infrastructure/llm"
 	"agentcanvas/internal/infrastructure/vectorstore"
 )
@@ -22,7 +21,7 @@ type ContextSemanticIndex struct {
 	Store             vectorstore.Store
 	Embedder          llm.EmbeddingClient
 	Providers         providerdomain.Repository
-	Secrets           *cryptoinfra.SecretBox
+	Secrets           providerdomain.SecretCodec
 	DefaultProviderID int64
 	DefaultModel      string
 	HNSW              vectorstore.HNSWConfig
@@ -32,7 +31,7 @@ func NewContextSemanticIndex(
 	store vectorstore.Store,
 	embedder llm.EmbeddingClient,
 	providers providerdomain.Repository,
-	secrets *cryptoinfra.SecretBox,
+	secrets providerdomain.SecretCodec,
 	defaultProviderID int64,
 	defaultModel string,
 	hnsw vectorstore.HNSWConfig,

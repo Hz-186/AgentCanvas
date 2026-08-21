@@ -89,7 +89,9 @@ func (r *QueueRuntime) dispatchOutbox(ctx context.Context) {
 		if err := r.Transport.PublishOutbox(ctx, item); err != nil {
 			observability.ReflectionSystemMetrics.RecordPublishLatency(time.Since(started))
 			next := time.Now().UTC().Add(outboxRetryDelay(item.AttemptCount + 1))
-			_ = r.Outbox.MarkOutboxFailed(context.WithoutCancel(ctx), item.ID, r.WorkerID, err, next)
+			if markErr := r.Outbox.MarkOutboxFailed(context.WithoutCancel(ctx), item.ID, r.WorkerID, err, next); markErr != nil {
+				r.Logger.Error("reflection outbox failure state update failed", "job_id", item.JobID, "event_id", item.EventID, "error", markErr)
+			}
 			observability.ReflectionSystemMetrics.RecordOutboxPublishFailure()
 			r.Logger.Error("reflection outbox publish failed", "job_id", item.JobID, "event_id", item.EventID,
 				"dispatch_seq", item.DispatchSeq, "attempt", item.AttemptCount+1, "error", err)
@@ -141,35 +143,35 @@ func (r *QueueRuntime) handleDelivery(ctx context.Context, workerID string, deli
 	envelope := delivery.Envelope()
 	if err := delivery.ValidationError(); err != nil {
 		if publishErr := r.Transport.PublishDLQ(context.WithoutCancel(ctx), envelope, err.Error()); publishErr != nil {
-			_ = delivery.Nak(context.WithoutCancel(ctx), time.Minute)
+			r.recordDeliveryError("nak", envelope, delivery.Nak(context.WithoutCancel(ctx), time.Minute))
 			return
 		}
-		_ = delivery.Term(context.WithoutCancel(ctx))
+		r.recordDeliveryError("term", envelope, delivery.Term(context.WithoutCancel(ctx)))
 		observability.ReflectionSystemMetrics.RecordDLQJob()
 		return
 	}
 	lockToken, err := queueLockToken()
 	if err != nil {
-		_ = delivery.Nak(context.WithoutCancel(ctx), time.Minute)
+		r.recordDeliveryError("nak", envelope, delivery.Nak(context.WithoutCancel(ctx), time.Minute))
 		return
 	}
 	leaseUntil := time.Now().UTC().Add(time.Duration(r.Config.LeaseSeconds) * time.Second)
 	job, state, err := r.Jobs.ClaimByID(ctx, envelope.JobID, workerID, lockToken, leaseUntil)
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		if publishErr := r.Transport.PublishDLQ(context.WithoutCancel(ctx), envelope, "reflection job not found"); publishErr == nil {
-			_ = delivery.Term(context.WithoutCancel(ctx))
+			r.recordDeliveryError("term", envelope, delivery.Term(context.WithoutCancel(ctx)))
 		} else {
-			_ = delivery.Nak(context.WithoutCancel(ctx), time.Minute)
+			r.recordDeliveryError("nak", envelope, delivery.Nak(context.WithoutCancel(ctx), time.Minute))
 		}
 		return
 	}
 	if err != nil {
-		_ = delivery.Nak(context.WithoutCancel(ctx), 10*time.Second)
+		r.recordDeliveryError("nak", envelope, delivery.Nak(context.WithoutCancel(ctx), 10*time.Second))
 		return
 	}
 	switch state {
 	case reflection.ClaimTerminal:
-		_ = delivery.Ack(context.WithoutCancel(ctx))
+		r.recordDeliveryError("ack", envelope, delivery.Ack(context.WithoutCancel(ctx)))
 		return
 	case reflection.ClaimBusy:
 		delay := 5 * time.Second
@@ -178,7 +180,7 @@ func (r *QueueRuntime) handleDelivery(ctx context.Context, workerID string, deli
 		} else if job.RetryAt != nil && job.RetryAt.After(time.Now()) {
 			delay = time.Until(*job.RetryAt) + time.Second
 		}
-		_ = delivery.Nak(context.WithoutCancel(ctx), delay)
+		r.recordDeliveryError("nak", envelope, delivery.Nak(context.WithoutCancel(ctx), delay))
 		return
 	}
 
@@ -217,23 +219,34 @@ func (r *QueueRuntime) handleDelivery(ctx context.Context, workerID string, deli
 			if errors.Is(err, reflection.ErrLeaseLost) {
 				observability.ReflectionSystemMetrics.RecordLeaseConflict()
 			}
-			_ = delivery.Nak(opCtx, 10*time.Second)
+			r.recordDeliveryError("nak", envelope, delivery.Nak(opCtx, 10*time.Second))
 			return
 		}
-		_ = delivery.Ack(opCtx)
+		r.recordDeliveryError("ack", envelope, delivery.Ack(opCtx))
 		return
 	}
 	if err := r.Jobs.CommitResult(opCtx, job.ID, job.LockToken, items); err != nil {
 		if errors.Is(err, reflection.ErrLeaseLost) {
 			observability.ReflectionSystemMetrics.RecordLeaseConflict()
 		}
-		_ = delivery.Nak(opCtx, 10*time.Second)
+		r.recordDeliveryError("nak", envelope, delivery.Nak(opCtx, 10*time.Second))
 		return
 	}
 	observability.ReflectionSystemMetrics.RecordJobCompleted()
 	if err := delivery.Ack(opCtx); err != nil {
 		r.Logger.Error("reflection message ack failed", "job_id", job.ID, "event_id", envelope.EventID, "worker_id", workerID, "error", err)
 	}
+}
+
+func (r *QueueRuntime) recordDeliveryError(action string, envelope reflection.Envelope, err error) {
+	if err == nil {
+		return
+	}
+	logger := r.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	logger.Error("reflection delivery state update failed", "action", action, "job_id", envelope.JobID, "event_id", envelope.EventID, "error", err)
 }
 
 func (r *QueueRuntime) heartbeat(ctx context.Context, cancel context.CancelFunc, job *reflection.Job, delivery reflection.Delivery, done chan<- error) {

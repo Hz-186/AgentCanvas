@@ -1,4 +1,4 @@
-"""Deterministic, dependency-free document chunking for the Bridge."""
+"""Deterministic document chunking for the Bridge."""
 
 from __future__ import annotations
 
@@ -51,7 +51,122 @@ def chunk_document(
         return fixed_chunks(text, chunk_size, overlap), "estimated"
     if method == "recursive":
         return recursive_chunks(text, block_list, chunk_size, overlap), "estimated"
+    if method == "langchain_recursive":
+        return langchain_recursive_chunks(text, block_list, chunk_size, overlap), "estimated"
     raise ValueError(f"unsupported chunk method: {method}")
+
+
+def langchain_recursive_chunks(
+    text: str,
+    blocks: list[Block],
+    chunk_size: int,
+    overlap: int,
+) -> list[Chunk]:
+    """Use LangChain's splitter while retaining AgentCanvas block metadata."""
+    try:
+        from langchain_core.documents import Document
+        from langchain_text_splitters import RecursiveCharacterTextSplitter
+    except ImportError as exc:  # pragma: no cover - deployment smoke test
+        raise RuntimeError("LangChain text splitter dependencies are not installed") from exc
+
+    segments = _document_segments(text, blocks)
+    if not segments:
+        return []
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=chunk_size,
+        chunk_overlap=overlap,
+        length_function=estimate_tokens,
+        separators=("\n\n", "\n", "。", "！", "？", "；", ";", "，", ",", " ", ""),
+        keep_separator="end",
+    )
+    output: list[Chunk] = []
+    grouped: list[Document] = []
+    grouped_text: list[str] = []
+    grouped_ids: list[str] = []
+    grouped_metadata: dict[str, Any] = {}
+    grouped_section = ""
+    grouped_page: int | None = None
+
+    def flush_group() -> None:
+        nonlocal grouped_text, grouped_ids, grouped_metadata, grouped_section, grouped_page
+        if not grouped_text:
+            return
+        grouped.append(
+            Document(
+                page_content="\n\n".join(grouped_text),
+                metadata={
+                    "block_ids": list(grouped_ids),
+                    "section_title": grouped_section,
+                    "page_no": grouped_page,
+                    "source_metadata": dict(grouped_metadata),
+                },
+            )
+        )
+        grouped_text = []
+        grouped_ids = []
+        grouped_metadata = {}
+        grouped_section = ""
+        grouped_page = None
+
+    for segment in segments:
+        content = str(segment["text"]).strip()
+        if not content:
+            continue
+        if segment["single"]:
+            flush_group()
+            atomic = Document(
+                page_content=content,
+                metadata={
+                    "block_ids": [segment["id"]],
+                    "section_title": segment["section"],
+                    "page_no": segment["page"],
+                    "source_metadata": dict(segment["metadata"]),
+                },
+            )
+            atomic_parts = splitter.split_documents([atomic])
+            for part in atomic_parts:
+                output.append(_langchain_chunk(part, output))
+            continue
+        grouped_text.append(content)
+        grouped_ids.append(str(segment["id"]))
+        grouped_section = str(segment["section"] or grouped_section)
+        if grouped_page is None:
+            grouped_page = segment["page"]
+        grouped_metadata = _merge_metadata(grouped_metadata, segment["metadata"])
+    flush_group()
+
+    for document in grouped:
+        for part in splitter.split_documents([document]):
+            output.append(_langchain_chunk(part, output))
+    return output
+
+
+def _langchain_chunk(document: Any, output: list[Chunk]) -> Chunk:
+    metadata = dict(document.metadata or {})
+    source_metadata = metadata.pop("source_metadata", {})
+    block_ids = metadata.pop("block_ids", []) or []
+    section_title = str(metadata.pop("section_title", "") or "")
+    page_no = metadata.pop("page_no", None)
+    if page_no is not None:
+        page_no = int(page_no)
+    merged = _metadata(
+        "python:langchain_recursive",
+        "estimated",
+        [str(item) for item in block_ids],
+        source_metadata,
+        page_no,
+    )
+    merged["splitter"] = "langchain_recursive_character_v1"
+    content = str(document.page_content).strip()
+    return Chunk(
+        index=len(output),
+        content=content,
+        token_count=estimate_tokens(content),
+        char_count=len(content),
+        section_title=section_title,
+        page_no=page_no,
+        metadata=merged,
+    )
 
 
 def fixed_chunks(text: str, chunk_size: int, overlap: int) -> list[Chunk]:
@@ -242,10 +357,10 @@ def _split_recursive(text: str, budget: int, separators: tuple[str, ...] = ("\n\
 
 
 def _split_keep_separator(text: str, separator: str) -> list[str]:
-	if not separator:
-		return [text]
-	pieces = text.split(separator)
-	return [piece + separator if index < len(pieces) - 1 and separator not in {"\n\n", "\n", " "} else piece for index, piece in enumerate(pieces)]
+    if not separator:
+        return [text]
+    pieces = text.split(separator)
+    return [piece + separator if index < len(pieces) - 1 and separator not in {"\n\n", "\n", " "} else piece for index, piece in enumerate(pieces)]
 
 
 def _split_by_rune_budget(text: str, budget: int) -> list[str]:
@@ -285,13 +400,13 @@ def _token_overlap_start(runes: list[str], start: int, end: int, overlap: int) -
 
 
 def _overlap_text(content: str, overlap: int) -> str:
-	if overlap <= 0:
-		return ""
-	runes = list(content)
-	start = len(runes)
-	while start > 0 and estimate_tokens("".join(runes[start - 1 :])) <= overlap:
-		start -= 1
-	return "".join(runes[start:]).strip() if start < len(runes) else ""
+    if overlap <= 0:
+        return ""
+    runes = list(content)
+    start = len(runes)
+    while start > 0 and estimate_tokens("".join(runes[start - 1 :])) <= overlap:
+        start -= 1
+    return "".join(runes[start:]).strip() if start < len(runes) else ""
 
 
 def _metadata(method: str, tokenizer: str, block_ids: list[str], extra: dict[str, Any], page_no: int | None) -> dict[str, Any]:

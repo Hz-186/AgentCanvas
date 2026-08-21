@@ -135,3 +135,13 @@ func RuntimeTools(client *Client, capabilities *Capabilities, allowed []string, 
 	}
 	return tools
 }
+
+// LoadRuntimeTools is the runtime-facing port implemented by the bridge
+// adapter; callers do not need the concrete client or capability DTO.
+func (c *Client) LoadRuntimeTools(ctx context.Context, allowed []string, invocations tool.InvocationRepository) ([]toolruntime.RuntimeTool, error) {
+	capabilities, err := c.GetCapabilities(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return RuntimeTools(c, capabilities, allowed, invocations), nil
+}

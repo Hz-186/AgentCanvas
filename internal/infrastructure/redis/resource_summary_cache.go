@@ -28,9 +28,11 @@ type ResourceSummaryCache struct {
 }
 
 type resourceFlight struct {
-	done chan struct{}
-	page resource.Page
-	err  error
+	done    chan struct{}
+	ownerID int64
+	kind    resource.Kind
+	page    resource.Page
+	err     error
 }
 
 type resourceCacheEnvelope struct {
@@ -51,7 +53,7 @@ func (c *ResourceSummaryCache) List(ctx context.Context, ownerID int64, kind res
 	cancel()
 	if epochErr != nil {
 		c.log.Warn("resource cache epoch read failed", "kind", kind, "error", epochErr)
-		return c.next.List(ctx, ownerID, kind, options)
+		epoch = "redis-unavailable"
 	}
 	key := c.key(ownerID, kind, epoch, options)
 	cacheCtx, cancel = context.WithTimeout(ctx, 30*time.Millisecond)
@@ -67,16 +69,16 @@ func (c *ResourceSummaryCache) List(ctx context.Context, ownerID int64, kind res
 		c.log.Warn("resource cache read failed", "kind", kind, "error", err)
 	}
 
-	page, err := c.load(ctx, key, ownerID, kind, options)
+	page, err := c.load(ctx, c.key(ownerID, kind, "flight", options), key, ownerID, kind, options)
 	if err != nil {
 		return resource.Page{}, err
 	}
 	return page, nil
 }
 
-func (c *ResourceSummaryCache) load(ctx context.Context, key string, ownerID int64, kind resource.Kind, options resource.ListOptions) (resource.Page, error) {
+func (c *ResourceSummaryCache) load(ctx context.Context, flightKey, cacheKey string, ownerID int64, kind resource.Kind, options resource.ListOptions) (resource.Page, error) {
 	c.mu.Lock()
-	if existing := c.flights[key]; existing != nil {
+	if existing := c.flights[flightKey]; existing != nil {
 		c.mu.Unlock()
 		select {
 		case <-ctx.Done():
@@ -85,22 +87,19 @@ func (c *ResourceSummaryCache) load(ctx context.Context, key string, ownerID int
 			return existing.page, existing.err
 		}
 	}
-	flight := &resourceFlight{done: make(chan struct{})}
-	c.flights[key] = flight
+	flight := &resourceFlight{done: make(chan struct{}), ownerID: ownerID, kind: kind}
+	c.flights[flightKey] = flight
 	c.mu.Unlock()
 
 	// A caller can observe a miss just before the previous leader stores and
 	// removes its flight. Recheck after becoming leader to close that window.
 	cacheCtx, cancel := context.WithTimeout(ctx, 30*time.Millisecond)
-	if data, cacheErr := c.client.Get(cacheCtx, key).Bytes(); cacheErr == nil {
+	if data, cacheErr := c.client.Get(cacheCtx, cacheKey).Bytes(); cacheErr == nil {
 		var envelope resourceCacheEnvelope
 		if json.Unmarshal(data, &envelope) == nil && envelope.Schema == 1 && envelope.OwnerID == ownerID && envelope.Kind == kind {
 			cancel()
 			flight.page = envelope.Page
-			c.mu.Lock()
-			delete(c.flights, key)
-			close(flight.done)
-			c.mu.Unlock()
+			c.finishFlight(flightKey, flight)
 			return envelope.Page, nil
 		}
 	}
@@ -108,14 +107,24 @@ func (c *ResourceSummaryCache) load(ctx context.Context, key string, ownerID int
 
 	page, err := c.next.List(ctx, ownerID, kind, options)
 	if err == nil {
-		c.store(key, ownerID, kind, page)
+		c.store(cacheKey, ownerID, kind, page)
 	}
 	flight.page, flight.err = page, err
+	c.finishFlight(flightKey, flight)
+	return page, err
+}
+
+func (c *ResourceSummaryCache) finishFlight(key string, flight *resourceFlight) {
 	c.mu.Lock()
-	delete(c.flights, key)
 	close(flight.done)
 	c.mu.Unlock()
-	return page, err
+	time.AfterFunc(100*time.Millisecond, func() {
+		c.mu.Lock()
+		if c.flights[key] == flight {
+			delete(c.flights, key)
+		}
+		c.mu.Unlock()
+	})
 }
 
 func (c *ResourceSummaryCache) store(key string, ownerID int64, kind resource.Kind, page resource.Page) {
@@ -133,7 +142,17 @@ func (c *ResourceSummaryCache) store(key string, ownerID int64, kind resource.Ki
 func (c *ResourceSummaryCache) Invalidate(ctx context.Context, ownerID int64, kind resource.Kind) error {
 	cacheCtx, cancel := context.WithTimeout(ctx, 30*time.Millisecond)
 	defer cancel()
-	return c.client.Set(cacheCtx, c.epochKey(ownerID, kind), uuid.NewString(), 0).Err()
+	if err := c.client.Set(cacheCtx, c.epochKey(ownerID, kind), uuid.NewString(), 0).Err(); err != nil {
+		return err
+	}
+	c.mu.Lock()
+	for key, flight := range c.flights {
+		if flight.ownerID == ownerID && flight.kind == kind {
+			delete(c.flights, key)
+		}
+	}
+	c.mu.Unlock()
+	return nil
 }
 
 func (c *ResourceSummaryCache) epoch(ctx context.Context, ownerID int64, kind resource.Kind) (string, error) {

@@ -48,23 +48,27 @@ func (s *Store) IndexChunks(ctx context.Context, docs []retrieval.ChunkIndexDocu
 		}
 		hasVector := len(doc.EmbeddingVector) > 0
 		metadata := map[string]any{
-			"owner_id":             doc.OwnerID,
-			"kb_id":                doc.KBID,
-			"document_id":          doc.DocumentID,
-			"chunk_id":             doc.ChunkID,
-			"chunk_index":          doc.ChunkIndex,
-			"document_name":        doc.DocumentName,
-			"file_type":            doc.FileType,
-			"section_title":        doc.SectionTitle,
-			"content":              doc.Content,
-			"content_hash":         doc.ContentHash,
-			"enabled":              doc.Enabled,
-			"embedding_model":      doc.EmbeddingModel,
-			"embedding_dimensions": doc.EmbeddingDimensions,
-			"page_no":              doc.PageNo,
-			"token_count":          doc.TokenCount,
-			"has_vector":           hasVector,
-			"source_metadata":      doc.Metadata,
+			"owner_id":              doc.OwnerID,
+			"kb_id":                 doc.KBID,
+			"document_id":           doc.DocumentID,
+			"generation":            doc.Generation,
+			"chunk_id":              doc.ChunkID,
+			"chunk_index":           doc.ChunkIndex,
+			"document_name":         doc.DocumentName,
+			"file_type":             doc.FileType,
+			"section_title":         doc.SectionTitle,
+			"content":               doc.Content,
+			"content_hash":          doc.ContentHash,
+			"enabled":               doc.Enabled,
+			"embedding_model":       doc.EmbeddingModel,
+			"embedding_dimensions":  doc.EmbeddingDimensions,
+			"embedding_provider_id": doc.EmbeddingProviderID,
+			"embedding_metric":      doc.EmbeddingMetric,
+			"embedding_profile":     doc.EmbeddingProfile,
+			"page_no":               doc.PageNo,
+			"token_count":           doc.TokenCount,
+			"has_vector":            hasVector,
+			"source_metadata":       doc.Metadata,
 		}
 		vector := doc.EmbeddingVector
 		if len(vector) == 0 && s.dimensions > 0 {
@@ -92,6 +96,19 @@ func (s *Store) DeleteByDocument(ctx context.Context, ownerID, documentID int64)
 
 func (s *Store) DeleteByKnowledgeBase(ctx context.Context, ownerID, kbID int64) error {
 	return s.deleteByFilter(ctx, map[string]any{"owner_id": ownerID, "kb_id": kbID})
+}
+
+func (s *Store) DeleteInactiveGenerations(ctx context.Context, ownerID, documentID int64, activeGeneration string) error {
+	if s == nil || s.store == nil {
+		return nil
+	}
+	cleaner, ok := s.store.(interface {
+		DeleteByFilterExcept(context.Context, string, map[string]any, string, any) error
+	})
+	if !ok {
+		return fmt.Errorf("milvus store does not support generation cleanup")
+	}
+	return cleaner.DeleteByFilterExcept(ctx, s.collection, map[string]any{"owner_id": ownerID, "document_id": documentID}, "generation", activeGeneration)
 }
 
 func (s *Store) SetDocumentEnabled(ctx context.Context, ownerID, documentID int64, enabled bool) error {
@@ -126,6 +143,18 @@ func (s *Store) Search(ctx context.Context, req retrieval.RetrievalRequest) (*re
 	} else if len(req.KBIDs) > 1 {
 		filter["kb_id"] = append([]int64(nil), req.KBIDs...)
 	}
+	if strings.TrimSpace(req.Generation) != "" {
+		filter["generation"] = req.Generation
+	}
+	if strings.TrimSpace(req.EmbeddingProfile) != "" {
+		filter["embedding_profile"] = req.EmbeddingProfile
+	}
+	activeGenerations := make([]map[string]any, 0, len(req.ActiveGenerations))
+	for documentID, generation := range req.ActiveGenerations {
+		if generation = strings.TrimSpace(generation); generation != "" {
+			activeGenerations = append(activeGenerations, map[string]any{"document_id": documentID, "generation": generation})
+		}
+	}
 	filter["enabled"] = true
 	for key, value := range req.Filters {
 		filter[key] = value
@@ -142,7 +171,7 @@ func (s *Store) Search(ctx context.Context, req retrieval.RetrievalRequest) (*re
 			vectorFilter[key] = value
 		}
 		vectorFilter["has_vector"] = true
-		items, err := s.store.Search(ctx, vectorstore.SearchRequest{Collection: s.collection, Vector: req.QueryVector, TopK: topK, Filter: vectorFilter, HNSW: s.hnsw})
+		items, err := s.store.Search(ctx, vectorstore.SearchRequest{Collection: s.collection, Vector: req.QueryVector, TopK: topK, Filter: vectorFilter, AnyFilters: activeGenerations, HNSW: s.hnsw})
 		if err != nil {
 			return nil, err
 		}
@@ -156,7 +185,7 @@ func (s *Store) Search(ctx context.Context, req retrieval.RetrievalRequest) (*re
 		if !hasKeywordSearch {
 			return nil, fmt.Errorf("milvus keyword retriever is not configured")
 		}
-		items, err := keywordSearch.SearchText(ctx, vectorstore.SearchRequest{Collection: s.collection, QueryText: req.Query, TopK: topK, Filter: filter})
+		items, err := keywordSearch.SearchText(ctx, vectorstore.SearchRequest{Collection: s.collection, QueryText: req.Query, TopK: topK, Filter: filter, AnyFilters: activeGenerations})
 		if err != nil {
 			return nil, err
 		}
@@ -228,6 +257,7 @@ func resultFromMetadata(item vectorstore.SearchResult) retrieval.RetrievalResult
 	}
 	result.DocumentID = int64Value(item.Metadata["document_id"])
 	result.KBID = int64Value(item.Metadata["kb_id"])
+	result.Generation = stringValue(item.Metadata["generation"])
 	result.Content = stringValue(item.Metadata["content"])
 	result.DocumentName = stringValue(item.Metadata["document_name"])
 	if pageNo := int64Value(item.Metadata["page_no"]); pageNo > 0 {

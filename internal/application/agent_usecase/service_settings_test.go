@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -19,6 +20,7 @@ import (
 	gitinfra "agentcanvas/internal/infrastructure/git"
 	"agentcanvas/internal/infrastructure/llm"
 	agenterrors "agentcanvas/internal/pkg/errors"
+	"agentcanvas/internal/pkg/jsonutil"
 	runtimeagent "agentcanvas/internal/runtime/agent"
 	agentruntime "agentcanvas/internal/runtime/agentruntime"
 	runtimeevent "agentcanvas/internal/runtime/event"
@@ -141,7 +143,7 @@ func TestStartTurnSnapshotsModeAndReturnsPersistentUserMessage(t *testing.T) {
 	conv := &conversation.Conversation{ID: 20, OwnerID: 3, AgentID: &agentID, AgentReleaseID: &releaseID, Source: conversation.SourceAgent, AgentMode: "plan_execute"}
 	conversations := &settingsConversationRepo{items: map[int64]*conversation.Conversation{20: conv}}
 	turns := &settingsTurnRepo{latestErr: agentdomain.ErrNoTurnAvailable}
-	definition := agentdomain.Definition{ProviderID: 1, Model: "test-model", SystemPrompt: "test", Mode: "react"}
+	definition := agentdomain.Definition{ModelConfig: agentdomain.ModelConfig{ProviderID: 1, Model: "test-model"}, PromptConfig: agentdomain.PromptConfig{SystemPrompt: "test"}, ExecutionLimits: agentdomain.ExecutionLimits{Mode: "react"}}
 	definitionJSON, checksum, err := definition.Snapshot()
 	if err != nil {
 		t.Fatal(err)
@@ -168,8 +170,51 @@ func TestStartTurnSnapshotsModeAndReturnsPersistentUserMessage(t *testing.T) {
 	}
 }
 
+func TestExecuteTurnAcceptsEmptyHistoricalInputAndFailsNilRuntimeResult(t *testing.T) {
+	definitionJSON, _, err := (agentdomain.Definition{
+		ModelConfig:  agentdomain.ModelConfig{ProviderID: 1, Model: "test-model"},
+		PromptConfig: agentdomain.PromptConfig{SystemPrompt: "test"},
+	}).Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	runID := int64(401)
+	run := &agentdomain.Run{ID: runID, OwnerID: 3, AgentID: 10, Status: agentdomain.RunStatusQueued, DefinitionJSON: definitionJSON, StartedAt: time.Now().UTC()}
+	turn := &agentdomain.Turn{ID: 201, OwnerID: 3, AgentID: 10, RunID: &runID, Status: agentdomain.TurnStatusRunning}
+	runs := &settingsRunRepo{items: map[int64]*agentdomain.Run{runID: run}}
+	turns := &settingsTurnRepo{}
+	runtime := &settingsAgentRuntime{}
+
+	NewService(nil, turns, nil, nil, runs, nil, nil, nil, runtime).executeTurnOwned(context.Background(), turn)
+
+	if runtime.executeReq.RunID != runID || turn.Status != agentdomain.TurnStatusFailed || run.Status != agentdomain.RunStatusFailed || !strings.Contains(run.ErrorMessage, "returned no result") {
+		t.Fatalf("empty input or nil result handling mismatch: request=%+v turn=%+v run=%+v", runtime.executeReq, turn, run)
+	}
+}
+
+func TestExecuteTurnFailsInvalidPersistedInputBeforeRuntime(t *testing.T) {
+	definitionJSON, _, err := (agentdomain.Definition{
+		ModelConfig:  agentdomain.ModelConfig{ProviderID: 1, Model: "test-model"},
+		PromptConfig: agentdomain.PromptConfig{SystemPrompt: "test"},
+	}).Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	runID := int64(402)
+	run := &agentdomain.Run{ID: runID, OwnerID: 3, AgentID: 10, Status: agentdomain.RunStatusQueued, DefinitionJSON: definitionJSON, StartedAt: time.Now().UTC()}
+	turn := &agentdomain.Turn{ID: 202, OwnerID: 3, AgentID: 10, RunID: &runID, Status: agentdomain.TurnStatusRunning, InputJSON: json.RawMessage(`{"query":`)}
+	runs := &settingsRunRepo{items: map[int64]*agentdomain.Run{runID: run}}
+	runtime := &settingsAgentRuntime{executeResult: &agentruntime.RunResult{Output: agentruntime.RunOutput{"final_answer": "must not execute"}}}
+
+	NewService(nil, &settingsTurnRepo{}, nil, nil, runs, nil, nil, nil, runtime).executeTurnOwned(context.Background(), turn)
+
+	if runtime.executeReq.RunID != 0 || turn.Status != agentdomain.TurnStatusFailed || run.Status != agentdomain.RunStatusFailed || !strings.Contains(run.ErrorMessage, "decode turn input") {
+		t.Fatalf("invalid persisted input was not rejected: request=%+v turn=%+v run=%+v", runtime.executeReq, turn, run)
+	}
+}
+
 func TestRootRunNeverEntersRunningWhenWorkspacePreparationFails(t *testing.T) {
-	definition := agentdomain.Definition{ProviderID: 1, Model: "test-model", SystemPrompt: "test", Mode: "react"}
+	definition := agentdomain.Definition{ModelConfig: agentdomain.ModelConfig{ProviderID: 1, Model: "test-model"}, PromptConfig: agentdomain.PromptConfig{SystemPrompt: "test"}, ExecutionLimits: agentdomain.ExecutionLimits{Mode: "react"}}
 	definitionJSON, _, err := definition.Snapshot()
 	if err != nil {
 		t.Fatal(err)
@@ -221,7 +266,7 @@ func TestRootRunNeverEntersRunningWhenWorkspacePreparationFails(t *testing.T) {
 }
 
 func TestRootRunDoesNotExecuteWhenWorkspaceLinkPersistenceFails(t *testing.T) {
-	definition := agentdomain.Definition{ProviderID: 1, Model: "test-model", SystemPrompt: "test", Mode: "react"}
+	definition := agentdomain.Definition{ModelConfig: agentdomain.ModelConfig{ProviderID: 1, Model: "test-model"}, PromptConfig: agentdomain.PromptConfig{SystemPrompt: "test"}, ExecutionLimits: agentdomain.ExecutionLimits{Mode: "react"}}
 	definitionJSON, _, err := definition.Snapshot()
 	if err != nil {
 		t.Fatal(err)
@@ -234,11 +279,8 @@ func TestRootRunDoesNotExecuteWhenWorkspaceLinkPersistenceFails(t *testing.T) {
 		InputJSON: json.RawMessage(`{"query":"edit README","mode":"react"}`), StartedAt: time.Now().UTC(),
 	}
 	linkErr := errors.New("run workspace link unavailable")
-	runs := &workspaceLifecycleRunRepo{
-		settingsRunRepo:  settingsRunRepo{items: map[int64]*agentdomain.Run{runID: run}},
-		workspaceLinkErr: linkErr,
-	}
-	turns := &settingsTurnRepo{}
+	runs := &workspaceLifecycleRunRepo{settingsRunRepo: settingsRunRepo{items: map[int64]*agentdomain.Run{runID: run}}}
+	turns := &settingsTurnRepo{ownedUpdateErr: linkErr}
 	turn := &agentdomain.Turn{ID: 202, OwnerID: 3, AgentID: agentID, ConversationID: conversationID, RunID: &runID, InputJSON: run.InputJSON, Status: agentdomain.TurnStatusQueued}
 	conversations := &settingsConversationRepo{items: map[int64]*conversation.Conversation{
 		conversationID: {ID: conversationID, OwnerID: 3, AgentID: &agentID, ProjectID: &projectID, WorkspaceMode: workspacedomain.KindWorktree},
@@ -255,7 +297,7 @@ func TestRootRunDoesNotExecuteWhenWorkspaceLinkPersistenceFails(t *testing.T) {
 	))
 
 	service.executeTurnOwned(context.Background(), turn)
-	if !runs.workspaceLinkFailed || run.Status != agentdomain.RunStatusFailed || runtime.executeReq.RunID != 0 {
+	if !turns.ownedUpdateFailed || run.Status != agentdomain.RunStatusFailed || runtime.executeReq.RunID != 0 {
 		t.Fatalf("workspace link failure did not stop execution: run=%+v runtime=%+v", run, runtime.executeReq)
 	}
 	if run.ErrorMessage != linkErr.Error() {
@@ -325,7 +367,7 @@ func TestSubagentDoesNotExecuteWhenWorkspaceLinkPersistenceFails(t *testing.T) {
 }
 
 func TestRootRunEmitsFinalWorkspaceStatusAfterRuntimeMutation(t *testing.T) {
-	definition := agentdomain.Definition{ProviderID: 1, Model: "test-model", SystemPrompt: "test", Mode: "react"}
+	definition := agentdomain.Definition{ModelConfig: agentdomain.ModelConfig{ProviderID: 1, Model: "test-model"}, PromptConfig: agentdomain.PromptConfig{SystemPrompt: "test"}, ExecutionLimits: agentdomain.ExecutionLimits{Mode: "react"}}
 	definitionJSON, _, err := definition.Snapshot()
 	if err != nil {
 		t.Fatal(err)
@@ -422,6 +464,28 @@ func TestCancelRunCancelsQueuedTurn(t *testing.T) {
 	}
 	if turns.updated == nil || turns.updated.Status != agentdomain.TurnStatusCancelled || turns.updated.FinishedAt == nil {
 		t.Fatalf("queued turn was not cancelled with the run: %+v", turns.updated)
+	}
+}
+
+func TestCancelRunReturnsChildCancellationError(t *testing.T) {
+	parentID, childID := int64(401), int64(402)
+	childErr := errors.New("child cancel failed")
+	runs := &settingsRunRepo{
+		items: map[int64]*agentdomain.Run{
+			parentID: {ID: parentID, OwnerID: 3, Status: agentdomain.RunStatusRunning},
+			childID:  {ID: childID, OwnerID: 3, ParentRunID: &parentID, Status: agentdomain.RunStatusRunning},
+		},
+		cancelErrors: map[int64]error{childID: childErr},
+	}
+	turns := &settingsTurnRepo{byRun: map[int64]*agentdomain.Turn{parentID: {ID: 201, OwnerID: 3, RunID: &parentID, Status: agentdomain.TurnStatusRunning}}}
+	service := NewService(nil, turns, nil, nil, runs, nil, nil, nil, nil)
+
+	err := service.CancelRun(context.Background(), 3, parentID)
+	if !errors.Is(err, childErr) || !strings.Contains(err.Error(), "cancel child run 402") {
+		t.Fatalf("CancelRun() error = %v", err)
+	}
+	if runs.items[parentID].Status != agentdomain.RunStatusCancelled {
+		t.Fatalf("parent status = %q, want cancelled", runs.items[parentID].Status)
 	}
 }
 
@@ -545,13 +609,34 @@ func TestResumeByIDPropagatesPendingApprovalStorageFailure(t *testing.T) {
 	}
 }
 
-func TestDecideApprovalResumesSubagentWithoutTurn(t *testing.T) {
+func TestResumeByIDQueuesTurnInsideApprovalTransaction(t *testing.T) {
+	run := &agentdomain.Run{ID: 42, OwnerID: 3, AgentID: 10, RunType: agentdomain.RunTypeTurn, Status: agentdomain.RunStatusPaused}
+	runs := &settingsRunRepo{items: map[int64]*agentdomain.Run{run.ID: run}}
+	turns := &settingsTurnRepo{byRun: map[int64]*agentdomain.Turn{run.ID: {
+		ID: 9, OwnerID: 3, RunID: &run.ID, Status: agentdomain.TurnStatusPaused, InputJSON: json.RawMessage(`{"query":"continue"}`),
+	}}}
+	approvals := &settingsApprovalRepo{checkpoint: &agentdomain.RunCheckpoint{ID: 8, OwnerID: 3, RunID: run.ID}}
+	service := NewService(nil, turns, nil, nil, runs, nil, nil, approvals, nil)
+
+	if _, err := service.ResumeByID(context.Background(), 3, run.ID); err != nil {
+		t.Fatalf("ResumeByID returned error: %v", err)
+	}
+	var input map[string]any
+	if err := json.Unmarshal(approvals.resumeInput, &input); err != nil {
+		t.Fatalf("resume input was not passed to the transaction: %v", err)
+	}
+	if input["query"] != "continue" || input["resume_approved"] != true || turns.updated != nil {
+		t.Fatalf("resume was not queued atomically: input=%v separately_updated=%+v", input, turns.updated)
+	}
+}
+
+func TestDecideApprovalQueuesSubagentResumeWithoutHTTPRuntimeCall(t *testing.T) {
 	_, definitionJSON, err := subagentRuntimeDefinition(toolruntime.SubagentDefinition{Task: "continue", SystemPrompt: "be precise"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	run := &agentdomain.Run{ID: 42, OwnerID: 3, AgentID: 10, RunType: agentdomain.RunTypeSubagent,
-		Status: agentdomain.RunStatusWaitingHuman, DefinitionJSON: definitionJSON, DefinitionHash: hashJSON(definitionJSON), InputJSON: json.RawMessage(`{"query":"continue"}`)}
+		Status: agentdomain.RunStatusWaitingHuman, DefinitionJSON: definitionJSON, DefinitionHash: jsonutil.Hash(definitionJSON), InputJSON: json.RawMessage(`{"query":"continue"}`)}
 	runs := &settingsRunRepo{items: map[int64]*agentdomain.Run{run.ID: run}}
 	request := &agentdomain.ApprovalRequest{ID: 7, OwnerID: 3, RunID: run.ID, Status: agentdomain.ApprovalStatusPending}
 	checkpoint := &agentdomain.RunCheckpoint{ID: 8, OwnerID: 3, RunID: run.ID, MessagesJSON: json.RawMessage(`[]`), PendingToolCallJSON: json.RawMessage(`null`), ContextJSON: json.RawMessage(`{}`)}
@@ -563,8 +648,35 @@ func TestDecideApprovalResumesSubagentWithoutTurn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DecideApprovalRequest returned error: %v", err)
 	}
-	if !approvals.decided || resumed.Status != agentdomain.RunStatusSucceeded || resumed.FinishedAt == nil || runtime.resumeReq.RunID != run.ID {
-		t.Fatalf("subagent approval did not resume directly: run=%+v decided=%v request=%+v", resumed, approvals.decided, runtime.resumeReq)
+	var input map[string]any
+	if err := json.Unmarshal(approvals.resumeInput, &input); err != nil {
+		t.Fatal(err)
+	}
+	if !approvals.decided || resumed.Status != agentdomain.RunStatusResuming || runtime.resumeReq.RunID != 0 || input["resume_approved"] != true {
+		t.Fatalf("subagent approval was not queued: run=%+v decided=%v request=%+v input=%v", resumed, approvals.decided, runtime.resumeReq, input)
+	}
+}
+
+func TestWorkerResumesSubagentThroughClaimedTurn(t *testing.T) {
+	_, definitionJSON, err := subagentRuntimeDefinition(toolruntime.SubagentDefinition{Task: "continue", SystemPrompt: "be precise"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runID := int64(43)
+	run := &agentdomain.Run{ID: runID, OwnerID: 3, AgentID: 10, RunType: agentdomain.RunTypeSubagent,
+		Status: agentdomain.RunStatusResuming, DefinitionJSON: definitionJSON, DefinitionHash: jsonutil.Hash(definitionJSON),
+		InputJSON: json.RawMessage(`{"query":"continue"}`), StartedAt: time.Now().UTC()}
+	turn := &agentdomain.Turn{ID: 9, OwnerID: 3, AgentID: 10, RunID: &runID, Status: agentdomain.TurnStatusRunning,
+		LeaseToken: "owned", InputJSON: json.RawMessage(`{"query":"continue","resume_approved":true}`)}
+	turns := &settingsTurnRepo{byRun: map[int64]*agentdomain.Turn{runID: turn}}
+	runs := &settingsRunRepo{items: map[int64]*agentdomain.Run{runID: run}}
+	approvals := &settingsApprovalRepo{checkpoint: &agentdomain.RunCheckpoint{ID: 8, OwnerID: 3, RunID: runID, MessagesJSON: json.RawMessage(`[]`), PendingToolCallJSON: json.RawMessage(`null`), ContextJSON: json.RawMessage(`{}`)}}
+	runtime := &settingsAgentRuntime{resumeResult: &agentruntime.RunResult{Output: agentruntime.RunOutput{"final_answer": "approved"}}}
+
+	NewService(nil, turns, nil, nil, runs, nil, nil, approvals, runtime).executeTurnOwned(context.Background(), turn)
+
+	if runtime.resumeReq.RunID != runID || turn.Status != agentdomain.TurnStatusSucceeded || run.Status != agentdomain.RunStatusSucceeded || turns.completedRun != run {
+		t.Fatalf("claimed subagent resume did not complete under the Turn lease: request=%+v turn=%+v run=%+v", runtime.resumeReq, turn, run)
 	}
 }
 
@@ -589,7 +701,7 @@ func TestResumeRunEmitsFinalWorkspaceStatusAfterRuntimeMutation(t *testing.T) {
 	}
 	run := &agentdomain.Run{
 		ID: runID, OwnerID: 3, AgentID: 10, RunType: agentdomain.RunTypeSubagent,
-		Status: agentdomain.RunStatusWaitingHuman, DefinitionJSON: definitionJSON, DefinitionHash: hashJSON(definitionJSON),
+		Status: agentdomain.RunStatusWaitingHuman, DefinitionJSON: definitionJSON, DefinitionHash: jsonutil.Hash(definitionJSON),
 		InputJSON: json.RawMessage(`{"query":"continue"}`), WorkspaceID: &workspace.ID, StartedAt: time.Now().UTC(),
 	}
 	runs := &settingsRunRepo{items: map[int64]*agentdomain.Run{run.ID: run}}
@@ -638,9 +750,10 @@ func TestResumeRunEmitsFinalWorkspaceStatusAfterRuntimeMutation(t *testing.T) {
 
 type settingsRunRepo struct {
 	agentdomain.RunRepository
-	item   *agentdomain.Run
-	items  map[int64]*agentdomain.Run
-	nextID int64
+	item         *agentdomain.Run
+	items        map[int64]*agentdomain.Run
+	nextID       int64
+	cancelErrors map[int64]error
 }
 
 func (r *settingsRunRepo) FindByID(_ context.Context, ownerID, id int64) (*agentdomain.Run, error) {
@@ -673,6 +786,17 @@ func (r *settingsRunRepo) Update(_ context.Context, item *agentdomain.Run) error
 		r.items[item.ID] = item
 	}
 	return nil
+}
+
+func (r *settingsRunRepo) CancelActive(_ context.Context, item *agentdomain.Run, finishedAt time.Time) (bool, error) {
+	if err := r.cancelErrors[item.ID]; err != nil {
+		return false, err
+	}
+	if !agentdomain.IsActiveRunStatus(item.Status) {
+		return false, nil
+	}
+	item.Status, item.FinishedAt = agentdomain.RunStatusCancelled, &finishedAt
+	return true, nil
 }
 
 func (r *settingsRunRepo) ListByParent(_ context.Context, ownerID, parentRunID int64) ([]agentdomain.Run, error) {
@@ -823,6 +947,7 @@ type settingsApprovalRepo struct {
 	createdApproval   *agentdomain.ApprovalRequest
 	createdCheckpoint *agentdomain.RunCheckpoint
 	decided           bool
+	resumeInput       []byte
 }
 
 func (r *settingsApprovalRepo) FindApprovalRequestByID(_ context.Context, ownerID, id int64) (*agentdomain.ApprovalRequest, error) {
@@ -853,13 +978,17 @@ func (r *settingsApprovalRepo) CreateCheckpoint(_ context.Context, item *agentdo
 	return nil
 }
 
-func (r *settingsApprovalRepo) DecideApprovalAndClaimResume(_ context.Context, item *agentdomain.ApprovalRequest) error {
+func (r *settingsApprovalRepo) DecideApprovalAndClaimResume(_ context.Context, item *agentdomain.ApprovalRequest, input []byte) error {
 	r.decided = true
 	r.request = item
+	r.resumeInput = append([]byte(nil), input...)
 	return nil
 }
 
-func (*settingsApprovalRepo) ClaimResume(context.Context, int64, int64) error { return nil }
+func (r *settingsApprovalRepo) ClaimResume(_ context.Context, _, _ int64, input []byte) error {
+	r.resumeInput = append([]byte(nil), input...)
+	return nil
+}
 
 type settingsAgentRepo struct {
 	agentdomain.Repository
@@ -997,10 +1126,13 @@ func (r *settingsMessageRepo) Create(_ context.Context, message *conversation.Me
 
 type settingsTurnRepo struct {
 	agentdomain.TurnRepository
-	latest    *agentdomain.Turn
-	latestErr error
-	byRun     map[int64]*agentdomain.Turn
-	updated   *agentdomain.Turn
+	latest            *agentdomain.Turn
+	latestErr         error
+	byRun             map[int64]*agentdomain.Turn
+	updated           *agentdomain.Turn
+	completedRun      *agentdomain.Run
+	ownedUpdateErr    error
+	ownedUpdateFailed bool
 }
 
 func (r *settingsTurnRepo) FindLatestByConversation(context.Context, int64, int64, int64) (*agentdomain.Turn, error) {
@@ -1030,6 +1162,28 @@ func (r *settingsTurnRepo) FindByRunID(_ context.Context, ownerID, runID int64) 
 
 func (r *settingsTurnRepo) Update(_ context.Context, item *agentdomain.Turn) error {
 	r.updated = item
+	return nil
+}
+
+func (r *settingsTurnRepo) CancelByRun(_ context.Context, ownerID, runID int64, finishedAt time.Time) (*agentdomain.Turn, error) {
+	item := r.byRun[runID]
+	if item == nil || item.OwnerID != ownerID {
+		return nil, agentdomain.ErrNoTurnAvailable
+	}
+	item.Status, item.FinishedAt = agentdomain.TurnStatusCancelled, &finishedAt
+	r.updated = item
+	return item, nil
+}
+
+func (r *settingsTurnRepo) UpdateRunOwned(_ context.Context, turn *agentdomain.Turn, run *agentdomain.Run, _ bool) error {
+	if r.ownedUpdateErr != nil && !r.ownedUpdateFailed {
+		r.ownedUpdateFailed = true
+		return r.ownedUpdateErr
+	}
+	r.updated = turn
+	if turn.Status == agentdomain.TurnStatusSucceeded {
+		r.completedRun = run
+	}
 	return nil
 }
 

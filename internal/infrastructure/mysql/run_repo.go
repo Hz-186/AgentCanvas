@@ -45,3 +45,20 @@ func (r *RunRepository) Update(ctx context.Context, item *agentdomain.Run) error
 	item.UpdatedAt = time.Now().UTC()
 	return r.db.WithContext(ctx).Save(item).Error
 }
+
+func (r *RunRepository) CancelActive(ctx context.Context, item *agentdomain.Run, finishedAt time.Time) (bool, error) {
+	result := r.db.WithContext(ctx).Model(&agentdomain.Run{}).
+		Where("id = ? AND owner_id = ? AND status IN ?", item.ID, item.OwnerID, []string{
+			agentdomain.RunStatusQueued, agentdomain.RunStatusRunning, agentdomain.RunStatusResuming,
+			agentdomain.RunStatusWaitingHuman, agentdomain.RunStatusPaused,
+		}).
+		Updates(map[string]any{"status": agentdomain.RunStatusCancelled, "finished_at": finishedAt, "updated_at": finishedAt})
+	if result.Error != nil {
+		return false, result.Error
+	}
+	if result.RowsAffected == 1 {
+		item.Status, item.FinishedAt, item.UpdatedAt = agentdomain.RunStatusCancelled, &finishedAt, finishedAt
+		return true, nil
+	}
+	return false, nil
+}

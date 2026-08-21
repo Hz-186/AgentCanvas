@@ -40,3 +40,13 @@ type ModelProvider struct {
 }
 
 func (ModelProvider) TableName() string { return "model_providers" }
+
+func MaskSecret(secret string) string {
+	if secret == "" {
+		return ""
+	}
+	if len(secret) <= 8 {
+		return "****"
+	}
+	return secret[:4] + "****" + secret[len(secret)-4:]
+}

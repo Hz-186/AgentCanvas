@@ -2,6 +2,7 @@ package mysql
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"agentcanvas/internal/domain/knowledge"
@@ -11,6 +12,50 @@ import (
 
 type DocumentRepository struct {
 	db *gorm.DB
+}
+
+type GenerationCommitter struct {
+	db *gorm.DB
+}
+
+func NewGenerationCommitter(db *gorm.DB) *GenerationCommitter {
+	return &GenerationCommitter{db: db}
+}
+
+func (c *GenerationCommitter) Activate(ctx context.Context, doc *knowledge.Document, cleanup *knowledge.IngestionJob, chunkDelta int) error {
+	if c == nil || c.db == nil || doc == nil || cleanup == nil {
+		return fmt.Errorf("generation commit is not configured")
+	}
+	now := time.Now().UTC()
+	doc.UpdatedAt = now
+	cleanup.Status = knowledge.IngestionJobStatusPending
+	cleanup.AttemptCount = 0
+	if cleanup.MaxAttempts <= 0 {
+		cleanup.MaxAttempts = 5
+	}
+	cleanup.CreatedAt = now
+	cleanup.UpdatedAt = now
+	return c.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		result := tx.Model(&knowledge.Document{}).
+			Where("id = ? AND owner_id = ? AND deleted_at IS NULL", doc.ID, doc.OwnerID).
+			Select("*").Updates(doc)
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return gorm.ErrRecordNotFound
+		}
+		result = tx.Model(&knowledge.KnowledgeBase{}).
+			Where("id = ? AND owner_id = ? AND deleted_at IS NULL", doc.KBID, doc.OwnerID).
+			UpdateColumn("chunk_count", gorm.Expr("GREATEST(chunk_count + ?, 0)", chunkDelta))
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return gorm.ErrRecordNotFound
+		}
+		return tx.Create(cleanup).Error
+	})
 }
 
 func NewDocumentRepository(db *gorm.DB) *DocumentRepository {

@@ -69,7 +69,7 @@ func TestSearchConvertsMilvusMetadataToRetrievalResults(t *testing.T) {
 	backend := &fakeVectorStore{searchResults: []vectorstore.SearchResult{{ID: "30", Score: 0.8, Metadata: map[string]any{"chunk_id": float64(30), "document_id": float64(20), "kb_id": float64(10), "content": "content", "document_name": "manual.pdf", "page_no": float64(2), "source_metadata": map[string]any{"block_type": "text"}}}}}
 	store := NewStore(backend, "docs", 2, vectorstore.HNSWConfig{})
 
-	resp, err := store.Search(context.Background(), retrieval.RetrievalRequest{OwnerID: 1, KBIDs: []int64{10}, Mode: retrieval.ModeVector, TopK: 1, QueryVector: []float32{0.1, 0.2}})
+	resp, err := store.Search(context.Background(), retrieval.RetrievalRequest{OwnerID: 1, KBIDs: []int64{10}, Mode: retrieval.ModeVector, TopK: 1, QueryVector: []float32{0.1, 0.2}, EmbeddingProfile: "profile-a"})
 	if err != nil {
 		t.Fatalf("Search() error = %v", err)
 	}
@@ -79,7 +79,7 @@ func TestSearchConvertsMilvusMetadataToRetrievalResults(t *testing.T) {
 	if resp.Results[0].Metadata["block_type"] != "text" {
 		t.Fatalf("metadata = %+v", resp.Results[0].Metadata)
 	}
-	if backend.searchRequest.Filter["enabled"] != true || backend.searchRequest.Filter["kb_id"] != int64(10) {
+	if backend.searchRequest.Filter["enabled"] != true || backend.searchRequest.Filter["kb_id"] != int64(10) || backend.searchRequest.Filter["embedding_profile"] != "profile-a" {
 		t.Fatalf("search filter = %+v", backend.searchRequest.Filter)
 	}
 }
@@ -98,6 +98,29 @@ func TestSearchUsesMultiKnowledgeBaseFilter(t *testing.T) {
 	}
 }
 
+func TestSearchFiltersEachDocumentToItsActiveGeneration(t *testing.T) {
+	backend := &fakeVectorStore{}
+	store := NewStore(backend, "docs", 2, vectorstore.HNSWConfig{})
+
+	_, err := store.Search(context.Background(), retrieval.RetrievalRequest{
+		OwnerID: 1, KBIDs: []int64{10}, Mode: retrieval.ModeVector, TopK: 1, QueryVector: []float32{0.1, 0.2},
+		ActiveGenerations: map[int64]string{20: "gen-a", 21: "gen-b"},
+	})
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if len(backend.searchRequest.AnyFilters) != 2 {
+		t.Fatalf("active generation filters = %+v", backend.searchRequest.AnyFilters)
+	}
+	found := map[int64]string{}
+	for _, filter := range backend.searchRequest.AnyFilters {
+		found[filter["document_id"].(int64)] = filter["generation"].(string)
+	}
+	if found[20] != "gen-a" || found[21] != "gen-b" {
+		t.Fatalf("active generation filters = %+v", backend.searchRequest.AnyFilters)
+	}
+}
+
 func TestDeleteByDocumentUsesMetadataFilterWhenSupported(t *testing.T) {
 	backend := &fakeVectorStore{}
 	store := NewStore(backend, "docs", 2, vectorstore.HNSWConfig{})
@@ -107,6 +130,18 @@ func TestDeleteByDocumentUsesMetadataFilterWhenSupported(t *testing.T) {
 	}
 	if backend.deleteCollection != "docs" || backend.deleteFilter["owner_id"] != int64(1) || backend.deleteFilter["document_id"] != int64(20) {
 		t.Fatalf("delete filter = collection=%s filter=%+v", backend.deleteCollection, backend.deleteFilter)
+	}
+}
+
+func TestDeleteInactiveGenerationsKeepsActiveGeneration(t *testing.T) {
+	backend := &fakeVectorStore{}
+	store := NewStore(backend, "docs", 2, vectorstore.HNSWConfig{})
+
+	if err := store.DeleteInactiveGenerations(context.Background(), 1, 20, "gen-active"); err != nil {
+		t.Fatalf("DeleteInactiveGenerations() error = %v", err)
+	}
+	if backend.excludedField != "generation" || backend.excludedValue != "gen-active" || backend.deleteFilter["document_id"] != int64(20) {
+		t.Fatalf("delete-except request: filter=%+v field=%q value=%v", backend.deleteFilter, backend.excludedField, backend.excludedValue)
 	}
 }
 
@@ -135,6 +170,8 @@ type fakeVectorStore struct {
 	textSearchRequest vectorstore.SearchRequest
 	deleteCollection  string
 	deleteFilter      map[string]any
+	excludedField     string
+	excludedValue     any
 	updateCollection  string
 	updateFilter      map[string]any
 	updateMutate      func(map[string]any) map[string]any
@@ -155,6 +192,14 @@ func (f *fakeVectorStore) Delete(context.Context, string, []string) error { retu
 func (f *fakeVectorStore) DeleteByFilter(_ context.Context, collection string, filter map[string]any) error {
 	f.deleteCollection = collection
 	f.deleteFilter = filter
+	return nil
+}
+
+func (f *fakeVectorStore) DeleteByFilterExcept(_ context.Context, collection string, filter map[string]any, field string, value any) error {
+	f.deleteCollection = collection
+	f.deleteFilter = filter
+	f.excludedField = field
+	f.excludedValue = value
 	return nil
 }
 

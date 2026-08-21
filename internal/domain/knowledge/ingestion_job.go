@@ -1,9 +1,15 @@
 package knowledge
 
-import "time"
+import (
+	"errors"
+	"time"
+)
+
+var ErrIngestionLeaseLost = errors.New("ingestion worker lease lost")
 
 const (
-	IngestionJobTypeDocument = "document_ingestion"
+	IngestionJobTypeDocument          = "document_ingestion"
+	IngestionJobTypeGenerationCleanup = "document_generation_cleanup"
 
 	IngestionJobStatusPending    = "pending"
 	IngestionJobStatusProcessing = "processing"
@@ -21,6 +27,7 @@ type IngestionJob struct {
 	Priority     int        `json:"priority" gorm:"column:priority"`
 	AttemptCount int        `json:"attempt_count" gorm:"column:attempt_count"`
 	MaxAttempts  int        `json:"max_attempts" gorm:"column:max_attempts"`
+	RetryAt      *time.Time `json:"retry_at,omitempty" gorm:"column:retry_at"`
 	ErrorMessage string     `json:"error_message,omitempty" gorm:"column:error_message"`
 	LockedBy     string     `json:"locked_by" gorm:"column:locked_by"`
 	LockedAt     *time.Time `json:"locked_at" gorm:"column:locked_at"`

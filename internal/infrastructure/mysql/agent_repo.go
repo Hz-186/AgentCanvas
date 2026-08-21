@@ -214,16 +214,7 @@ func (r *AgentTurnRepository) CreateWithArtifacts(ctx context.Context, item *age
 }
 
 func (r *AgentTurnRepository) CompleteWithMessage(ctx context.Context, item *agentdomain.Turn, assistantMessage *conversation.Message, run *agentdomain.Run) error {
-	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var owned agentdomain.Turn
-		query := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND owner_id = ?", item.ID, item.OwnerID)
-		if item.LeaseToken != "" {
-			query = query.Where("lease_token = ?", item.LeaseToken)
-		}
-		if err := query.First(&owned).Error; err != nil {
-			return err
-		}
-		now := time.Now().UTC()
+	return r.completeOwned(ctx, item, run, func(tx *gorm.DB, now time.Time) error {
 		assistantMessage.CreatedAt = now
 		normalizeMessage(assistantMessage)
 		if err := tx.Create(assistantMessage).Error; err != nil {
@@ -232,14 +223,58 @@ func (r *AgentTurnRepository) CompleteWithMessage(ctx context.Context, item *age
 		if err := syncConversationMessageJSON(ctx, tx, assistantMessage.OwnerID, assistantMessage.ConversationID, now); err != nil {
 			return err
 		}
-		item.AssistantMessageID, item.UpdatedAt = &assistantMessage.ID, now
+		item.AssistantMessageID = &assistantMessage.ID
+		clearTurnLease(item)
+		return nil
+	})
+}
+
+func (r *AgentTurnRepository) UpdateRunOwned(ctx context.Context, item *agentdomain.Turn, run *agentdomain.Run, releaseLease bool) error {
+	return r.completeOwned(ctx, item, run, func(_ *gorm.DB, _ time.Time) error {
+		if releaseLease {
+			clearTurnLease(item)
+		}
+		return nil
+	})
+}
+
+func clearTurnLease(item *agentdomain.Turn) {
+	item.WorkerID, item.LeaseToken = "", ""
+	item.LeaseExpiresAt, item.LastHeartbeatAt = nil, nil
+}
+
+func (r *AgentTurnRepository) completeOwned(ctx context.Context, item *agentdomain.Turn, run *agentdomain.Run, beforeSave func(*gorm.DB, time.Time) error) error {
+	leaseProtected := item.LeaseToken != ""
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var owned agentdomain.Turn
+		query := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND owner_id = ?", item.ID, item.OwnerID)
+		if leaseProtected {
+			query = query.Where("lease_token = ? AND status = ?", item.LeaseToken, agentdomain.TurnStatusRunning)
+		}
+		if err := query.First(&owned).Error; err != nil {
+			return err
+		}
+		if leaseProtected {
+			var ownedRun agentdomain.Run
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+				Where("id = ? AND owner_id = ? AND status IN ?", run.ID, run.OwnerID, []string{agentdomain.RunStatusQueued, agentdomain.RunStatusRunning, agentdomain.RunStatusResuming}).
+				First(&ownedRun).Error; err != nil {
+				return err
+			}
+		}
+		now := time.Now().UTC()
+		if beforeSave != nil {
+			if err := beforeSave(tx, now); err != nil {
+				return err
+			}
+		}
+		item.UpdatedAt, run.UpdatedAt = now, now
 		if err := tx.Save(item).Error; err != nil {
 			return err
 		}
-		run.UpdatedAt = now
 		return tx.Save(run).Error
 	})
-	if errors.Is(err, gorm.ErrRecordNotFound) && item.LeaseToken != "" {
+	if errors.Is(err, gorm.ErrRecordNotFound) && leaseProtected {
 		return agentdomain.ErrLeaseLost
 	}
 	return err
@@ -293,6 +328,29 @@ func (r *AgentTurnRepository) Update(ctx context.Context, item *agentdomain.Turn
 		return agentdomain.ErrLeaseLost
 	}
 	return nil
+}
+
+func (r *AgentTurnRepository) CancelByRun(ctx context.Context, ownerID, runID int64, finishedAt time.Time) (*agentdomain.Turn, error) {
+	result := r.db.WithContext(ctx).Model(&agentdomain.Turn{}).
+		Where("owner_id = ? AND run_id = ? AND status IN ?", ownerID, runID, []string{
+			agentdomain.TurnStatusQueued, agentdomain.TurnStatusRunning, agentdomain.TurnStatusRetryWait,
+			agentdomain.TurnStatusWaitingHuman, agentdomain.TurnStatusPaused,
+		}).
+		Updates(map[string]any{
+			"status": agentdomain.TurnStatusCancelled, "finished_at": finishedAt, "updated_at": finishedAt,
+			"worker_id": "", "lease_token": "", "lease_expires_at": nil, "last_heartbeat_at": nil, "retry_at": nil,
+		})
+	if result.Error != nil {
+		return nil, result.Error
+	}
+	if result.RowsAffected != 1 {
+		return nil, agentdomain.ErrNoTurnAvailable
+	}
+	var item agentdomain.Turn
+	if err := r.db.WithContext(ctx).Where("owner_id = ? AND run_id = ?", ownerID, runID).First(&item).Error; err != nil {
+		return nil, err
+	}
+	return &item, nil
 }
 
 func (r *AgentTurnRepository) ListQueued(ctx context.Context, limit int) ([]agentdomain.Turn, error) {
@@ -354,19 +412,35 @@ func (r *AgentTurnRepository) ListExpiredRunning(ctx context.Context, before tim
 	return items, err
 }
 
-func (r *AgentTurnRepository) RequeueExpired(ctx context.Context, turnID int64, retryAt time.Time, reason string) error {
-	return r.db.WithContext(ctx).Model(&agentdomain.Turn{}).
-		Where("id = ? AND status = ? AND lease_expires_at < ?", turnID, agentdomain.TurnStatusRunning, time.Now().UTC()).
-		Updates(map[string]any{"status": agentdomain.TurnStatusRetryWait, "worker_id": "", "lease_token": "", "lease_expires_at": nil,
-			"retry_at": retryAt, "error_message": reason, "updated_at": time.Now().UTC()}).Error
-}
-
-func (r *AgentTurnRepository) PauseExpired(ctx context.Context, turnID int64, reason string) error {
-	now := time.Now().UTC()
-	return r.db.WithContext(ctx).Model(&agentdomain.Turn{}).
-		Where("id = ? AND status = ? AND lease_expires_at < ?", turnID, agentdomain.TurnStatusRunning, now).
-		Updates(map[string]any{"status": agentdomain.TurnStatusPaused, "worker_id": "", "lease_token": "", "lease_expires_at": nil,
-			"error_message": reason, "finished_at": now, "updated_at": now}).Error
+func (r *AgentTurnRepository) RecoverExpired(ctx context.Context, item *agentdomain.Turn, run *agentdomain.Run) error {
+	if item == nil || run == nil || item.LeaseToken == "" {
+		return gorm.ErrInvalidData
+	}
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		now := time.Now().UTC()
+		var owned agentdomain.Turn
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("id = ? AND owner_id = ? AND status = ? AND lease_token = ? AND lease_expires_at < ?", item.ID, item.OwnerID, agentdomain.TurnStatusRunning, item.LeaseToken, now).
+			First(&owned).Error; err != nil {
+			return err
+		}
+		var ownedRun agentdomain.Run
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("id = ? AND owner_id = ? AND status IN ?", run.ID, run.OwnerID, []string{agentdomain.RunStatusRunning, agentdomain.RunStatusResuming}).
+			First(&ownedRun).Error; err != nil {
+			return err
+		}
+		clearTurnLease(item)
+		item.UpdatedAt, run.UpdatedAt = now, now
+		if err := tx.Save(item).Error; err != nil {
+			return err
+		}
+		return tx.Save(run).Error
+	})
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return agentdomain.ErrLeaseLost
+	}
+	return err
 }
 
 type AgentImprovementRepository struct{ db *gorm.DB }

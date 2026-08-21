@@ -8,6 +8,8 @@ import (
 
 	"agentcanvas/internal/domain/agent"
 	"agentcanvas/internal/domain/conversation"
+	runtimeagent "agentcanvas/internal/runtime/agent"
+	"agentcanvas/internal/runtime/agentruntime"
 )
 
 func TestImprovementProposalSecurityRejectsInjectionAndSecrets(t *testing.T) {
@@ -44,10 +46,14 @@ func TestNormalizeImprovementProposalsDropsMemoryWhenDisabled(t *testing.T) {
 }
 
 type workerTurnRepo struct {
-	expired  []agent.Turn
-	requeued []int64
-	paused   []int64
-	latest   *agent.Turn
+	expired   []agent.Turn
+	requeued  []int64
+	paused    []int64
+	latest    *agent.Turn
+	updateErr error
+	updates   int
+	retried   *agent.Turn
+	retryRun  *agent.Run
 }
 
 func (*workerTurnRepo) Create(context.Context, *agent.Turn) error { return nil }
@@ -55,6 +61,15 @@ func (*workerTurnRepo) CreateWithArtifacts(context.Context, *agent.Turn, *conver
 	return nil
 }
 func (*workerTurnRepo) CompleteWithMessage(context.Context, *agent.Turn, *conversation.Message, *agent.Run) error {
+	return nil
+}
+func (r *workerTurnRepo) UpdateRunOwned(_ context.Context, turn *agent.Turn, run *agent.Run, _ bool) error {
+	if r.updateErr != nil {
+		return r.updateErr
+	}
+	if turn.Status == agent.TurnStatusRetryWait {
+		r.retried, r.retryRun = turn, run
+	}
 	return nil
 }
 func (*workerTurnRepo) FindByID(context.Context, int64, int64) (*agent.Turn, error) {
@@ -72,7 +87,13 @@ func (r *workerTurnRepo) FindLatestByConversation(context.Context, int64, int64,
 func (*workerTurnRepo) FindByIdempotencyKey(context.Context, int64, int64, string) (*agent.Turn, error) {
 	return nil, agent.ErrNoTurnAvailable
 }
-func (*workerTurnRepo) Update(context.Context, *agent.Turn) error             { return nil }
+func (r *workerTurnRepo) Update(context.Context, *agent.Turn) error {
+	r.updates++
+	return r.updateErr
+}
+func (*workerTurnRepo) CancelByRun(context.Context, int64, int64, time.Time) (*agent.Turn, error) {
+	return nil, agent.ErrNoTurnAvailable
+}
 func (*workerTurnRepo) ListQueued(context.Context, int) ([]agent.Turn, error) { return nil, nil }
 func (*workerTurnRepo) ClaimNext(context.Context, string, string, time.Time) (*agent.Turn, error) {
 	return nil, agent.ErrNoTurnAvailable
@@ -81,16 +102,19 @@ func (*workerTurnRepo) RenewLease(context.Context, int64, string, time.Time) err
 func (r *workerTurnRepo) ListExpiredRunning(context.Context, time.Time, int) ([]agent.Turn, error) {
 	return r.expired, nil
 }
-func (r *workerTurnRepo) RequeueExpired(_ context.Context, id int64, _ time.Time, _ string) error {
-	r.requeued = append(r.requeued, id)
-	return nil
-}
-func (r *workerTurnRepo) PauseExpired(_ context.Context, id int64, _ string) error {
-	r.paused = append(r.paused, id)
+func (r *workerTurnRepo) RecoverExpired(_ context.Context, turn *agent.Turn, _ *agent.Run) error {
+	if turn.Status == agent.TurnStatusRetryWait {
+		r.requeued = append(r.requeued, turn.ID)
+	} else if turn.Status == agent.TurnStatusPaused {
+		r.paused = append(r.paused, turn.ID)
+	}
 	return nil
 }
 
-type workerRunRepo struct{ items map[int64]*agent.Run }
+type workerRunRepo struct {
+	items       map[int64]*agent.Run
+	updateCalls int
+}
 
 func (*workerRunRepo) Create(context.Context, *agent.Run) error { return nil }
 func (r *workerRunRepo) FindByID(_ context.Context, _ int64, id int64) (*agent.Run, error) {
@@ -99,7 +123,13 @@ func (r *workerRunRepo) FindByID(_ context.Context, _ int64, id int64) (*agent.R
 func (*workerRunRepo) ListByParent(context.Context, int64, int64) ([]agent.Run, error) {
 	return nil, nil
 }
-func (*workerRunRepo) Update(context.Context, *agent.Run) error { return nil }
+func (r *workerRunRepo) Update(context.Context, *agent.Run) error {
+	r.updateCalls++
+	return nil
+}
+func (*workerRunRepo) CancelActive(context.Context, *agent.Run, time.Time) (bool, error) {
+	return true, nil
+}
 
 type workerStepRepo struct{ byRun map[int64][]agent.RunStep }
 
@@ -108,13 +138,25 @@ func (r *workerStepRepo) ListByRun(_ context.Context, _ int64, runID int64) ([]a
 	return r.byRun[runID], nil
 }
 
+type workerApprovalRepo struct {
+	agent.ApprovalRepository
+	saves      int
+	checkpoint *agent.RunCheckpoint
+}
+
+func (r *workerApprovalRepo) SavePausedRun(_ context.Context, _ *agent.Turn, _ *agent.Run, _ *agent.ApprovalRequest, checkpoint *agent.RunCheckpoint) error {
+	r.saves++
+	r.checkpoint = checkpoint
+	return nil
+}
+
 func TestRecoverExpiredRequeuesOnlyBeforeToolSideEffects(t *testing.T) {
 	run1, run2 := int64(10), int64(20)
 	turns := &workerTurnRepo{expired: []agent.Turn{
-		{ID: 1, OwnerID: 1, RunID: &run1, Status: agent.TurnStatusRunning, AttemptCount: 1, MaxAttempts: 3},
-		{ID: 2, OwnerID: 1, RunID: &run2, Status: agent.TurnStatusRunning, AttemptCount: 1, MaxAttempts: 3},
+		{ID: 1, OwnerID: 1, RunID: &run1, Status: agent.TurnStatusRunning, LeaseToken: "one", AttemptCount: 1, MaxAttempts: 3},
+		{ID: 2, OwnerID: 1, RunID: &run2, Status: agent.TurnStatusRunning, LeaseToken: "two", AttemptCount: 1, MaxAttempts: 3},
 	}}
-	runs := &workerRunRepo{items: map[int64]*agent.Run{run1: {ID: run1}, run2: {ID: run2}}}
+	runs := &workerRunRepo{items: map[int64]*agent.Run{run1: {ID: run1, Status: agent.RunStatusRunning}, run2: {ID: run2, Status: agent.RunStatusRunning}}}
 	steps := &workerStepRepo{byRun: map[int64][]agent.RunStep{run2: {{StepType: "tool_call"}}}}
 	service := &Service{turns: turns, runs: runs, steps: steps}
 	if err := service.recoverExpired(context.Background()); err != nil {
@@ -125,6 +167,75 @@ func TestRecoverExpiredRequeuesOnlyBeforeToolSideEffects(t *testing.T) {
 	}
 	if len(turns.paused) != 1 || turns.paused[0] != 2 {
 		t.Fatalf("unexpected paused turns: %v", turns.paused)
+	}
+}
+
+func TestFailTurnDoesNotOverwriteRunAfterLeaseLoss(t *testing.T) {
+	run := &agent.Run{ID: 10, OwnerID: 1, Status: agent.RunStatusRunning, StartedAt: time.Now().UTC()}
+	turn := &agent.Turn{ID: 20, OwnerID: 1, RunID: &run.ID, Status: agent.TurnStatusRunning, LeaseToken: "stale"}
+	turns := &workerTurnRepo{updateErr: agent.ErrLeaseLost}
+	runs := &workerRunRepo{items: map[int64]*agent.Run{run.ID: run}}
+
+	(&Service{turns: turns, runs: runs}).failTurn(context.Background(), turn, run, context.Canceled)
+
+	if runs.updateCalls != 0 || run.Status != agent.RunStatusRunning {
+		t.Fatalf("stale worker changed run after lease loss: calls=%d status=%s", runs.updateCalls, run.Status)
+	}
+}
+
+func TestRetryTurnOnlyRequeuesSafeAttempts(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		attempt    int
+		steps      []agent.RunStep
+		wantStatus string
+	}{
+		{name: "transient before tools", attempt: 1, wantStatus: agent.TurnStatusRetryWait},
+		{name: "tool side effect", attempt: 1, steps: []agent.RunStep{{StepType: runtimeagent.StepTypeToolCall}}, wantStatus: agent.TurnStatusFailed},
+		{name: "attempts exhausted", attempt: 3, wantStatus: agent.TurnStatusFailed},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			runID := int64(10)
+			run := &agent.Run{ID: runID, OwnerID: 1, Status: agent.RunStatusRunning, StartedAt: time.Now().UTC()}
+			turn := &agent.Turn{ID: 20, OwnerID: 1, RunID: &runID, Status: agent.TurnStatusRunning, LeaseToken: "owned", AttemptCount: tc.attempt, MaxAttempts: 3}
+			turns := &workerTurnRepo{}
+			runs := &workerRunRepo{items: map[int64]*agent.Run{runID: run}}
+			service := &Service{turns: turns, runs: runs, steps: &workerStepRepo{byRun: map[int64][]agent.RunStep{runID: tc.steps}}}
+
+			service.retryTurn(context.Background(), turn, run, context.DeadlineExceeded)
+
+			if turn.Status != tc.wantStatus {
+				t.Fatalf("Turn status = %s, want %s", turn.Status, tc.wantStatus)
+			}
+			if tc.wantStatus == agent.TurnStatusRetryWait {
+				if turns.retried == nil || run.Status != agent.RunStatusQueued || turn.RetryAt == nil {
+					t.Fatalf("safe retry was not persisted: turn=%+v run=%+v", turn, run)
+				}
+			} else if turns.retried != nil || run.Status != agent.RunStatusFailed {
+				t.Fatalf("unsafe retry was not terminal: turn=%+v run=%+v", turn, run)
+			}
+		})
+	}
+}
+
+func TestCompleteTurnPersistsPauseInSingleRepositoryCall(t *testing.T) {
+	run := &agent.Run{ID: 10, OwnerID: 1, Status: agent.RunStatusRunning, StartedAt: time.Now().UTC()}
+	turn := &agent.Turn{ID: 20, OwnerID: 1, RunID: &run.ID, Status: agent.TurnStatusRunning, LeaseToken: "owned"}
+	turns := &workerTurnRepo{}
+	runs := &workerRunRepo{items: map[int64]*agent.Run{run.ID: run}}
+	approvals := &workerApprovalRepo{}
+	result := &agentruntime.RunResult{Output: agentruntime.RunOutput{
+		"stop_reason": runtimeagent.StopReasonPaused,
+		"checkpoint":  runtimeagent.Checkpoint{SnapshotVersion: 1},
+	}}
+
+	(&Service{turns: turns, runs: runs, approvals: approvals}).completeTurn(context.Background(), turn, run, result)
+
+	if approvals.saves != 1 || approvals.checkpoint == nil {
+		t.Fatalf("pause was not persisted atomically: saves=%d checkpoint=%+v", approvals.saves, approvals.checkpoint)
+	}
+	if turns.updates != 0 || runs.updateCalls != 0 || turn.Status != agent.TurnStatusPaused || run.Status != agent.RunStatusPaused {
+		t.Fatalf("pause used split writes: turn_updates=%d run_updates=%d turn=%s run=%s", turns.updates, runs.updateCalls, turn.Status, run.Status)
 	}
 }
 

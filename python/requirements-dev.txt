@@ -1,2 +1,2 @@
--r requirements.txt
+-r requirements.lock
 grpcio-tools==1.66.2

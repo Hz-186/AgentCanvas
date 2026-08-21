@@ -9,6 +9,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	authdomain "agentcanvas/internal/domain/auth"
 )
 
 type GitHubClient struct {
@@ -19,21 +21,8 @@ type GitHubClient struct {
 	HTTPClient   *http.Client
 }
 
-type GitHubUser struct {
-	ID        int64  `json:"id"`
-	Login     string `json:"login"`
-	Name      string `json:"name"`
-	Email     string `json:"email"`
-	AvatarURL string `json:"avatar_url"`
-}
-
-type tokenResponse struct {
-	AccessToken string `json:"access_token"`
-	Scope       string `json:"scope"`
-	TokenType   string `json:"token_type"`
-	Error       string `json:"error"`
-	Description string `json:"error_description"`
-}
+type GitHubUser = authdomain.GitHubUser
+type tokenResponse = authdomain.GitHubOAuthToken
 
 type githubEmail struct {
 	Email      string `json:"email"`

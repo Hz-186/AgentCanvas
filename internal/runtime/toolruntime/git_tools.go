@@ -7,12 +7,25 @@ import (
 	"path/filepath"
 	"strings"
 
-	gitinfra "agentcanvas/internal/infrastructure/git"
+	workspacedomain "agentcanvas/internal/domain/workspace"
 )
 
 type GitTool struct {
 	Kind string
-	Git  *gitinfra.Service
+	Git  GitOperations
+}
+
+type GitOperations interface {
+	RepoRoot(context.Context, string) (string, error)
+	Head(context.Context, string) (string, error)
+	CurrentBranch(context.Context, string) string
+	Status(context.Context, string) (workspacedomain.GitStatus, error)
+	RuntimeStatus(context.Context, string) (branch, head string, dirty, unpushed bool, err error)
+	Diff(context.Context, string, bool) (string, error)
+	Log(context.Context, string, int) (string, error)
+	Branches(context.Context, string) ([]string, error)
+	ListWorktrees(context.Context, string) ([]workspacedomain.GitWorktree, error)
+	Commit(context.Context, string, string, []string) (workspacedomain.GitCommitResult, error)
 }
 
 func (t GitTool) Name() string { return t.Kind }
@@ -152,12 +165,12 @@ func (t GitTool) Execute(ctx context.Context, rc ToolRunContext, input json.RawM
 	}
 }
 
-func currentGitToolStatus(ctx context.Context, service *gitinfra.Service, workspace *WorkspaceContext) (gitinfra.Status, error) {
+func currentGitToolStatus(ctx context.Context, service GitOperations, workspace *WorkspaceContext) (workspacedomain.GitStatus, error) {
 	status, err := service.Status(ctx, workspace.WorkspacePath)
 	if err != nil {
 		workspace.Dirty = true
 		workspace.Unpushed = true
-		return gitinfra.Status{Root: workspace.RepositoryRoot, Branch: workspace.BranchName, Dirty: true, Unpushed: true}, err
+		return workspacedomain.GitStatus{Root: workspace.RepositoryRoot, Branch: workspace.BranchName, Dirty: true, Unpushed: true}, err
 	}
 	if workspace.Kind == "worktree" && workspace.BaseSHA != "" && status.Head != "" && status.Head != workspace.BaseSHA {
 		status.Unpushed = true
@@ -168,7 +181,7 @@ func currentGitToolStatus(ctx context.Context, service *gitinfra.Service, worksp
 	return status, nil
 }
 
-func validateGitToolWorkspace(ctx context.Context, service *gitinfra.Service, workspace *WorkspaceContext) error {
+func validateGitToolWorkspace(ctx context.Context, service GitOperations, workspace *WorkspaceContext) error {
 	if service == nil || workspace == nil || strings.TrimSpace(workspace.RepositoryRoot) == "" || strings.TrimSpace(workspace.WorkspacePath) == "" {
 		return errors.New("workspace Git binding is incomplete")
 	}
@@ -186,7 +199,7 @@ func validateGitToolWorkspace(ctx context.Context, service *gitinfra.Service, wo
 	if !sameGitToolPath(checkoutRoot, workspace.WorkspacePath) {
 		return errors.New("workspace checkout root binding changed")
 	}
-	if _, err := gitinfra.EnsureInside(repositoryRoot, checkoutRoot); err != nil {
+	if !gitToolPathWithin(repositoryRoot, checkoutRoot) {
 		return errors.New("workspace checkout is outside its repository binding")
 	}
 	switch workspace.Kind {
@@ -215,14 +228,20 @@ func validateGitToolWorkspace(ctx context.Context, service *gitinfra.Service, wo
 }
 
 func sameGitToolPath(left, right string) bool {
-	left, right = filepath.Clean(left), filepath.Clean(right)
-	if resolved, err := filepath.EvalSymlinks(left); err == nil {
-		left = filepath.Clean(resolved)
+	return resolvedGitToolPath(left) == resolvedGitToolPath(right)
+}
+
+func gitToolPathWithin(root, path string) bool {
+	relative, err := filepath.Rel(resolvedGitToolPath(root), resolvedGitToolPath(path))
+	return err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
+}
+
+func resolvedGitToolPath(path string) string {
+	path = filepath.Clean(path)
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		return filepath.Clean(resolved)
 	}
-	if resolved, err := filepath.EvalSymlinks(right); err == nil {
-		right = filepath.Clean(resolved)
-	}
-	return left == right
+	return path
 }
 
 func resultOrError(value any, err error) (*ToolResult, error) {

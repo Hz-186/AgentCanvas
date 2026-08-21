@@ -62,6 +62,7 @@ type Capabilities struct {
 	ProtocolVersion string
 	ServiceVersion  string
 	ChunkMethods    []string
+	ParserMethods   []string
 	Tools           []ToolCapability
 	MaxConcurrency  uint32
 	MaxInputBytes   uint64
@@ -255,6 +256,76 @@ func (c *Client) ChunkDocument(ctx context.Context, method string, doc parser.Pa
 	return chunks, nil
 }
 
+// ParseDocument asks the sidecar to parse a bounded document payload. The
+// returned document remains the AgentCanvas DTO; LangChain types never cross
+// the process boundary.
+func (c *Client) ParseDocument(ctx context.Context, method, filename string, content []byte) (*parser.ParsedDocument, bool, []string, error) {
+	if c == nil || c.stub == nil {
+		return nil, false, nil, fmt.Errorf("python bridge client is not configured")
+	}
+	if strings.TrimSpace(method) == "" || strings.TrimSpace(filename) == "" {
+		return nil, false, nil, fmt.Errorf("python bridge parser and filename are required")
+	}
+	if c.config.MaxSendBytes > 0 && len(content) > c.config.MaxSendBytes {
+		return nil, false, nil, fmt.Errorf("document exceeds Python bridge input limit")
+	}
+	requestID := uuid.NewString()
+	callCtx, cancel := c.contextWithRequestID(ctx, requestID)
+	defer cancel()
+	resp, err := c.stub.ParseDocument(callCtx, &bridgegen.ParseDocumentRequest{
+		RequestId: requestID,
+		Filename:  filename,
+		Parser:    method,
+		Content:   content,
+	})
+	if err != nil {
+		return nil, false, nil, err
+	}
+	if resp == nil || strings.TrimSpace(resp.Parser) != strings.TrimSpace(method) || strings.TrimSpace(resp.ImplementationVersion) == "" {
+		return nil, false, nil, fmt.Errorf("python bridge returned an invalid parser response")
+	}
+	warnings := append([]string(nil), resp.Warnings...)
+	if resp.RequiresOcr {
+		return nil, true, warnings, nil
+	}
+	if resp.Document == nil || strings.TrimSpace(resp.Document.FileType) == "" {
+		return nil, false, warnings, fmt.Errorf("python bridge returned an empty parsed document")
+	}
+	doc := &parser.ParsedDocument{Text: resp.Document.Text, FileType: resp.Document.FileType}
+	doc.Blocks = make([]parser.DocumentBlock, 0, len(resp.Document.Blocks))
+	for index, item := range resp.Document.Blocks {
+		if item == nil || strings.TrimSpace(item.Id) == "" || strings.TrimSpace(item.Text) == "" {
+			return nil, false, warnings, fmt.Errorf("python bridge returned invalid parsed block at index %d", index)
+		}
+		metadata := map[string]any{}
+		if strings.TrimSpace(item.MetadataJson) != "" {
+			if err := json.Unmarshal([]byte(item.MetadataJson), &metadata); err != nil || metadata == nil {
+				return nil, false, warnings, fmt.Errorf("decode Python block metadata at index %d", index)
+			}
+		}
+		var pageNo *int
+		if item.PageNo != nil {
+			value := int(*item.PageNo)
+			if value <= 0 {
+				return nil, false, warnings, fmt.Errorf("python bridge returned invalid page number at index %d", index)
+			}
+			pageNo = &value
+		}
+		var bbox *parser.BBox
+		if strings.TrimSpace(item.BboxJson) != "" {
+			bbox = &parser.BBox{}
+			if err := json.Unmarshal([]byte(item.BboxJson), bbox); err != nil {
+				return nil, false, warnings, fmt.Errorf("decode Python block bbox at index %d: %w", index, err)
+			}
+		}
+		doc.Blocks = append(doc.Blocks, parser.DocumentBlock{ID: item.Id, Type: item.Type, Text: item.Text, PageNo: pageNo, BBox: bbox, Metadata: metadata})
+	}
+	if strings.TrimSpace(doc.Text) == "" || len(doc.Blocks) == 0 {
+		return nil, false, warnings, fmt.Errorf("python bridge returned an empty parsed document")
+	}
+	return doc, false, warnings, nil
+}
+
 func (c *Client) ListTools(ctx context.Context) ([]ToolCapability, error) {
 	if c == nil || c.stub == nil {
 		return nil, fmt.Errorf("python bridge client is not configured")
@@ -304,7 +375,7 @@ func capabilitiesFromProto(resp *bridgegen.CapabilitiesResponse) (*Capabilities,
 	}
 	return &Capabilities{
 		ProtocolVersion: resp.ProtocolVersion, ServiceVersion: resp.ServiceVersion,
-		ChunkMethods: append([]string(nil), resp.ChunkMethods...), Tools: tools,
+		ChunkMethods: append([]string(nil), resp.ChunkMethods...), ParserMethods: append([]string(nil), resp.ParserMethods...), Tools: tools,
 		MaxConcurrency: resp.MaxConcurrency, MaxInputBytes: resp.MaxInputBytes, MaxOutputBytes: resp.MaxOutputBytes,
 	}, nil
 }

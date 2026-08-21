@@ -17,6 +17,7 @@ type ChunkIndexDocument struct {
 	OwnerID             int64
 	KBID                int64
 	DocumentID          int64
+	Generation          string
 	ChunkID             int64
 	ChunkIndex          int
 	DocumentName        string
@@ -27,6 +28,9 @@ type ChunkIndexDocument struct {
 	EmbeddingVector     []float32
 	EmbeddingModel      string
 	EmbeddingDimensions int
+	EmbeddingProviderID int64
+	EmbeddingMetric     string
+	EmbeddingProfile    string
 	Enabled             bool
 	PageNo              *int
 	TokenCount          int
@@ -38,6 +42,9 @@ type ChunkIndexDocument struct {
 type RetrievalRequest struct {
 	OwnerID           int64
 	KBIDs             []int64
+	Generation        string
+	ActiveGenerations map[int64]string
+	EmbeddingProfile  string
 	Query             string
 	Conversation      []QueryTurn
 	RewriteProviderID int64
@@ -88,6 +95,7 @@ type Clarification struct {
 type RetrievalResult struct {
 	ChunkID      int64          `json:"chunk_id"`
 	DocumentID   int64          `json:"document_id"`
+	Generation   string         `json:"generation,omitempty"`
 	KBID         int64          `json:"kb_id"`
 	Score        float64        `json:"score"`
 	KeywordScore float64        `json:"keyword_score"`

@@ -3,6 +3,7 @@ package reflection_usecase
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -31,6 +32,7 @@ type workerJobRepo struct {
 	completed bool
 	failed    bool
 	retryAt   *time.Time
+	failErr   error
 }
 
 func (f *workerJobRepo) Create(context.Context, *reflection.Job) error { return nil }
@@ -52,7 +54,7 @@ func (f *workerJobRepo) Complete(context.Context, *reflection.Job) error {
 }
 func (f *workerJobRepo) Fail(_ context.Context, _ *reflection.Job, _ error, retryAt *time.Time) error {
 	f.failed, f.retryAt = true, retryAt
-	return nil
+	return f.failErr
 }
 
 func (f workerProviders) Create(context.Context, *providerdomain.ModelProvider) error { return nil }
@@ -113,11 +115,12 @@ func TestWorkerRetriesMalformedAnalysisAndCompletesQualifiedJob(t *testing.T) {
 	encrypted, _ := box.Encrypt("key")
 	provider := workerProviders{item: providerdomain.ModelProvider{ID: 1, OwnerID: 2, Status: providerdomain.StatusActive,
 		ProviderType: providerdomain.TypeOpenAICompatible, BaseURL: "https://example.test", EncryptedAPIKey: encrypted, DefaultChatModel: "m"}}
+	stateErr := errors.New("persist retry state")
 	badJobs := &workerJobRepo{next: &reflection.Job{OwnerID: 2, AgentID: 3, RunID: 4, ProviderID: 1, Model: "m", MaxAttempts: 3,
-		PayloadJSON: json.RawMessage(`{"stop_reason":"max_iterations_exceeded"}`)}}
+		PayloadJSON: json.RawMessage(`{"stop_reason":"max_iterations_exceeded"}`)}, failErr: stateErr}
 	badWorker := Worker{Service: Service{Reflections: &fakeRepo{}}, Jobs: badJobs, Providers: provider, Secrets: box, LLM: workerChat{response: `not-json`}}
 	processed, processErr := badWorker.ProcessNext(context.Background(), "worker")
-	if !processed || processErr == nil || !badJobs.failed || badJobs.retryAt == nil || badJobs.completed {
+	if !processed || processErr == nil || !errors.Is(processErr, stateErr) || !badJobs.failed || badJobs.retryAt == nil || badJobs.completed {
 		t.Fatalf("malformed analysis should be retried: processed=%v err=%v jobs=%+v", processed, processErr, badJobs)
 	}
 

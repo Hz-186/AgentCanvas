@@ -89,7 +89,11 @@ func TestLivePythonBridgeBenchmark(t *testing.T) {
 		t.Run(fixture.Name, func(t *testing.T) {
 			doc := fixture.document()
 			policy := chunker.Policy{ChunkSize: fixture.ChunkSize, Overlap: fixture.Overlap}
-			goChunks, err := native.Chunk(context.Background(), fixture.Method, doc, policy)
+			goMethod := fixture.Method
+			if goMethod == "langchain_recursive" {
+				goMethod = chunker.MethodRecursive
+			}
+			goChunks, err := native.Chunk(context.Background(), goMethod, doc, policy)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -115,7 +119,11 @@ func TestLivePythonBridgeBenchmark(t *testing.T) {
 					t.Errorf("Python chunks did not retain metadata key %q", key)
 				}
 			}
+			goRecall, goPrecision := retrievalMetrics(goChunks, fixture.Queries, 3)
 			recall, precision := retrievalMetrics(pythonChunks, fixture.Queries, 3)
+			if recall < goRecall-0.05 || precision < goPrecision-0.05 {
+				t.Fatalf("Python retrieval regressed beyond five points: go=%.2f/%.2f python=%.2f/%.2f", goRecall, goPrecision, recall, precision)
+			}
 			backend := "proxy"
 			if esStore != nil {
 				backend = "elasticsearch"
@@ -128,7 +136,7 @@ func TestLivePythonBridgeBenchmark(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			t.Logf("retrieval backend=%s recall@3=%.2f precision@3=%.2f", backend, recall, precision)
+			t.Logf("retrieval backend=%s go_recall@3=%.2f go_precision@3=%.2f python_recall@3=%.2f python_precision@3=%.2f", backend, goRecall, goPrecision, recall, precision)
 			if len(fixture.Queries) > 0 && (recall < 0.5 || precision < 0.5) {
 				t.Fatalf("retrieval proxy metrics too low: recall=%.2f precision=%.2f", recall, precision)
 			}

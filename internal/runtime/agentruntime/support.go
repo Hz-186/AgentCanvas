@@ -6,9 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"agentcanvas/internal/domain/conversation"
 	providerdomain "agentcanvas/internal/domain/provider"
-	cryptoinfra "agentcanvas/internal/infrastructure/crypto"
 	"agentcanvas/internal/infrastructure/llm"
 	agenterrors "agentcanvas/internal/pkg/errors"
 	runtimeevent "agentcanvas/internal/runtime/event"
@@ -99,7 +97,7 @@ func validateJSONType(typ string, value any) error {
 
 type ProviderLoader struct {
 	Providers providerdomain.Repository
-	Secrets   *cryptoinfra.SecretBox
+	Secrets   providerdomain.SecretCodec
 }
 
 func (l ProviderLoader) LoadChatProviderConfig(ctx context.Context, ownerID, providerID int64, model string) (*LoadedProvider, error) {
@@ -136,27 +134,4 @@ func (l ProviderLoader) LoadChatProviderConfig(ctx context.Context, ownerID, pro
 		},
 		EmbeddingModel: strings.TrimSpace(provider.DefaultEmbeddingModel),
 	}, nil
-}
-
-type ConversationMessageWriter struct {
-	Messages conversation.MessageRepository
-}
-
-func (w ConversationMessageWriter) WriteAssistantMessage(ctx context.Context, ownerID int64, conversationID *int64, runID int64, content string, tokenCount int) (int64, error) {
-	if conversationID == nil || *conversationID <= 0 || w.Messages == nil {
-		return 0, nil
-	}
-	message := &conversation.Message{
-		OwnerID:        ownerID,
-		ConversationID: *conversationID,
-		Role:           conversation.RoleAssistant,
-		Content:        content,
-		ContentType:    conversation.ContentTypeText,
-		RunID:          &runID,
-		TokenCount:     tokenCount,
-	}
-	if err := w.Messages.Create(ctx, message); err != nil {
-		return 0, err
-	}
-	return message.ID, nil
 }

@@ -29,17 +29,18 @@ type TurnRepository interface {
 	Create(ctx context.Context, item *Turn) error
 	CreateWithArtifacts(ctx context.Context, item *Turn, userMessage *conversation.Message, run *Run) error
 	CompleteWithMessage(ctx context.Context, item *Turn, assistantMessage *conversation.Message, run *Run) error
+	UpdateRunOwned(ctx context.Context, item *Turn, run *Run, releaseLease bool) error
 	FindByID(ctx context.Context, ownerID, id int64) (*Turn, error)
 	FindByIdempotencyKey(ctx context.Context, ownerID, conversationID int64, key string) (*Turn, error)
 	FindByRunID(ctx context.Context, ownerID, runID int64) (*Turn, error)
 	FindLatestByConversation(ctx context.Context, ownerID, agentID, conversationID int64) (*Turn, error)
 	Update(ctx context.Context, item *Turn) error
+	CancelByRun(ctx context.Context, ownerID, runID int64, finishedAt time.Time) (*Turn, error)
 	ListQueued(ctx context.Context, limit int) ([]Turn, error)
 	ClaimNext(ctx context.Context, workerID, leaseToken string, leaseUntil time.Time) (*Turn, error)
 	RenewLease(ctx context.Context, turnID int64, leaseToken string, leaseUntil time.Time) error
 	ListExpiredRunning(ctx context.Context, before time.Time, limit int) ([]Turn, error)
-	RequeueExpired(ctx context.Context, turnID int64, retryAt time.Time, reason string) error
-	PauseExpired(ctx context.Context, turnID int64, reason string) error
+	RecoverExpired(ctx context.Context, item *Turn, run *Run) error
 }
 
 type RunRepository interface {
@@ -47,6 +48,7 @@ type RunRepository interface {
 	FindByID(context.Context, int64, int64) (*Run, error)
 	ListByParent(context.Context, int64, int64) ([]Run, error)
 	Update(context.Context, *Run) error
+	CancelActive(context.Context, *Run, time.Time) (bool, error)
 }
 
 type RunEventRepository interface {
@@ -64,10 +66,11 @@ type ApprovalRepository interface {
 	FindApprovalRequestByID(context.Context, int64, int64) (*ApprovalRequest, error)
 	FindPendingApprovalByRun(context.Context, int64, int64) (*ApprovalRequest, error)
 	ListApprovalRequests(context.Context, int64, string) ([]ApprovalRequest, error)
-	DecideApprovalAndClaimResume(context.Context, *ApprovalRequest) error
+	DecideApprovalAndClaimResume(context.Context, *ApprovalRequest, []byte) error
 	CreateCheckpoint(context.Context, *RunCheckpoint) error
+	SavePausedRun(context.Context, *Turn, *Run, *ApprovalRequest, *RunCheckpoint) error
 	FindLatestCheckpointByRun(context.Context, int64, int64) (*RunCheckpoint, error)
-	ClaimResume(context.Context, int64, int64) error
+	ClaimResume(context.Context, int64, int64, []byte) error
 }
 
 type ImprovementRepository interface {

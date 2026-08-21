@@ -25,10 +25,10 @@ services:
     container_name: agentcanvas-mysql
     restart: unless-stopped
     environment:
-      MYSQL_ROOT_PASSWORD: password
+      MYSQL_ROOT_PASSWORD: ${AGENTCANVAS_MYSQL_ROOT_PASSWORD:?Set AGENTCANVAS_MYSQL_ROOT_PASSWORD}
       MYSQL_DATABASE: agentcanvas
       MYSQL_USER: agentcanvas
-      MYSQL_PASSWORD: password
+      MYSQL_PASSWORD: ${AGENTCANVAS_MYSQL_PASSWORD:?Set AGENTCANVAS_MYSQL_PASSWORD}
     ports:
       - "3306:3306"
     volumes:
@@ -37,7 +37,7 @@ services:
       - --character-set-server=utf8mb4
       - --collation-server=utf8mb4_unicode_ci
     healthcheck:
-      test: [ "CMD", "mysqladmin", "ping", "-h", "localhost", "-ppassword" ]
+      test: [ "CMD", "mysqladmin", "ping", "-h", "localhost", "-p$${MYSQL_ROOT_PASSWORD}" ]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -46,14 +46,16 @@ services:
     image: redis:7.2
     container_name: agentcanvas-redis
     restart: unless-stopped
+    environment:
+      AGENTCANVAS_REDIS_PASSWORD: ${AGENTCANVAS_REDIS_PASSWORD:?Set AGENTCANVAS_REDIS_PASSWORD}
     ports:
       - "6379:6379"
     volumes:
       - agentcanvas_redis_data:/data
     command:
-      ["redis-server", "--appendonly", "yes"]
+      ["sh", "-c", "exec redis-server --appendonly yes --requirepass \"$${AGENTCANVAS_REDIS_PASSWORD}\""]
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD-SHELL", "redis-cli --no-auth-warning -a \"$${AGENTCANVAS_REDIS_PASSWORD}\" ping"]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -63,8 +65,8 @@ services:
     container_name: agentcanvas-minio
     restart: unless-stopped
     environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin
+      MINIO_ROOT_USER: ${AGENTCANVAS_MINIO_ACCESS_KEY:?Set AGENTCANVAS_MINIO_ACCESS_KEY}
+      MINIO_ROOT_PASSWORD: ${AGENTCANVAS_MINIO_SECRET_KEY:?Set AGENTCANVAS_MINIO_SECRET_KEY}
     ports:
       - "9000:9000"
       - "9001:9001"
@@ -108,8 +110,8 @@ services:
     environment:
       ETCD_ENDPOINTS: etcd:2379
       MINIO_ADDRESS: minio:9000
-      MINIO_ACCESS_KEY_ID: minioadmin
-      MINIO_SECRET_ACCESS_KEY: minioadmin
+      MINIO_ACCESS_KEY_ID: ${AGENTCANVAS_MINIO_ACCESS_KEY:?Set AGENTCANVAS_MINIO_ACCESS_KEY}
+      MINIO_SECRET_ACCESS_KEY: ${AGENTCANVAS_MINIO_SECRET_KEY:?Set AGENTCANVAS_MINIO_SECRET_KEY}
       MINIO_USE_SSL: "false"
       MINIO_BUCKET_NAME: milvus-bucket
     ports:

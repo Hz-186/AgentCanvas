@@ -1,6 +1,9 @@
 package knowledge
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 type BaseRepository interface {
 	Create(ctx context.Context, kb *KnowledgeBase) error
@@ -35,8 +38,26 @@ type IngestionJobRepository interface {
 	Create(ctx context.Context, job *IngestionJob) error
 	FindByID(ctx context.Context, ownerID, id int64) (*IngestionJob, error)
 	ClaimNext(ctx context.Context, workerID string) (*IngestionJob, error)
+	ClaimByID(ctx context.Context, ownerID, id int64, workerID string) (*IngestionJob, bool, error)
 	MarkCompleted(ctx context.Context, id int64) error
 	MarkFailed(ctx context.Context, id int64, message string) (bool, error)
+}
+
+type ReliableIngestionJobRepository interface {
+	RenewLock(ctx context.Context, id int64, workerID string, lockedAt time.Time) error
+	MarkCompletedOwned(ctx context.Context, id int64, workerID string) error
+	MarkFailedOwned(ctx context.Context, id int64, workerID, message string) (bool, error)
+}
+
+// RetryableIngestionJobRepository persists the next retry time in the
+// business row instead of relying on an in-memory transport delay.
+type RetryableIngestionJobRepository interface {
+	MarkFailedAt(ctx context.Context, id int64, message string, retryAt time.Time) (bool, error)
+	MarkFailedOwnedAt(ctx context.Context, id int64, workerID, message string, retryAt time.Time) (bool, error)
+}
+
+type GenerationCommitter interface {
+	Activate(ctx context.Context, doc *Document, cleanup *IngestionJob, chunkDelta int) error
 }
 
 type RetrievalLogRepository interface {

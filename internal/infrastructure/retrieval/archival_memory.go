@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"agentcanvas/internal/domain/contextresource"
 	"agentcanvas/internal/domain/memory"
 	"agentcanvas/internal/infrastructure/llm"
 	"agentcanvas/internal/infrastructure/vectorstore"
@@ -15,10 +16,11 @@ import (
 const ArchivalMemoryCollection = "agent_archival_memories"
 
 type ArchivalMemoryIndex struct {
-	Store    vectorstore.Store
-	Embedder llm.EmbeddingClient
-	Provider llm.EmbeddingProviderConfig
-	Model    string
+	Store      vectorstore.Store
+	Embedder   llm.EmbeddingClient
+	Provider   llm.EmbeddingProviderConfig
+	ProviderID int64
+	Model      string
 }
 
 func (s ArchivalMemoryIndex) Index(ctx context.Context, item memory.Memory) error {
@@ -26,14 +28,15 @@ func (s ArchivalMemoryIndex) Index(ctx context.Context, item memory.Memory) erro
 	if err != nil {
 		return err
 	}
-	if err := s.Store.EnsureCollection(ctx, ArchivalMemoryCollection, len(vector), vectorstore.DefaultHNSWConfig()); err != nil {
+	collection := s.collection()
+	if err := s.Store.EnsureCollection(ctx, collection, len(vector), vectorstore.DefaultHNSWConfig()); err != nil {
 		return err
 	}
 	conversationID := int64(0)
 	if item.ConversationID != nil {
 		conversationID = *item.ConversationID
 	}
-	return s.Store.Upsert(ctx, ArchivalMemoryCollection, []vectorstore.VectorDocument{{
+	return s.Store.Upsert(ctx, collection, []vectorstore.VectorDocument{{
 		ID: strconv.FormatInt(item.ID, 10), Vector: vector,
 		Metadata: map[string]any{"owner_id": item.OwnerID, "conversation_id": conversationID, "memory_id": item.ID, "memory_type": item.MemoryType},
 	}})
@@ -44,7 +47,7 @@ func (s ArchivalMemoryIndex) Search(ctx context.Context, ownerID int64, query st
 	if err != nil {
 		return nil, err
 	}
-	results, err := s.Store.Search(ctx, vectorstore.SearchRequest{Collection: ArchivalMemoryCollection, Vector: vector, TopK: limit, Filter: map[string]any{"owner_id": ownerID}})
+	results, err := s.Store.Search(ctx, vectorstore.SearchRequest{Collection: s.collection(), Vector: vector, TopK: limit, Filter: map[string]any{"owner_id": ownerID}})
 	if err != nil {
 		return nil, err
 	}
@@ -68,9 +71,9 @@ func (s ArchivalMemoryIndex) Delete(ctx context.Context, memoryID int64) error {
 	if store, ok := s.Store.(interface {
 		DeleteByFilter(context.Context, string, map[string]any) error
 	}); ok {
-		return store.DeleteByFilter(ctx, ArchivalMemoryCollection, map[string]any{"memory_id": memoryID})
+		return store.DeleteByFilter(ctx, s.collection(), map[string]any{"memory_id": memoryID})
 	}
-	return s.Store.Delete(ctx, ArchivalMemoryCollection, []string{strconv.FormatInt(memoryID, 10)})
+	return s.Store.Delete(ctx, s.collection(), []string{strconv.FormatInt(memoryID, 10)})
 }
 
 func metadataInt64(value any) (int64, error) {
@@ -100,6 +103,16 @@ func (s ArchivalMemoryIndex) embed(ctx context.Context, text string) ([]float32,
 		return nil, fmt.Errorf("embedding response is empty")
 	}
 	return resp.Embeddings[0], nil
+}
+
+func (s ArchivalMemoryIndex) collection() string {
+	// The backing vector field fixes its dimension. A changed dimension is
+	// rejected by Elasticsearch/Milvus and requires an explicit rebuild.
+	hash := contextresource.HashContent(fmt.Sprintf("%d\x1f%s\x1fCOSINE", s.ProviderID, strings.TrimSpace(s.Model)))
+	if len(hash) > 12 {
+		hash = hash[:12]
+	}
+	return fmt.Sprintf("%s_%s", ArchivalMemoryCollection, hash)
 }
 
 var _ memory.ArchivalIndex = ArchivalMemoryIndex{}

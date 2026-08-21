@@ -4,8 +4,6 @@ import (
 	"agentcanvas/internal/domain/audit"
 	authdomain "agentcanvas/internal/domain/auth"
 	"agentcanvas/internal/domain/user"
-	cryptoinfra "agentcanvas/internal/infrastructure/crypto"
-	oauthinfra "agentcanvas/internal/infrastructure/oauth"
 	agenterrors "agentcanvas/internal/pkg/errors"
 	"context"
 	"encoding/json"
@@ -25,11 +23,11 @@ type Service struct {
 	sessions    authdomain.SessionRepository
 	apiTokens   authdomain.APITokenRepository
 	audits      audit.Repository
-	passwords   *cryptoinfra.PasswordHasher
-	jwt         *cryptoinfra.JWTService
-	tokenHasher *cryptoinfra.TokenHasher
+	passwords   authdomain.PasswordHasher
+	jwt         authdomain.AccessTokenService
+	tokenHasher authdomain.TokenHasher
 	redis       *redis.Client
-	github      *oauthinfra.GitHubClient
+	github      authdomain.GitHubOAuthClient
 	refreshTTL  time.Duration
 }
 
@@ -79,16 +77,22 @@ type CreateAPITokenRequest struct {
 	ExpiresAt *time.Time `json:"expires_at"`
 }
 
+var apiTokenScopes = map[string]struct{}{
+	"agent:read": {}, "agent:write": {}, "run:read": {}, "run:write": {},
+	"resource:read": {}, "resource:write": {}, "memory:read": {}, "memory:write": {},
+	"admin": {}, "*": {},
+}
+
 func NewService(users user.Repository,
 	oauth authdomain.OAuthRepository,
 	sessions authdomain.SessionRepository,
 	apiTokens authdomain.APITokenRepository,
 	audits audit.Repository,
-	passwords *cryptoinfra.PasswordHasher,
-	jwt *cryptoinfra.JWTService,
-	tokenHasher *cryptoinfra.TokenHasher,
+	passwords authdomain.PasswordHasher,
+	jwt authdomain.AccessTokenService,
+	tokenHasher authdomain.TokenHasher,
 	redisClient *redis.Client,
-	githubClient *oauthinfra.GitHubClient,
+	githubClient authdomain.GitHubOAuthClient,
 	refreshTTL time.Duration) *Service {
 	return &Service{
 		users:       users,
@@ -210,7 +214,7 @@ func (s *Service) BeginGitHubOAuth(ctx context.Context) (string, error) {
 	if s.redis == nil || s.github == nil {
 		return "", fmt.Errorf("github oauth is not configured")
 	}
-	state, err := cryptoinfra.RandomURLToken(32)
+	state, err := authdomain.RandomURLToken(32)
 	if err != nil {
 		return "", err
 	}
@@ -284,7 +288,7 @@ func (s *Service) HandleGitHubCallbackCode(ctx context.Context, code, state stri
 	if err != nil {
 		return "", err
 	}
-	loginCode, err := cryptoinfra.RandomURLToken(32)
+	loginCode, err := authdomain.RandomURLToken(32)
 	if err != nil {
 		return "", err
 	}
@@ -324,12 +328,33 @@ func (s *Service) CreateAPIToken(ctx context.Context, ownerID int64, req CreateA
 	if name == "" {
 		return nil, agenterrors.ErrInvalidInput
 	}
-	raw, err := cryptoinfra.RandomURLToken(32)
+	scopes := make([]string, 0, len(req.Scopes))
+	seen := make(map[string]struct{}, len(req.Scopes))
+	for _, raw := range req.Scopes {
+		scope := strings.TrimSpace(raw)
+		if scope == "" {
+			continue
+		}
+		if _, ok := apiTokenScopes[scope]; !ok {
+			return nil, fmt.Errorf("unsupported api token scope %q", scope)
+		}
+		if _, ok := seen[scope]; !ok {
+			seen[scope] = struct{}{}
+			scopes = append(scopes, scope)
+		}
+	}
+	if len(scopes) == 0 {
+		return nil, fmt.Errorf("at least one api token scope is required")
+	}
+	raw, err := authdomain.RandomURLToken(32)
 	if err != nil {
 		return nil, err
 	}
 	fullToken := "ac_" + raw
-	scopesJSON, _ := json.Marshal(req.Scopes)
+	scopesJSON, err := json.Marshal(scopes)
+	if err != nil {
+		return nil, err
+	}
 	token := &authdomain.APIToken{
 		OwnerID:     ownerID,
 		Name:        name,
@@ -346,7 +371,7 @@ func (s *Service) CreateAPIToken(ctx context.Context, ownerID int64, req CreateA
 		Name:        token.Name,
 		Token:       fullToken,
 		TokenPrefix: token.TokenPrefix,
-		Scopes:      req.Scopes,
+		Scopes:      scopes,
 		ExpiresAt:   token.ExpiresAt,
 		CreatedAt:   token.CreatedAt,
 	}, nil
@@ -360,7 +385,7 @@ func (s *Service) RevokeAPIToken(ctx context.Context, ownerID, id int64) error {
 	return s.apiTokens.RevokeByID(ctx, ownerID, id, time.Now().UTC())
 }
 
-func (s *Service) VerifyAccessToken(raw string) (*cryptoinfra.JWTClaims, error) {
+func (s *Service) VerifyAccessToken(raw string) (*authdomain.AccessTokenClaims, error) {
 	return s.jwt.VerifyAccessToken(raw)
 }
 
@@ -368,7 +393,7 @@ func (s *Service) HashToken(raw string) string {
 	return s.tokenHasher.Hash(raw)
 }
 
-func (s *Service) createGitHubUser(ctx context.Context, ghUser *oauthinfra.GitHubUser, providerUserID, scopes string) (*user.User, *authdomain.OAuthAccount, error) {
+func (s *Service) createGitHubUser(ctx context.Context, ghUser *authdomain.GitHubUser, providerUserID, scopes string) (*user.User, *authdomain.OAuthAccount, error) {
 	username := strings.TrimSpace(ghUser.Login)
 	if username == "" {
 		username = "github_" + providerUserID
@@ -428,7 +453,7 @@ func (s *Service) issueTokens(ctx context.Context, userID int64, client ClientIn
 	if err != nil {
 		return nil, err
 	}
-	refresh, err := cryptoinfra.RandomURLToken(48)
+	refresh, err := authdomain.RandomURLToken(48)
 	if err != nil {
 		return nil, err
 	}
@@ -450,22 +475,7 @@ func (s *Service) issueTokens(ctx context.Context, userID int64, client ClientIn
 }
 
 func (s *Service) audit(ctx context.Context, ownerID, actorID int64, action, resourceType, resourceID string, detail map[string]any, client ClientInfo) error {
-	detailJSON := "{}"
-	if detail != nil {
-		if data, err := json.Marshal(detail); err == nil {
-			detailJSON = string(data)
-		}
-	}
-	return s.audits.Create(ctx, &audit.Log{
-		OwnerID:      ownerID,
-		ActorID:      actorID,
-		Action:       action,
-		ResourceType: resourceType,
-		ResourceID:   resourceID,
-		DetailJSON:   detailJSON,
-		IPAddress:    client.IPAddress,
-		UserAgent:    client.UserAgent,
-	})
+	return s.audits.Create(ctx, audit.NewLog(ownerID, actorID, action, resourceType, resourceID, detail, client.IPAddress, client.UserAgent))
 }
 
 func toUserDTO(u *user.User) UserDTO {

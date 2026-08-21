@@ -9,10 +9,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 	"time"
+
+	workspacedomain "agentcanvas/internal/domain/workspace"
 )
 
 var ErrNotRepository = errors.New("path is not a git repository")
@@ -36,33 +37,9 @@ type CommandResult struct {
 	ExitCode int
 }
 
-type Worktree struct {
-	Path       string `json:"path"`
-	Branch     string `json:"branch,omitempty"`
-	Head       string `json:"head,omitempty"`
-	Detached   bool   `json:"detached"`
-	Bare       bool   `json:"bare"`
-	Locked     bool   `json:"locked"`
-	LockReason string `json:"lock_reason,omitempty"`
-	Prunable   bool   `json:"prunable"`
-}
-
-type Status struct {
-	Root      string   `json:"root"`
-	Branch    string   `json:"branch"`
-	Head      string   `json:"head"`
-	Dirty     bool     `json:"dirty"`
-	Unpushed  bool     `json:"unpushed"`
-	Staged    []string `json:"staged,omitempty"`
-	Changed   []string `json:"changed,omitempty"`
-	Untracked []string `json:"untracked,omitempty"`
-}
-
-type CommitResult struct {
-	Hash    string   `json:"hash"`
-	Message string   `json:"message"`
-	Paths   []string `json:"paths"`
-}
+type Worktree = workspacedomain.GitWorktree
+type Status = workspacedomain.GitStatus
+type CommitResult = workspacedomain.GitCommitResult
 
 func NewService(cfg Config) *Service {
 	if cfg.CommandTimeout <= 0 {
@@ -266,41 +243,15 @@ func ParseWorktrees(output string) []Worktree {
 }
 
 func SanitizeBranch(value string) string {
-	value = strings.ToLower(strings.TrimSpace(value))
-	value = regexp.MustCompile(`[^a-z0-9._/-]+`).ReplaceAllString(value, "-")
-	value = strings.Trim(value, "-/_ .")
-	value = strings.ReplaceAll(value, "..", "-")
-	value = strings.TrimSuffix(value, ".lock")
-	value = regexp.MustCompile(`/+`).ReplaceAllString(value, "/")
-	value = regexp.MustCompile(`-+`).ReplaceAllString(value, "-")
-	parts := make([]string, 0)
-	for _, part := range strings.Split(value, "/") {
-		if part = strings.Trim(part, "-._"); part != "" {
-			parts = append(parts, part)
-		}
-	}
-	return strings.Join(parts, "/")
+	return workspacedomain.SanitizeBranch(value)
 }
 
 func Slugify(value string) string {
-	value = SanitizeBranch(value)
-	value = strings.ReplaceAll(value, "/", "-")
-	if len(value) > 80 {
-		value = value[:80]
-	}
-	value = strings.Trim(value, "-._")
-	if value == "" {
-		value = "run"
-	}
-	return value
+	return workspacedomain.Slugify(value)
 }
 
 func BranchName(projectSlug string, runID int64, task string) string {
-	projectSlug = Slugify(projectSlug)
-	if len(projectSlug) > 48 {
-		projectSlug = projectSlug[:48]
-	}
-	return SanitizeBranch(fmt.Sprintf("%s/%d-%s", projectSlug, runID, Slugify(task)))
+	return workspacedomain.BranchName(projectSlug, runID, task)
 }
 
 func (s *Service) ResolveBase(ctx context.Context, root string) (string, string) {
@@ -452,6 +403,14 @@ func (s *Service) Status(ctx context.Context, path string) (Status, error) {
 		status.Unpushed = strings.TrimSpace(unpushed.Stdout) != ""
 	}
 	return status, nil
+}
+
+func (s *Service) RuntimeStatus(ctx context.Context, path string) (branch, head string, dirty, unpushed bool, err error) {
+	status, err := s.Status(ctx, path)
+	if err != nil {
+		return "", "", false, false, err
+	}
+	return status.Branch, status.Head, status.Dirty, status.Unpushed, nil
 }
 
 func (s *Service) Diff(ctx context.Context, path string, staged bool) (string, error) {
@@ -635,96 +594,17 @@ func (s *Service) HashFile(path string) (string, error) {
 }
 
 func EnsureInside(root, target string) (string, error) {
-	root, err := filepath.Abs(filepath.Clean(root))
-	if err != nil {
-		return "", err
-	}
-	target, err = filepath.Abs(filepath.Clean(target))
-	if err != nil {
-		return "", err
-	}
-	rel, err := filepath.Rel(root, target)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("path escapes workspace root")
-	}
-	return target, nil
+	return workspacedomain.EnsureInside(root, target)
 }
 
 // EnsureSafePath validates both the lexical path and every existing symlink
 // ancestor. This also protects writes to new files below an escaping symlink.
 func EnsureSafePath(root, target string) (string, error) {
-	root, err := filepath.Abs(filepath.Clean(root))
-	if err != nil {
-		return "", err
-	}
-	target, err = filepath.Abs(filepath.Clean(target))
-	if err != nil {
-		return "", err
-	}
-	if _, err := EnsureInside(root, target); err != nil {
-		return "", err
-	}
-	rootReal := root
-	if resolved, resolveErr := filepath.EvalSymlinks(root); resolveErr == nil {
-		rootReal = resolved
-	}
-	existing := target
-	for {
-		if _, statErr := os.Lstat(existing); statErr == nil {
-			break
-		}
-		parent := filepath.Dir(existing)
-		if parent == existing {
-			break
-		}
-		existing = parent
-	}
-	if resolved, resolveErr := filepath.EvalSymlinks(existing); resolveErr == nil {
-		if _, err := EnsureInside(rootReal, resolved); err != nil {
-			return "", err
-		}
-	}
-	if _, statErr := os.Lstat(target); statErr == nil {
-		if resolved, resolveErr := filepath.EvalSymlinks(target); resolveErr == nil {
-			if _, err := EnsureInside(rootReal, resolved); err != nil {
-				return "", err
-			}
-		}
-	}
-	return target, nil
+	return workspacedomain.EnsureSafePath(root, target)
 }
 
 func IsSensitivePath(root, target string) bool {
-	if _, err := EnsureSafePath(root, target); err != nil {
-		return true
-	}
-	resolved := filepath.Clean(target)
-	if candidate, err := filepath.EvalSymlinks(target); err == nil {
-		resolved = candidate
-	}
-	rel, _ := filepath.Rel(root, resolved)
-	parts := strings.Split(filepath.ToSlash(rel), "/")
-	for _, part := range parts {
-		lower := strings.ToLower(part)
-		if lower == ".git" || lower == ".agentcanvas" || lower == "credentials" || lower == "secrets" || lower == ".ssh" || lower == ".aws" {
-			return true
-		}
-	}
-	base := strings.ToLower(filepath.Base(resolved))
-	if base == ".env" || strings.HasPrefix(base, ".env.") || strings.HasSuffix(base, ".pem") || strings.HasSuffix(base, ".key") || strings.HasSuffix(base, ".p12") || strings.HasSuffix(base, ".pfx") {
-		return true
-	}
-	switch base {
-	case ".git-credentials", ".netrc", ".npmrc", ".pypirc", "authorized_keys", "credentials", "credentials.json",
-		"google-credentials.json", "id_dsa", "id_ecdsa", "id_ed25519", "id_rsa", "service-account.json", "service_account.json":
-		return true
-	}
-	for _, secretName := range []string{"secrets.json", "secrets.yaml", "secrets.yml", "secrets.toml", "secrets.ini"} {
-		if base == secretName {
-			return true
-		}
-	}
-	return strings.HasSuffix(base, "-credentials.json") || strings.HasSuffix(base, "_credentials.json")
+	return workspacedomain.IsSensitivePath(root, target)
 }
 
 func SortedWorktrees(items []Worktree) []Worktree {

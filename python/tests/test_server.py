@@ -4,10 +4,17 @@ import unittest
 import grpc
 
 from agentcanvas.pythonbridge.v1 import bridge_pb2, bridge_pb2_grpc
-from agentcanvas_bridge.server import BridgeLimits, create_server
+from agentcanvas_bridge.server import BridgeLimits, config_from_env, create_server
 
 
 class ServerTest(unittest.TestCase):
+    def test_config_from_env_uses_valid_slot_defaults(self):
+        host, port, token, limits = config_from_env()
+        self.assertEqual(host, "127.0.0.1")
+        self.assertEqual(port, 50051)
+        self.assertEqual(token, "")
+        self.assertEqual(limits.max_input_bytes, 8 * 1024 * 1024)
+
     def setUp(self):
         self.server = create_server(
             "test-token",
@@ -49,6 +56,8 @@ class ServerTest(unittest.TestCase):
         )
         self.assertEqual(capabilities.protocol_version, "v1")
         self.assertIn("python:recursive", capabilities.chunk_methods)
+        self.assertIn("python:langchain_recursive", capabilities.chunk_methods)
+        self.assertIn("python:langchain_pdf", capabilities.parser_methods)
         tools = self.stub.ListTools(bridge_pb2.ListToolsRequest(), metadata=self.metadata("list-tools"))
         self.assertEqual(len(tools.tools), 2)
 
@@ -95,6 +104,56 @@ class ServerTest(unittest.TestCase):
             '{"chars":5,"lines":1,"words":1,"sha256":"2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"}',
         )
 
+    def test_parse_document_requires_ocr_for_empty_input(self):
+        response = self.stub.ParseDocument(
+            bridge_pb2.ParseDocumentRequest(
+                request_id="parse-request",
+                filename="scan.pdf",
+                parser="python:langchain_pdf",
+                content=b"",
+            ),
+            metadata=self.metadata("parse-request"),
+        )
+        self.assertTrue(response.requires_ocr)
+        self.assertEqual(response.parser, "python:langchain_pdf")
+
+    def test_parse_document_rejects_unsupported_type(self):
+        with self.assertRaises(grpc.RpcError) as raised:
+            self.stub.ParseDocument(
+                bridge_pb2.ParseDocumentRequest(
+                    request_id="parse-request",
+                    filename="note.txt",
+                    parser="python:langchain_pdf",
+                    content=b"text",
+                ),
+                metadata=self.metadata("parse-request"),
+            )
+        self.assertEqual(raised.exception.code(), grpc.StatusCode.INVALID_ARGUMENT)
+
+    def test_parse_document_requires_filename_and_parser(self):
+        for field in ("filename", "parser"):
+            request = bridge_pb2.ParseDocumentRequest(
+                request_id="parse-request",
+                filename="guide.pdf",
+                parser="python:langchain_pdf",
+                content=b"pdf",
+            )
+            setattr(request, field, "")
+            with self.assertRaises(grpc.RpcError) as raised:
+                self.stub.ParseDocument(request, metadata=self.metadata("parse-request"))
+            self.assertEqual(raised.exception.code(), grpc.StatusCode.INVALID_ARGUMENT)
+
+    def test_chunk_document_requires_document_and_policy(self):
+        for field in ("document", "policy"):
+            request = bridge_pb2.ChunkDocumentRequest(request_id="chunk-request", method="python:recursive")
+            if field == "document":
+                request.policy.chunk_size = 8
+            else:
+                request.document.text = "hello"
+            with self.assertRaises(grpc.RpcError) as raised:
+                self.stub.ChunkDocument(request, metadata=self.metadata("chunk-request"))
+            self.assertEqual(raised.exception.code(), grpc.StatusCode.INVALID_ARGUMENT)
+
     def test_limits_and_unknown_tool_are_structured_errors(self):
         metadata = self.metadata()
         with self.assertRaises(grpc.RpcError) as oversized:
@@ -108,6 +167,32 @@ class ServerTest(unittest.TestCase):
                 metadata=metadata,
             )
         self.assertEqual(oversized.exception.code(), grpc.StatusCode.RESOURCE_EXHAUSTED)
+
+        with self.assertRaises(grpc.RpcError) as oversized_response:
+            self.stub.ChunkDocument(
+                bridge_pb2.ChunkDocumentRequest(
+                    request_id="test-request",
+                    method="python:fixed_token",
+                    document=bridge_pb2.ParsedDocument(text="a" * 3000),
+                    policy=bridge_pb2.ChunkPolicy(chunk_size=1),
+                ),
+                metadata=metadata,
+            )
+        self.assertEqual(oversized_response.exception.code(), grpc.StatusCode.RESOURCE_EXHAUSTED)
+
+        with self.assertRaises(grpc.RpcError) as malformed_metadata:
+            self.stub.ChunkDocument(
+                bridge_pb2.ChunkDocumentRequest(
+                    request_id="test-request",
+                    method="python:recursive",
+                    document=bridge_pb2.ParsedDocument(
+                        blocks=(bridge_pb2.DocumentBlock(id="b1", type="paragraph", text="hello", metadata_json="["),)
+                    ),
+                    policy=bridge_pb2.ChunkPolicy(chunk_size=8),
+                ),
+                metadata=metadata,
+            )
+        self.assertEqual(malformed_metadata.exception.code(), grpc.StatusCode.INVALID_ARGUMENT)
 
         with self.assertRaises(grpc.RpcError) as missing:
             self.stub.ExecuteTool(

@@ -85,7 +85,7 @@ func (h *MemoryHandler) ListRecallLogs(c *gin.Context) {
 }
 
 func (h *MemoryHandler) SetRecallFeedback(c *gin.Context) {
-	ownerID, id, ok := h.ownerAndID(c)
+	ownerID, id, ok := ownerAndID(c, "id")
 	if !ok {
 		return
 	}
@@ -151,7 +151,7 @@ func (h *MemoryHandler) Create(c *gin.Context) {
 }
 
 func (h *MemoryHandler) Get(c *gin.Context) {
-	ownerID, id, ok := h.ownerAndID(c)
+	ownerID, id, ok := ownerAndID(c, "id")
 	if !ok {
 		return
 	}
@@ -164,7 +164,7 @@ func (h *MemoryHandler) Get(c *gin.Context) {
 }
 
 func (h *MemoryHandler) Update(c *gin.Context) {
-	ownerID, id, ok := h.ownerAndID(c)
+	ownerID, id, ok := ownerAndID(c, "id")
 	if !ok {
 		return
 	}
@@ -182,7 +182,7 @@ func (h *MemoryHandler) Update(c *gin.Context) {
 }
 
 func (h *MemoryHandler) Delete(c *gin.Context) {
-	ownerID, id, ok := h.ownerAndID(c)
+	ownerID, id, ok := ownerAndID(c, "id")
 	if !ok {
 		return
 	}
@@ -191,20 +191,6 @@ func (h *MemoryHandler) Delete(c *gin.Context) {
 		return
 	}
 	response.OK(c, gin.H{"success": true})
-}
-
-func (h *MemoryHandler) ownerAndID(c *gin.Context) (int64, int64, bool) {
-	ownerID, ok := currentUserID(c)
-	if !ok {
-		response.Error(c, http.StatusUnauthorized, agenterrors.CodeUnauthorized, agenterrors.ErrUnauthorized.Error())
-		return 0, 0, false
-	}
-	id, err := parseInt64Param(c, "id")
-	if err != nil {
-		writeAppError(c, agenterrors.ErrInvalidInput)
-		return 0, 0, false
-	}
-	return ownerID, id, true
 }
 
 func intQuery(c *gin.Context, name string, fallback int) int {
