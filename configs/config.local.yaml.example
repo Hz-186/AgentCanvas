@@ -3,15 +3,18 @@ app:
   env: local
   port: 8080
   base_url: http://localhost:8080
+  cors_allowed_origins:
+    - http://localhost:8080
+    - http://localhost:5173
 
 mysql:
-  dsn: root:password@tcp(localhost:3306)/agentcanvas?charset=utf8mb4&parseTime=True&loc=Local
+  dsn: ${AGENTCANVAS_MYSQL_DSN}
   max_open_conns: 20
   max_idle_conns: 10
 
 redis:
   addr: localhost:6379
-  password: ""
+  password: ${AGENTCANVAS_REDIS_PASSWORD}
   db: 0
 
 queue:
@@ -78,10 +81,13 @@ git_workspace:
 
 minio:
   endpoint: localhost:9000
-  access_key: minioadmin
-  secret_key: minioadmin
+  access_key: ${AGENTCANVAS_MINIO_ACCESS_KEY}
+  secret_key: ${AGENTCANVAS_MINIO_SECRET_KEY}
   bucket: agentcanvas
   use_ssl: false
+
+retrieval:
+  backend: elasticsearch
 
 elasticsearch:
   addresses:
@@ -96,7 +102,7 @@ milvus:
   enabled: true
   address: http://localhost:19530
   token: ""
-  collection: agentcanvas_chunks
+  collection: agentcanvas_chunks_v2
   dimensions: 0
   m: 16
   ef_construction: 200
@@ -122,6 +128,10 @@ python_bridge:
   enabled: false
   shadow_enabled: false
   allow_experimental_chunking: false
+  document_parser: go
+  shadow_document_parser: false
+  allow_experimental_parsing: false
+  fallback_to_go_ocr: true
   target: 127.0.0.1:50051
   auth_token_env: AGENTCANVAS_PYTHON_BRIDGE_TOKEN
   connect_timeout_seconds: 2
@@ -129,15 +139,19 @@ python_bridge:
   max_send_bytes: 8388608
   max_receive_bytes: 2097152
   max_concurrency: 8
+  max_document_bytes: 8388608
+  allowed_parser_methods:
+    - python:langchain_pdf
   allowed_chunk_methods:
     - python:fixed_token
     - python:recursive
+    - python:langchain_recursive
   allowed_tools: []
 
 security:
-  jwt_secret: replace-me-with-long-random-string
-  refresh_token_pepper: replace-me-with-another-long-random-string
-  secret_encrypt_key: replace-me-with-base64-encoded-32-bytes
+  jwt_secret: ${AGENTCANVAS_JWT_SECRET}
+  refresh_token_pepper: ${AGENTCANVAS_REFRESH_TOKEN_PEPPER}
+  secret_encrypt_key: ${AGENTCANVAS_SECRET_ENCRYPT_KEY}
   access_token_ttl_minutes: 30
   refresh_token_ttl_days: 30
 
