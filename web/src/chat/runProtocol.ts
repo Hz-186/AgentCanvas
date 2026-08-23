@@ -81,8 +81,8 @@ export function parseRunStreamEvent(input: string | unknown): RunStreamEvent {
     validateUsage(data);
   } else if (envelope.kind === 'workspace.update') {
 	for (const key of ['workspace_id', 'run_id']) requireNumber(data, key);
-	for (const key of ['repo_root', 'path', 'branch', 'base_sha', 'head_sha']) requireStringValue(data, key);
-	for (const key of ['dirty', 'unpushed']) requireBoolean(data, key);
+	for (const key of ['repository_root', 'workspace_path', 'branch_name', 'base_sha', 'head_sha']) requireStringValue(data, key);
+	for (const key of ['dirty', 'has_unpushed_commits']) requireBoolean(data, key);
   } else if (terminalKinds.has(envelope.kind)) {
     objectValue(data.run, 'data.run');
     validateUsage(objectValue(data.usage, 'data.usage'));

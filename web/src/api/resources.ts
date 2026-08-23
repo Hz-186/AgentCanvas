@@ -16,6 +16,7 @@ import type {
   Message,
   MessageSearchResult,
   MCPServer,
+  MCPServerRequest,
   MCPToolCache,
   ModelProvider,
   ProviderCatalog,
@@ -29,7 +30,6 @@ import type {
   ToolDefinition,
   ToolPack,
   ToolPackItem,
-  ToolPolicy,
   Skill,
   CreateSkillRequest,
   UpdateSkillRequest,
@@ -87,11 +87,11 @@ export const agentApi = {
 export const projectApi = {
   list: (includeArchived = false) => api.get<Project[]>('/projects', includeArchived ? { include_archived: 'true' } : undefined),
   get: (id: number) => api.get<Project>(`/projects/${id}`),
-  create: (body: { name: string; slug?: string; description?: string; primary_path: string; initialize_git?: boolean }) => api.post<Project>('/projects', body),
-  update: (id: number, body: Partial<Pick<Project, 'name' | 'description' | 'icon' | 'color'>>) => api.patch<Project>(`/projects/${id}`, body),
+  create: (body: { name: string; slug?: string; description?: string; repository_root: string; initialize_git?: boolean }) => api.post<Project>('/projects', body),
+  update: (id: number, body: Partial<Pick<Project, 'name' | 'description'>>) => api.patch<Project>(`/projects/${id}`, body),
   remove: (id: number) => api.delete<{ success: boolean }>(`/projects/${id}`),
   folders: (id: number) => api.get<ProjectFolder[]>(`/projects/${id}/folders`),
-  addFolder: (id: number, body: { path: string; label?: string; is_primary?: boolean }) => api.post<ProjectFolder>(`/projects/${id}/folders`, body),
+  addFolder: (id: number, body: { path: string; label?: string; is_repository_root?: boolean }) => api.post<ProjectFolder>(`/projects/${id}/folders`, body),
   removeFolder: (id: number, folderId: number) => api.delete<{ success: boolean }>(`/projects/${id}/folders/${folderId}`),
   status: (id: number) => api.get<GitStatus>(`/projects/${id}/git/status`),
   branches: (id: number) => api.get<string[]>(`/projects/${id}/git/branches`),
@@ -137,7 +137,7 @@ export const knowledgeApi = {
     embedding_model?: string;
     embedding_dimensions?: number;
     embedding_metric?: 'COSINE' | 'IP' | 'L2';
-    hybrid_weight?: number;
+    vector_weight?: number;
     rerank_enabled?: boolean;
     rerank_provider_id?: number;
     rerank_model?: string;
@@ -156,14 +156,14 @@ export const knowledgeApi = {
       embedding_model?: string;
       embedding_dimensions?: number;
       embedding_metric?: 'COSINE' | 'IP' | 'L2';
-      hybrid_weight?: number;
+      vector_weight?: number;
       rerank_enabled?: boolean;
       rerank_provider_id?: number;
       rerank_model?: string;
       chunk_method?: string;
       chunk_size?: number;
       chunk_overlap?: number;
-      status?: number;
+      enabled?: boolean;
     },
   ) => api.patch<KnowledgeBase>(`/knowledge-bases/${id}`, body),
   remove: (id: number) => api.delete<{ success: boolean }>(`/knowledge-bases/${id}`),
@@ -202,11 +202,11 @@ export const settingsApi = {
   audits: {
     list: (limit = 30, offset = 0) => api.get<AuditLog[]>('/audit-logs', { limit, offset }),
   },
-  memories: {
-	list: (params?: { memory_type?: string; status?: string; scope_type?: string; scope_id?: number; source?: string; conversation_id?: number }) => api.get<Memory[]>('/memories', params),
-    create: (body: { memory_type: string; title?: string; content: string; importance?: number; source?: string }) =>
-      api.post<Memory>('/memories', body),
-	update: (id: number, body: Partial<Pick<Memory, 'memory_type' | 'title' | 'content' | 'importance' | 'source' | 'metadata_json'>>) => api.patch<Memory>(`/memories/${id}`, body),
+	memories: {
+	list: (params?: { memory_type?: string; status?: string; scope_type?: string; scope_id?: number; source?: string; source_conversation_id?: number; source_project_id?: number }) => api.get<Memory[]>('/memories', params),
+	create: (body: { memory_type: string; source_conversation_id?: number | null; source_project_id?: number | null; scope_type?: Memory['scope_type']; scope_id?: number; title?: string; content: string; importance?: number; source?: string }) =>
+	  api.post<Memory>('/memories', body),
+	update: (id: number, body: Partial<Pick<Memory, 'memory_type' | 'source_conversation_id' | 'source_project_id' | 'scope_type' | 'scope_id' | 'title' | 'content' | 'importance' | 'source' | 'metadata_json'>>) => api.patch<Memory>(`/memories/${id}`, body),
     remove: (id: number) => api.delete<{ success: boolean }>(`/memories/${id}`),
 	listCandidates: (status?: ChangeProposal['status']) => api.get<ChangeProposal[]>('/memory-candidates', status ? { status } : undefined),
 	approveCandidate: (id: number, note = '') => api.post<ChangeProposal>(`/memory-candidates/${id}/approve`, { note }),
@@ -219,14 +219,10 @@ export const settingsApi = {
     get: (id: number) => api.get<ToolDefinition>(`/tool-definitions/${id}`),
     create: (body: { name: string; tool_type?: string; description?: string; config_json: Record<string, unknown> }) =>
       api.post<ToolDefinition>('/tool-definitions', body),
-    update: (id: number, body: Partial<Pick<ToolDefinition, 'name' | 'description' | 'config_json' | 'status'>>) =>
+    update: (id: number, body: Partial<Pick<ToolDefinition, 'name' | 'description' | 'config_json' | 'enabled'>>) =>
       api.patch<ToolDefinition>(`/tool-definitions/${id}`, body),
     remove: (id: number) => api.delete<{ success: boolean }>(`/tool-definitions/${id}`),
     test: (id: number, input: Record<string, unknown>) => api.post<Record<string, unknown>>(`/tool-definitions/${id}/test`, { input }),
-    listPolicies: () => api.get<ToolPolicy[]>('/tool-policies'),
-    createPolicy: (body: Partial<ToolPolicy>) => api.post<ToolPolicy>('/tool-policies', body),
-    updatePolicy: (id: number, body: Partial<ToolPolicy>) => api.patch<ToolPolicy>(`/tool-policies/${id}`, body),
-    removePolicy: (id: number) => api.delete<{ success: boolean }>(`/tool-policies/${id}`),
     listPacks: () => api.get<ToolPack[]>('/tool-packs'),
     createPack: (body: { name: string; description?: string }) => api.post<ToolPack>('/tool-packs', body),
     updatePack: (id: number, body: Partial<ToolPack>) => api.patch<ToolPack>(`/tool-packs/${id}`, body),
@@ -236,9 +232,9 @@ export const settingsApi = {
     removePackItem: (packId: number, toolId: number) =>
       request<{ success: boolean }>(`/tool-packs/${packId}/items`, { method: 'DELETE', body: { tool_id: toolId } }),
     listMCPServers: () => api.get<MCPServer[]>('/mcp-servers'),
-    createMCPServer: (body: { name: string; transport: 'streamable_http' | 'stdio'; endpoint_url?: string; command?: string; args_json?: string[]; env_json?: Record<string, string> }) =>
+    createMCPServer: (body: MCPServerRequest & { name: string; transport: 'streamable_http' | 'stdio' }) =>
       api.post<MCPServer>('/mcp-servers', body),
-    updateMCPServer: (id: number, body: Partial<MCPServer>) => api.patch<MCPServer>(`/mcp-servers/${id}`, body),
+    updateMCPServer: (id: number, body: MCPServerRequest) => api.patch<MCPServer>(`/mcp-servers/${id}`, body),
     removeMCPServer: (id: number) => api.delete<{ success: boolean }>(`/mcp-servers/${id}`),
     refreshMCPServer: (id: number) => api.post<{ server: MCPServer; tools: MCPToolCache[] }>(`/mcp-servers/${id}/refresh`),
     listMCPTools: (id: number) => api.get<MCPToolCache[]>(`/mcp-servers/${id}/tools`),

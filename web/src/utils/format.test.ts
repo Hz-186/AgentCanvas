@@ -63,12 +63,12 @@ describe('friendlyErrorMessage', () => {
   });
 
   it('maps missing-column SQL errors to a migration hint', () => {
-    const err = new Error("Error 1054 (42S22): Unknown column 'message_json' in 'field list'");
+	const err = new Error("Error 1054 (42S22): Unknown column 'checkpoint_json' in 'field list'");
     expect(friendlyErrorMessage(err)).toContain('数据库迁移');
   });
 
   it('maps invalid JSON SQL errors to a backend JSON hint', () => {
-    const err = new Error('Error 3140 (22032): Invalid JSON text in value for column metadata_json');
+	const err = new Error('Error 3140 (22032): Invalid JSON text in value for column input_schema_json');
     expect(friendlyErrorMessage(err)).toContain('非法 JSON');
   });
 

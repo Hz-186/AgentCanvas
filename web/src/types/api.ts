@@ -50,7 +50,7 @@ export interface ModelProvider {
   api_key_mask: string;
   default_chat_model: string;
   default_embedding_model: string;
-  status: number;
+  enabled: boolean;
   last_test_status: string;
   last_test_error?: string;
   last_test_at: string | null;
@@ -74,7 +74,7 @@ export interface UpdateProviderRequest {
   api_key?: string;
   default_chat_model?: string;
   default_embedding_model?: string;
-  status?: number;
+  enabled?: boolean;
 }
 
 // —— Provider Catalog (内置供应商目录) ——
@@ -107,7 +107,6 @@ export interface ApiToken {
   name: string;
   token_prefix: string;
   scopes: string;
-  last_used_at: string | null;
   expires_at: string | null;
   revoked_at: string | null;
   created_at: string;
@@ -132,7 +131,7 @@ export interface AuditLog {
   action: string;
   resource_type: string;
   resource_id: string;
-  detail_json: string;
+  detail_json: Record<string, unknown>;
   ip_address: string;
   user_agent: string;
   created_at: string;
@@ -142,23 +141,25 @@ export interface AuditLog {
 export interface Memory {
   id: number;
   owner_id: number;
-  conversation_id: number | null;
-	parent_id?: number | null;
-	conflict_flag?: boolean;
-	scope_type: 'user' | 'agent' | 'conversation';
+	source_conversation_id: number | null;
+	conflict_with_id?: number | null;
+	has_conflict?: boolean;
+	source_project_id?: number | null;
+	scope_type: 'user' | 'agent' | 'conversation' | 'project';
 	scope_id: number;
 	status: 'active' | 'superseded' | 'revoked';
 	supersedes_id?: number | null;
 	memory_type: string;
-	memory_level?: 'working' | 'short_term' | 'long_term';
+	retention_tier?: 'short_term' | 'long_term';
   title: string;
   content: string;
   importance: number;
   source: string;
-  metadata_json?: unknown;
-	last_used_at: string | null;
+  metadata_json?: Record<string, unknown>;
+	last_recalled_at: string | null;
 	last_decay_at?: string | null;
-	access_count?: number;
+	recall_count?: number;
+	promotion_count?: number;
   expires_at: string | null;
   created_at: string;
   updated_at: string;
@@ -197,20 +198,7 @@ export interface ToolDefinition {
   config_json: Record<string, unknown>;
   input_schema_json?: Record<string, unknown>;
   output_schema_json?: Record<string, unknown>;
-  status: number;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface ToolPolicy {
-  id: number;
-  owner_id: number;
-  name: string;
-  require_approval_for_risk?: string[];
-  max_timeout_ms: number;
-  max_output_bytes: number;
-  allowed_hosts?: string[];
-  credential_scope?: string;
+  enabled: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -227,7 +215,7 @@ export interface ToolPack {
 export interface ToolPackItem {
   id: number;
   owner_id: number;
-  pack_id: number;
+  tool_pack_id: number;
   tool_id: number;
   created_at: string;
 }
@@ -240,25 +228,32 @@ export interface MCPServer {
   endpoint_url: string;
   command: string;
   args_json?: string[] | unknown;
-  env_json?: Record<string, string> | unknown;
-  status: number;
-  last_error: string;
-  discovered_at: string | null;
+  env_json?: never;
+  enabled: boolean;
+  discovery_error: string;
+  tools_discovered_at: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface MCPServerRequest {
+  name?: string;
+  transport?: 'streamable_http' | 'stdio';
+  endpoint_url?: string;
+  command?: string;
+  args_json?: string[];
+  env_json?: Record<string, string>;
+  enabled?: boolean;
 }
 
 export interface MCPToolCache {
   id: number;
   owner_id: number;
-  server_id: number;
+  mcp_server_id: number;
   tool_name: string;
   description: string;
-  parameters_json?: unknown;
-  schema_hash: string;
-  cached_at: string;
+  input_schema_json?: unknown;
   created_at: string;
-  updated_at: string;
 }
 
 export interface Skill {
@@ -269,11 +264,10 @@ export interface Skill {
   skill_type: 'instruction' | 'bundle';
   source_type: 'inline' | 'local_path';
   entry_file: string;
-  content_md?: string;
+  content_markdown?: string;
   bundle_path?: string;
   tags_json?: string[] | unknown;
-  status: number;
-  version: number;
+  enabled: boolean;
   checksum: string;
   last_validated_at?: string | null;
   last_validation_error?: string;
@@ -287,10 +281,10 @@ export interface CreateSkillRequest {
   skill_type?: 'instruction' | 'bundle';
   source_type?: 'inline' | 'local_path';
   entry_file?: string;
-  content_md?: string;
+  content_markdown?: string;
   bundle_path?: string;
   tags?: string[];
-  status?: number;
+  enabled?: boolean;
 }
 
 export interface UpdateSkillRequest {
@@ -299,10 +293,10 @@ export interface UpdateSkillRequest {
   skill_type?: 'instruction' | 'bundle';
   source_type?: 'inline' | 'local_path';
   entry_file?: string;
-  content_md?: string;
+  content_markdown?: string;
   bundle_path?: string;
   tags?: string[];
-  status?: number;
+  enabled?: boolean;
 }
 
 export interface SkillValidationResult {
@@ -325,21 +319,21 @@ export interface KnowledgeBase {
   embedding_model: string;
   embedding_dimensions: number;
   embedding_metric?: 'COSINE' | 'IP' | 'L2';
-  hybrid_weight: number;
+  vector_weight: number;
   rerank_enabled: boolean;
   rerank_provider_id: number | null;
   rerank_model: string;
   chunk_method: string;
   chunk_size: number;
   chunk_overlap: number;
-  status: number;
+  enabled: boolean;
   document_count: number;
   chunk_count: number;
   created_at: string;
   updated_at: string;
 }
 
-export type ParserStatus =
+export type IngestionStatus =
   | 'pending'
   | 'parsing'
   | 'chunking'
@@ -350,16 +344,17 @@ export type ParserStatus =
 export interface AgentDocument {
   id: number;
   owner_id: number;
-  kb_id: number;
+  knowledge_base_id: number;
   name: string;
   original_filename: string;
   file_type: string;
   mime_type: string;
-  file_size: number;
-  object_key: string;
+  file_size_bytes: number;
+  storage_object_key: string;
   content_hash: string;
-  parser_status: ParserStatus;
-  parser_error?: string;
+  active_generation_id?: string;
+  ingestion_status: IngestionStatus;
+  ingestion_error?: string;
   enabled: boolean;
   chunk_count: number;
   token_count: number;
@@ -371,20 +366,17 @@ export interface AgentDocument {
 export interface DocumentChunk {
   id: number;
   owner_id: number;
-  kb_id: number;
+  knowledge_base_id: number;
   document_id: number;
   chunk_index: number;
   content: string;
   content_hash: string;
   token_count: number;
   char_count: number;
-  page_no: number | null;
+  page_number: number | null;
   section_title: string;
-  es_index: string;
-  es_doc_id: string;
-  metadata_json: string;
+  metadata_json: Record<string, unknown>;
   created_at: string;
-  updated_at: string;
 }
 
 export interface UploadDocumentResponse {
@@ -395,7 +387,7 @@ export interface UploadDocumentResponse {
 export interface IngestionJob {
   id: number;
   owner_id: number;
-  kb_id: number;
+  knowledge_base_id: number;
   document_id: number;
   job_type: string;
   status: string;
@@ -411,7 +403,7 @@ export interface IngestionJob {
 export interface RetrievalResult {
   chunk_id: number;
   document_id: number;
-  kb_id: number;
+  knowledge_base_id: number;
   score: number;
   keyword_score: number;
   vector_score: number;
@@ -419,7 +411,7 @@ export interface RetrievalResult {
   content: string;
   highlight: string;
   document_name: string;
-  page_no: number | null;
+  page_number: number | null;
   metadata: Record<string, unknown>;
 }
 
@@ -464,7 +456,6 @@ export interface Conversation {
   id: number;
   owner_id: number;
   title: string;
-  source: string;
   agent_id?: number | null;
   agent_release_id?: number | null;
   project_id?: number | null;
@@ -480,7 +471,7 @@ export interface AgentEditableSettings {
   provider_id: number;
   model: string;
   system_prompt: string;
-  knowledge_ids: number[];
+  knowledge_base_ids: number[];
   python_tool_names?: string[];
   temperature?: number;
 }
@@ -572,10 +563,8 @@ export interface Message {
   conversation_id: number;
   role: MessageRole;
   content: string;
-  content_type: string;
   run_id?: number | null;
   token_count: number;
-  metadata_json?: string;
   created_at: string;
 }
 
@@ -589,31 +578,15 @@ export interface MessageSearchResult {
   created_at: string;
 }
 
-export interface MessageReference {
-  id: number;
-  owner_id: number;
-  message_id: number;
-  kb_id: number;
-  document_id: number;
-  chunk_id: number;
-  ref_index: number;
-  score: number;
-  quote_text: string;
-  page_no?: number | null;
-  metadata_json?: string;
-  created_at: string;
-}
-
 export type ResourceSummaryKind = 'skills' | 'memories' | 'http-tools' | 'knowledge-bases';
 
 export interface ResourceSummary {
   id: number;
   name: string;
   description?: string;
-  status?: number;
+  enabled: boolean;
   resource_type?: string;
   updated_at: string;
-  current_version_id?: number | null;
   document_count?: number;
   chunk_count?: number;
 }
@@ -696,10 +669,10 @@ export interface Run {
 
 export type WorkspaceKind = 'shared' | 'worktree';
 export type WorkspaceStatus = 'creating' | 'ready' | 'failed' | 'preserved' | 'cleaned';
-export interface ProjectFolder { id: number; owner_id: number; project_id: number; path: string; label: string; is_primary: boolean; added_at: string; }
-export interface Project { id: number; owner_id: number; slug: string; name: string; description: string; icon: string; color: string; primary_path: string; archived: boolean; folders: ProjectFolder[]; created_at: string; updated_at: string; }
-export interface Workspace { id: number; owner_id: number; project_id: number; run_id: number; parent_workspace_id?: number | null; kind: WorkspaceKind; repository_root: string; workspace_path: string; branch_name: string; base_ref: string; base_sha: string; head_sha: string; status: WorkspaceStatus; dirty: boolean; unpushed: boolean; locked: boolean; lock_reason: string; cleanup_reason: string; error_message: string; last_checked_at?: string | null; cleaned_at?: string | null; created_at: string; updated_at: string; }
-export interface GitStatus { root: string; branch: string; head: string; dirty: boolean; unpushed: boolean; staged?: string[]; changed?: string[]; untracked?: string[]; }
+export interface ProjectFolder { id: number; owner_id: number; project_id: number; path: string; label: string; is_repository_root: boolean; added_at: string; }
+export interface Project { id: number; owner_id: number; slug: string; name: string; description: string; repository_root: string; archived: boolean; folders: ProjectFolder[]; created_at: string; updated_at: string; }
+export interface Workspace { id: number; owner_id: number; project_id: number; run_id: number; parent_workspace_id?: number | null; kind: WorkspaceKind; repository_root: string; workspace_path: string; branch_name: string; base_ref: string; base_sha: string; head_sha: string; status: WorkspaceStatus; dirty: boolean; has_unpushed_commits: boolean; locked: boolean; lock_reason: string; cleanup_reason: string; error_message: string; last_checked_at?: string | null; cleaned_at?: string | null; created_at: string; updated_at: string; }
+export interface GitStatus { root: string; branch: string; head: string; dirty: boolean; has_unpushed_commits: boolean; staged?: string[]; changed?: string[]; untracked?: string[]; }
 export interface GitWorktree { path: string; branch?: string; head?: string; detached: boolean; bare: boolean; locked: boolean; lock_reason?: string; prunable?: boolean; }
 
 export interface ApprovalRequest {

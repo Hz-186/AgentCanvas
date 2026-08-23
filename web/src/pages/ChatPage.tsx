@@ -57,7 +57,7 @@ const emptySettings = (providerID = 0): AgentEditableSettings => ({
   provider_id: providerID,
   model: '',
   system_prompt: '',
-  knowledge_ids: [],
+  knowledge_base_ids: [],
   python_tool_names: [],
 });
 
@@ -217,7 +217,7 @@ export function ChatPage() {
       if (cancelled) return;
       setAgents(agentList);
       setProviders(providerList);
-      setKnowledgeBases(kbList.filter((item) => item.status === 1));
+      setKnowledgeBases(kbList.filter((item) => item.enabled));
       setProjects(projectList);
       setNewProviderID(providerList[0]?.id ?? 0);
     }).catch((cause) => !cancelled && setError(friendlyErrorMessage(cause, '加载 Agent 数据失败')));
@@ -226,7 +226,7 @@ export function ChatPage() {
 
   useEffect(() => {
     if (!currentAgent) return;
-    setSettings({ ...currentAgent.settings, knowledge_ids: [...(currentAgent.settings.knowledge_ids ?? [])], python_tool_names: [...(currentAgent.settings.python_tool_names ?? [])] });
+    setSettings({ ...currentAgent.settings, knowledge_base_ids: [...(currentAgent.settings.knowledge_base_ids ?? [])], python_tool_names: [...(currentAgent.settings.python_tool_names ?? [])] });
     setSettingsSaved(false);
   }, [currentAgent?.id, currentAgent?.updated_at]);
 
@@ -555,7 +555,7 @@ export function ChatPage() {
     const optimisticID = -Date.now();
     pageGeneration.current += 1;
     setBusy(true); setError(''); setQuestion(''); setTrace([]); setApprovals([]);
-    setMessages((current) => [...current, { id: optimisticID, owner_id: 0, conversation_id: activeConversationID!, role: 'user', content, content_type: 'text', token_count: 0, created_at: new Date().toISOString() }]);
+		setMessages((current) => [...current, { id: optimisticID, owner_id: 0, conversation_id: activeConversationID!, role: 'user', content, token_count: 0, created_at: new Date().toISOString() }]);
     try {
       const accepted = await agentApi.startTurn(agentID, activeConversationID, content, nextIdempotencyKey());
       setMessages((current) => mergeMessages(current.filter((item) => item.id !== optimisticID), [accepted.user_message]));
@@ -670,7 +670,7 @@ export function ChatPage() {
     || streamSegments.some((segment) => segment.kind !== 'assistant')
     || Boolean(run || (streamIsCurrent && (runStreamState.status || runStreamState.approval)));
 	const effectiveWorkspaceDirty = gitStatus?.dirty ?? workspace?.dirty ?? false;
-	const effectiveWorkspaceUnpushed = gitStatus?.unpushed ?? workspace?.unpushed ?? false;
+    const effectiveWorkspaceUnpushed = gitStatus?.has_unpushed_commits ?? workspace?.has_unpushed_commits ?? false;
 
   return <div className="page chat-page-scoped"><div ref={shellRef} className="chat-shell" style={shellStyle}>
     <aside className="chat-sidebar glass">
@@ -754,7 +754,7 @@ export function ChatPage() {
         <Field label="Model Provider"><Select value={settings.provider_id} onChange={(event) => setSettings((current) => ({ ...current, provider_id: Number(event.target.value), model: '' }))}>{providers.map((providerItem) => <option value={providerItem.id} key={providerItem.id}>{providerItem.name}</option>)}</Select></Field>
         <Field label="Model" hint="留空时使用 Provider 的默认模型"><TextInput value={settings.model} onChange={(event) => setSettings((current) => ({ ...current, model: event.target.value }))} placeholder={providers.find((item) => item.id === settings.provider_id)?.default_chat_model || 'Provider 默认模型'} /></Field>
         <Field label="全局 System Prompt"><TextArea className="textarea settings-prompt" value={settings.system_prompt} onChange={(event) => setSettings((current) => ({ ...current, system_prompt: event.target.value }))} placeholder="留空时使用系统默认提示词" /></Field>
-        <Field label="知识库"><div className="knowledge-checklist">{knowledgeBases.length === 0 ? <p className="muted">暂无可用知识库</p> : knowledgeBases.map((kb) => <label key={kb.id}><input type="checkbox" checked={settings.knowledge_ids.includes(kb.id)} onChange={(event) => setSettings((current) => ({ ...current, knowledge_ids: event.target.checked ? [...current.knowledge_ids, kb.id] : current.knowledge_ids.filter((id) => id !== kb.id) }))} /><span><strong>{kb.name}</strong><small>{kb.document_count} 个文档</small></span></label>)}</div></Field>
+        <Field label="知识库"><div className="knowledge-checklist">{knowledgeBases.length === 0 ? <p className="muted">暂无可用知识库</p> : knowledgeBases.map((kb) => <label key={kb.id}><input type="checkbox" checked={settings.knowledge_base_ids.includes(kb.id)} onChange={(event) => setSettings((current) => ({ ...current, knowledge_base_ids: event.target.checked ? [...current.knowledge_base_ids, kb.id] : current.knowledge_base_ids.filter((id) => id !== kb.id) }))} /><span><strong>{kb.name}</strong><small>{kb.document_count} 个文档</small></span></label>)}</div></Field>
         <Field label="Temperature" hint="留空时使用模型默认值"><TextInput type="number" min={0} max={2} step={0.1} value={settings.temperature ?? ''} onChange={(event) => setSettings((current) => ({ ...current, temperature: event.target.value === '' ? undefined : Number(event.target.value) }))} /></Field>
         {settingsSaved ? <div className="settings-saved-notice"><p>配置已更新，将应用于新会话。</p><Button type="button" onClick={() => navigate(`/app/agents/${agentID}/chat/new`)}><Plus size={14} />使用新配置新建会话</Button></div> : null}
       </div>

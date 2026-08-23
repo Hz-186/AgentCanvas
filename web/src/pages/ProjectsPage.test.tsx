@@ -25,26 +25,24 @@ const project: Project = {
   slug: 'agent-canvas',
   name: 'AgentCanvas',
   description: '',
-  icon: '',
-  color: '',
-  primary_path: '/Users/test/AgentCanvas',
+  repository_root: '/Users/test/AgentCanvas',
   archived: false,
-  folders: [{ id: 91, owner_id: 7, project_id: 11, path: '/Users/test/AgentCanvas', label: 'Primary', is_primary: true, added_at: '2026-08-07T00:00:00Z' }],
+  folders: [{ id: 91, owner_id: 7, project_id: 11, path: '/Users/test/AgentCanvas', label: 'Primary', is_repository_root: true, added_at: '2026-08-07T00:00:00Z' }],
   created_at: '2026-08-07T00:00:00Z',
   updated_at: '2026-08-07T00:00:00Z',
 };
 
 const status: GitStatus = {
-  root: project.primary_path,
+  root: project.repository_root,
   branch: 'main',
   head: '0123456789abcdef',
   dirty: true,
-  unpushed: false,
+  has_unpushed_commits: false,
   changed: ['README.md'],
 };
 
 const worktree: GitWorktree = {
-  path: `${project.primary_path}/.worktrees/42-update-readme`,
+  path: `${project.repository_root}/.worktrees/42-update-readme`,
   branch: 'agent-canvas/42-update-readme',
   head: 'fedcba9876543210',
   detached: false,
@@ -62,7 +60,7 @@ beforeEach(() => {
   apiMocks.branches.mockResolvedValue(['main', worktree.branch!]);
   apiMocks.worktrees.mockResolvedValue([worktree]);
   apiMocks.remove.mockResolvedValue({ success: true });
-  apiMocks.addFolder.mockResolvedValue({ id: 92, owner_id: 7, project_id: 11, path: '/Users/test/AgentCanvas/web', label: 'Web', is_primary: false, added_at: '2026-08-07T00:00:00Z' });
+  apiMocks.addFolder.mockResolvedValue({ id: 92, owner_id: 7, project_id: 11, path: '/Users/test/AgentCanvas/web', label: 'Web', is_repository_root: false, added_at: '2026-08-07T00:00:00Z' });
   apiMocks.removeFolder.mockResolvedValue({ success: true });
   Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: vi.fn().mockResolvedValue(undefined) } });
 });
@@ -79,7 +77,7 @@ describe('Projects page', () => {
 
     await waitFor(() => expect(apiMocks.create).toHaveBeenCalledWith({
       name: 'Hermes Port',
-      primary_path: '/Users/test/Hermes Port',
+      repository_root: '/Users/test/Hermes Port',
       initialize_git: true,
     }));
     await waitFor(() => expect(apiMocks.list).toHaveBeenCalledTimes(2));
@@ -87,7 +85,7 @@ describe('Projects page', () => {
 
   it('loads Git status and worktrees on demand', async () => {
     render(<ProjectsPage />);
-    await screen.findByText(project.primary_path);
+    await screen.findByText(project.repository_root);
 
     fireEvent.click(screen.getByRole('button', { name: 'Worktrees' }));
 
@@ -101,33 +99,29 @@ describe('Projects page', () => {
     expect(screen.getByText('01234567')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: `Copy merge command for ${worktree.branch}` }));
     await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
-      `git -C '${project.primary_path}' merge --no-ff '${worktree.branch}'`,
+      `git -C '${project.repository_root}' merge --no-ff '${worktree.branch}'`,
     ));
     expect(await screen.findByText(/不会自动执行 merge/)).toBeInTheDocument();
   });
 
   it('updates Project metadata without changing its repository binding', async () => {
     render(<ProjectsPage />);
-    await screen.findByText(project.primary_path);
+    await screen.findByText(project.repository_root);
 
     fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
     fireEvent.change(screen.getByLabelText('Project name'), { target: { value: '  AgentCanvas Next  ' } });
     fireEvent.change(screen.getByLabelText('Description'), { target: { value: '  Git workspace control  ' } });
-    fireEvent.change(screen.getByLabelText('Icon'), { target: { value: '  git-branch  ' } });
-    fireEvent.change(screen.getByLabelText('Color'), { target: { value: '  #3355ff  ' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save Project' }));
 
     await waitFor(() => expect(apiMocks.update).toHaveBeenCalledWith(project.id, {
       name: 'AgentCanvas Next',
       description: 'Git workspace control',
-      icon: 'git-branch',
-      color: '#3355ff',
     }));
   });
 
   it('adds a configured Project folder and can promote it to primary', async () => {
     render(<ProjectsPage />);
-    await screen.findByText(project.primary_path);
+    await screen.findByText(project.repository_root);
     fireEvent.click(screen.getByRole('button', { name: 'Folders' }));
 
     expect(await screen.findByText('Primary · Primary')).toBeInTheDocument();
@@ -139,7 +133,7 @@ describe('Projects page', () => {
     await waitFor(() => expect(apiMocks.addFolder).toHaveBeenCalledWith(project.id, {
       path: '/Users/test/AgentCanvas/web',
       label: 'Web',
-      is_primary: true,
+      is_repository_root: true,
     }));
   });
 });

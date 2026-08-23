@@ -18,7 +18,7 @@ describe('parseRunStreamEvent', () => {
     ['tool.error', { call_id: 'c1', segment_id: 't1', name: 'search', status: 'failed' }],
     ['approval.required', { request_id: 1, call_id: 'c1', tool_name: 'write', reason: 'risk' }],
     ['usage.update', { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 }],
-    ['workspace.update', { workspace_id: 9, run_id: 7, repo_root: '/repo', path: '/repo/.worktrees/7-task', branch: 'demo/7-task', base_sha: 'abc', head_sha: 'def', dirty: true, unpushed: false }],
+    ['workspace.update', { workspace_id: 9, run_id: 7, repository_root: '/repo', workspace_path: '/repo/.worktrees/7-task', branch_name: 'demo/7-task', base_sha: 'abc', head_sha: 'def', dirty: true, has_unpushed_commits: false }],
     ['stream.snapshot', { run: { id: 7 }, usage: { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 } }],
     ['run.complete', { run: { id: 7 }, usage: { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 } }],
     ['run.failed', { run: { id: 7 }, usage: { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 } }],
@@ -32,7 +32,7 @@ describe('parseRunStreamEvent', () => {
   it('rejects unknown kinds and incomplete payloads', () => {
     expect(() => parseRunStreamEvent({ ...base, kind: 'unknown', data: {} })).toThrow(RunStreamProtocolError);
     expect(() => parseRunStreamEvent({ ...base, kind: 'tool.start', data: { call_id: 'c1' } })).toThrow('segment_id');
-    expect(() => parseRunStreamEvent({ ...base, kind: 'workspace.update', data: { workspace_id: 9, run_id: 7 } })).toThrow('repo_root');
+    expect(() => parseRunStreamEvent({ ...base, kind: 'workspace.update', data: { workspace_id: 9, run_id: 7 } })).toThrow('repository_root');
     expect(() => parseRunStreamEvent('{bad json')).toThrow('valid JSON');
   });
 });

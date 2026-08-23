@@ -101,19 +101,19 @@ export interface WorkspaceUpdatePayload {
 	workspace_id: number;
 	run_id: number;
 	project_id?: number;
-	repo_root: string;
-	path: string;
-	branch: string;
+	repository_root: string;
+	workspace_path: string;
+	branch_name: string;
 	base_sha: string;
 	head_sha: string;
 	kind?: 'shared' | 'worktree' | string;
 	dirty: boolean;
-	unpushed: boolean;
+	has_unpushed_commits: boolean;
 	status?: string;
 	locked?: boolean;
 	lock_reason?: string;
 	cleanup_reason?: string;
-	error?: string;
+	error_message?: string;
 }
 
 export interface TerminalSnapshotPayload {
