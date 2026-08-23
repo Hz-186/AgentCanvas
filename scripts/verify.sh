@@ -11,10 +11,19 @@ check_migration_tables() {
     echo "==> Checking migration tables against code references..."
 
     declared_tables=$(sed -nE 's/^[[:space:]]*CREATE TABLE( IF NOT EXISTS)?[[:space:]]+`?([[:alnum:]_]+)`?[[:space:]]*\(.*/\2/p' migrations/*.up.sql 2>/dev/null | sort -u)
+    dropped_tables=$(sed -nE 's/^[[:space:]]*DROP TABLE( IF EXISTS)?[[:space:]]+([^;]+).*/\2/p' migrations/*.up.sql 2>/dev/null | tr ',' '\n' | sed -nE 's/.*`([^`]+)`.*/\1/p; s/^[[:space:]]*([[:alnum:]_]+).*/\1/p' | sort -u)
     code_tables=$(rg --no-filename 'TableName\(\).*return "[^"]+"' internal -g '*.go' | sed -nE 's/.*TableName\(\).*return "([^"]+)".*/\1/p' | sort -u)
 
-    migration_only=""
+    active_tables=""
     for table in $declared_tables; do
+        [[ -z "$table" ]] && continue
+        if ! printf '%s\n' "$dropped_tables" | grep -Fxq "$table"; then
+            active_tables="${active_tables}${table}"$'\n'
+        fi
+    done
+
+    migration_only=""
+    for table in $active_tables; do
         [[ -z "$table" ]] && continue
         if ! printf '%s\n' "$code_tables" | grep -Fxq "$table"; then
             migration_only="$migration_only $table"
@@ -24,7 +33,7 @@ check_migration_tables() {
     code_only=""
     for table in $code_tables; do
         [[ -z "$table" ]] && continue
-        if ! printf '%s\n' "$declared_tables" | grep -Fxq "$table"; then
+        if ! printf '%s\n' "$active_tables" | grep -Fxq "$table"; then
             code_only="$code_only $table"
         fi
     done
