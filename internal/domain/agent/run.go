@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
+
+	"agentcanvas/internal/domain"
 )
 
 const (
@@ -23,8 +25,7 @@ const (
 
 // Run is a durable execution of an Agent turn or temporary subagent.
 type Run struct {
-	ID              int64           `json:"id" gorm:"primaryKey;column:id"`
-	OwnerID         int64           `json:"owner_id" gorm:"column:owner_id"`
+	domain.BaseModel
 	AgentID         int64           `json:"agent_id" gorm:"column:agent_id"`
 	AgentReleaseID  *int64          `json:"agent_release_id,omitempty" gorm:"column:agent_release_id"`
 	ConversationID  *int64          `json:"conversation_id,omitempty" gorm:"column:conversation_id"`
@@ -43,8 +44,6 @@ type Run struct {
 	LatencyMS       int             `json:"latency_ms" gorm:"column:latency_ms"`
 	StartedAt       time.Time       `json:"started_at" gorm:"column:started_at"`
 	FinishedAt      *time.Time      `json:"finished_at,omitempty" gorm:"column:finished_at"`
-	CreatedAt       time.Time       `json:"created_at" gorm:"column:created_at"`
-	UpdatedAt       time.Time       `json:"updated_at" gorm:"column:updated_at"`
 }
 
 // TransitionStatus is the single state machine for durable Agent runs.
@@ -98,19 +97,16 @@ func IsActiveRunStatus(status string) bool {
 func (Run) TableName() string { return "agent_runs" }
 
 type RunEvent struct {
-	ID          int64           `json:"id" gorm:"primaryKey;column:id"`
-	OwnerID     int64           `json:"owner_id" gorm:"column:owner_id"`
+	domain.ImmutableModel
 	RunID       int64           `json:"run_id" gorm:"column:run_id"`
 	EventType   string          `json:"event_type" gorm:"column:event_type"`
 	PayloadJSON json.RawMessage `json:"payload_json" gorm:"column:payload_json"`
-	CreatedAt   time.Time       `json:"created_at" gorm:"column:created_at"`
 }
 
 func (RunEvent) TableName() string { return "agent_run_events" }
 
 type RunStep struct {
-	ID            int64           `json:"id" gorm:"primaryKey;column:id"`
-	OwnerID       int64           `json:"owner_id" gorm:"column:owner_id"`
+	domain.ImmutableModel
 	RunID         int64           `json:"run_id" gorm:"column:run_id"`
 	StepIndex     int             `json:"step_index" gorm:"column:step_index"`
 	StepType      string          `json:"step_type" gorm:"column:step_type"`
@@ -126,7 +122,6 @@ type RunStep struct {
 	LatencyMS     int             `json:"latency_ms" gorm:"column:latency_ms"`
 	ProviderID    int64           `json:"provider_id" gorm:"column:provider_id"`
 	Model         string          `json:"model" gorm:"column:model"`
-	CreatedAt     time.Time       `json:"created_at" gorm:"column:created_at"`
 }
 
 func (RunStep) TableName() string { return "agent_run_steps" }

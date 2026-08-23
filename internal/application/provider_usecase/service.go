@@ -1,6 +1,7 @@
 package provider_usecase
 
 import (
+	"agentcanvas/internal/domain"
 	"agentcanvas/internal/domain/audit"
 	providerdomain "agentcanvas/internal/domain/provider"
 	"agentcanvas/internal/infrastructure/llm"
@@ -42,7 +43,7 @@ type UpdateProviderRequest struct {
 	APIKey                *string `json:"api_key"`
 	DefaultChatModel      *string `json:"default_chat_model"`
 	DefaultEmbeddingModel *string `json:"default_embedding_model"`
-	Status                *int    `json:"status"`
+	Enabled               *bool   `json:"enabled"`
 }
 
 func NewService(providers providerdomain.Repository, audits audit.Repository, secrets providerdomain.SecretCodec, tester llm.ProviderTester) *Service {
@@ -63,7 +64,7 @@ func (s *Service) Create(ctx context.Context, ownerID int64, req CreateProviderR
 		return nil, err
 	}
 	p := &providerdomain.ModelProvider{
-		OwnerID:               ownerID,
+		SoftDeleteModel:       domain.SoftDeleteModel{BaseModel: domain.BaseModel{OwnerID: ownerID}},
 		Name:                  strings.TrimSpace(req.Name),
 		ProviderType:          req.ProviderType,
 		BaseURL:               strings.TrimSpace(req.BaseURL),
@@ -71,7 +72,7 @@ func (s *Service) Create(ctx context.Context, ownerID int64, req CreateProviderR
 		APIKeyMask:            mask,
 		DefaultChatModel:      req.DefaultChatModel,
 		DefaultEmbeddingModel: req.DefaultEmbeddingModel,
-		Status:                providerdomain.StatusActive,
+		Enabled:               providerdomain.ProviderEnabled,
 	}
 	if err := s.providers.Create(ctx, p); err != nil {
 		return nil, err
@@ -136,8 +137,8 @@ func (s *Service) Update(ctx context.Context, ownerID, id int64, req UpdateProvi
 	if req.DefaultEmbeddingModel != nil {
 		p.DefaultEmbeddingModel = *req.DefaultEmbeddingModel
 	}
-	if req.Status != nil {
-		p.Status = *req.Status
+	if req.Enabled != nil {
+		p.Enabled = *req.Enabled
 	}
 	if err := s.providers.Update(ctx, p); err != nil {
 		return nil, err

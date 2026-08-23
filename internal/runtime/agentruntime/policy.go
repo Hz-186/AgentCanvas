@@ -21,6 +21,8 @@ type contextPolicy struct {
 	MaxRuleTokens                   int               `json:"max_rule_tokens"`
 	ModelAutoCompactTokenLimit      int               `json:"model_auto_compact_token_limit"`
 	ModelAutoCompactTokenLimitScope string            `json:"model_auto_compact_token_limit_scope"`
+	CompactionProviderID            int64             `json:"compaction_provider_id"`
+	CompactionModel                 string            `json:"compaction_model"`
 	CompactPrompt                   string            `json:"compact_prompt"`
 	Retrieval                       retrievalPolicy   `json:"retrieval"`
 	DeprecatedRules                 []json.RawMessage `json:"rules"`
@@ -92,6 +94,12 @@ func applyContextPolicy(cfg *agentRuntimeConfig, policy contextPolicy) {
 	}
 	if strings.TrimSpace(policy.ModelAutoCompactTokenLimitScope) != "" {
 		cfg.ModelAutoCompactTokenLimitScope = strings.TrimSpace(policy.ModelAutoCompactTokenLimitScope)
+	}
+	if policy.CompactionProviderID > 0 {
+		cfg.CompactionProviderID = policy.CompactionProviderID
+	}
+	if strings.TrimSpace(policy.CompactionModel) != "" {
+		cfg.CompactionModel = strings.TrimSpace(policy.CompactionModel)
 	}
 	if strings.TrimSpace(policy.CompactPrompt) != "" {
 		cfg.CompactPrompt = strings.TrimSpace(policy.CompactPrompt)
@@ -242,7 +250,7 @@ func validateAgentContextPolicyJSON(raw json.RawMessage) error {
 	if err != nil {
 		return fmt.Errorf("%w: agent runtime context_policy_json is invalid", agenterrors.ErrInvalidInput)
 	}
-	if policy.MaxInputChars < 0 || policy.MaxInputTokens < 0 || policy.ContextWindowTokens < 0 || policy.ReservedOutputTokens < 0 || policy.ContextSafetyMarginTokens < 0 || policy.MaxRuleTokens < 0 || policy.ModelAutoCompactTokenLimit < 0 {
+	if policy.MaxInputChars < 0 || policy.MaxInputTokens < 0 || policy.ContextWindowTokens < 0 || policy.ReservedOutputTokens < 0 || policy.ContextSafetyMarginTokens < 0 || policy.MaxRuleTokens < 0 || policy.ModelAutoCompactTokenLimit < 0 || policy.CompactionProviderID < 0 {
 		return fmt.Errorf("%w: agent runtime context policy limits must be positive", agenterrors.ErrInvalidInput)
 	}
 	if scope := strings.TrimSpace(policy.ModelAutoCompactTokenLimitScope); scope != "" && scope != "total" && scope != "body_after_prefix" {

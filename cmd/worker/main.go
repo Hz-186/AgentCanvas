@@ -104,6 +104,7 @@ func main() {
 	memoryRepo := cacheinfra.NewMemoryRepository(mysqlinfra.NewMemoryRepository(db), resourceInvalidator, memoryCache)
 	memoryLogRepo := mysqlinfra.NewMemoryWriteLogRepository(db)
 	messageRepo := mysqlinfra.NewMessageRepository(db)
+	conversationRepo := mysqlinfra.NewConversationRepository(db)
 	fileStorage := infraDeps.FileStorage
 	secretBox := infraDeps.SecretBox
 	var ocrClient parserinfra.OCRClient
@@ -237,10 +238,12 @@ func main() {
 	workerID := fmt.Sprintf("%s-%d", hostname, os.Getpid())
 	extractionJobRepo := mysqlinfra.NewExtractionJobRepository(db)
 	dreamWorker := memoryusecase.NewDreamWorker(baseChatClient(), llm.NewOpenAICompatibleEmbeddingClient(), memoryRepo, memoryLogRepo, messageRepo, archivalVecStore, infraDeps.Redis, memoryusecase.NewDreamConfig(cfg.MemoryDream), workerID, extractionJobRepo)
+	dreamWorker.ConfigureConversations(conversationRepo)
 	memoryCandidates := memoryusecase.NewCandidateService(mysqlinfra.NewAgentImprovementRepository(db))
 	go memoryusecase.NewScheduler(memoryRepo, infraDeps.Redis, time.Hour, appLogger).Run(ctx)
 	dreamWorker.ConfigureCandidates(memoryCandidates)
-	extractionCompatibility := memoryusecase.NewExtractionService(memoryRepo, extractionJobRepo, mysqlinfra.NewMergeLogRepository(db), messageRepo)
+	extractionCompatibility := memoryusecase.NewExtractionService(memoryRepo, extractionJobRepo, messageRepo)
+	extractionCompatibility.ConfigureConversations(conversationRepo)
 	extractionCompatibility.ConfigureCandidates(memoryCandidates)
 	reflectionRepo := mysqlinfra.NewReflectionRepository(db)
 	reflectionJobRepo := mysqlinfra.NewReflectionJobRepository(db)
@@ -350,11 +353,11 @@ func processNextJob(ctx context.Context, jobQueue queue.JobQueue, workerID strin
 	case memoryusecase.DreamJobType:
 		payload := memoryusecase.DreamPayload{JobID: payloadInt64(job.Payload, "job_id"), OwnerID: payloadInt64(job.Payload, "owner_id"), ConversationID: payloadInt64(job.Payload, "conversation_id")}
 		if err := dreamWorker.HandleDreamJob(ctx, payload); err != nil {
-			attempts := job.Attempts
-			if attempts < 1 {
-				attempts = 1
+			attemptCount := job.AttemptCount
+			if attemptCount < 1 {
+				attemptCount = 1
 			}
-			if nackErr := jobQueue.Nack(ctx, job.ID, time.Now().Add(time.Duration(attempts)*time.Minute)); nackErr != nil {
+			if nackErr := jobQueue.Nack(ctx, job.ID, time.Now().Add(time.Duration(attemptCount)*time.Minute)); nackErr != nil {
 				return true, fmt.Errorf("dream job failed: %v; nack: %w", err, nackErr)
 			}
 			return true, err

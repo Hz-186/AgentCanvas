@@ -8,9 +8,12 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 
+	"agentcanvas/internal/domain"
 	agentdomain "agentcanvas/internal/domain/agent"
 	"agentcanvas/internal/domain/memory"
+	"agentcanvas/internal/observability"
 )
 
 // CandidateService is shared by Agent tools, Dream, extraction and review
@@ -24,6 +27,8 @@ func NewCandidateService(repository agentdomain.ImprovementRepository) *Candidat
 }
 
 func (s *CandidateService) Suggest(ctx context.Context, request memory.CandidateRequest) (int64, error) {
+	started := time.Now()
+	defer func() { observability.MemoryRuntimeMetrics.RecordCandidateWrite(time.Since(started).Milliseconds()) }()
 	if s == nil || s.repository == nil {
 		return 0, fmt.Errorf("memory candidate repository is not configured")
 	}
@@ -39,14 +44,14 @@ func (s *CandidateService) Suggest(ctx context.Context, request memory.Candidate
 	if action == "" {
 		action = "create"
 	}
-	scopeType, scopeID := memory.ScopeUser, request.OwnerID
-	if request.ConversationID > 0 {
-		scopeType, scopeID = memory.ScopeConversation, request.ConversationID
+	scopeType, scopeID, err := memory.ResolveScope(memoryType, request.OwnerID, request.AgentID, request.ProjectID, request.ConversationID, request.ScopeType, request.ScopeID)
+	if err != nil {
+		return 0, err
 	}
 	payload, _ := json.Marshal(map[string]any{
-		"memory_id": request.MemoryID, "memory_type": memoryType, "level": memory.LevelLongTerm,
-		"action": action, "conversation_id": request.ConversationID, "scope_type": scopeType,
-		"scope_id": scopeID, "source": strings.TrimSpace(request.Source), "source_id": request.SourceID,
+		"memory_id": request.MemoryID, "memory_type": memoryType, "retention_tier": memory.TierLongTerm,
+		"action": action, "source_conversation_id": request.SourceConversationID, "scope_type": scopeType,
+		"scope_id": scopeID, "source_project_id": request.SourceProjectID, "source": strings.TrimSpace(request.Source), "source_id": request.SourceID,
 	})
 	evidence, _ := json.Marshal(request.Evidence)
 	sum := sha256.Sum256([]byte(fmt.Sprintf("%d\x00%d\x00%s\x00%s\x00%s\x00%s", request.OwnerID, request.AgentID, request.SourceID, action, memoryType, content)))
@@ -62,7 +67,7 @@ func (s *CandidateService) Suggest(ctx context.Context, request memory.Candidate
 	if securityStatus != "passed" {
 		status = agentdomain.ProposalStatusRejectedSecurity
 	}
-	item := &agentdomain.ChangeProposal{OwnerID: request.OwnerID, AgentID: request.AgentID, RunID: request.RunID,
+	item := &agentdomain.ChangeProposal{BaseModel: domain.BaseModel{OwnerID: request.OwnerID}, AgentID: request.AgentID, RunID: request.RunID,
 		Kind: agentdomain.ProposalKindMemory, Title: strings.TrimSpace(request.Title), Content: content,
 		PayloadJSON: payload, EvidenceJSON: evidence, DiffJSON: json.RawMessage(`{}`), Confidence: confidence,
 		Checksum: hex.EncodeToString(sum[:]), SecurityStatus: securityStatus, SecurityReason: securityReason, Status: status}

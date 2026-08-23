@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"agentcanvas/internal/domain"
 	"agentcanvas/internal/domain/skill"
 	agenterrors "agentcanvas/internal/pkg/errors"
 
@@ -23,27 +24,27 @@ type Service struct {
 }
 
 type CreateSkillRequest struct {
-	Name        string   `json:"name" binding:"required"`
-	Description string   `json:"description"`
-	SkillType   string   `json:"skill_type"`
-	SourceType  string   `json:"source_type"`
-	EntryFile   string   `json:"entry_file"`
-	ContentMD   string   `json:"content_md"`
-	BundlePath  string   `json:"bundle_path"`
-	Tags        []string `json:"tags"`
-	Status      *int     `json:"status"`
+	Name            string   `json:"name" binding:"required"`
+	Description     string   `json:"description"`
+	SkillType       string   `json:"skill_type"`
+	SourceType      string   `json:"source_type"`
+	EntryFile       string   `json:"entry_file"`
+	ContentMarkdown string   `json:"content_markdown"`
+	BundlePath      string   `json:"bundle_path"`
+	Tags            []string `json:"tags"`
+	Enabled         *bool    `json:"enabled"`
 }
 
 type UpdateSkillRequest struct {
-	Name        *string   `json:"name"`
-	Description *string   `json:"description"`
-	SkillType   *string   `json:"skill_type"`
-	SourceType  *string   `json:"source_type"`
-	EntryFile   *string   `json:"entry_file"`
-	ContentMD   *string   `json:"content_md"`
-	BundlePath  *string   `json:"bundle_path"`
-	Tags        *[]string `json:"tags"`
-	Status      *int      `json:"status"`
+	Name            *string   `json:"name"`
+	Description     *string   `json:"description"`
+	SkillType       *string   `json:"skill_type"`
+	SourceType      *string   `json:"source_type"`
+	EntryFile       *string   `json:"entry_file"`
+	ContentMarkdown *string   `json:"content_markdown"`
+	BundlePath      *string   `json:"bundle_path"`
+	Tags            *[]string `json:"tags"`
+	Enabled         *bool     `json:"enabled"`
 }
 
 type ValidationResult struct {
@@ -69,19 +70,18 @@ func (s *Service) Create(ctx context.Context, ownerID int64, req CreateSkillRequ
 		return nil, agenterrors.ErrInvalidInput
 	}
 	item := &skill.Skill{
-		OwnerID:     ownerID,
-		Name:        strings.TrimSpace(req.Name),
-		Description: strings.TrimSpace(req.Description),
-		SkillType:   strings.TrimSpace(req.SkillType),
-		SourceType:  strings.TrimSpace(req.SourceType),
-		EntryFile:   strings.TrimSpace(req.EntryFile),
-		ContentMD:   req.ContentMD,
-		BundlePath:  strings.TrimSpace(req.BundlePath),
-		Status:      skill.StatusActive,
-		Version:     1,
+		SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{OwnerID: ownerID}},
+		Name:            strings.TrimSpace(req.Name),
+		Description:     strings.TrimSpace(req.Description),
+		SkillType:       strings.TrimSpace(req.SkillType),
+		SourceType:      strings.TrimSpace(req.SourceType),
+		EntryFile:       strings.TrimSpace(req.EntryFile),
+		ContentMarkdown: req.ContentMarkdown,
+		BundlePath:      strings.TrimSpace(req.BundlePath),
+		Enabled:         skill.Enabled,
 	}
-	if req.Status != nil {
-		item.Status = *req.Status
+	if req.Enabled != nil {
+		item.Enabled = *req.Enabled
 	}
 	item.TagsJSON = mustMarshalTags(req.Tags)
 	if err := s.prepareSkill(item); err != nil {
@@ -122,8 +122,8 @@ func (s *Service) Update(ctx context.Context, ownerID, id int64, req UpdateSkill
 	if req.EntryFile != nil {
 		item.EntryFile = strings.TrimSpace(*req.EntryFile)
 	}
-	if req.ContentMD != nil {
-		item.ContentMD = *req.ContentMD
+	if req.ContentMarkdown != nil {
+		item.ContentMarkdown = *req.ContentMarkdown
 	}
 	if req.BundlePath != nil {
 		item.BundlePath = strings.TrimSpace(*req.BundlePath)
@@ -131,8 +131,8 @@ func (s *Service) Update(ctx context.Context, ownerID, id int64, req UpdateSkill
 	if req.Tags != nil {
 		item.TagsJSON = mustMarshalTags(*req.Tags)
 	}
-	if req.Status != nil {
-		item.Status = *req.Status
+	if req.Enabled != nil {
+		item.Enabled = *req.Enabled
 	}
 	if err := s.prepareSkill(item); err != nil {
 		return nil, err
@@ -199,20 +199,15 @@ func (s *Service) prepareSkill(item *skill.Skill) error {
 	if !isSimpleRelativeFile(item.EntryFile) {
 		return fmt.Errorf("%w: entry_file must be a relative file path", agenterrors.ErrInvalidInput)
 	}
-	if item.Status != skill.StatusActive && item.Status != skill.StatusDisabled {
-		return fmt.Errorf("%w: unsupported skill status", agenterrors.ErrInvalidInput)
-	}
-	if item.Version <= 0 {
-		item.Version = 1
-	}
+	// Enabled is a boolean by design; no numeric status validation is needed.
 	item.TagsJSON = mustMarshalTags(decodeTags(item.TagsJSON))
-	content, bundlePath, err := s.resolveSkillContent(item.SourceType, item.BundlePath, item.EntryFile, item.ContentMD)
+	content, bundlePath, err := s.resolveSkillContent(item.SourceType, item.BundlePath, item.EntryFile, item.ContentMarkdown)
 	if err != nil {
 		return err
 	}
 	item.BundlePath = bundlePath
 	if item.SourceType == skill.SourceInline {
-		item.ContentMD = content
+		item.ContentMarkdown = content
 	}
 	item.Checksum = checksumForContent(item.Name, item.Description, item.SkillType, item.SourceType, item.EntryFile, bundlePath, content)
 	return nil
@@ -223,7 +218,7 @@ func (s *Service) resolveSkillContent(sourceType, bundlePath, entryFile, inlineC
 	case skill.SourceInline:
 		content := strings.TrimSpace(inlineContent)
 		if content == "" {
-			return "", "", fmt.Errorf("%w: inline skill content_md is required", agenterrors.ErrInvalidInput)
+			return "", "", fmt.Errorf("%w: inline skill content_markdown is required", agenterrors.ErrInvalidInput)
 		}
 		return content, "", nil
 	case skill.SourceLocalPath:

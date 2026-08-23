@@ -20,19 +20,19 @@ func NewConsolidationService(memories memory.Repository) *ConsolidationService {
 	return &ConsolidationService{memories: memories}
 }
 
-func (s *ConsolidationService) UpgradeShortTermToLongTerm(ctx context.Context, ownerID int64, minAccessCount int, minImportance float64) (int64, error) {
-	items, err := s.memories.ListByLevel(ctx, ownerID, memory.LevelShortTerm, nil, 100)
+func (s *ConsolidationService) UpgradeShortTermToLongTerm(ctx context.Context, ownerID int64, minRecallCount int, minImportance float64) (int64, error) {
+	items, err := s.memories.ListByLevel(ctx, ownerID, memory.TierShortTerm, nil, 100)
 	if err != nil {
 		return 0, err
 	}
 	var upgraded int64
 	for _, item := range items {
-		if item.AccessCount >= minAccessCount && item.Importance >= minImportance {
-			item.MemoryLevel = memory.LevelLongTerm
+		if item.RecallCount >= minRecallCount && item.Importance >= minImportance {
+			item.RetentionTier = memory.TierLongTerm
 			if err := s.memories.Update(ctx, &item); err != nil {
 				return upgraded, err
 			}
-			if err := s.memories.IncrementConsolidationCount(ctx, ownerID, item.ID); err != nil {
+			if err := s.memories.IncrementPromotionCount(ctx, ownerID, item.ID); err != nil {
 				return upgraded, err
 			}
 			upgraded++
@@ -50,14 +50,14 @@ func (s *ConsolidationService) DecayLongTermImportance(ctx context.Context, owne
 }
 
 func (s *ConsolidationService) DowngradeWeakLongTerm(ctx context.Context, ownerID int64, minImportance float64) (int64, error) {
-	items, err := s.memories.ListByLevel(ctx, ownerID, memory.LevelLongTerm, nil, 200)
+	items, err := s.memories.ListByLevel(ctx, ownerID, memory.TierLongTerm, nil, 200)
 	if err != nil {
 		return 0, err
 	}
 	var downgraded int64
 	for _, item := range items {
-		if item.Importance < minImportance && item.AccessCount < 3 {
-			item.MemoryLevel = memory.LevelShortTerm
+		if item.Importance < minImportance && item.RecallCount < 3 {
+			item.RetentionTier = memory.TierShortTerm
 			if err := s.memories.Update(ctx, &item); err != nil {
 				return downgraded, err
 			}

@@ -12,10 +12,10 @@ import (
 )
 
 type KnowledgeSearchTool struct {
-	Retriever retrieval.Retriever
-	KBIDs     []int64
-	DefaultK  int
-	Mode      retrieval.Mode
+	Retriever        retrieval.Retriever
+	KnowledgeBaseIDs []int64
+	DefaultK         int
+	Mode             retrieval.Mode
 }
 
 type knowledgeSearchInput struct {
@@ -42,8 +42,8 @@ func (t KnowledgeSearchTool) Execute(ctx context.Context, rc ToolRunContext, inp
 	if t.Retriever == nil {
 		return nil, fmt.Errorf("retriever is not configured")
 	}
-	if len(t.KBIDs) == 0 {
-		return nil, fmt.Errorf("%w: knowledge_ids are required", agenterrors.ErrInvalidInput)
+	if len(t.KnowledgeBaseIDs) == 0 {
+		return nil, fmt.Errorf("%w: knowledge_base_ids are required", agenterrors.ErrInvalidInput)
 	}
 	var parsed knowledgeSearchInput
 	if err := json.Unmarshal(input, &parsed); err != nil {
@@ -74,12 +74,12 @@ func (t KnowledgeSearchTool) Execute(ctx context.Context, rc ToolRunContext, inp
 		return &ToolResult{ContentText: "unsupported retrieval mode", IsError: true}, fmt.Errorf("%w: unsupported retrieval mode", agenterrors.ErrInvalidInput)
 	}
 	resp, err := t.Retriever.Search(ctx, retrieval.RetrievalRequest{
-		OwnerID:         rc.OwnerID,
-		KBIDs:           t.KBIDs,
-		Query:           query,
-		TopK:            topK,
-		Mode:            mode,
-		EnableHighlight: true,
+		OwnerID:          rc.OwnerID,
+		KnowledgeBaseIDs: t.KnowledgeBaseIDs,
+		Query:            query,
+		TopK:             topK,
+		Mode:             mode,
+		EnableHighlight:  true,
 	})
 	if err != nil {
 		return &ToolResult{ContentText: err.Error(), IsError: true}, err

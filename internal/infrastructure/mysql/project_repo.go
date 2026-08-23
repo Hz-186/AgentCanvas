@@ -31,8 +31,8 @@ func (r *ProjectRepository) CreateWithPrimaryFolder(ctx context.Context, item *p
 		}
 		folder.OwnerID = item.OwnerID
 		folder.ProjectID = item.ID
-		folder.Path = item.PrimaryPath
-		folder.IsPrimary = true
+		folder.Path = item.RepositoryRoot
+		folder.IsRepositoryRoot = true
 		return tx.Create(folder).Error
 	})
 	return mapMySQLConstraintError(err)
@@ -109,7 +109,7 @@ func (r *ProjectRepository) Archive(ctx context.Context, ownerID, id int64) erro
 
 func (r *ProjectRepository) ListFolders(ctx context.Context, ownerID, projectID int64) ([]projectdomain.ProjectFolder, error) {
 	var items []projectdomain.ProjectFolder
-	err := r.db.WithContext(ctx).Where("owner_id = ? AND project_id = ?", ownerID, projectID).Order("is_primary DESC, id ASC").Find(&items).Error
+	err := r.db.WithContext(ctx).Where("owner_id = ? AND project_id = ?", ownerID, projectID).Order("is_repository_root DESC, id ASC").Find(&items).Error
 	return items, err
 }
 
@@ -130,12 +130,12 @@ func (r *ProjectRepository) AddPrimaryFolder(ctx context.Context, item *projectd
 		}
 		if err := tx.Model(&projectdomain.ProjectFolder{}).
 			Where("owner_id = ? AND project_id = ? AND id <> ?", item.OwnerID, item.ProjectID, item.ID).
-			Update("is_primary", false).Error; err != nil {
+			Update("is_repository_root", false).Error; err != nil {
 			return err
 		}
 		result := tx.Model(&projectdomain.Project{}).
 			Where("id = ? AND owner_id = ?", item.ProjectID, item.OwnerID).
-			Update("primary_path", item.Path)
+			Update("repository_root", item.Path)
 		if result.Error != nil {
 			return result.Error
 		}
@@ -174,12 +174,12 @@ func (r *ProjectRepository) SetPrimaryFolder(ctx context.Context, ownerID, proje
 		if projectCount == 0 {
 			return agenterrors.ErrNotFound
 		}
-		if err := tx.Model(&projectdomain.ProjectFolder{}).Where("owner_id = ? AND project_id = ?", ownerID, projectID).Update("is_primary", false).Error; err != nil {
+		if err := tx.Model(&projectdomain.ProjectFolder{}).Where("owner_id = ? AND project_id = ?", ownerID, projectID).Update("is_repository_root", false).Error; err != nil {
 			return err
 		}
 		folderResult := tx.Model(&projectdomain.ProjectFolder{}).
 			Where("id = ? AND owner_id = ? AND project_id = ?", folderID, ownerID, projectID).
-			Update("is_primary", true)
+			Update("is_repository_root", true)
 		if folderResult.Error != nil {
 			return folderResult.Error
 		}
@@ -188,7 +188,7 @@ func (r *ProjectRepository) SetPrimaryFolder(ctx context.Context, ownerID, proje
 		}
 		projectResult := tx.Model(&projectdomain.Project{}).
 			Where("id = ? AND owner_id = ?", projectID, ownerID).
-			Update("primary_path", folder.Path)
+			Update("repository_root", folder.Path)
 		if projectResult.Error != nil {
 			return projectResult.Error
 		}

@@ -35,6 +35,11 @@ func TestContextScopeFilterSeparatesMessagesAndSharedResources(t *testing.T) {
 	if !agentsOK || !conversationsOK || len(agents) != 2 || agents[0] != 0 || agents[1] != 3 || len(conversations) != 2 || conversations[0] != 0 || conversations[1] != 7 {
 		t.Fatalf("shared resources must allow global and current scopes: %#v", shared)
 	}
+	projectScoped := contextScopeFilter(contextresource.SearchRequest{OwnerID: 9, ProjectID: 42, ResourceTypes: []string{contextresource.TypeLongTermMemory}})
+	projects, projectsOK := projectScoped["project_id"].([]int64)
+	if !projectsOK || len(projects) != 2 || projects[0] != 0 || projects[1] != 42 {
+		t.Fatalf("project resources must allow global and current project only: %#v", projectScoped)
+	}
 }
 
 func TestContextKeywordSearchUsesMilvusTextIndexWithoutEmbedding(t *testing.T) {
@@ -49,6 +54,18 @@ func TestContextKeywordSearchUsesMilvusTextIndexWithoutEmbedding(t *testing.T) {
 	}
 	if len(results) != 1 || store.request.Collection != contextResourceKeywordCollection || store.request.QueryText != "hello" {
 		t.Fatalf("keyword results/request = %+v / %+v", results, store.request)
+	}
+}
+
+func TestContextKeywordSearchExcludesOtherProjectsBeforeRecall(t *testing.T) {
+	store := &fakeContextTextStore{results: []vectorstore.SearchResult{
+		{ID: "other", Score: 1, Metadata: map[string]any{"owner_id": int64(9), "project_id": int64(99), "resource_type": contextresource.TypeLongTermMemory, "resource_id": "99"}},
+		{ID: "current", Score: .9, Metadata: map[string]any{"owner_id": int64(9), "project_id": int64(42), "resource_type": contextresource.TypeLongTermMemory, "resource_id": "42"}},
+	}}
+	index := &ContextSemanticIndex{Store: store}
+	results, err := index.Search(context.Background(), contextresource.SearchRequest{OwnerID: 9, ProjectID: 42, ResourceTypes: []string{contextresource.TypeLongTermMemory}, Query: "fact", Mode: "keyword", TopK: 2})
+	if err != nil || len(results) != 1 || results[0].ResourceID != "42" {
+		t.Fatalf("cross-project context leaked: results=%+v err=%v", results, err)
 	}
 }
 

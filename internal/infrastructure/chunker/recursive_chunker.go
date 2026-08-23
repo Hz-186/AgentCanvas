@@ -61,7 +61,7 @@ func (c *RecursiveChunker) ChunkDocument(
 			TokenCount:   c.count(content),
 			CharCount:    utf8.RuneCountInString(content),
 			SectionTitle: buffer.sectionTitle,
-			PageNo:       buffer.pageNo,
+			PageNumber:   buffer.pageNo,
 			Metadata:     chunkMetadata(c.Method(), c.tokenizer.Name(), buffer.blockIDs, buffer.metadata, buffer.pageNo),
 		})
 		buffer = c.overlapBuffer(content, policy.Overlap, buffer.sectionTitle, buffer.pageNo)
@@ -77,7 +77,7 @@ func (c *RecursiveChunker) ChunkDocument(
 					TokenCount:   c.count(content),
 					CharCount:    utf8.RuneCountInString(content),
 					SectionTitle: segment.sectionTitle,
-					PageNo:       segment.pageNo,
+					PageNumber:   segment.pageNo,
 					Metadata: chunkMetadata(
 						c.Method(),
 						c.tokenizer.Name(),

@@ -13,20 +13,20 @@ import (
 )
 
 type WorkspaceContext struct {
-	ID               int64  `json:"workspace_id"`
-	ProjectID        int64  `json:"project_id"`
-	RunID            int64  `json:"run_id"`
-	Kind             string `json:"kind"`
-	RepositoryRoot   string `json:"repository_root"`
-	WorkspacePath    string `json:"workspace_path"`
-	BranchName       string `json:"branch_name"`
-	BaseSHA          string `json:"base_sha,omitempty"`
-	HeadSHA          string `json:"head_sha,omitempty"`
-	Dirty            bool   `json:"dirty"`
-	Unpushed         bool   `json:"unpushed"`
-	FileWriteEnabled bool   `json:"file_write_enabled"`
-	GitEnabled       bool   `json:"git_enabled"`
-	ExecEnabled      bool   `json:"exec_enabled"`
+	ID                 int64  `json:"workspace_id"`
+	ProjectID          int64  `json:"project_id"`
+	RunID              int64  `json:"run_id"`
+	Kind               string `json:"kind"`
+	RepositoryRoot     string `json:"repository_root"`
+	WorkspacePath      string `json:"workspace_path"`
+	BranchName         string `json:"branch_name"`
+	BaseSHA            string `json:"base_sha,omitempty"`
+	HeadSHA            string `json:"head_sha,omitempty"`
+	Dirty              bool   `json:"dirty"`
+	HasUnpushedCommits bool   `json:"has_unpushed_commits"`
+	FileWriteEnabled   bool   `json:"file_write_enabled"`
+	GitEnabled         bool   `json:"git_enabled"`
+	ExecEnabled        bool   `json:"exec_enabled"`
 }
 
 type ToolRunContext struct {
@@ -36,6 +36,7 @@ type ToolRunContext struct {
 	RunID           int64
 	DelegationDepth int
 	ConversationID  *int64
+	ProjectID       int64
 	// Task is the current run objective. Tools use it as a semantic query
 	// when the model omits an explicit query (for example memory recall).
 	Task      string
@@ -182,11 +183,11 @@ func (t AuditedTool) Execute(ctx context.Context, rc ToolRunContext, input json.
 	}
 	detail := map[string]any{
 		"agent_id": rc.AgentID, "run_id": rc.RunID, "tool": t.Tool.Name(),
-		"workspace_path": rc.Workspace.WorkspacePath, "branch": rc.Workspace.BranchName,
+		"repository_root": rc.Workspace.RepositoryRoot, "workspace_path": rc.Workspace.WorkspacePath, "branch_name": rc.Workspace.BranchName,
 		"input": sanitizedAuditInput(input), "succeeded": runErr == nil,
 	}
 	if runErr != nil {
-		detail["error"] = runErr.Error()
+		detail["error_message"] = runErr.Error()
 	}
 	if result != nil {
 		detail["result_summary"] = truncateAuditText(result.ContentText, 2048)

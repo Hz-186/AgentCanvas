@@ -62,7 +62,6 @@ type Repositories struct {
 	MemoryRecallLogs memory.RecallLogRepository
 	MemoryCandidates memory.CandidateWriter
 	MemoryRetriever  memory.SemanticRetriever
-	WorkingMemory    memory.WorkingMemoryRepository
 	ToolPacks        tool.PackRepository
 	Skills           skill.Repository
 	MCPServers       tool.MCPRepository
@@ -117,8 +116,8 @@ func buildRuntimeCore(deps Deps) runtimeCore {
 			Providers: deps.Providers, ToolPacks: deps.ToolPacks, Skills: deps.Skills, MCPServers: deps.MCPServers,
 			Retriever: deps.Retriever, MemoryRetriever: deps.MemoryRetriever, Memories: deps.Memories, MemoryReader: deps.MemoryReader,
 			MemoryLogs: deps.MemoryWriteLogs, MemoryRecallLogs: deps.MemoryRecallLogs, MemoryCandidates: deps.MemoryCandidates,
-			WorkingMemory: deps.WorkingMemory, MessageHistory: deps.MessageHistory, Compactions: deps.Compactions,
-			SessionSearch: deps.SessionSearch, ContextIndex: deps.ContextIndex, ToolInvocations: deps.ToolInvocations,
+			MessageHistory: deps.MessageHistory, Compactions: deps.Compactions, SessionSearch: deps.SessionSearch,
+			ContextIndex: deps.ContextIndex, ToolInvocations: deps.ToolInvocations,
 		},
 		coreClients: coreClients{LLM: deps.ToolCalling, Embedder: deps.Embedder, PythonBridge: deps.PythonBridge, Archival: deps.Archival},
 		coreTooling: coreTooling{Tools: deps.ToolRegistry, SubagentDispatcher: deps.SubagentDispatcher,

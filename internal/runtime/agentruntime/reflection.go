@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"strings"
 
+	"agentcanvas/internal/domain"
 	"agentcanvas/internal/domain/reflection"
 	runtimeagent "agentcanvas/internal/runtime/agent"
 )
@@ -67,7 +68,7 @@ func (n runtimeCore) finalizeReflection(ctx context.Context, rc *RunContext, cfg
 	if strings.TrimSpace(policy.Model) != "" {
 		model = strings.TrimSpace(policy.Model)
 	}
-	_ = n.Reflections.Enqueue(ctx, &reflection.Job{OwnerID: rc.OwnerID, AgentID: rc.AgentID, RunID: rc.RunID,
+	_ = n.Reflections.Enqueue(ctx, &reflection.Job{BaseModel: domain.BaseModel{OwnerID: rc.OwnerID}, AgentID: rc.AgentID, RunID: rc.RunID,
 		ProviderID: providerID, Model: model, Mode: agentMode(cfg.Mode), Task: task,
 		PayloadJSON: payload, Status: reflection.JobPending, MaxAttempts: 3})
 }

@@ -3,6 +3,8 @@ package reflection
 import (
 	"encoding/json"
 	"time"
+
+	"agentcanvas/internal/domain"
 )
 
 const (
@@ -38,8 +40,7 @@ const (
 // Reflection is an evidence-backed policy lesson derived from an Agent trajectory.
 // It is separate from factual/user memory so provenance and usefulness can evolve independently.
 type Reflection struct {
-	ID                  int64           `json:"id" gorm:"primaryKey;column:id"`
-	OwnerID             int64           `json:"owner_id" gorm:"column:owner_id"`
+	domain.SoftDeleteModel
 	AgentID             int64           `json:"agent_id" gorm:"column:agent_id"`
 	SourceRunID         int64           `json:"source_run_id" gorm:"column:source_run_id"`
 	SupersedesID        *int64          `json:"supersedes_id,omitempty" gorm:"column:supersedes_id"`
@@ -68,16 +69,12 @@ type Reflection struct {
 	HarmfulCount        int             `json:"harmful_count" gorm:"column:harmful_count"`
 	LastRecalledAt      *time.Time      `json:"last_recalled_at,omitempty" gorm:"column:last_recalled_at"`
 	ExpiresAt           *time.Time      `json:"expires_at,omitempty" gorm:"column:expires_at"`
-	CreatedAt           time.Time       `json:"created_at" gorm:"column:created_at"`
-	UpdatedAt           time.Time       `json:"updated_at" gorm:"column:updated_at"`
-	DeletedAt           *time.Time      `json:"-" gorm:"column:deleted_at"`
 }
 
 func (Reflection) TableName() string { return "agent_reflections" }
 
 type Job struct {
-	ID              int64           `json:"id" gorm:"primaryKey;column:id"`
-	OwnerID         int64           `json:"owner_id" gorm:"column:owner_id"`
+	domain.BaseModel
 	AgentID         int64           `json:"agent_id" gorm:"column:agent_id"`
 	RunID           int64           `json:"run_id" gorm:"column:run_id"`
 	TriggerHash     string          `json:"trigger_hash" gorm:"column:trigger_hash"`
@@ -98,8 +95,6 @@ type Job struct {
 	RetryAt         *time.Time      `json:"retry_at,omitempty" gorm:"column:retry_at"`
 	ErrorMessage    string          `json:"error_message,omitempty" gorm:"column:error_message"`
 	FailureType     string          `json:"failure_type,omitempty" gorm:"column:failure_type"`
-	CreatedAt       time.Time       `json:"created_at" gorm:"column:created_at"`
-	UpdatedAt       time.Time       `json:"updated_at" gorm:"column:updated_at"`
 	CompletedAt     *time.Time      `json:"completed_at,omitempty" gorm:"column:completed_at"`
 }
 
@@ -138,8 +133,7 @@ type Evidence struct {
 func (Evidence) TableName() string { return "agent_reflection_evidence" }
 
 type RecallLog struct {
-	ID             int64      `json:"id" gorm:"primaryKey;column:id"`
-	OwnerID        int64      `json:"owner_id" gorm:"column:owner_id"`
+	domain.BaseModel
 	ReflectionID   int64      `json:"reflection_id" gorm:"column:reflection_id"`
 	RunID          int64      `json:"run_id" gorm:"column:run_id"`
 	Score          float64    `json:"score" gorm:"column:score"`
@@ -148,8 +142,6 @@ type RecallLog struct {
 	Outcome        string     `json:"outcome,omitempty" gorm:"column:outcome"`
 	Verdict        string     `json:"verdict,omitempty" gorm:"column:verdict"`
 	FeedbackNote   string     `json:"feedback_note,omitempty" gorm:"column:feedback_note"`
-	CreatedAt      time.Time  `json:"created_at" gorm:"column:created_at"`
-	UpdatedAt      time.Time  `json:"updated_at" gorm:"column:updated_at"`
 	ResolvedAt     *time.Time `json:"resolved_at,omitempty" gorm:"column:resolved_at"`
 }
 

@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"agentcanvas/internal/domain"
 	"context"
 	"net/http"
 	"net/http/httptest"
@@ -56,7 +57,7 @@ func TestReflectionHandlerRequiresAuthentication(t *testing.T) {
 }
 
 func TestReflectionHandlerListsOwnerScopedAgentItems(t *testing.T) {
-	service := &fakeReflectionHTTPService{items: []reflection.Reflection{{ID: 7, OwnerID: 1, AgentID: 20}}}
+	service := &fakeReflectionHTTPService{items: []reflection.Reflection{{SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 7, OwnerID: 1}}, AgentID: 20}}}
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	ctx.Request = httptest.NewRequest(http.MethodGet, "/api/v1/agents/20/reflections?status=active&limit=10&offset=2", nil)

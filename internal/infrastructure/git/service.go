@@ -400,7 +400,7 @@ func (s *Service) Status(ctx context.Context, path string) (Status, error) {
 		if err != nil {
 			return Status{}, err
 		}
-		status.Unpushed = strings.TrimSpace(unpushed.Stdout) != ""
+		status.HasUnpushedCommits = strings.TrimSpace(unpushed.Stdout) != ""
 	}
 	return status, nil
 }
@@ -410,7 +410,7 @@ func (s *Service) RuntimeStatus(ctx context.Context, path string) (branch, head 
 	if err != nil {
 		return "", "", false, false, err
 	}
-	return status.Branch, status.Head, status.Dirty, status.Unpushed, nil
+	return status.Branch, status.Head, status.Dirty, status.HasUnpushedCommits, nil
 }
 
 func (s *Service) Diff(ctx context.Context, path string, staged bool) (string, error) {

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"agentcanvas/internal/domain"
 	projectdomain "agentcanvas/internal/domain/project"
 	agenterrors "agentcanvas/internal/pkg/errors"
 )
@@ -13,7 +14,7 @@ func (s *Service) CreateProject(ctx context.Context, ownerID int64, req CreatePr
 	if !s.cfg.Enabled || ownerID <= 0 || strings.TrimSpace(req.Name) == "" {
 		return nil, agenterrors.ErrInvalidInput
 	}
-	primary, err := s.canonicalAllowedPath(req.PrimaryPath)
+	primary, err := s.canonicalAllowedPath(req.RepositoryRoot)
 	if err != nil {
 		return nil, err
 	}
@@ -35,13 +36,13 @@ func (s *Service) CreateProject(ctx context.Context, ownerID int64, req CreatePr
 	if slug == "" {
 		return nil, agenterrors.ErrInvalidInput
 	}
-	item := &projectdomain.Project{OwnerID: ownerID, Slug: slug, Name: strings.TrimSpace(req.Name), Description: strings.TrimSpace(req.Description), Icon: strings.TrimSpace(req.Icon), Color: strings.TrimSpace(req.Color), PrimaryPath: root}
-	folder := &projectdomain.ProjectFolder{OwnerID: ownerID, ProjectID: item.ID, Path: root, Label: "Primary", IsPrimary: true}
+	item := &projectdomain.Project{BaseModel: domain.BaseModel{OwnerID: ownerID}, Slug: slug, Name: strings.TrimSpace(req.Name), Description: strings.TrimSpace(req.Description), RepositoryRoot: root}
+	folder := &projectdomain.ProjectFolder{OwnerID: ownerID, ProjectID: item.ID, Path: root, Label: "Primary", IsRepositoryRoot: true}
 	if err := s.projects.CreateWithPrimaryFolder(ctx, item, folder); err != nil {
 		return nil, err
 	}
 	item.Folders = []projectdomain.ProjectFolder{*folder}
-	s.audit(ctx, ownerID, "project.create", "project", item.ID, map[string]any{"slug": item.Slug, "primary_path": item.PrimaryPath})
+	s.audit(ctx, ownerID, "project.create", "project", item.ID, map[string]any{"slug": item.Slug, "repository_root": item.RepositoryRoot})
 	return item, nil
 }
 
@@ -66,12 +67,6 @@ func (s *Service) UpdateProject(ctx context.Context, ownerID, id int64, req Upda
 	}
 	if req.Description != nil {
 		item.Description = strings.TrimSpace(*req.Description)
-	}
-	if req.Icon != nil {
-		item.Icon = strings.TrimSpace(*req.Icon)
-	}
-	if req.Color != nil {
-		item.Color = strings.TrimSpace(*req.Color)
 	}
 	if err := s.projects.Update(ctx, item); err != nil {
 		return nil, err
@@ -104,7 +99,7 @@ func (s *Service) AddFolder(ctx context.Context, ownerID, projectID int64, req A
 	if err != nil {
 		return nil, err
 	}
-	if req.IsPrimary {
+	if req.IsRepositoryRoot {
 		path, err = s.git.EnsureRepository(ctx, path, s.cfg.AutoInitRepository)
 		if err != nil {
 			return nil, err
@@ -113,15 +108,15 @@ func (s *Service) AddFolder(ctx context.Context, ownerID, projectID int64, req A
 			return nil, err
 		}
 	}
-	item := &projectdomain.ProjectFolder{OwnerID: ownerID, ProjectID: projectID, Path: path, Label: strings.TrimSpace(req.Label), IsPrimary: req.IsPrimary}
-	if req.IsPrimary {
+	item := &projectdomain.ProjectFolder{OwnerID: ownerID, ProjectID: projectID, Path: path, Label: strings.TrimSpace(req.Label), IsRepositoryRoot: req.IsRepositoryRoot}
+	if req.IsRepositoryRoot {
 		if err := s.projects.AddPrimaryFolder(ctx, item); err != nil {
 			return nil, err
 		}
 	} else if err := s.projects.AddFolder(ctx, item); err != nil {
 		return nil, err
 	}
-	s.audit(ctx, ownerID, "project.folder_added", "project", projectID, map[string]any{"folder_id": item.ID, "path": item.Path, "is_primary": item.IsPrimary})
+	s.audit(ctx, ownerID, "project.folder_added", "project", projectID, map[string]any{"folder_id": item.ID, "path": item.Path, "is_repository_root": item.IsRepositoryRoot})
 	return item, nil
 }
 
@@ -131,7 +126,7 @@ func (s *Service) DeleteFolder(ctx context.Context, ownerID, projectID, folderID
 		return err
 	}
 	for _, folder := range folders {
-		if folder.ID == folderID && folder.IsPrimary {
+		if folder.ID == folderID && folder.IsRepositoryRoot {
 			return fmt.Errorf("%w: primary folder cannot be deleted", agenterrors.ErrForbidden)
 		}
 	}

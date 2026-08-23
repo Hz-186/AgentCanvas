@@ -60,7 +60,7 @@ func (t SkillLoadTool) Execute(ctx context.Context, rc ToolRunContext, input jso
 	if err != nil {
 		return &ToolResult{ContentText: err.Error(), IsError: true}, err
 	}
-	if item.Status != skill.StatusActive || item.DeletedAt != nil {
+	if !item.Enabled || item.DeletedAt != nil {
 		return &ToolResult{ContentText: "skill is not active", IsError: true}, fmt.Errorf("%w: skill is not active", agenterrors.ErrInvalidInput)
 	}
 	content, err := loadSkillContentFromItem(t.SkillRoot, item)
@@ -72,11 +72,11 @@ func (t SkillLoadTool) Execute(ctx context.Context, rc ToolRunContext, input jso
 	}
 	t.audit(rc.OwnerID, "skill.load", strconv.FormatInt(item.ID, 10), map[string]any{"skill_id": item.ID, "name": item.Name})
 	return ResultFromValue(map[string]any{
-		"id":          item.ID,
-		"name":        item.Name,
-		"description": item.Description,
-		"content_md":  content,
-		"checksum":    item.Checksum,
+		"id":               item.ID,
+		"name":             item.Name,
+		"description":      item.Description,
+		"content_markdown": content,
+		"checksum":         item.Checksum,
 	})
 }
 
@@ -172,7 +172,7 @@ func loadSkillContentFromItem(workspaceRoot string, item *skill.Skill) (string, 
 		return "", agenterrors.ErrInvalidInput
 	}
 	if item.SourceType == skill.SourceInline {
-		content := strings.TrimSpace(item.ContentMD)
+		content := strings.TrimSpace(item.ContentMarkdown)
 		if content == "" {
 			return "", fmt.Errorf("%w: skill content is empty", agenterrors.ErrInvalidInput)
 		}

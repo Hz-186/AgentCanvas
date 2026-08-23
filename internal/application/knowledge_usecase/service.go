@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 
+	"agentcanvas/internal/domain"
 	"agentcanvas/internal/domain/audit"
 	"agentcanvas/internal/domain/knowledge"
 	"agentcanvas/internal/domain/retrieval"
@@ -116,7 +117,7 @@ type CreateKnowledgeBaseRequest struct {
 	EmbeddingModel      string  `json:"embedding_model"`
 	EmbeddingDimensions int     `json:"embedding_dimensions"`
 	EmbeddingMetric     string  `json:"embedding_metric"`
-	HybridWeight        float64 `json:"hybrid_weight"`
+	VectorWeight        float64 `json:"vector_weight"`
 	RerankEnabled       bool    `json:"rerank_enabled"`
 	RerankProviderID    *int64  `json:"rerank_provider_id"`
 	RerankModel         string  `json:"rerank_model"`
@@ -134,14 +135,14 @@ type UpdateKnowledgeBaseRequest struct {
 	EmbeddingModel      *string  `json:"embedding_model"`
 	EmbeddingDimensions *int     `json:"embedding_dimensions"`
 	EmbeddingMetric     *string  `json:"embedding_metric"`
-	HybridWeight        *float64 `json:"hybrid_weight"`
+	VectorWeight        *float64 `json:"vector_weight"`
 	RerankEnabled       *bool    `json:"rerank_enabled"`
 	RerankProviderID    *int64   `json:"rerank_provider_id"`
 	RerankModel         *string  `json:"rerank_model"`
 	ChunkMethod         *string  `json:"chunk_method"`
 	ChunkSize           *int     `json:"chunk_size"`
 	ChunkOverlap        *int     `json:"chunk_overlap"`
-	Status              *int     `json:"status"`
+	Enabled             *bool    `json:"enabled"`
 }
 
 type UploadDocumentRequest struct {
@@ -220,11 +221,11 @@ func (s *Service) CreateKnowledgeBase(ctx context.Context, ownerID int64, req Cr
 	if !validRetrievalMode(retrievalMode) {
 		return nil, agenterrors.ErrInvalidInput
 	}
-	hybridWeight := req.HybridWeight
-	if hybridWeight == 0 {
-		hybridWeight = 0.5
+	vectorWeight := req.VectorWeight
+	if vectorWeight == 0 {
+		vectorWeight = 0.5
 	}
-	if hybridWeight < 0 || hybridWeight > 1 || req.EmbeddingDimensions < 0 {
+	if vectorWeight < 0 || vectorWeight > 1 || req.EmbeddingDimensions < 0 {
 		return nil, agenterrors.ErrInvalidInput
 	}
 	if requiresEmbedding(retrievalMode) && req.EmbeddingProviderID == nil {
@@ -252,7 +253,7 @@ func (s *Service) CreateKnowledgeBase(ctx context.Context, ownerID int64, req Cr
 		return nil, fmt.Errorf("embedding metric %q does not match configured backend metric %q", embeddingMetric, knowledge.NormalizeEmbeddingMetric(s.embeddingMetric))
 	}
 	kb := &knowledge.KnowledgeBase{
-		OwnerID:             ownerID,
+		SoftDeleteModel:     domain.SoftDeleteModel{BaseModel: domain.BaseModel{OwnerID: ownerID}},
 		Name:                name,
 		Description:         strings.TrimSpace(req.Description),
 		RetrievalBackend:    retrievalBackend,
@@ -261,14 +262,14 @@ func (s *Service) CreateKnowledgeBase(ctx context.Context, ownerID int64, req Cr
 		EmbeddingModel:      strings.TrimSpace(req.EmbeddingModel),
 		EmbeddingDimensions: req.EmbeddingDimensions,
 		EmbeddingMetric:     embeddingMetric,
-		HybridWeight:        hybridWeight,
+		VectorWeight:        vectorWeight,
 		RerankEnabled:       req.RerankEnabled,
 		RerankProviderID:    req.RerankProviderID,
 		RerankModel:         strings.TrimSpace(req.RerankModel),
 		ChunkMethod:         chunkMethod,
 		ChunkSize:           chunkSize,
 		ChunkOverlap:        chunkOverlap,
-		Status:              knowledge.KnowledgeBaseStatusActive,
+		Enabled:             knowledge.KnowledgeBaseEnabled,
 	}
 	if err := s.kbs.Create(ctx, kb); err != nil {
 		return nil, err
@@ -344,11 +345,11 @@ func (s *Service) UpdateKnowledgeBase(ctx context.Context, ownerID, id int64, re
 		}
 		kb.EmbeddingMetric = knowledge.NormalizeEmbeddingMetric(*req.EmbeddingMetric)
 	}
-	if req.HybridWeight != nil {
-		if *req.HybridWeight < 0 || *req.HybridWeight > 1 {
+	if req.VectorWeight != nil {
+		if *req.VectorWeight < 0 || *req.VectorWeight > 1 {
 			return nil, agenterrors.ErrInvalidInput
 		}
-		kb.HybridWeight = *req.HybridWeight
+		kb.VectorWeight = *req.VectorWeight
 	}
 	if req.RerankEnabled != nil {
 		kb.RerankEnabled = *req.RerankEnabled
@@ -381,8 +382,8 @@ func (s *Service) UpdateKnowledgeBase(ctx context.Context, ownerID, id int64, re
 	if kb.ChunkOverlap >= kb.ChunkSize {
 		return nil, agenterrors.ErrInvalidInput
 	}
-	if req.Status != nil {
-		kb.Status = *req.Status
+	if req.Enabled != nil {
+		kb.Enabled = *req.Enabled
 	}
 	// embedding 相关配置(检索模式 / provider / model)变化时,重置已缓存的向量维度,
 	// 使下一次重建索引能按新模型重新推断维度,避免维度校验死锁。
@@ -431,19 +432,19 @@ func (s *Service) ReindexKnowledgeBase(ctx context.Context, ownerID, id int64, c
 	var jobCount int64
 	for i := range docs {
 		doc := docs[i]
-		doc.ParserStatus = knowledge.DocumentStatusPending
-		doc.ParserError = ""
+		doc.IngestionStatus = knowledge.DocumentStatusPending
+		doc.IngestionError = ""
 		if err := s.documents.Update(ctx, &doc); err != nil {
 			return nil, err
 		}
 		job := &knowledge.IngestionJob{
-			OwnerID:      ownerID,
-			KBID:         id,
-			DocumentID:   doc.ID,
-			JobType:      knowledge.IngestionJobTypeDocument,
-			Status:       knowledge.IngestionJobStatusPending,
-			MaxAttempts:  3,
-			AttemptCount: 0,
+			BaseModel:       domain.BaseModel{OwnerID: ownerID},
+			KnowledgeBaseID: id,
+			DocumentID:      doc.ID,
+			JobType:         knowledge.IngestionJobTypeDocument,
+			Status:          knowledge.IngestionJobStatusPending,
+			MaxAttempts:     3,
+			AttemptCount:    0,
 		}
 		if err := s.createIngestionJob(ctx, job); err != nil {
 			return nil, err
@@ -493,14 +494,14 @@ func (s *Service) UploadDocument(ctx context.Context, ownerID, kbID int64, req U
 		name = originalFilename
 	}
 	doc := &knowledge.Document{
-		OwnerID:          ownerID,
-		KBID:             kb.ID,
+		SoftDeleteModel:  domain.SoftDeleteModel{BaseModel: domain.BaseModel{OwnerID: ownerID}},
+		KnowledgeBaseID:  kb.ID,
 		Name:             name,
 		OriginalFilename: originalFilename,
 		FileType:         fileType,
-		MimeType:         req.ContentType,
-		FileSize:         req.FileHeader.Size,
-		ParserStatus:     knowledge.DocumentStatusPending,
+		MIMEType:         req.ContentType,
+		FileSizeBytes:    req.FileHeader.Size,
+		IngestionStatus:  knowledge.DocumentStatusPending,
 		Enabled:          true,
 	}
 	if err := s.documents.Create(ctx, doc); err != nil {
@@ -510,8 +511,8 @@ func (s *Service) UploadDocument(ctx context.Context, ownerID, kbID int64, req U
 	objectKey := objectKey(ownerID, kbID, doc.ID, originalFilename)
 	file, err := req.FileHeader.Open()
 	if err != nil {
-		doc.ParserStatus = knowledge.DocumentStatusFailed
-		doc.ParserError = err.Error()
+		doc.IngestionStatus = knowledge.DocumentStatusFailed
+		doc.IngestionError = err.Error()
 		return nil, errors.Join(err, s.documents.Update(ctx, doc))
 	}
 	defer file.Close()
@@ -519,34 +520,34 @@ func (s *Service) UploadDocument(ctx context.Context, ownerID, kbID int64, req U
 	hash := sha256.New()
 	reader := io.TeeReader(file, hash)
 	if err := s.storage.Put(ctx, objectKey, reader, req.FileHeader.Size, req.ContentType); err != nil {
-		doc.ParserStatus = knowledge.DocumentStatusFailed
-		doc.ParserError = err.Error()
+		doc.IngestionStatus = knowledge.DocumentStatusFailed
+		doc.IngestionError = err.Error()
 		return nil, errors.Join(err, s.documents.Update(ctx, doc))
 	}
-	doc.ObjectKey = objectKey
+	doc.StorageObjectKey = objectKey
 	doc.ContentHash = hex.EncodeToString(hash.Sum(nil))
 	if err := s.documents.Update(ctx, doc); err != nil {
 		return nil, err
 	}
 
 	job := &knowledge.IngestionJob{
-		OwnerID:      ownerID,
-		KBID:         kbID,
-		DocumentID:   doc.ID,
-		JobType:      knowledge.IngestionJobTypeDocument,
-		Status:       knowledge.IngestionJobStatusPending,
-		MaxAttempts:  3,
-		AttemptCount: 0,
+		BaseModel:       domain.BaseModel{OwnerID: ownerID},
+		KnowledgeBaseID: kbID,
+		DocumentID:      doc.ID,
+		JobType:         knowledge.IngestionJobTypeDocument,
+		Status:          knowledge.IngestionJobStatusPending,
+		MaxAttempts:     3,
+		AttemptCount:    0,
 	}
 	if err := s.createIngestionJob(ctx, job); err != nil {
-		doc.ParserStatus = knowledge.DocumentStatusFailed
-		doc.ParserError = err.Error()
+		doc.IngestionStatus = knowledge.DocumentStatusFailed
+		doc.IngestionError = err.Error()
 		return nil, errors.Join(err, s.documents.Update(ctx, doc))
 	}
 	if err := s.kbs.AdjustCounts(ctx, ownerID, kbID, 1, 0); err != nil {
 		return nil, err
 	}
-	_ = s.audit(ctx, ownerID, ownerID, "document.upload", "document", strconv.FormatInt(doc.ID, 10), map[string]any{"kb_id": kbID, "job_id": job.ID}, client)
+	_ = s.audit(ctx, ownerID, ownerID, "document.upload", "document", strconv.FormatInt(doc.ID, 10), map[string]any{"knowledge_base_id": kbID, "job_id": job.ID}, client)
 	return &UploadDocumentResponse{Document: doc, Job: job}, nil
 }
 
@@ -561,10 +562,10 @@ func (s *Service) createIngestionJob(ctx context.Context, job *knowledge.Ingesti
 		ID:   strconv.FormatInt(job.ID, 10),
 		Type: job.JobType,
 		Payload: map[string]any{
-			"owner_id":         job.OwnerID,
-			"ingestion_job_id": job.ID,
-			"kb_id":            job.KBID,
-			"document_id":      job.DocumentID,
+			"owner_id":          job.OwnerID,
+			"ingestion_job_id":  job.ID,
+			"knowledge_base_id": job.KnowledgeBaseID,
+			"document_id":       job.DocumentID,
 		},
 	})
 }
@@ -598,10 +599,10 @@ func (s *Service) DeleteDocument(ctx context.Context, ownerID, id int64, client 
 	if err := s.documents.SoftDelete(ctx, ownerID, id); err != nil {
 		return err
 	}
-	if err := s.kbs.AdjustCounts(ctx, ownerID, doc.KBID, -1, -doc.ChunkCount); err != nil {
+	if err := s.kbs.AdjustCounts(ctx, ownerID, doc.KnowledgeBaseID, -1, -doc.ChunkCount); err != nil {
 		return err
 	}
-	_ = s.audit(ctx, ownerID, ownerID, "document.delete", "document", strconv.FormatInt(id, 10), map[string]any{"kb_id": doc.KBID}, client)
+	_ = s.audit(ctx, ownerID, ownerID, "document.delete", "document", strconv.FormatInt(id, 10), map[string]any{"knowledge_base_id": doc.KnowledgeBaseID}, client)
 	return nil
 }
 
@@ -626,7 +627,7 @@ func (s *Service) SetDocumentEnabled(ctx context.Context, ownerID, id int64, ena
 	if enabled {
 		action = "document.enable"
 	}
-	_ = s.audit(ctx, ownerID, ownerID, action, "document", strconv.FormatInt(id, 10), map[string]any{"kb_id": doc.KBID}, client)
+	_ = s.audit(ctx, ownerID, ownerID, action, "document", strconv.FormatInt(id, 10), map[string]any{"knowledge_base_id": doc.KnowledgeBaseID}, client)
 	return doc, nil
 }
 
@@ -674,19 +675,19 @@ func (s *Service) Search(ctx context.Context, ownerID, kbID int64, req SearchReq
 	activeGenerations := make(map[int64]string)
 	if docs, listErr := s.documents.ListByKnowledgeBase(ctx, ownerID, kbID); listErr == nil {
 		for _, doc := range docs {
-			if strings.TrimSpace(doc.ActiveGeneration) != "" {
-				activeGenerations[doc.ID] = doc.ActiveGeneration
+			if strings.TrimSpace(doc.ActiveGenerationID) != "" {
+				activeGenerations[doc.ID] = doc.ActiveGenerationID
 			}
 		}
 	}
 	retrievalRequest := retrieval.RetrievalRequest{
-		OwnerID:           ownerID,
-		KBIDs:             []int64{kbID},
-		ActiveGenerations: activeGenerations,
-		Query:             query,
-		TopK:              topK,
-		Mode:              mode,
-		EnableHighlight:   true,
+		OwnerID:             ownerID,
+		KnowledgeBaseIDs:    []int64{kbID},
+		ActiveGenerationIDs: activeGenerations,
+		Query:               query,
+		TopK:                topK,
+		Mode:                mode,
+		EnableHighlight:     true,
 	}
 	if mode != retrieval.ModeKeyword {
 		retrievalRequest.EmbeddingProfile = kb.EmbeddingProfile().Key()
@@ -751,15 +752,15 @@ func (s *Service) logRetrieval(ctx context.Context, ownerID, kbID int64, backend
 		}
 	}
 	return s.logs.Create(ctx, &knowledge.RetrievalLog{
-		OwnerID:          ownerID,
-		KBIDsJSON:        string(kbIDsJSON),
+		ImmutableModel:   domain.ImmutableModel{OwnerID: ownerID},
+		KnowledgeBaseIDs: kbIDsJSON,
 		QueryText:        query,
 		RetrievalBackend: backend,
 		RetrievalMode:    string(mode),
 		TopK:             topK,
 		ResultCount:      len(resp.Results),
 		LatencyMS:        resp.LatencyMS,
-		ResultsJSON:      string(resultsJSON),
+		ResultsJSON:      resultsJSON,
 	})
 }
 

@@ -1,6 +1,7 @@
 package httpserver
 
 import (
+	"agentcanvas/internal/domain"
 	"context"
 	"encoding/json"
 	"io"
@@ -148,7 +149,7 @@ func TestRunStreamV1RouterReplaysThenStreamsLiveUntilTerminal(t *testing.T) {
 	baseHub := eventhub.NewMemoryHub(eventhub.Config{SubscriberBuffer: 8})
 	first := publishStreamEvent(baseHub, streamTestRunID, "assistant.start")
 	notifier := &streamSubscribeNotifier{Hub: baseHub, subscribed: make(chan struct{})}
-	run := &agentdomain.Run{ID: streamTestRunID, OwnerID: streamTestOwnerID, Status: agentdomain.RunStatusRunning}
+	run := &agentdomain.Run{BaseModel: domain.BaseModel{ID: streamTestRunID, OwnerID: streamTestOwnerID}, Status: agentdomain.RunStatusRunning}
 	router, token := newRunStreamRouter(t, run, notifier)
 
 	recorder := httptest.NewRecorder()
@@ -196,7 +197,7 @@ func TestRunStreamV1RouterUsesHighestCursor(t *testing.T) {
 	}
 	terminal := hub.Prepare(streamTestRunID, eventhub.StreamEvent{RunID: streamTestRunID, Kind: eventhub.RunComplete})
 	hub.CloseRun(streamTestRunID, terminal)
-	run := &agentdomain.Run{ID: streamTestRunID, OwnerID: streamTestOwnerID, Status: agentdomain.RunStatusSucceeded}
+	run := &agentdomain.Run{BaseModel: domain.BaseModel{ID: streamTestRunID, OwnerID: streamTestOwnerID}, Status: agentdomain.RunStatusSucceeded}
 	router, token := newRunStreamRouter(t, run, hub)
 
 	tests := []struct {
@@ -241,7 +242,7 @@ func TestRunStreamV1RouterReturnsSnapshotForReplayGap(t *testing.T) {
 	}
 	terminal := hub.Prepare(streamTestRunID, eventhub.StreamEvent{RunID: streamTestRunID, Kind: eventhub.RunComplete})
 	hub.CloseRun(streamTestRunID, terminal)
-	run := &agentdomain.Run{ID: streamTestRunID, OwnerID: streamTestOwnerID, Status: agentdomain.RunStatusSucceeded}
+	run := &agentdomain.Run{BaseModel: domain.BaseModel{ID: streamTestRunID, OwnerID: streamTestOwnerID}, Status: agentdomain.RunStatusSucceeded}
 	router, token := newRunStreamRouter(t, run, hub)
 
 	recorder := httptest.NewRecorder()
@@ -260,7 +261,7 @@ func TestRunStreamV1RouterReturnsSnapshotForReplayGap(t *testing.T) {
 
 func TestRunStreamV1RouterRequiresAuthenticationAndHidesMissingRun(t *testing.T) {
 	hub := eventhub.NewMemoryHub()
-	run := &agentdomain.Run{ID: streamTestRunID, OwnerID: streamTestOwnerID, Status: agentdomain.RunStatusRunning}
+	run := &agentdomain.Run{BaseModel: domain.BaseModel{ID: streamTestRunID, OwnerID: streamTestOwnerID}, Status: agentdomain.RunStatusRunning}
 	router, token := newRunStreamRouter(t, run, hub)
 
 	unauthorized := httptest.NewRecorder()

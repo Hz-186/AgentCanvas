@@ -27,11 +27,25 @@ func TestMCPServerArgsAndEnv(t *testing.T) {
 	}
 }
 
+func TestMCPServerEnvironmentIsWriteOnly(t *testing.T) {
+	data, err := json.Marshal(&MCPServer{EnvJSON: json.RawMessage(`{"TOKEN":"secret"}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(data, &fields); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := fields["env_json"]; ok {
+		t.Fatalf("MCP response exposed environment: %s", data)
+	}
+}
+
 func TestMCPTableNames(t *testing.T) {
 	if (MCPServer{}).TableName() != "mcp_servers" {
 		t.Fatal("unexpected mcp server table")
 	}
-	if (MCPToolCache{}).TableName() != "mcp_tool_cache" {
+	if (MCPToolCacheEntry{}).TableName() != "mcp_tool_cache" {
 		t.Fatal("unexpected mcp tool cache table")
 	}
 }

@@ -35,9 +35,9 @@ type natsConsumerDeliveryConfigurer interface {
 }
 
 type natsInflight struct {
-	message     NATSMessage
-	attempts    int
-	maxAttempts int
+	message      NATSMessage
+	attemptCount int
+	maxAttempts  int
 }
 
 type NATSJetStreamQueue struct {
@@ -144,15 +144,15 @@ func (q *NATSJetStreamQueue) Claim(ctx context.Context, opts ClaimOptions) ([]Jo
 			continue
 		}
 		if deliveryAttempt := message.DeliveryAttempt(); deliveryAttempt > 0 {
-			job.Attempts = deliveryAttempt
+			job.AttemptCount = deliveryAttempt
 		} else {
-			job.Attempts++
+			job.AttemptCount++
 		}
 		if job.MaxAttempts == 0 {
 			job.MaxAttempts = q.MaxAttempts
 		}
 		q.mu.Lock()
-		q.inflight[job.ID] = natsInflight{message: message, attempts: job.Attempts, maxAttempts: job.MaxAttempts}
+		q.inflight[job.ID] = natsInflight{message: message, attemptCount: job.AttemptCount, maxAttempts: job.MaxAttempts}
 		q.mu.Unlock()
 		jobs = append(jobs, job)
 	}
@@ -182,7 +182,7 @@ func (q *NATSJetStreamQueue) Nack(ctx context.Context, jobID string, retryAt tim
 	if err != nil {
 		return err
 	}
-	if delivery.maxAttempts > 0 && delivery.attempts >= delivery.maxAttempts {
+	if delivery.maxAttempts > 0 && delivery.attemptCount >= delivery.maxAttempts {
 		return delivery.message.Ack()
 	}
 	if retryAt.After(time.Now()) {

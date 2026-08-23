@@ -64,9 +64,9 @@ func (s *Store) IndexChunks(ctx context.Context, docs []retrieval.ChunkIndexDocu
 	for _, doc := range docs {
 		payload := map[string]any{
 			"owner_id":              doc.OwnerID,
-			"kb_id":                 doc.KBID,
+			"knowledge_base_id":     doc.KnowledgeBaseID,
 			"document_id":           doc.DocumentID,
-			"generation":            doc.Generation,
+			"generation_id":         doc.GenerationID,
 			"chunk_id":              doc.ChunkID,
 			"chunk_index":           doc.ChunkIndex,
 			"document_name":         doc.DocumentName,
@@ -80,7 +80,7 @@ func (s *Store) IndexChunks(ctx context.Context, docs []retrieval.ChunkIndexDocu
 			"embedding_provider_id": doc.EmbeddingProviderID,
 			"embedding_metric":      doc.EmbeddingMetric,
 			"embedding_profile":     doc.EmbeddingProfile,
-			"page_no":               doc.PageNo,
+			"page_number":           doc.PageNumber,
 			"token_count":           doc.TokenCount,
 			"metadata":              doc.Metadata,
 			"created_at":            doc.CreatedAt,
@@ -160,7 +160,7 @@ func (s *Store) SetDocumentEnabled(ctx context.Context, ownerID, documentID int6
 func (s *Store) DeleteByKnowledgeBase(ctx context.Context, ownerID, kbID int64) error {
 	return s.deleteByQuery(ctx, []map[string]any{
 		{"term": map[string]any{"owner_id": ownerID}},
-		{"term": map[string]any{"kb_id": kbID}},
+		{"term": map[string]any{"knowledge_base_id": kbID}},
 	})
 }
 
@@ -171,7 +171,7 @@ func (s *Store) DeleteInactiveGenerations(ctx context.Context, ownerID, document
 				{"term": map[string]any{"owner_id": ownerID}},
 				{"term": map[string]any{"document_id": documentID}},
 			},
-			"must_not": map[string]any{"term": map[string]any{"generation": activeGeneration}},
+			"must_not": map[string]any{"term": map[string]any{"generation_id": activeGeneration}},
 		},
 	})
 }
@@ -209,7 +209,7 @@ func (s *Store) Search(ctx context.Context, req retrieval.RetrievalRequest) (*re
 			err = vectorErr
 			break
 		}
-		results = fusion.WeightedRetrievalResults(keywordResults, vectorResults, req.HybridWeight, req.TopK)
+		results = fusion.WeightedRetrievalResults(keywordResults, vectorResults, req.VectorWeight, req.TopK)
 	default:
 		err = fmt.Errorf("unsupported retrieval mode: %s", req.Mode)
 	}
@@ -310,16 +310,16 @@ func (s *Store) searchBody(ctx context.Context, body map[string]any) ([]retrieva
 			highlight = values[0]
 		}
 		results = append(results, retrieval.RetrievalResult{
-			ChunkID:      hit.Source.ChunkID,
-			DocumentID:   hit.Source.DocumentID,
-			Generation:   hit.Source.Generation,
-			KBID:         hit.Source.KBID,
-			Score:        hit.Score,
-			Content:      hit.Source.Content,
-			Highlight:    highlight,
-			DocumentName: hit.Source.DocumentName,
-			PageNo:       hit.Source.PageNo,
-			Metadata:     hit.Source.Metadata,
+			ChunkID:         hit.Source.ChunkID,
+			DocumentID:      hit.Source.DocumentID,
+			GenerationID:    hit.Source.GenerationID,
+			KnowledgeBaseID: hit.Source.KnowledgeBaseID,
+			Score:           hit.Score,
+			Content:         hit.Source.Content,
+			Highlight:       highlight,
+			DocumentName:    hit.Source.DocumentName,
+			PageNumber:      hit.Source.PageNumber,
+			Metadata:        hit.Source.Metadata,
 		})
 	}
 	return results, nil
@@ -327,24 +327,24 @@ func (s *Store) searchBody(ctx context.Context, body map[string]any) ([]retrieva
 
 func (s *Store) filters(req retrieval.RetrievalRequest) []map[string]any {
 	filters := []map[string]any{{"term": map[string]any{"owner_id": req.OwnerID}}}
-	if len(req.KBIDs) > 0 {
-		filters = append(filters, map[string]any{"terms": map[string]any{"kb_id": req.KBIDs}})
+	if len(req.KnowledgeBaseIDs) > 0 {
+		filters = append(filters, map[string]any{"terms": map[string]any{"knowledge_base_id": req.KnowledgeBaseIDs}})
 	}
-	if strings.TrimSpace(req.Generation) != "" {
-		filters = append(filters, map[string]any{"term": map[string]any{"generation": req.Generation}})
+	if strings.TrimSpace(req.GenerationID) != "" {
+		filters = append(filters, map[string]any{"term": map[string]any{"generation_id": req.GenerationID}})
 	}
 	if strings.TrimSpace(req.EmbeddingProfile) != "" {
 		filters = append(filters, map[string]any{"term": map[string]any{"embedding_profile": req.EmbeddingProfile}})
 	}
-	if len(req.ActiveGenerations) > 0 {
-		should := make([]map[string]any, 0, len(req.ActiveGenerations))
-		for documentID, generation := range req.ActiveGenerations {
-			if strings.TrimSpace(generation) == "" {
+	if len(req.ActiveGenerationIDs) > 0 {
+		should := make([]map[string]any, 0, len(req.ActiveGenerationIDs))
+		for documentID, generationID := range req.ActiveGenerationIDs {
+			if strings.TrimSpace(generationID) == "" {
 				continue
 			}
 			should = append(should, map[string]any{"bool": map[string]any{"filter": []map[string]any{
 				{"term": map[string]any{"document_id": documentID}},
-				{"term": map[string]any{"generation": generation}},
+				{"term": map[string]any{"generation_id": generationID}},
 			}}})
 		}
 		if len(should) > 0 {
@@ -442,9 +442,9 @@ type searchResponse struct {
 
 type chunkSearchDocument struct {
 	OwnerID             int64          `json:"owner_id"`
-	KBID                int64          `json:"kb_id"`
+	KnowledgeBaseID     int64          `json:"knowledge_base_id"`
 	DocumentID          int64          `json:"document_id"`
-	Generation          string         `json:"generation"`
+	GenerationID        string         `json:"generation_id"`
 	ChunkID             int64          `json:"chunk_id"`
 	ChunkIndex          int            `json:"chunk_index"`
 	DocumentName        string         `json:"document_name"`
@@ -457,7 +457,7 @@ type chunkSearchDocument struct {
 	EmbeddingProviderID int64          `json:"embedding_provider_id"`
 	EmbeddingMetric     string         `json:"embedding_metric"`
 	EmbeddingProfile    string         `json:"embedding_profile"`
-	PageNo              *int           `json:"page_no"`
+	PageNumber          *int           `json:"page_number"`
 	TokenCount          int            `json:"token_count"`
 	Metadata            map[string]any `json:"metadata"`
 }

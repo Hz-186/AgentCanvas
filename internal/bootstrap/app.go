@@ -175,14 +175,8 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 	memoryRepo := cacheinfra.NewMemoryRepository(mysqlinfra.NewMemoryRepository(db), resourceInvalidator, memoryCache)
 	memoryWriteLogRepo := mysqlinfra.NewMemoryWriteLogRepository(db)
 	memoryRecallLogRepo := mysqlinfra.NewMemoryRecallLogRepository(db)
-	workingMemoryRepo := redisinfra.NewWorkingMemoryRepository(redisClient, redisinfra.WorkingMemoryOptions{
-		TTL:      time.Duration(cfg.WorkingMemory.TTLSeconds) * time.Second,
-		LockTTL:  time.Duration(cfg.WorkingMemory.LockTTLMS) * time.Millisecond,
-		LockWait: time.Duration(cfg.WorkingMemory.LockWaitMS) * time.Millisecond,
-	})
 	toolDefinitionRepo := cacheinfra.NewToolDefinitionRepository(mysqlinfra.NewToolDefinitionRepository(db), resourceInvalidator)
 	toolInvocationRepo := mysqlinfra.NewToolInvocationRepository(db)
-	toolPolicyRepo := mysqlinfra.NewToolPolicyRepository(db)
 	toolPackRepo := mysqlinfra.NewToolPackRepository(db)
 	mcpRepo := mysqlinfra.NewMCPRepository(db)
 	skillRepo := cacheinfra.NewSkillRepository(mysqlinfra.NewSkillRepository(db), resourceInvalidator)
@@ -355,7 +349,7 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 			Retriever: retrievalService, Providers: providerLoader, MessageHistory: messageRepo, Compactions: compactionRepo,
 			SessionSearch: sessionSearch, Memories: memoryRepo, MemoryReader: memoryService, MemoryWriteLogs: memoryWriteLogRepo,
 			MemoryRecallLogs: memoryRecallLogRepo, MemoryCandidates: memoryCandidateService, MemoryRetriever: memoryRetrievalStore,
-			WorkingMemory: workingMemoryRepo, ToolPacks: toolPackRepo, Skills: skillRepo, MCPServers: mcpRepo,
+			ToolPacks: toolPackRepo, Skills: skillRepo, MCPServers: mcpRepo,
 			ToolInvocations: toolInvocationRepo, ContextIndex: contextIndex,
 		},
 		RuntimeClients: agentruntime.RuntimeClients{
@@ -394,8 +388,13 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 	agentRuntime.ConfigureMemoryReader(memoryService)
 	agentRuntime.ConfigureMemoryCandidates(memoryCandidateService)
 	agentRuntime.ConfigureSessionSearch(sessionSearch)
-	improvementService := independentagentusecase.NewImprovementService(agentImprovementRepo, agentRepo, agentTurnRepo, messageRepo,
-		runStepRepo, memoryRepo, reflectionRepo, skillRepo, providerLoader, toolCallingClient, cfg.AgentRuntime.MemoryReviewMode)
+	memoryReviewMode := cfg.AgentRuntime.MemoryReviewMode
+	if cfg.MemoryDream.Enabled {
+		memoryReviewMode = independentagentusecase.MemoryReviewOff
+		log.Warn("Dream memory extraction is enabled; duplicate self-improvement memory proposals are disabled")
+	}
+	improvementService := independentagentusecase.NewImprovementService(agentImprovementRepo, agentRepo, agentTurnRepo, conversationRepo, messageRepo,
+		runStepRepo, memoryRepo, reflectionRepo, skillRepo, providerLoader, toolCallingClient, memoryReviewMode)
 	improvementService.ConfigureMemoryCommands(memoryCommandService)
 	improvementService.ConfigureReviewModel(cfg.AgentRuntime.ReviewProviderID, cfg.AgentRuntime.ReviewModel)
 	if cfg.AgentRuntime.SelfImprovementEnabled {
@@ -417,7 +416,7 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 	auditHandler := handler.NewAuditHandler(auditService)
 	memoryHandler := handler.NewMemoryHandler(memoryService)
 	memoryHandler.ConfigureCandidates(memoryCandidateService, improvementService)
-	toolHandler := handler.NewToolHandler(toolService, toolPolicyRepo, toolPackRepo, mcpRepo)
+	toolHandler := handler.NewToolHandler(toolService, toolPackRepo, mcpRepo)
 	skillHandler := handler.NewSkillHandler(skillService, auditRepo)
 	knowledgeHandler := handler.NewKnowledgeHandler(knowledgeService)
 	documentHandler := handler.NewDocumentHandler(knowledgeService)

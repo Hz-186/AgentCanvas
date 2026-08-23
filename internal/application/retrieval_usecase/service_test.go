@@ -1,6 +1,7 @@
 package retrieval_usecase
 
 import (
+	"agentcanvas/internal/domain"
 	"context"
 	"errors"
 	"testing"
@@ -24,21 +25,20 @@ func TestSearchEmbedsQueryAndAppliesRerank(t *testing.T) {
 	service := NewService(
 		&fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{
 			10: {
-				ID:                  10,
-				OwnerID:             1,
+				SoftDeleteModel:     domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 10, OwnerID: 1}},
 				RetrievalMode:       knowledge.RetrievalModeHybrid,
 				EmbeddingProviderID: &providerID,
 				EmbeddingModel:      "text-embedding",
 				EmbeddingDimensions: 3,
-				HybridWeight:        0.7,
+				VectorWeight:        0.7,
 				RerankEnabled:       true,
 				RerankProviderID:    &rerankProviderID,
 				RerankModel:         "reranker",
 			},
 		}},
 		&fakeProviderRepo{items: map[int64]*providerdomain.ModelProvider{
-			90: {ID: 90, OwnerID: 1, ProviderType: providerdomain.TypeOpenAICompatible, Status: providerdomain.StatusActive},
-			91: {ID: 91, OwnerID: 1, ProviderType: providerdomain.TypeOpenAICompatible, Status: providerdomain.StatusActive},
+			90: {SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 90, OwnerID: 1}}, ProviderType: providerdomain.TypeOpenAICompatible, Enabled: providerdomain.ProviderEnabled},
+			91: {SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 91, OwnerID: 1}}, ProviderType: providerdomain.TypeOpenAICompatible, Enabled: providerdomain.ProviderEnabled},
 		}},
 		raw,
 		&fakeEmbedder{vectors: [][]float32{{0.1, 0.2, 0.3}}},
@@ -46,15 +46,15 @@ func TestSearchEmbedsQueryAndAppliesRerank(t *testing.T) {
 		mustSecretBox(t),
 	)
 
-	resp, err := service.Search(context.Background(), retrieval.RetrievalRequest{OwnerID: 1, KBIDs: []int64{10}, Query: "agent", TopK: 2, Mode: retrieval.ModeHybrid})
+	resp, err := service.Search(context.Background(), retrieval.RetrievalRequest{OwnerID: 1, KnowledgeBaseIDs: []int64{10}, Query: "agent", TopK: 2, Mode: retrieval.ModeHybrid})
 	if err != nil {
 		t.Fatalf("Search() error = %v", err)
 	}
 	if len(raw.request.QueryVector) != 3 {
 		t.Fatalf("query vector = %#v", raw.request.QueryVector)
 	}
-	if raw.request.HybridWeight != 0.7 {
-		t.Fatalf("hybrid weight = %v, want 0.7", raw.request.HybridWeight)
+	if raw.request.VectorWeight != 0.7 {
+		t.Fatalf("hybrid weight = %v, want 0.7", raw.request.VectorWeight)
 	}
 	if raw.request.EmbeddingProfile == "" {
 		t.Fatal("embedding profile was not propagated to the backend")
@@ -68,13 +68,13 @@ func TestSearchRejectsIncompatibleKnowledgeBaseEmbeddingProfiles(t *testing.T) {
 	providerID := int64(90)
 	service := NewService(
 		&fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{
-			10: {ID: 10, OwnerID: 1, EmbeddingProviderID: &providerID, EmbeddingModel: "model-a", EmbeddingDimensions: 2, EmbeddingMetric: knowledge.EmbeddingMetricCosine},
-			11: {ID: 11, OwnerID: 1, EmbeddingProviderID: &providerID, EmbeddingModel: "model-b", EmbeddingDimensions: 2, EmbeddingMetric: knowledge.EmbeddingMetricCosine},
+			10: {SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 10, OwnerID: 1}}, EmbeddingProviderID: &providerID, EmbeddingModel: "model-a", EmbeddingDimensions: 2, EmbeddingMetric: knowledge.EmbeddingMetricCosine},
+			11: {SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 11, OwnerID: 1}}, EmbeddingProviderID: &providerID, EmbeddingModel: "model-b", EmbeddingDimensions: 2, EmbeddingMetric: knowledge.EmbeddingMetricCosine},
 		}},
 		&fakeProviderRepo{}, &fakeRawRetriever{}, nil, nil, mustSecretBox(t),
 	)
 	_, err := service.Search(context.Background(), retrieval.RetrievalRequest{
-		OwnerID: 1, KBIDs: []int64{10, 11}, Query: "agent", Mode: retrieval.ModeVector, QueryVector: []float32{0.1, 0.2},
+		OwnerID: 1, KnowledgeBaseIDs: []int64{10, 11}, Query: "agent", Mode: retrieval.ModeVector, QueryVector: []float32{0.1, 0.2},
 	})
 	if err == nil || err.Error() != "knowledge bases use incompatible embedding profiles" {
 		t.Fatalf("Search() error = %v", err)
@@ -86,14 +86,11 @@ func TestSearchDispatchesVectorQueryToKnowledgeBaseBackend(t *testing.T) {
 	defaultBackend := &fakeRawRetriever{response: &retrieval.RetrievalResponse{}}
 	milvusBackend := &fakeRawRetriever{response: &retrieval.RetrievalResponse{Results: []retrieval.RetrievalResult{{ChunkID: 1, Score: 0.9}}}}
 	service := NewService(
-		&fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{10: {
-			ID: 10, OwnerID: 1, RetrievalBackend: knowledge.RetrievalBackendMilvus,
+		&fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{10: {SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 10, OwnerID: 1}}, RetrievalBackend: knowledge.RetrievalBackendMilvus,
 			RetrievalMode: knowledge.RetrievalModeVector, EmbeddingProviderID: &providerID,
 			EmbeddingModel: "text-embedding", EmbeddingDimensions: 2,
 		}}},
-		&fakeProviderRepo{items: map[int64]*providerdomain.ModelProvider{90: {
-			ID: 90, OwnerID: 1, ProviderType: providerdomain.TypeOpenAICompatible, Status: providerdomain.StatusActive,
-		}}},
+		&fakeProviderRepo{items: map[int64]*providerdomain.ModelProvider{90: {SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 90, OwnerID: 1}}, ProviderType: providerdomain.TypeOpenAICompatible, Enabled: providerdomain.ProviderEnabled}}},
 		defaultBackend, &fakeEmbedder{vectors: [][]float32{{0.1, 0.2}}}, nil, mustSecretBox(t),
 	).WithBackends(map[string]retrieval.Retriever{
 		knowledge.RetrievalBackendElasticsearch: defaultBackend,
@@ -101,7 +98,7 @@ func TestSearchDispatchesVectorQueryToKnowledgeBaseBackend(t *testing.T) {
 	})
 
 	if _, err := service.Search(context.Background(), retrieval.RetrievalRequest{
-		OwnerID: 1, KBIDs: []int64{10}, Query: "agent", TopK: 1, CandidateK: 100, Mode: retrieval.ModeVector,
+		OwnerID: 1, KnowledgeBaseIDs: []int64{10}, Query: "agent", TopK: 1, CandidateK: 100, Mode: retrieval.ModeVector,
 	}); err != nil {
 		t.Fatalf("Search() error = %v", err)
 	}
@@ -115,15 +112,13 @@ func TestSearchDispatchesVectorQueryToKnowledgeBaseBackend(t *testing.T) {
 
 func TestSearchRejectsDeclaredBackendWithoutAdapter(t *testing.T) {
 	service := NewService(
-		&fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{10: {
-			ID: 10, OwnerID: 1, RetrievalBackend: knowledge.RetrievalBackendMilvus,
-		}}},
+		&fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{10: {SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 10, OwnerID: 1}}, RetrievalBackend: knowledge.RetrievalBackendMilvus}}},
 		&fakeProviderRepo{},
 		&fakeRawRetriever{response: &retrieval.RetrievalResponse{}},
 		nil, nil, mustSecretBox(t),
 	)
 	_, err := service.Search(context.Background(), retrieval.RetrievalRequest{
-		OwnerID: 1, KBIDs: []int64{10}, Query: "agent", Mode: retrieval.ModeKeyword,
+		OwnerID: 1, KnowledgeBaseIDs: []int64{10}, Query: "agent", Mode: retrieval.ModeKeyword,
 	})
 	if err == nil || err.Error() != "retriever for knowledge base backend \"milvus\" is not configured" {
 		t.Fatalf("Search() error = %v", err)
@@ -140,8 +135,7 @@ func TestSearchFallsBackWhenRerankFails(t *testing.T) {
 	service := NewService(
 		&fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{
 			10: {
-				ID:                  10,
-				OwnerID:             1,
+				SoftDeleteModel:     domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 10, OwnerID: 1}},
 				RetrievalMode:       knowledge.RetrievalModeVector,
 				EmbeddingProviderID: &providerID,
 				EmbeddingModel:      "text-embedding",
@@ -152,8 +146,8 @@ func TestSearchFallsBackWhenRerankFails(t *testing.T) {
 			},
 		}},
 		&fakeProviderRepo{items: map[int64]*providerdomain.ModelProvider{
-			90: {ID: 90, OwnerID: 1, ProviderType: providerdomain.TypeOpenAICompatible, Status: providerdomain.StatusActive},
-			91: {ID: 91, OwnerID: 1, ProviderType: providerdomain.TypeOpenAICompatible, Status: providerdomain.StatusActive},
+			90: {SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 90, OwnerID: 1}}, ProviderType: providerdomain.TypeOpenAICompatible, Enabled: providerdomain.ProviderEnabled},
+			91: {SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 91, OwnerID: 1}}, ProviderType: providerdomain.TypeOpenAICompatible, Enabled: providerdomain.ProviderEnabled},
 		}},
 		raw,
 		&fakeEmbedder{vectors: [][]float32{{0.1, 0.2}}},
@@ -161,7 +155,7 @@ func TestSearchFallsBackWhenRerankFails(t *testing.T) {
 		mustSecretBox(t),
 	)
 
-	resp, err := service.Search(context.Background(), retrieval.RetrievalRequest{OwnerID: 1, KBIDs: []int64{10}, Query: "agent", TopK: 2, Mode: retrieval.ModeVector})
+	resp, err := service.Search(context.Background(), retrieval.RetrievalRequest{OwnerID: 1, KnowledgeBaseIDs: []int64{10}, Query: "agent", TopK: 2, Mode: retrieval.ModeVector})
 	if err != nil {
 		t.Fatalf("Search() error = %v", err)
 	}
@@ -174,7 +168,7 @@ func TestSearchKeywordDoesNotRequireEmbeddingProvider(t *testing.T) {
 	raw := &fakeRawRetriever{response: &retrieval.RetrievalResponse{}}
 	service := NewService(
 		&fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{
-			10: {ID: 10, OwnerID: 1, RetrievalMode: knowledge.RetrievalModeKeyword},
+			10: {SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 10, OwnerID: 1}}, RetrievalMode: knowledge.RetrievalModeKeyword},
 		}},
 		&fakeProviderRepo{},
 		raw,
@@ -183,7 +177,7 @@ func TestSearchKeywordDoesNotRequireEmbeddingProvider(t *testing.T) {
 		mustSecretBox(t),
 	)
 
-	if _, err := service.Search(context.Background(), retrieval.RetrievalRequest{OwnerID: 1, KBIDs: []int64{10}, Query: "agent", Mode: retrieval.ModeKeyword}); err != nil {
+	if _, err := service.Search(context.Background(), retrieval.RetrievalRequest{OwnerID: 1, KnowledgeBaseIDs: []int64{10}, Query: "agent", Mode: retrieval.ModeKeyword}); err != nil {
 		t.Fatalf("Search() error = %v", err)
 	}
 	if raw.request.Mode != retrieval.ModeKeyword {
@@ -197,7 +191,7 @@ func TestSearchExpandsCandidateKWhenRecallIsLow(t *testing.T) {
 		{Results: []retrieval.RetrievalResult{{ChunkID: 1, Score: 0.8}, {ChunkID: 2, Score: 0.7}, {ChunkID: 3, Score: 0.6}}},
 	}}
 	service := NewService(
-		&fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{10: {ID: 10, OwnerID: 1, RetrievalMode: knowledge.RetrievalModeKeyword}}},
+		&fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{10: {SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 10, OwnerID: 1}}, RetrievalMode: knowledge.RetrievalModeKeyword}}},
 		&fakeProviderRepo{},
 		raw,
 		nil,
@@ -205,7 +199,7 @@ func TestSearchExpandsCandidateKWhenRecallIsLow(t *testing.T) {
 		mustSecretBox(t),
 	)
 
-	resp, err := service.Search(context.Background(), retrieval.RetrievalRequest{OwnerID: 1, KBIDs: []int64{10}, Query: "missing faq", TopK: 2, Mode: retrieval.ModeKeyword, CandidateK: 4})
+	resp, err := service.Search(context.Background(), retrieval.RetrievalRequest{OwnerID: 1, KnowledgeBaseIDs: []int64{10}, Query: "missing faq", TopK: 2, Mode: retrieval.ModeKeyword, CandidateK: 4})
 	if err != nil {
 		t.Fatalf("Search() error = %v", err)
 	}
@@ -229,7 +223,7 @@ func TestSearchRewritesQueryWhenRecallIsLow(t *testing.T) {
 		{Results: []retrieval.RetrievalResult{{ChunkID: 1, Score: 0.9}, {ChunkID: 2, Score: 0.8}}},
 	}}
 	service := NewService(
-		&fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{10: {ID: 10, OwnerID: 1, RetrievalMode: knowledge.RetrievalModeKeyword}}},
+		&fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{10: {SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 10, OwnerID: 1}}, RetrievalMode: knowledge.RetrievalModeKeyword}}},
 		&fakeProviderRepo{},
 		raw,
 		nil,
@@ -237,7 +231,7 @@ func TestSearchRewritesQueryWhenRecallIsLow(t *testing.T) {
 		mustSecretBox(t),
 	)
 
-	resp, err := service.Search(context.Background(), retrieval.RetrievalRequest{OwnerID: 1, KBIDs: []int64{10}, Query: "  AgentCanvas??  ", TopK: 2, Mode: retrieval.ModeKeyword, CandidateK: 100})
+	resp, err := service.Search(context.Background(), retrieval.RetrievalRequest{OwnerID: 1, KnowledgeBaseIDs: []int64{10}, Query: "  AgentCanvas??  ", TopK: 2, Mode: retrieval.ModeKeyword, CandidateK: 100})
 	if err != nil {
 		t.Fatalf("Search() error = %v", err)
 	}
@@ -258,15 +252,15 @@ func TestSearchFallsBackToKeywordWhenVectorRecallFails(t *testing.T) {
 		},
 	}
 	service := NewService(
-		&fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{10: {ID: 10, OwnerID: 1, RetrievalMode: knowledge.RetrievalModeVector, EmbeddingProviderID: &providerID, EmbeddingModel: "text-embedding", EmbeddingDimensions: 2}}},
-		&fakeProviderRepo{items: map[int64]*providerdomain.ModelProvider{90: {ID: 90, OwnerID: 1, ProviderType: providerdomain.TypeOpenAICompatible, Status: providerdomain.StatusActive}}},
+		&fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{10: {SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 10, OwnerID: 1}}, RetrievalMode: knowledge.RetrievalModeVector, EmbeddingProviderID: &providerID, EmbeddingModel: "text-embedding", EmbeddingDimensions: 2}}},
+		&fakeProviderRepo{items: map[int64]*providerdomain.ModelProvider{90: {SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 90, OwnerID: 1}}, ProviderType: providerdomain.TypeOpenAICompatible, Enabled: providerdomain.ProviderEnabled}}},
 		raw,
 		&fakeEmbedder{vectors: [][]float32{{0.1, 0.2}}},
 		nil,
 		mustSecretBox(t),
 	)
 
-	resp, err := service.Search(context.Background(), retrieval.RetrievalRequest{OwnerID: 1, KBIDs: []int64{10}, Query: "agent", TopK: 1, Mode: retrieval.ModeVector})
+	resp, err := service.Search(context.Background(), retrieval.RetrievalRequest{OwnerID: 1, KnowledgeBaseIDs: []int64{10}, Query: "agent", TopK: 1, Mode: retrieval.ModeVector})
 	if err != nil {
 		t.Fatalf("Search() error = %v", err)
 	}
@@ -285,15 +279,15 @@ func TestSearchFallsBackToVectorWhenKeywordRecallIsLow(t *testing.T) {
 		{Results: []retrieval.RetrievalResult{{ChunkID: 1, Score: 0.9, VectorScore: 0.9}, {ChunkID: 2, Score: 0.8, VectorScore: 0.8}}},
 	}}
 	service := NewService(
-		&fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{10: {ID: 10, OwnerID: 1, RetrievalMode: knowledge.RetrievalModeKeyword, EmbeddingProviderID: &providerID, EmbeddingModel: "BAAI/bge-m3", EmbeddingDimensions: 2}}},
-		&fakeProviderRepo{items: map[int64]*providerdomain.ModelProvider{90: {ID: 90, OwnerID: 1, ProviderType: providerdomain.TypeOpenAICompatible, Status: providerdomain.StatusActive}}},
+		&fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{10: {SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 10, OwnerID: 1}}, RetrievalMode: knowledge.RetrievalModeKeyword, EmbeddingProviderID: &providerID, EmbeddingModel: "BAAI/bge-m3", EmbeddingDimensions: 2}}},
+		&fakeProviderRepo{items: map[int64]*providerdomain.ModelProvider{90: {SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 90, OwnerID: 1}}, ProviderType: providerdomain.TypeOpenAICompatible, Enabled: providerdomain.ProviderEnabled}}},
 		raw,
 		&fakeEmbedder{vectors: [][]float32{{0.1, 0.2}}},
 		nil,
 		mustSecretBox(t),
 	)
 
-	resp, err := service.Search(context.Background(), retrieval.RetrievalRequest{OwnerID: 1, KBIDs: []int64{10}, Query: "missing", TopK: 2, Mode: retrieval.ModeKeyword, CandidateK: 100})
+	resp, err := service.Search(context.Background(), retrieval.RetrievalRequest{OwnerID: 1, KnowledgeBaseIDs: []int64{10}, Query: "missing", TopK: 2, Mode: retrieval.ModeKeyword, CandidateK: 100})
 	if err != nil {
 		t.Fatalf("Search() error = %v", err)
 	}
@@ -318,7 +312,7 @@ func TestAnalyzeRecallDetectsIncompleteHybridCoverage(t *testing.T) {
 func TestSearchEmbeddingProviderErrorUsesRequestedMode(t *testing.T) {
 	service := NewService(
 		&fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{
-			10: {ID: 10, OwnerID: 1, RetrievalMode: knowledge.RetrievalModeKeyword},
+			10: {SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 10, OwnerID: 1}}, RetrievalMode: knowledge.RetrievalModeKeyword},
 		}},
 		&fakeProviderRepo{},
 		&fakeRawRetriever{},
@@ -327,7 +321,7 @@ func TestSearchEmbeddingProviderErrorUsesRequestedMode(t *testing.T) {
 		mustSecretBox(t),
 	)
 
-	_, err := service.Search(context.Background(), retrieval.RetrievalRequest{OwnerID: 1, KBIDs: []int64{10}, Query: "agent", Mode: retrieval.ModeVector})
+	_, err := service.Search(context.Background(), retrieval.RetrievalRequest{OwnerID: 1, KnowledgeBaseIDs: []int64{10}, Query: "agent", Mode: retrieval.ModeVector})
 	if err == nil {
 		t.Fatal("Search() error = nil, want embedding provider error")
 	}

@@ -68,7 +68,7 @@ func TestMilvusStoreUsesRESTAPIForCollectionAndSearch(t *testing.T) {
 	if err := store.EnsureCollection(context.Background(), "docs", 1024, HNSWConfig{}); err != nil {
 		t.Fatalf("EnsureCollection() error = %v", err)
 	}
-	if err := store.Upsert(context.Background(), "docs", []VectorDocument{{ID: "chunk-1", Vector: []float32{0.1, 0.2}, Metadata: map[string]any{"kb_id": 10}}}); err != nil {
+	if err := store.Upsert(context.Background(), "docs", []VectorDocument{{ID: "chunk-1", Vector: []float32{0.1, 0.2}, Metadata: map[string]any{"knowledge_base_id": 10}}}); err != nil {
 		t.Fatalf("Upsert() error = %v", err)
 	}
 	if err := store.DeleteByFilter(context.Background(), "docs", map[string]any{"document_id": 20}); err != nil {
@@ -89,7 +89,7 @@ func TestMilvusStoreUsesRESTAPIForCollectionAndSearch(t *testing.T) {
 	}
 	got, err := store.Search(context.Background(), SearchRequest{
 		Collection: "docs", Vector: []float32{0.1, 0.2}, TopK: 3,
-		Filter:     map[string]any{"kb_id": []int64{10, 11}, "enabled": true},
+		Filter:     map[string]any{"knowledge_base_id": []int64{10, 11}, "enabled": true},
 		AnyFilters: []map[string]any{{"document_id": int64(20), "generation": "gen-a"}, {"document_id": int64(21), "generation": "gen-b"}},
 	})
 	if err != nil {
@@ -137,7 +137,7 @@ func TestMilvusStoreUsesRESTAPIForCollectionAndSearch(t *testing.T) {
 	}
 	searchReq := requests[9]
 	filter := searchReq["filter"].(string)
-	if filter == "" || searchReq["limit"].(float64) != 3 || !strings.Contains(filter, "metadata['kb_id'] in [10, 11]") || !strings.Contains(filter, "metadata['enabled'] == true") || !strings.Contains(filter, "metadata['document_id'] == 20") || !strings.Contains(filter, "metadata['generation'] == 'gen-a'") || !strings.Contains(filter, " || ") {
+	if filter == "" || searchReq["limit"].(float64) != 3 || !strings.Contains(filter, "metadata['knowledge_base_id'] in [10, 11]") || !strings.Contains(filter, "metadata['enabled'] == true") || !strings.Contains(filter, "metadata['document_id'] == 20") || !strings.Contains(filter, "metadata['generation'] == 'gen-a'") || !strings.Contains(filter, " || ") {
 		t.Fatalf("unexpected search request: %+v", searchReq)
 	}
 }
@@ -149,7 +149,7 @@ func TestMilvusStoreRejectsUnsafeFilterField(t *testing.T) {
 	defer server.Close()
 
 	store := NewMilvusStore(server.URL, "", HNSWConfig{})
-	_, err := store.Search(context.Background(), SearchRequest{Collection: "docs", Vector: []float32{0.1}, Filter: map[string]any{"kb_id'] == 1 || metadata['owner_id": 2}})
+	_, err := store.Search(context.Background(), SearchRequest{Collection: "docs", Vector: []float32{0.1}, Filter: map[string]any{"knowledge_base_id'] == 1 || metadata['owner_id": 2}})
 	if err == nil || !strings.Contains(err.Error(), "invalid milvus filter field") {
 		t.Fatalf("expected invalid filter field error, got %v", err)
 	}

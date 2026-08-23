@@ -36,7 +36,7 @@ const memoryIndexMapping = `{
       "owner_id": { "type": "long" },
       "memory_id": { "type": "long" },
       "memory_type": { "type": "keyword" },
-      "memory_level": { "type": "keyword" },
+      "retention_tier": { "type": "keyword" },
       "content": {
         "type": "text",
         "fields": {
@@ -85,15 +85,15 @@ func (s *MemoryStore) EnsureIndex(ctx context.Context) error {
 
 func (s *MemoryStore) Index(ctx context.Context, item memory.Memory) error {
 	doc := map[string]any{
-		"owner_id":     item.OwnerID,
-		"memory_id":    item.ID,
-		"memory_type":  item.MemoryType,
-		"memory_level": item.MemoryLevel,
-		"title":        item.Title,
-		"content":      item.Content,
-		"importance":   item.Importance,
-		"created_at":   item.CreatedAt,
-		"updated_at":   item.UpdatedAt,
+		"owner_id":       item.OwnerID,
+		"memory_id":      item.ID,
+		"memory_type":    item.MemoryType,
+		"retention_tier": item.RetentionTier,
+		"title":          item.Title,
+		"content":        item.Content,
+		"importance":     item.Importance,
+		"created_at":     item.CreatedAt,
+		"updated_at":     item.UpdatedAt,
 	}
 	body, _ := json.Marshal(doc)
 	res, err := s.client.Index(

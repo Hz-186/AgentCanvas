@@ -7,26 +7,31 @@ import (
 	"strings"
 	"time"
 
+	"agentcanvas/internal/domain"
+	"agentcanvas/internal/domain/conversation"
 	"agentcanvas/internal/domain/memory"
 )
 
 type ExtractionService struct {
-	memories    memory.Repository
-	extractions memory.ExtractionJobRepository
-	merges      memory.MergeLogRepository
-	messages    DreamMessageRepository
-	candidates  memory.CandidateWriter
+	memories      memory.Repository
+	extractions   memory.ExtractionJobRepository
+	messages      DreamMessageRepository
+	candidates    memory.CandidateWriter
+	conversations conversation.Repository
 }
 
 func (s *ExtractionService) ConfigureCandidates(candidates memory.CandidateWriter) {
 	s.candidates = candidates
 }
 
-func NewExtractionService(memories memory.Repository, extractions memory.ExtractionJobRepository, merges memory.MergeLogRepository, messageRepositories ...DreamMessageRepository) *ExtractionService {
+func (s *ExtractionService) ConfigureConversations(conversations conversation.Repository) {
+	s.conversations = conversations
+}
+
+func NewExtractionService(memories memory.Repository, extractions memory.ExtractionJobRepository, messageRepositories ...DreamMessageRepository) *ExtractionService {
 	service := &ExtractionService{
 		memories:    memories,
 		extractions: extractions,
-		merges:      merges,
 	}
 	if len(messageRepositories) > 0 {
 		service.messages = messageRepositories[0]
@@ -38,19 +43,11 @@ func (s *ExtractionService) ScheduleDream(ctx context.Context, ownerID, conversa
 	if s == nil || s.extractions == nil || s.messages == nil || ownerID <= 0 || conversationID <= 0 {
 		return nil, nil
 	}
-	messages, err := s.messages.ListActiveByConversation(ctx, ownerID, conversationID)
-	if err != nil || len(messages) == 0 {
+	through, err := s.latestActiveMessageID(ctx, ownerID, conversationID)
+	if err != nil || through <= 0 {
 		return nil, err
 	}
-	through := messages[len(messages)-1].ID
-	ids := make([]int64, 0, len(messages))
-	for _, item := range messages {
-		ids = append(ids, item.ID)
-	}
-	idsJSON, err := json.Marshal(ids)
-	if err != nil {
-		return nil, fmt.Errorf("marshal dream message ids: %w", err)
-	}
+	projectID := s.projectID(ctx, ownerID, conversationID)
 	now := time.Now().UTC()
 	due := now.Add(cfg.IdleTimeout)
 	reason := "idle"
@@ -60,17 +57,25 @@ func (s *ExtractionService) ScheduleDream(ctx context.Context, ownerID, conversa
 	}
 	key := fmt.Sprintf("dream:%d:%d:%d", ownerID, conversationID, through)
 	if existing, findErr := s.extractions.FindByIdempotencyKey(ctx, ownerID, key); findErr == nil {
+		needsUpdate := false
+		if existing.ProjectID <= 0 && projectID > 0 {
+			existing.ProjectID = projectID
+			needsUpdate = true
+		}
 		if existing.DueAt == nil || due.Before(*existing.DueAt) {
 			existing.DueAt = &due
 			existing.TriggerReason = reason
+			needsUpdate = true
+		}
+		if needsUpdate {
 			if err := s.extractions.Update(ctx, existing); err != nil {
 				return nil, err
 			}
 		}
 		return existing, nil
 	}
-	job := &memory.ExtractionJob{OwnerID: ownerID, ConversationID: conversationID, IdempotencyKey: key, TriggerReason: reason,
-		SourceMessageIDs: idsJSON, ThroughMessageID: through, Status: string(memory.ExtractionPending), DueAt: &due}
+	job := &memory.ExtractionJob{BaseModel: domain.BaseModel{OwnerID: ownerID}, ConversationID: conversationID, ProjectID: projectID, IdempotencyKey: key, TriggerReason: reason,
+		ThroughMessageID: through, Status: string(memory.ExtractionPending), DueAt: &due}
 	if err := s.extractions.Create(ctx, job); err != nil {
 		if existing, findErr := s.extractions.FindByIdempotencyKey(ctx, ownerID, key); findErr == nil {
 			return existing, nil
@@ -78,6 +83,28 @@ func (s *ExtractionService) ScheduleDream(ctx context.Context, ownerID, conversa
 		return nil, err
 	}
 	return job, nil
+}
+
+func (s *ExtractionService) latestActiveMessageID(ctx context.Context, ownerID, conversationID int64) (int64, error) {
+	if reader, ok := s.messages.(dreamMessageBoundaryReader); ok {
+		return reader.LatestActiveMessageID(ctx, ownerID, conversationID)
+	}
+	messages, err := s.messages.ListActiveByConversation(ctx, ownerID, conversationID)
+	if err != nil || len(messages) == 0 {
+		return 0, err
+	}
+	return messages[len(messages)-1].ID, nil
+}
+
+func (s *ExtractionService) projectID(ctx context.Context, ownerID, conversationID int64) int64 {
+	if s == nil || s.conversations == nil {
+		return 0
+	}
+	item, err := s.conversations.FindByID(ctx, ownerID, conversationID)
+	if err != nil || item.ProjectID == nil {
+		return 0
+	}
+	return *item.ProjectID
 }
 
 func (s *ExtractionService) StartExtraction(ctx context.Context, ownerID, conversationID int64, messageIDs []int64) (int64, error) {
@@ -89,7 +116,7 @@ func (s *ExtractionService) StartExtraction(ctx context.Context, ownerID, conver
 		return 0, fmt.Errorf("marshal extraction message ids: %w", err)
 	}
 	job := &memory.ExtractionJob{
-		OwnerID:          ownerID,
+		BaseModel:        domain.BaseModel{OwnerID: ownerID},
 		ConversationID:   conversationID,
 		SourceMessageIDs: idsJSON,
 		Status:           string(memory.ExtractionPending),
@@ -182,8 +209,6 @@ func (s *ExtractionService) applyExtractionResults(ctx context.Context, job *mem
 			item       memory.ExtractedMemoryItem
 		}{memory.TypeProfile, item})
 	}
-	// summary_memory is a read-only compatibility type. Conversation continuity
-	// is owned exclusively by conversation_compactions in V2.
 	for _, item := range result.EpisodicMemories {
 		allItems = append(allItems, struct {
 			memoryType string
@@ -209,7 +234,11 @@ func (s *ExtractionService) applyExtractionResults(ctx context.Context, job *mem
 			importance = 1
 		}
 
-		if _, err := s.candidates.Suggest(ctx, memory.CandidateRequest{OwnerID: job.OwnerID, ConversationID: job.ConversationID,
+		projectID := job.ProjectID
+		if projectID <= 0 {
+			projectID = s.projectID(ctx, job.OwnerID, job.ConversationID)
+		}
+		if _, err := s.candidates.Suggest(ctx, memory.CandidateRequest{OwnerID: job.OwnerID, ConversationID: job.ConversationID, ProjectID: projectID, SourceConversationID: job.ConversationID, SourceProjectID: projectID,
 			SourceID: fmt.Sprintf("legacy-extraction:%d:%s:%d", job.ID, entry.memoryType, index), MemoryType: entry.memoryType,
 			Title: entry.item.Title, Content: entry.item.Content, Action: "create", Importance: importance,
 			Evidence: []string{fmt.Sprintf("extraction_job:%d", job.ID)}, Source: "legacy_extraction"}); err != nil {
@@ -259,9 +288,8 @@ EXISTING MEMORIES (for reference, avoid duplicates):
 
 Extract important information into these categories and return as JSON:
 1. profile_memories: user preferences, traits, skills, background
-2. summary_memories: key facts, decisions, summaries  
-3. episodic_memories: significant events or experiences
-4. task_memories: ongoing tasks, goals, or reminders
+2. episodic_memories: significant events or experiences
+3. task_memories: ongoing tasks, goals, or reminders
 
 For each item provide: title, content, importance (0-1), confidence (0-1).
 Only include items with confidence >= 0.6.

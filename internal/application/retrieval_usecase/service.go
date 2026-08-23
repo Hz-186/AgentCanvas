@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	defaultHybridWeight = 0.5
+	defaultVectorWeight = 0.5
 	defaultCandidateK   = 20
 )
 
@@ -108,7 +108,7 @@ func (s *Service) Search(ctx context.Context, req retrieval.RetrievalRequest) (r
 		}
 		return resp, err
 	}
-	kb, err := s.primaryKnowledgeBase(ctx, req.OwnerID, req.KBIDs)
+	kb, err := s.primaryKnowledgeBase(ctx, req.OwnerID, req.KnowledgeBaseIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -123,11 +123,11 @@ func (s *Service) Search(ctx context.Context, req retrieval.RetrievalRequest) (r
 		return nil, fmt.Errorf("embedding dimensions mismatch: got %d, want %d", len(req.QueryVector), kb.EmbeddingDimensions)
 	}
 	req.EmbeddingProfile = kb.EmbeddingProfile().Key()
-	if req.HybridWeight == 0 {
-		req.HybridWeight = kb.HybridWeight
+	if req.VectorWeight == 0 {
+		req.VectorWeight = kb.VectorWeight
 	}
-	if req.HybridWeight == 0 {
-		req.HybridWeight = defaultHybridWeight
+	if req.VectorWeight == 0 {
+		req.VectorWeight = defaultVectorWeight
 	}
 	resp, err := s.searchWithDiagnostics(ctx, req, nil, &plan)
 	if err != nil {
@@ -217,7 +217,7 @@ func (s *Service) rewriteSearch(ctx context.Context, req retrieval.RetrievalRequ
 		rewriteReq.Query = variant
 		if rewriteReq.Mode != retrieval.ModeKeyword {
 			rewriteReq.QueryVector = nil
-			kb, err := s.primaryKnowledgeBase(ctx, rewriteReq.OwnerID, rewriteReq.KBIDs)
+			kb, err := s.primaryKnowledgeBase(ctx, rewriteReq.OwnerID, rewriteReq.KnowledgeBaseIDs)
 			if err != nil {
 				continue
 			}
@@ -293,10 +293,10 @@ func (s *Service) fallbackRequest(ctx context.Context, req retrieval.RetrievalRe
 		}
 		return fallback, true, nil
 	case retrieval.ModeKeyword:
-		if s.embedder == nil || len(req.KBIDs) == 0 {
+		if s.embedder == nil || len(req.KnowledgeBaseIDs) == 0 {
 			return retrieval.RetrievalRequest{}, false, nil
 		}
-		kb, err := s.primaryKnowledgeBase(ctx, req.OwnerID, req.KBIDs)
+		kb, err := s.primaryKnowledgeBase(ctx, req.OwnerID, req.KnowledgeBaseIDs)
 		if err != nil || kb.EmbeddingProviderID == nil {
 			return retrieval.RetrievalRequest{}, false, err
 		}
@@ -334,7 +334,7 @@ func isBetterRecall(current, candidate *retrieval.RetrievalResponse) bool {
 
 func (s *Service) primaryKnowledgeBase(ctx context.Context, ownerID int64, kbIDs []int64) (*knowledge.KnowledgeBase, error) {
 	if len(kbIDs) == 0 {
-		return nil, fmt.Errorf("kb_ids are required")
+		return nil, fmt.Errorf("knowledge_base_ids are required")
 	}
 	kb, err := s.kbs.FindByID(ctx, ownerID, kbIDs[0])
 	if err != nil {
@@ -360,18 +360,18 @@ func (s *Service) primaryKnowledgeBase(ctx context.Context, ownerID int64, kbIDs
 }
 
 func (s *Service) backendFor(ctx context.Context, req retrieval.RetrievalRequest) (retrieval.Retriever, error) {
-	if len(req.KBIDs) == 0 {
+	if len(req.KnowledgeBaseIDs) == 0 {
 		if s.raw == nil {
 			return nil, fmt.Errorf("retriever is not configured")
 		}
 		return s.raw, nil
 	}
-	kb, err := s.kbs.FindByID(ctx, req.OwnerID, req.KBIDs[0])
+	kb, err := s.kbs.FindByID(ctx, req.OwnerID, req.KnowledgeBaseIDs[0])
 	if err != nil {
 		return nil, err
 	}
 	backendName := strings.TrimSpace(kb.RetrievalBackend)
-	for _, id := range req.KBIDs[1:] {
+	for _, id := range req.KnowledgeBaseIDs[1:] {
 		candidate, findErr := s.kbs.FindByID(ctx, req.OwnerID, id)
 		if findErr != nil {
 			return nil, findErr
@@ -398,7 +398,7 @@ func (s *Service) embedQuery(ctx context.Context, ownerID int64, kb *knowledge.K
 	if err != nil {
 		return nil, err
 	}
-	if provider.Status != providerdomain.StatusActive {
+	if !provider.Enabled {
 		return nil, fmt.Errorf("embedding provider is disabled")
 	}
 	model := strings.TrimSpace(kb.EmbeddingModel)
@@ -430,7 +430,7 @@ func (s *Service) rerank(ctx context.Context, ownerID int64, kb *knowledge.Knowl
 	if err != nil {
 		return nil, err
 	}
-	if provider.Status != providerdomain.StatusActive {
+	if !provider.Enabled {
 		return nil, fmt.Errorf("rerank provider is disabled")
 	}
 	model := strings.TrimSpace(kb.RerankModel)

@@ -71,9 +71,9 @@ func (i *RetryingInvalidator) process(ctx context.Context) {
 	}
 	for _, event := range events {
 		if err := i.next.Invalidate(ctx, event.OwnerID, event.Kind); err != nil {
-			attempts := event.Attempts + 1
-			delay := time.Second << min(attempts, 8)
-			_ = i.store.MarkFailed(ctx, event.ID, attempts, time.Now().UTC().Add(delay), err)
+			attemptCount := event.AttemptCount + 1
+			delay := time.Second << min(attemptCount, 8)
+			_ = i.store.MarkFailed(ctx, event.ID, attemptCount, time.Now().UTC().Add(delay), err)
 			continue
 		}
 		if err := i.store.MarkProcessed(ctx, event.ID); err != nil {

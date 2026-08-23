@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"agentcanvas/internal/domain"
 	workspacedomain "agentcanvas/internal/domain/workspace"
 	agenterrors "agentcanvas/internal/pkg/errors"
 )
@@ -55,14 +56,14 @@ func (s *Service) PrepareRunWorkspace(ctx context.Context, ownerID, projectID, r
 		mode = workspacedomain.KindWorktree
 	}
 	workspace := &workspacedomain.Workspace{
-		OwnerID: ownerID, ProjectID: projectID, RunID: runID, Kind: mode,
-		RepositoryRoot: projectItem.PrimaryPath, WorkspacePath: projectItem.PrimaryPath,
+		BaseModel: domain.BaseModel{OwnerID: ownerID}, ProjectID: projectID, RunID: runID, Kind: mode,
+		RepositoryRoot: projectItem.RepositoryRoot, WorkspacePath: projectItem.RepositoryRoot,
 		Status: workspacedomain.StatusCreating,
 	}
 	if parent != nil {
 		workspace.ParentWorkspaceID = &parent.ID
 	}
-	primaryPath, err := s.canonicalAllowedPath(projectItem.PrimaryPath)
+	primaryPath, err := s.canonicalAllowedPath(projectItem.RepositoryRoot)
 	if err != nil {
 		return s.failWorkspace(ctx, workspace, err)
 	}
@@ -71,7 +72,7 @@ func (s *Service) PrepareRunWorkspace(ctx context.Context, ownerID, projectID, r
 	if err != nil {
 		if mode == workspacedomain.KindWorktree {
 			workspace.BranchName = workspacedomain.BranchName(projectSlug, runID, task)
-			workspace.WorkspacePath = filepath.Join(projectItem.PrimaryPath, s.cfg.WorktreeDirName, workspacedomain.Slugify(fmt.Sprintf("%d-%s", runID, task)))
+			workspace.WorkspacePath = filepath.Join(projectItem.RepositoryRoot, s.cfg.WorktreeDirName, workspacedomain.Slugify(fmt.Sprintf("%d-%s", runID, task)))
 		}
 		return s.failWorkspace(ctx, workspace, err)
 	}
@@ -91,7 +92,7 @@ func (s *Service) PrepareRunWorkspace(ctx context.Context, ownerID, projectID, r
 			return s.failWorkspace(ctx, workspace, statusErr)
 		}
 		workspace.WorkspacePath, workspace.BranchName, workspace.BaseSHA, workspace.HeadSHA = root, status.Branch, status.Head, status.Head
-		workspace.Dirty, workspace.Unpushed, workspace.Status = status.Dirty, status.Unpushed, workspacedomain.StatusReady
+		workspace.Dirty, workspace.HasUnpushedCommits, workspace.Status = status.Dirty, status.HasUnpushedCommits, workspacedomain.StatusReady
 		if err := s.workspaces.Update(ctx, workspace); err != nil {
 			return nil, err
 		}
@@ -360,7 +361,7 @@ func (s *Service) RefreshGitStatus(ctx context.Context, item *workspacedomain.Wo
 	status, err := s.git.Status(ctx, item.WorkspacePath)
 	if err != nil {
 		now := time.Now().UTC()
-		item.Dirty, item.Unpushed, item.LastCheckedAt, item.ErrorMessage = true, true, &now, err.Error()
+		item.Dirty, item.HasUnpushedCommits, item.LastCheckedAt, item.ErrorMessage = true, true, &now, err.Error()
 		persistErr := s.workspaces.Update(ctx, item)
 		s.audit(ctx, item.OwnerID, "workspace.status_failed", "workspace", item.ID, workspaceAuditDetail(item))
 		return nil, errors.Join(err, persistErr)
@@ -370,21 +371,21 @@ func (s *Service) RefreshGitStatus(ctx context.Context, item *workspacedomain.Wo
 		item.BranchName = status.Branch
 	} else if status.Branch != item.BranchName {
 		err = fmt.Errorf("%w: workspace branch changed from %q to %q", agenterrors.ErrConflict, item.BranchName, status.Branch)
-		item.HeadSHA, item.Dirty, item.Unpushed, item.LastCheckedAt, item.ErrorMessage = status.Head, true, true, &now, err.Error()
+		item.HeadSHA, item.Dirty, item.HasUnpushedCommits, item.LastCheckedAt, item.ErrorMessage = status.Head, true, true, &now, err.Error()
 		persistErr := s.workspaces.Update(ctx, item)
 		s.audit(ctx, item.OwnerID, "workspace.status_failed", "workspace", item.ID, workspaceAuditDetail(item))
 		return nil, errors.Join(err, persistErr)
 	}
-	item.HeadSHA, item.Dirty, item.Unpushed, item.LastCheckedAt, item.ErrorMessage = status.Head, status.Dirty, status.Unpushed, &now, ""
+	item.HeadSHA, item.Dirty, item.HasUnpushedCommits, item.LastCheckedAt, item.ErrorMessage = status.Head, status.Dirty, status.HasUnpushedCommits, &now, ""
 	if item.Kind == workspacedomain.KindWorktree && item.BaseSHA != "" && item.HeadSHA != "" && item.HeadSHA != item.BaseSHA {
 		// A worktree branch without an upstream cannot prove that its commits
 		// are published. Treat any commit beyond the recorded base as unpushed.
-		item.Unpushed = true
+		item.HasUnpushedCommits = true
 	}
 	if item.Kind == workspacedomain.KindWorktree {
 		tree, listErr := s.registeredWorktree(ctx, item)
 		if listErr != nil {
-			item.Dirty, item.Unpushed, item.ErrorMessage = true, true, listErr.Error()
+			item.Dirty, item.HasUnpushedCommits, item.ErrorMessage = true, true, listErr.Error()
 			persistErr := s.workspaces.Update(ctx, item)
 			s.audit(ctx, item.OwnerID, "workspace.status_failed", "workspace", item.ID, workspaceAuditDetail(item))
 			return nil, errors.Join(listErr, persistErr)

@@ -7,9 +7,9 @@ import (
 	"time"
 
 	toolusecase "agentcanvas/internal/application/tool_usecase"
+	"agentcanvas/internal/domain"
 	"agentcanvas/internal/domain/tool"
 	agenterrors "agentcanvas/internal/pkg/errors"
-	"agentcanvas/internal/pkg/jsonutil"
 	"agentcanvas/internal/pkg/response"
 	"agentcanvas/internal/runtime/toolruntime"
 
@@ -17,14 +17,23 @@ import (
 )
 
 type ToolHandler struct {
-	service    *toolusecase.Service
-	policyRepo tool.PolicyRepository
-	packRepo   tool.PackRepository
-	mcpRepo    tool.MCPRepository
+	service  *toolusecase.Service
+	packRepo tool.PackRepository
+	mcpRepo  tool.MCPRepository
 }
 
-func NewToolHandler(service *toolusecase.Service, policyRepo tool.PolicyRepository, packRepo tool.PackRepository, mcpRepo tool.MCPRepository) *ToolHandler {
-	return &ToolHandler{service: service, policyRepo: policyRepo, packRepo: packRepo, mcpRepo: mcpRepo}
+type mcpServerRequest struct {
+	Name        string          `json:"name"`
+	Transport   string          `json:"transport"`
+	EndpointURL string          `json:"endpoint_url"`
+	Command     string          `json:"command"`
+	ArgsJSON    json.RawMessage `json:"args_json"`
+	EnvJSON     json.RawMessage `json:"env_json"`
+	Enabled     *bool           `json:"enabled"`
+}
+
+func NewToolHandler(service *toolusecase.Service, packRepo tool.PackRepository, mcpRepo tool.MCPRepository) *ToolHandler {
+	return &ToolHandler{service: service, packRepo: packRepo, mcpRepo: mcpRepo}
 }
 
 func (h *ToolHandler) List(c *gin.Context) {
@@ -123,84 +132,6 @@ func (h *ToolHandler) Test(c *gin.Context) {
 	response.OK(c, output)
 }
 
-func (h *ToolHandler) CreatePolicy(c *gin.Context) {
-	ownerID, ok := currentUserID(c)
-	if !ok {
-		response.Error(c, http.StatusUnauthorized, agenterrors.CodeUnauthorized, agenterrors.ErrUnauthorized.Error())
-		return
-	}
-	var item tool.ToolPolicy
-	if err := c.ShouldBindJSON(&item); err != nil {
-		writeAppError(c, err)
-		return
-	}
-	item.OwnerID = ownerID
-	item.ID = 0
-	if err := h.policyRepo.Create(c.Request.Context(), &item); err != nil {
-		writeAppError(c, err)
-		return
-	}
-	response.OK(c, item)
-}
-
-func (h *ToolHandler) GetPolicy(c *gin.Context) {
-	ownerID, id, ok := ownerAndID(c, "id")
-	if !ok {
-		return
-	}
-	item, err := h.policyRepo.FindByID(c.Request.Context(), ownerID, id)
-	if err != nil {
-		writeAppError(c, err)
-		return
-	}
-	response.OK(c, item)
-}
-
-func (h *ToolHandler) ListPolicies(c *gin.Context) {
-	ownerID, ok := currentUserID(c)
-	if !ok {
-		response.Error(c, http.StatusUnauthorized, agenterrors.CodeUnauthorized, agenterrors.ErrUnauthorized.Error())
-		return
-	}
-	items, err := h.policyRepo.List(c.Request.Context(), ownerID)
-	if err != nil {
-		writeAppError(c, err)
-		return
-	}
-	response.OK(c, items)
-}
-
-func (h *ToolHandler) UpdatePolicy(c *gin.Context) {
-	ownerID, id, ok := ownerAndID(c, "id")
-	if !ok {
-		return
-	}
-	var item tool.ToolPolicy
-	if err := c.ShouldBindJSON(&item); err != nil {
-		writeAppError(c, err)
-		return
-	}
-	item.ID = id
-	item.OwnerID = ownerID
-	if err := h.policyRepo.Update(c.Request.Context(), &item); err != nil {
-		writeAppError(c, err)
-		return
-	}
-	response.OK(c, item)
-}
-
-func (h *ToolHandler) DeletePolicy(c *gin.Context) {
-	ownerID, id, ok := ownerAndID(c, "id")
-	if !ok {
-		return
-	}
-	if err := h.policyRepo.Delete(c.Request.Context(), ownerID, id); err != nil {
-		writeAppError(c, err)
-		return
-	}
-	response.OK(c, gin.H{"success": true})
-}
-
 func (h *ToolHandler) CreatePack(c *gin.Context) {
 	ownerID, ok := currentUserID(c)
 	if !ok {
@@ -291,7 +222,7 @@ func (h *ToolHandler) AddPackItem(c *gin.Context) {
 		writeAppError(c, err)
 		return
 	}
-	item := tool.ToolPackItem{OwnerID: ownerID, PackID: packID, ToolID: req.ToolID}
+	item := tool.ToolPackItem{ImmutableModel: domain.ImmutableModel{OwnerID: ownerID}, ToolPackID: packID, ToolID: req.ToolID}
 	if err := h.packRepo.AddItem(c.Request.Context(), &item); err != nil {
 		writeAppError(c, err)
 		return
@@ -351,18 +282,22 @@ func (h *ToolHandler) CreateMCPServer(c *gin.Context) {
 		response.Error(c, http.StatusUnauthorized, agenterrors.CodeUnauthorized, agenterrors.ErrUnauthorized.Error())
 		return
 	}
-	var item tool.MCPServer
-	if err := c.ShouldBindJSON(&item); err != nil {
+	var req mcpServerRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
 		writeAppError(c, err)
 		return
 	}
-	if err := normalizeMCPServerRequest(&item); err != nil {
+	item := &tool.MCPServer{Name: req.Name, Transport: req.Transport, EndpointURL: req.EndpointURL, Command: req.Command, ArgsJSON: req.ArgsJSON, EnvJSON: req.EnvJSON, Enabled: true}
+	if req.Enabled != nil {
+		item.Enabled = *req.Enabled
+	}
+	if err := normalizeMCPServerRequest(item); err != nil {
 		writeAppError(c, err)
 		return
 	}
 	item.ID = 0
 	item.OwnerID = ownerID
-	if err := h.mcpRepo.CreateServer(c.Request.Context(), &item); err != nil {
+	if err := h.mcpRepo.CreateServer(c.Request.Context(), item); err != nil {
 		writeAppError(c, err)
 		return
 	}
@@ -406,7 +341,7 @@ func (h *ToolHandler) UpdateMCPServer(c *gin.Context) {
 		writeAppError(c, err)
 		return
 	}
-	var req tool.MCPServer
+	var req mcpServerRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		writeAppError(c, err)
 		return
@@ -429,8 +364,8 @@ func (h *ToolHandler) UpdateMCPServer(c *gin.Context) {
 	if len(req.EnvJSON) > 0 {
 		item.EnvJSON = req.EnvJSON
 	}
-	if req.Status == tool.MCPStatusActive || req.Status == tool.MCPStatusDisabled {
-		item.Status = req.Status
+	if req.Enabled != nil {
+		item.Enabled = *req.Enabled
 	}
 	if err := normalizeMCPServerRequest(item); err != nil {
 		writeAppError(c, err)
@@ -469,29 +404,27 @@ func (h *ToolHandler) RefreshMCPServer(c *gin.Context) {
 	discovered, err := client.Discover(c.Request.Context())
 	now := time.Now().UTC()
 	if err != nil {
-		item.LastError = err.Error()
+		item.DiscoveryError = err.Error()
 		_ = h.mcpRepo.UpdateServer(c.Request.Context(), item)
 		writeAppError(c, err)
 		return
 	}
-	cached := make([]tool.MCPToolCache, 0, len(discovered))
+	cached := make([]tool.MCPToolCacheEntry, 0, len(discovered))
 	for _, def := range discovered {
-		cached = append(cached, tool.MCPToolCache{
-			OwnerID:        ownerID,
-			ServerID:       id,
-			ToolName:       def.Name,
-			Description:    def.Description,
-			ParametersJSON: def.Parameters,
-			SchemaHash:     jsonutil.Hash(def.Parameters),
-			CachedAt:       now,
+		cached = append(cached, tool.MCPToolCacheEntry{
+			ImmutableModel:  domain.ImmutableModel{OwnerID: ownerID},
+			MCPServerID:     id,
+			ToolName:        def.Name,
+			Description:     def.Description,
+			InputSchemaJSON: def.Parameters,
 		})
 	}
 	if err := h.mcpRepo.ReplaceToolCache(c.Request.Context(), ownerID, id, cached); err != nil {
 		writeAppError(c, err)
 		return
 	}
-	item.LastError = ""
-	item.DiscoveredAt = &now
+	item.DiscoveryError = ""
+	item.ToolsDiscoveredAt = &now
 	if err := h.mcpRepo.UpdateServer(c.Request.Context(), item); err != nil {
 		writeAppError(c, err)
 		return

@@ -250,7 +250,7 @@ func (c *Client) ChunkDocument(ctx context.Context, method string, doc parser.Pa
 		}
 		chunks = append(chunks, chunker.Chunk{
 			Index: index, Content: item.Content, TokenCount: int(item.TokenCount), CharCount: int(item.CharCount),
-			SectionTitle: item.SectionTitle, PageNo: pageNo, Metadata: metadata,
+			SectionTitle: item.SectionTitle, PageNumber: pageNo, Metadata: metadata,
 		})
 	}
 	return chunks, nil

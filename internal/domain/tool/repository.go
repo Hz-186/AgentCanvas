@@ -15,14 +15,6 @@ type InvocationRepository interface {
 	ListByRun(ctx context.Context, ownerID, runID int64) ([]Invocation, error)
 }
 
-type PolicyRepository interface {
-	Create(ctx context.Context, item *ToolPolicy) error
-	FindByID(ctx context.Context, ownerID, id int64) (*ToolPolicy, error)
-	List(ctx context.Context, ownerID int64) ([]ToolPolicy, error)
-	Update(ctx context.Context, item *ToolPolicy) error
-	Delete(ctx context.Context, ownerID, id int64) error
-}
-
 type PackRepository interface {
 	CreatePack(ctx context.Context, item *ToolPack) error
 	FindPackByID(ctx context.Context, ownerID, id int64) (*ToolPack, error)
@@ -41,6 +33,6 @@ type MCPRepository interface {
 	ListServers(ctx context.Context, ownerID int64) ([]MCPServer, error)
 	UpdateServer(ctx context.Context, item *MCPServer) error
 	DeleteServer(ctx context.Context, ownerID, id int64) error
-	ReplaceToolCache(ctx context.Context, ownerID, serverID int64, tools []MCPToolCache) error
-	ListToolCache(ctx context.Context, ownerID, serverID int64) ([]MCPToolCache, error)
+	ReplaceToolCache(ctx context.Context, ownerID, serverID int64, tools []MCPToolCacheEntry) error
+	ListToolCache(ctx context.Context, ownerID, serverID int64) ([]MCPToolCacheEntry, error)
 }

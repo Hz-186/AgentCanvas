@@ -25,8 +25,6 @@ type MessageRepository interface {
 	ListByConversation(ctx context.Context, ownerID, conversationID int64) ([]Message, error)
 	ListActiveByConversation(ctx context.Context, ownerID, conversationID int64) ([]Message, error)
 	ListByRun(ctx context.Context, ownerID, runID int64) ([]Message, error)
-	CreateReferences(ctx context.Context, refs []MessageReference) error
-	ListReferencesByMessage(ctx context.Context, ownerID, messageID int64) ([]MessageReference, error)
 }
 
 type MessageSearchRequest struct {

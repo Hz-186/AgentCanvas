@@ -9,12 +9,27 @@ import (
 	"testing"
 	"time"
 
+	"agentcanvas/internal/domain"
 	"agentcanvas/internal/domain/contextresource"
 	"agentcanvas/internal/domain/memory"
 
 	gormmysql "gorm.io/driver/mysql"
 	"gorm.io/gorm"
 )
+
+func TestMemoryIndexScopeDoesNotBindProjectMemoryToSourceConversation(t *testing.T) {
+	conversationID, projectID := int64(7), int64(42)
+	item := &memory.Memory{SourceConversationID: &conversationID, SourceProjectID: &projectID, ScopeType: memory.ScopeProject, ScopeID: projectID}
+	_, indexedConversationID, indexedProjectID := memoryIndexScope(item)
+	if indexedConversationID != 0 || indexedProjectID != projectID {
+		t.Fatalf("project memory index scope = conversation:%d project:%d", indexedConversationID, indexedProjectID)
+	}
+	item.ScopeType, item.ScopeID = memory.ScopeUser, 1
+	indexedAgentID, indexedConversationID, indexedProjectID := memoryIndexScope(item)
+	if indexedAgentID != 0 || indexedConversationID != 0 || indexedProjectID != 0 {
+		t.Fatalf("user memory index scope used source fields: agent:%d conversation:%d project:%d", indexedAgentID, indexedConversationID, indexedProjectID)
+	}
+}
 
 func TestMemoryV2RepositoryIntegration(t *testing.T) {
 	dsn := os.Getenv("AGENTCANVAS_TEST_MYSQL_DSN")
@@ -36,17 +51,17 @@ func TestMemoryV2RepositoryIntegration(t *testing.T) {
 	cleanup()
 	t.Cleanup(cleanup)
 	oldSourceKey := "memory-v2-integration:old"
-	old := &memory.Memory{OwnerID: ownerID, MemoryType: memory.TypeProfile, MemoryLevel: memory.LevelLongTerm,
+	old := &memory.Memory{SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{OwnerID: ownerID}}, MemoryType: memory.TypeProfile, RetentionTier: memory.TierLongTerm,
 		Title: "response style", Content: "User prefers concise answers", Importance: 1, Source: "integration_test",
-		SourceKey: &oldSourceKey, ScopeType: memory.ScopeAgent, ScopeID: 7, Status: memory.StatusActive}
+		DeduplicationKey: &oldSourceKey, ScopeType: memory.ScopeAgent, ScopeID: 7, Status: memory.StatusActive}
 	if err := repository.Create(ctx, old); err != nil {
 		t.Fatal(err)
 	}
 
 	replacementSourceKey := "memory-v2-integration:replacement"
-	replacement := &memory.Memory{OwnerID: ownerID, MemoryType: memory.TypeProfile, MemoryLevel: memory.LevelLongTerm,
+	replacement := &memory.Memory{SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{OwnerID: ownerID}}, MemoryType: memory.TypeProfile, RetentionTier: memory.TierLongTerm,
 		Title: "response style", Content: "User prefers detailed answers", Importance: 1, Source: "approved_memory_proposal",
-		SourceKey: &replacementSourceKey, ScopeType: memory.ScopeAgent, ScopeID: 7, Status: memory.StatusActive}
+		DeduplicationKey: &replacementSourceKey, ScopeType: memory.ScopeAgent, ScopeID: 7, Status: memory.StatusActive}
 	if err := repository.Replace(ctx, ownerID, old.ID, replacement); err != nil {
 		t.Fatal(err)
 	}
@@ -55,8 +70,8 @@ func TestMemoryV2RepositoryIntegration(t *testing.T) {
 		t.Fatalf("invalid replacement lineage: previous=%+v replacement=%+v err=%v", previous, replacement, err)
 	}
 
-	replayed := &memory.Memory{OwnerID: ownerID, MemoryType: memory.TypeProfile, Content: replacement.Content,
-		SourceKey: &replacementSourceKey, ScopeType: memory.ScopeAgent, ScopeID: 7}
+	replayed := &memory.Memory{SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{OwnerID: ownerID}}, MemoryType: memory.TypeProfile, Content: replacement.Content,
+		DeduplicationKey: &replacementSourceKey, ScopeType: memory.ScopeAgent, ScopeID: 7}
 	if err := repository.Replace(ctx, ownerID, old.ID, replayed); err != nil {
 		t.Fatalf("replacement replay must be idempotent: %v", err)
 	}
@@ -76,13 +91,13 @@ func TestMemoryV2RepositoryIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	used, err := repository.FindByID(ctx, ownerID, replacement.ID)
-	if err != nil || used.AccessCount != 1 || used.LastUsedAt == nil {
+	if err != nil || used.RecallCount != 1 || used.LastRecalledAt == nil {
 		t.Fatalf("actual recall must atomically update lifecycle counters: memory=%+v err=%v", used, err)
 	}
 
 	decayBase := time.Now().UTC().Add(-72 * time.Hour)
 	if err := db.Model(&memory.Memory{}).Where("owner_id = ? AND id = ?", ownerID, replacement.ID).
-		Updates(map[string]any{"importance": 1.0, "created_at": decayBase, "last_used_at": decayBase, "last_decay_at": nil}).Error; err != nil {
+		Updates(map[string]any{"importance": 1.0, "created_at": decayBase, "last_recalled_at": decayBase, "last_decay_at": nil}).Error; err != nil {
 		t.Fatal(err)
 	}
 	if count, err := repository.UpdateDecayedImportance(ctx, ownerID, 0.1); err != nil || count != 1 {
@@ -106,7 +121,7 @@ func TestMemoryV2RepositoryIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	recallLogs := NewMemoryRecallLogRepository(db)
-	logItem := &memory.RecallLog{OwnerID: ownerID, AgentID: 7, RunID: 11, Query: "response style", CandidateJSON: json.RawMessage(`{"score":0.9}`), InjectedJSON: details, TokenCost: 8}
+	logItem := &memory.RecallLog{ImmutableModel: domain.ImmutableModel{OwnerID: ownerID}, AgentID: 7, RunID: 11, Query: "response style", CandidateJSON: json.RawMessage(`{"score":0.9}`), InjectedJSON: details, TokenCost: 8}
 	if err := recallLogs.Create(ctx, logItem); err != nil {
 		t.Fatal(err)
 	}

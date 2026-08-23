@@ -19,7 +19,6 @@ func NewOAuthRepository(db *gorm.DB) *OAuthRepository {
 func (r *OAuthRepository) Create(ctx context.Context, account *auth.OAuthAccount) error {
 	now := time.Now().UTC()
 	account.CreatedAt = now
-	account.UpdatedAt = now
 	return r.db.WithContext(ctx).Create(account).Error
 }
 

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"agentcanvas/internal/domain"
 	"agentcanvas/internal/domain/contextresource"
 	"agentcanvas/internal/domain/conversation"
 	"agentcanvas/internal/domain/memory"
@@ -59,17 +60,11 @@ func (r *ContextResourceRepository) Backfill(ctx context.Context, resourceType s
 		}
 	case contextresource.TypeLongTermMemory:
 		var items []memory.Memory
-		if err := r.db.WithContext(ctx).Where("id > ? AND deleted_at IS NULL AND status = ? AND conflict_flag = ? AND (expires_at IS NULL OR expires_at > ?) AND memory_level IN ?", afterID, memory.StatusActive, false, time.Now().UTC(), []string{memory.LevelShortTerm, memory.LevelLongTerm}).Order("id ASC").Limit(limit).Find(&items).Error; err != nil {
+		if err := r.db.WithContext(ctx).Where("id > ? AND deleted_at IS NULL AND status = ? AND has_conflict = ? AND (expires_at IS NULL OR expires_at > ?) AND retention_tier IN ?", afterID, memory.StatusActive, false, time.Now().UTC(), []string{memory.TierShortTerm, memory.TierLongTerm}).Order("id ASC").Limit(limit).Find(&items).Error; err != nil {
 			return result, err
 		}
 		for i := range items {
-			agentID, conversationID := int64(0), int64(0)
-			if items[i].ScopeType == memory.ScopeAgent {
-				agentID = items[i].ScopeID
-			}
-			if items[i].ConversationID != nil {
-				conversationID = *items[i].ConversationID
-			}
+			agentID, conversationID, _ := memoryIndexScope(&items[i])
 			candidates = append(candidates, candidate{ID: items[i].ID, OwnerID: items[i].OwnerID, AgentID: agentID, ConversationID: conversationID, Content: memoryContextText(items[i])})
 		}
 	case contextresource.TypeSkill:
@@ -143,10 +138,10 @@ func enqueueContextResource(ctx context.Context, tx *gorm.DB, ownerID, agentID, 
 	}
 	now := time.Now().UTC()
 	item := contextresource.OutboxItem{
-		OwnerID: ownerID, AgentID: agentID, ConversationID: conversationID, ResourceType: resourceType, ResourceID: strconv.FormatInt(resourceID, 10),
+		BaseModel: domain.BaseModel{OwnerID: ownerID, CreatedAt: now, UpdatedAt: now}, AgentID: agentID, ConversationID: conversationID, ResourceType: resourceType, ResourceID: strconv.FormatInt(resourceID, 10),
 		Operation: operation, ContentHash: contentHash, EmbeddingProviderID: profile.ProviderID, EmbeddingModel: profile.Model,
 		EmbeddingDimensions: profile.Dimensions, EmbeddingProfileHash: profile.Hash, Status: contextresource.StatusPending,
-		MaxAttempts: defaultContextOutboxMaxAttempts, AvailableAt: now, CreatedAt: now, UpdatedAt: now,
+		MaxAttempts: defaultContextOutboxMaxAttempts, AvailableAt: now,
 	}
 	return tx.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(&item).Error
 }
@@ -217,13 +212,13 @@ func (r *ContextResourceRepository) Retry(ctx context.Context, id int64, workerI
 			}
 			return err
 		}
-		attempts := item.AttemptCount + 1
+		attemptCount := item.AttemptCount + 1
 		status := contextresource.StatusPending
-		if item.MaxAttempts <= 0 || attempts >= item.MaxAttempts {
+		if item.MaxAttempts <= 0 || attemptCount >= item.MaxAttempts {
 			status = contextresource.StatusDeadLetter
 		}
 		return tx.Model(&contextresource.OutboxItem{}).Where("id = ?", id).Updates(map[string]any{
-			"status": status, "attempt_count": attempts, "available_at": next.UTC(), "last_error": message,
+			"status": status, "attempt_count": attemptCount, "available_at": next.UTC(), "last_error": message,
 			"locked_by": "", "locked_at": nil, "lease_expires_at": nil, "updated_at": now,
 		}).Error
 	})
@@ -250,38 +245,40 @@ func (r *ContextResourceRepository) LoadDocument(ctx context.Context, item conte
 		if err := r.db.WithContext(ctx).Where("owner_id = ? AND id = ? AND deleted_at IS NULL", item.OwnerID, id).First(&value).Error; err != nil {
 			return nilOrLoadError(err)
 		}
-		return document(item, reflectionContextText(value), 0, map[string]any{"status": value.Status, "scope": value.Scope, "mode": value.Mode}), nil
+		return document(item, reflectionContextText(value), 0, 0, map[string]any{"status": value.Status, "scope": value.Scope, "mode": value.Mode}), nil
 	case contextresource.TypeLongTermMemory:
 		var value memory.Memory
 		if err := r.db.WithContext(ctx).Where("owner_id = ? AND id = ? AND deleted_at IS NULL", item.OwnerID, id).First(&value).Error; err != nil {
 			return nilOrLoadError(err)
 		}
-		conversationID := int64(0)
-		if value.ConversationID != nil {
-			conversationID = *value.ConversationID
+		agentID, conversationID, projectID := memoryIndexScope(&value)
+		if value.ScopeType == memory.ScopeProject {
+			projectID = value.ScopeID
+			conversationID = 0
 		}
 		if !value.IsRecallable(time.Now().UTC()) {
 			return nilOrLoadError(gorm.ErrRecordNotFound)
 		}
-		return document(item, memoryContextText(value), conversationID, map[string]any{"memory_type": value.MemoryType, "memory_level": value.MemoryLevel, "scope_type": value.ScopeType, "scope_id": value.ScopeID, "status": value.Status, "conflict_flag": value.ConflictFlag, "importance": value.Importance}), nil
+		item.AgentID = agentID
+		return document(item, memoryContextText(value), conversationID, projectID, map[string]any{"memory_type": value.MemoryType, "retention_tier": value.RetentionTier, "scope_type": value.ScopeType, "scope_id": value.ScopeID, "status": value.Status, "has_conflict": value.HasConflict, "importance": value.Importance}), nil
 	case contextresource.TypeSkill:
 		var value skill.Skill
 		if err := r.db.WithContext(ctx).Where("owner_id = ? AND id = ? AND deleted_at IS NULL", item.OwnerID, id).First(&value).Error; err != nil {
 			return nilOrLoadError(err)
 		}
-		return document(item, skillContextText(value), 0, map[string]any{"status": value.Status, "skill_type": value.SkillType}), nil
+		return document(item, skillContextText(value), 0, 0, map[string]any{"enabled": value.Enabled, "skill_type": value.SkillType}), nil
 	case contextresource.TypeTool:
 		var value tool.Definition
 		if err := r.db.WithContext(ctx).Where("owner_id = ? AND id = ? AND deleted_at IS NULL", item.OwnerID, id).First(&value).Error; err != nil {
 			return nilOrLoadError(err)
 		}
-		return document(item, toolContextText(value), 0, map[string]any{"status": value.Status, "tool_type": value.ToolType}), nil
+		return document(item, toolContextText(value), 0, 0, map[string]any{"enabled": value.Enabled, "tool_type": value.ToolType}), nil
 	case contextresource.TypeConversationMessage:
 		var value conversation.Message
 		if err := r.db.WithContext(ctx).Where("owner_id = ? AND id = ? AND archived_at IS NULL", item.OwnerID, id).First(&value).Error; err != nil {
 			return nilOrLoadError(err)
 		}
-		return document(item, messageContextText(value), value.ConversationID, map[string]any{"role": value.Role, "created_at": value.CreatedAt.Unix()}), nil
+		return document(item, messageContextText(value), value.ConversationID, 0, map[string]any{"role": value.Role, "created_at": value.CreatedAt.Unix()}), nil
 	default:
 		return nil, fmt.Errorf("unsupported context resource type %q", item.ResourceType)
 	}
@@ -294,8 +291,8 @@ func nilOrLoadError(err error) (*contextresource.Document, error) {
 	return nil, err
 }
 
-func document(item contextresource.OutboxItem, content string, conversationID int64, metadata map[string]any) *contextresource.Document {
-	return &contextresource.Document{OwnerID: item.OwnerID, AgentID: item.AgentID, ResourceType: item.ResourceType,
+func document(item contextresource.OutboxItem, content string, conversationID, projectID int64, metadata map[string]any) *contextresource.Document {
+	return &contextresource.Document{OwnerID: item.OwnerID, AgentID: item.AgentID, ProjectID: projectID, ResourceType: item.ResourceType,
 		ResourceID: item.ResourceID, Content: content, ContentHash: contextresource.HashContent(content), ConversationID: conversationID, Metadata: metadata}
 }
 
@@ -308,7 +305,7 @@ func memoryContextText(item memory.Memory) string {
 }
 
 func skillContextText(item skill.Skill) string {
-	return strings.Join([]string{item.Name, item.Description, string(item.TagsJSON), item.ContentMD}, "\n")
+	return strings.Join([]string{item.Name, item.Description, string(item.TagsJSON), item.ContentMarkdown}, "\n")
 }
 
 func toolContextText(item tool.Definition) string {

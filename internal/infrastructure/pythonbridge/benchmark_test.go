@@ -168,9 +168,9 @@ func indexBenchmarkChunks(ctx context.Context, store *esretrieval.Store, chunks 
 		hash := sha256.Sum256([]byte(chunk.Content))
 		now := time.Now().UTC()
 		documents = append(documents, retrieval.ChunkIndexDocument{
-			OwnerID: 1, KBID: kbID, DocumentID: kbID, ChunkID: kbID*1000 + int64(index+1), ChunkIndex: index,
+			OwnerID: 1, KnowledgeBaseID: kbID, DocumentID: kbID, ChunkID: kbID*1000 + int64(index+1), ChunkIndex: index,
 			DocumentName: "python-bridge-benchmark", FileType: "md", Content: chunk.Content,
-			ContentHash: fmt.Sprintf("%x", hash[:]), Enabled: true, PageNo: chunk.PageNo, TokenCount: chunk.TokenCount,
+			ContentHash: fmt.Sprintf("%x", hash[:]), Enabled: true, PageNumber: chunk.PageNumber, TokenCount: chunk.TokenCount,
 			Metadata: chunk.Metadata, CreatedAt: now, UpdatedAt: now,
 		})
 	}
@@ -187,7 +187,7 @@ func elasticsearchMetrics(ctx context.Context, store *esretrieval.Store, chunks 
 	var recall, precision float64
 	measured := 0
 	for _, query := range queries {
-		response, err := store.Search(ctx, retrieval.RetrievalRequest{OwnerID: 1, KBIDs: []int64{kbID}, Query: query.Term, TopK: 3, Mode: retrieval.ModeKeyword})
+		response, err := store.Search(ctx, retrieval.RetrievalRequest{OwnerID: 1, KnowledgeBaseIDs: []int64{kbID}, Query: query.Term, TopK: 3, Mode: retrieval.ModeKeyword})
 		if err != nil {
 			return 0, 0, err
 		}

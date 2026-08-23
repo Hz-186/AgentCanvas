@@ -50,6 +50,8 @@ type GitService interface {
 
 func (s *Service) ConfigureAudits(repository audit.Repository) { s.audits = repository }
 
+func (s *Service) Enabled() bool { return s != nil && s.cfg.Enabled }
+
 func (s *Service) audit(ctx context.Context, ownerID int64, action, resourceType string, resourceID int64, detail map[string]any) {
 	if s.audits == nil || ownerID <= 0 {
 		return
@@ -58,26 +60,22 @@ func (s *Service) audit(ctx context.Context, ownerID int64, action, resourceType
 }
 
 type CreateProjectRequest struct {
-	Slug          string `json:"slug"`
-	Name          string `json:"name"`
-	Description   string `json:"description"`
-	Icon          string `json:"icon"`
-	Color         string `json:"color"`
-	PrimaryPath   string `json:"primary_path"`
-	InitializeGit *bool  `json:"initialize_git,omitempty"`
+	Slug           string `json:"slug"`
+	Name           string `json:"name"`
+	Description    string `json:"description"`
+	RepositoryRoot string `json:"repository_root"`
+	InitializeGit  *bool  `json:"initialize_git,omitempty"`
 }
 
 type UpdateProjectRequest struct {
 	Name        *string `json:"name"`
 	Description *string `json:"description"`
-	Icon        *string `json:"icon"`
-	Color       *string `json:"color"`
 }
 
 type AddFolderRequest struct {
-	Path      string `json:"path"`
-	Label     string `json:"label"`
-	IsPrimary bool   `json:"is_primary"`
+	Path             string `json:"path"`
+	Label            string `json:"label"`
+	IsRepositoryRoot bool   `json:"is_repository_root"`
 }
 
 func NewService(projects projectdomain.Repository, workspaces workspacedomain.Repository, gitService GitService, cfg Config) *Service {

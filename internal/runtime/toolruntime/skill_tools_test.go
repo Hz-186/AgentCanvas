@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"agentcanvas/internal/domain"
 	"agentcanvas/internal/domain/skill"
 
 	"gorm.io/gorm"
@@ -42,7 +43,7 @@ func (r *fakeSkillRepo) SoftDelete(context.Context, int64, int64) error { return
 
 func TestSkillLoadToolReadsInlineSkill(t *testing.T) {
 	repo := &fakeSkillRepo{items: map[int64]*skill.Skill{
-		1: {ID: 1, OwnerID: 1, Name: "review", Description: "review repo", SourceType: skill.SourceInline, ContentMD: "# Skill", Status: skill.StatusActive},
+		1: {SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 1, OwnerID: 1}}, Name: "review", Description: "review repo", SourceType: skill.SourceInline, ContentMarkdown: "# Skill", Enabled: skill.Enabled},
 	}}
 	tool := SkillLoadTool{Repository: repo, AllowedSkillIDs: []int64{1}, MaxContentBytes: 1024}
 	result, err := tool.Execute(context.Background(), ToolRunContext{OwnerID: 1}, json.RawMessage(`{"skill_id":1}`))
@@ -53,14 +54,14 @@ func TestSkillLoadToolReadsInlineSkill(t *testing.T) {
 	if err := json.Unmarshal(result.ContentJSON, &output); err != nil {
 		t.Fatal(err)
 	}
-	if output["name"] != "review" || output["content_md"] != "# Skill" {
+	if output["name"] != "review" || output["content_markdown"] != "# Skill" {
 		t.Fatalf("unexpected output: %+v", output)
 	}
 }
 
 func TestSkillLoadToolRejectsUnboundSkill(t *testing.T) {
 	repo := &fakeSkillRepo{items: map[int64]*skill.Skill{
-		1: {ID: 1, OwnerID: 1, Name: "review", Description: "review repo", SourceType: skill.SourceInline, ContentMD: "# Skill", Status: skill.StatusActive},
+		1: {SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 1, OwnerID: 1}}, Name: "review", Description: "review repo", SourceType: skill.SourceInline, ContentMarkdown: "# Skill", Enabled: skill.Enabled},
 	}}
 	tool := SkillLoadTool{Repository: repo, AllowedSkillIDs: []int64{2}}
 	if _, err := tool.Execute(context.Background(), ToolRunContext{OwnerID: 1}, json.RawMessage(`{"skill_id":1}`)); err == nil {
@@ -75,7 +76,7 @@ func TestSkillLoadToolReadsLocalPathSkill(t *testing.T) {
 		t.Fatal(err)
 	}
 	repo := &fakeSkillRepo{items: map[int64]*skill.Skill{
-		1: {ID: 1, OwnerID: 1, Name: "local", Description: "local skill", SourceType: skill.SourceLocalPath, BundlePath: dir, EntryFile: "SKILL.md", Status: skill.StatusActive},
+		1: {SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 1, OwnerID: 1}}, Name: "local", Description: "local skill", SourceType: skill.SourceLocalPath, BundlePath: dir, EntryFile: "SKILL.md", Enabled: skill.Enabled},
 	}}
 	tool := SkillLoadTool{Repository: repo, AllowedSkillIDs: []int64{1}, SkillRoot: dir, MaxContentBytes: 1024}
 	result, err := tool.Execute(context.Background(), ToolRunContext{OwnerID: 1}, json.RawMessage(`{"skill_id":1}`))
@@ -86,15 +87,15 @@ func TestSkillLoadToolReadsLocalPathSkill(t *testing.T) {
 	if err := json.Unmarshal(result.ContentJSON, &output); err != nil {
 		t.Fatal(err)
 	}
-	if output["content_md"] != "local content" {
+	if output["content_markdown"] != "local content" {
 		t.Fatalf("unexpected output: %+v", output)
 	}
 }
 
 func TestSkillSearchToolReturnsRankedMatches(t *testing.T) {
 	tool := SkillSearchTool{Skills: []skill.Skill{
-		{ID: 1, Name: "repo-review", Description: "review repository changes"},
-		{ID: 2, Name: "doc-writer", Description: "write documentation"},
+		{SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 1}}, Name: "repo-review", Description: "review repository changes"},
+		{SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 2}}, Name: "doc-writer", Description: "write documentation"},
 	}, Limit: 3}
 	result, err := tool.Execute(context.Background(), ToolRunContext{OwnerID: 1}, json.RawMessage(`{"goal":"review repo changes"}`))
 	if err != nil {

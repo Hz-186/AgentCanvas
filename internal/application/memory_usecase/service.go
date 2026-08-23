@@ -32,38 +32,41 @@ func NewServiceWithCacheAndRetriever(memories memory.Repository, cache memory.Ca
 }
 
 type CreateMemoryRequest struct {
-	ConversationID *int64          `json:"conversation_id"`
-	ScopeType      string          `json:"scope_type"`
-	ScopeID        int64           `json:"scope_id"`
-	MemoryType     string          `json:"memory_type" binding:"required"`
-	Title          string          `json:"title"`
-	Content        string          `json:"content" binding:"required"`
-	Importance     float64         `json:"importance"`
-	Source         string          `json:"source"`
-	MetadataJSON   json.RawMessage `json:"metadata_json"`
+	SourceConversationID *int64          `json:"source_conversation_id"`
+	SourceProjectID      *int64          `json:"source_project_id"`
+	ScopeType            string          `json:"scope_type"`
+	ScopeID              int64           `json:"scope_id"`
+	MemoryType           string          `json:"memory_type" binding:"required"`
+	Title                string          `json:"title"`
+	Content              string          `json:"content" binding:"required"`
+	Importance           float64         `json:"importance"`
+	Source               string          `json:"source"`
+	MetadataJSON         json.RawMessage `json:"metadata_json"`
 }
 
 type UpdateMemoryRequest struct {
-	ConversationID *int64          `json:"conversation_id"`
-	ScopeType      string          `json:"scope_type"`
-	ScopeID        *int64          `json:"scope_id"`
-	MemoryType     string          `json:"memory_type"`
-	Title          string          `json:"title"`
-	Content        string          `json:"content"`
-	Importance     *float64        `json:"importance"`
-	Source         string          `json:"source"`
-	MetadataJSON   json.RawMessage `json:"metadata_json"`
+	SourceConversationID *int64          `json:"source_conversation_id"`
+	SourceProjectID      *int64          `json:"source_project_id"`
+	ScopeType            string          `json:"scope_type"`
+	ScopeID              *int64          `json:"scope_id"`
+	MemoryType           string          `json:"memory_type"`
+	Title                string          `json:"title"`
+	Content              string          `json:"content"`
+	Importance           *float64        `json:"importance"`
+	Source               string          `json:"source"`
+	MetadataJSON         json.RawMessage `json:"metadata_json"`
 }
 
 type ListMemoryFilter struct {
-	MemoryTypes    []string
-	ConversationID *int64
-	Statuses       []string
-	ScopeTypes     []string
-	ScopeID        *int64
-	Sources        []string
-	Limit          int
-	Offset         int
+	MemoryTypes          []string
+	SourceConversationID *int64
+	SourceProjectID      *int64
+	Statuses             []string
+	ScopeTypes           []string
+	ScopeID              *int64
+	Sources              []string
+	Limit                int
+	Offset               int
 }
 
 func (s *Service) ConfigureCommands(commands *MemoryCommandService) {
@@ -102,7 +105,7 @@ func (s *Service) Create(ctx context.Context, ownerID int64, req CreateMemoryReq
 	if importance < 0 || importance > 1 {
 		return nil, agenterrors.ErrInvalidInput
 	}
-	result, err := s.commands.Execute(ctx, memory.WriteRequest{OwnerID: ownerID, ConversationID: req.ConversationID,
+	result, err := s.commands.Execute(ctx, memory.WriteRequest{OwnerID: ownerID, SourceConversationID: req.SourceConversationID, SourceProjectID: req.SourceProjectID,
 		MemoryType: strings.TrimSpace(req.MemoryType), Title: strings.TrimSpace(req.Title), Content: strings.TrimSpace(req.Content),
 		Importance: importance, Source: manualMemorySource(req.Source), MetadataJSON: req.MetadataJSON, ScopeType: req.ScopeType, ScopeID: req.ScopeID, Reason: "manual create"})
 	if err != nil {
@@ -132,11 +135,11 @@ func (s *Service) List(ctx context.Context, ownerID int64, memoryTypes []string,
 func (s *Service) ListFiltered(ctx context.Context, ownerID int64, filter ListMemoryFilter) ([]memory.Memory, error) {
 	if repository, ok := s.memories.(memory.FilteredRepository); ok {
 		return repository.ListFiltered(ctx, ownerID, memory.ListFilter{
-			MemoryTypes: filter.MemoryTypes, ConversationID: filter.ConversationID, Statuses: filter.Statuses,
+			MemoryTypes: filter.MemoryTypes, SourceConversationID: filter.SourceConversationID, SourceProjectID: filter.SourceProjectID, Statuses: filter.Statuses,
 			ScopeTypes: filter.ScopeTypes, ScopeID: filter.ScopeID, Sources: filter.Sources, Limit: filter.Limit, Offset: filter.Offset,
 		})
 	}
-	items, err := s.memories.List(ctx, ownerID, filter.MemoryTypes, filter.ConversationID, 100, 0)
+	items, err := s.memories.List(ctx, ownerID, filter.MemoryTypes, filter.SourceConversationID, 100, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -147,6 +150,9 @@ func (s *Service) ListFiltered(ctx context.Context, ownerID int64, filter ListMe
 			continue
 		}
 		if filter.ScopeID != nil && item.ScopeID != *filter.ScopeID {
+			continue
+		}
+		if filter.SourceProjectID != nil && (item.SourceProjectID == nil || *item.SourceProjectID != *filter.SourceProjectID) {
 			continue
 		}
 		filtered = append(filtered, item)
@@ -230,8 +236,11 @@ func (s *Service) Update(ctx context.Context, ownerID, id int64, req UpdateMemor
 	if err != nil {
 		return nil, err
 	}
-	if req.ConversationID != nil {
-		item.ConversationID = req.ConversationID
+	if req.SourceConversationID != nil {
+		item.SourceConversationID = req.SourceConversationID
+	}
+	if req.SourceProjectID != nil {
+		item.SourceProjectID = req.SourceProjectID
 	}
 	if value := strings.TrimSpace(req.ScopeType); value != "" {
 		item.ScopeType = value
@@ -256,7 +265,7 @@ func (s *Service) Update(ctx context.Context, ownerID, id int64, req UpdateMemor
 	if len(req.MetadataJSON) > 0 {
 		item.MetadataJSON = req.MetadataJSON
 	}
-	result, err := s.commands.Execute(ctx, memory.WriteRequest{OwnerID: ownerID, ConversationID: item.ConversationID, MemoryID: item.ID,
+	result, err := s.commands.Execute(ctx, memory.WriteRequest{OwnerID: ownerID, SourceConversationID: item.SourceConversationID, SourceProjectID: item.SourceProjectID, MemoryID: item.ID,
 		MemoryType: item.MemoryType, Title: item.Title, Content: item.Content, Importance: item.Importance, Source: manualMemorySource(item.Source), MetadataJSON: item.MetadataJSON,
 		ScopeType: item.ScopeType, ScopeID: item.ScopeID, Status: item.Status, SupersedesID: item.SupersedesID, Reason: "manual update"})
 	if err != nil {

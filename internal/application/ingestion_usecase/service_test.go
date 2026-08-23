@@ -1,6 +1,7 @@
 package ingestion_usecase
 
 import (
+	"agentcanvas/internal/domain"
 	"context"
 	"encoding/json"
 	"errors"
@@ -38,13 +39,11 @@ func TestProcessJobViaLivePythonBridge(t *testing.T) {
 	t.Cleanup(func() { _ = bridge.Close() })
 	registry := chunker.NewDefaultRegistry()
 	registry.Register(pythonbridgeinfra.NewChunker(bridge, "python:langchain_recursive"))
-	kbs := &fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{10: {
-		ID: 10, OwnerID: 1, RetrievalMode: knowledge.RetrievalModeKeyword,
+	kbs := &fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{10: {SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 10, OwnerID: 1}}, RetrievalMode: knowledge.RetrievalModeKeyword,
 		ChunkMethod: "python:langchain_recursive", ChunkSize: 12, ChunkOverlap: 2,
 	}}}
-	docs := &fakeDocumentRepo{items: map[int64]*knowledge.Document{20: {
-		ID: 20, OwnerID: 1, KBID: 10, Name: "Bridge", OriginalFilename: "bridge.md", FileType: "md",
-		ObjectKey: "raw/bridge.md", ParserStatus: knowledge.DocumentStatusPending, Enabled: true,
+	docs := &fakeDocumentRepo{items: map[int64]*knowledge.Document{20: {SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 20, OwnerID: 1}}, KnowledgeBaseID: 10, Name: "Bridge", OriginalFilename: "bridge.md", FileType: "md",
+		StorageObjectKey: "raw/bridge.md", IngestionStatus: knowledge.DocumentStatusPending, Enabled: true,
 	}}}
 	chunks, indexer := &fakeChunkRepo{}, &fakeIndexer{}
 	service := NewService(
@@ -52,10 +51,10 @@ func TestProcessJobViaLivePythonBridge(t *testing.T) {
 		fakeReadStorage{objects: map[string]string{"raw/bridge.md": "# Bridge\n\n第一段内容。第二段内容。"}},
 		parser.NewTextParser(), registry, indexer, nil, nil, "test_chunks",
 	)
-	if err := service.ProcessJob(context.Background(), &knowledge.IngestionJob{ID: 30, OwnerID: 1, KBID: 10, DocumentID: 20}); err != nil {
+	if err := service.ProcessJob(context.Background(), &knowledge.IngestionJob{BaseModel: domain.BaseModel{ID: 30, OwnerID: 1}, KnowledgeBaseID: 10, DocumentID: 20}); err != nil {
 		t.Fatalf("ProcessJob() error = %v", err)
 	}
-	if docs.items[20].ParserStatus != knowledge.DocumentStatusCompleted || len(chunks.byDocument[20]) == 0 || len(indexer.indexed) == 0 {
+	if docs.items[20].IngestionStatus != knowledge.DocumentStatusCompleted || len(chunks.byDocument[20]) == 0 || len(indexer.indexed) == 0 {
 		t.Fatalf("Python ingestion did not complete: doc=%+v chunks=%+v indexed=%+v", docs.items[20], chunks.byDocument[20], indexer.indexed)
 	}
 	var metadata map[string]any
@@ -69,25 +68,23 @@ func TestProcessJobParsesChunksIndexesAndCompletes(t *testing.T) {
 	kbs := &fakeKBRepo{
 		items: map[int64]*knowledge.KnowledgeBase{
 			10: {
-				ID:           10,
-				OwnerID:      1,
-				ChunkMethod:  knowledge.ChunkMethodRecursive,
-				ChunkSize:    20,
-				ChunkOverlap: 0,
+				SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 10, OwnerID: 1}},
+				ChunkMethod:     knowledge.ChunkMethodRecursive,
+				ChunkSize:       20,
+				ChunkOverlap:    0,
 			},
 		},
 	}
 	docs := &fakeDocumentRepo{
 		items: map[int64]*knowledge.Document{
 			20: {
-				ID:               20,
-				OwnerID:          1,
-				KBID:             10,
+				SoftDeleteModel:  domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 20, OwnerID: 1}},
+				KnowledgeBaseID:  10,
 				Name:             "Guide",
 				OriginalFilename: "guide.md",
 				FileType:         "md",
-				ObjectKey:        "raw/guide.md",
-				ParserStatus:     knowledge.DocumentStatusPending,
+				StorageObjectKey: "raw/guide.md",
+				IngestionStatus:  knowledge.DocumentStatusPending,
 				Enabled:          true,
 			},
 		},
@@ -115,18 +112,17 @@ func TestProcessJobParsesChunksIndexesAndCompletes(t *testing.T) {
 	)
 
 	err := service.ProcessJob(ctx, &knowledge.IngestionJob{
-		ID:         30,
-		OwnerID:    1,
-		KBID:       10,
-		DocumentID: 20,
+		BaseModel:       domain.BaseModel{ID: 30, OwnerID: 1},
+		KnowledgeBaseID: 10,
+		DocumentID:      20,
 	})
 	if err != nil {
 		t.Fatalf("ProcessJob() error = %v", err)
 	}
 
 	doc := docs.items[20]
-	if doc.ParserStatus != knowledge.DocumentStatusCompleted {
-		t.Fatalf("ParserStatus = %q, want completed", doc.ParserStatus)
+	if doc.IngestionStatus != knowledge.DocumentStatusCompleted {
+		t.Fatalf("ParserStatus = %q, want completed", doc.IngestionStatus)
 	}
 	if doc.ChunkCount == 0 {
 		t.Fatal("ChunkCount = 0, want chunks")
@@ -152,12 +148,6 @@ func TestProcessJobParsesChunksIndexesAndCompletes(t *testing.T) {
 		}
 	}
 	for _, chunk := range chunks.byDocument[20] {
-		if chunk.ESIndex != "test_chunks" {
-			t.Fatalf("ESIndex = %q, want test_chunks", chunk.ESIndex)
-		}
-		if chunk.ESDocID == "" {
-			t.Fatal("ESDocID is empty")
-		}
 		var metadata map[string]any
 		if err := json.Unmarshal([]byte(chunk.MetadataJSON), &metadata); err != nil {
 			t.Fatalf("MetadataJSON = %q: %v", chunk.MetadataJSON, err)
@@ -176,24 +166,22 @@ func TestProcessJobReplacesExistingChunksIdempotently(t *testing.T) {
 	kbs := &fakeKBRepo{
 		items: map[int64]*knowledge.KnowledgeBase{
 			10: {
-				ID:           10,
-				OwnerID:      1,
-				ChunkSize:    20,
-				ChunkOverlap: 0,
+				SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 10, OwnerID: 1}},
+				ChunkSize:       20,
+				ChunkOverlap:    0,
 			},
 		},
 	}
 	docs := &fakeDocumentRepo{
 		items: map[int64]*knowledge.Document{
 			20: {
-				ID:               20,
-				OwnerID:          1,
-				KBID:             10,
+				SoftDeleteModel:  domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 20, OwnerID: 1}},
+				KnowledgeBaseID:  10,
 				Name:             "Guide",
 				OriginalFilename: "guide.md",
 				FileType:         "md",
-				ObjectKey:        "raw/guide.md",
-				ParserStatus:     knowledge.DocumentStatusCompleted,
+				StorageObjectKey: "raw/guide.md",
+				IngestionStatus:  knowledge.DocumentStatusCompleted,
 				ChunkCount:       2,
 			},
 		},
@@ -201,8 +189,8 @@ func TestProcessJobReplacesExistingChunksIdempotently(t *testing.T) {
 	chunks := &fakeChunkRepo{
 		byDocument: map[int64][]knowledge.DocumentChunk{
 			20: {
-				{ID: 1, OwnerID: 1, KBID: 10, DocumentID: 20, ChunkIndex: 0, Content: "old one"},
-				{ID: 2, OwnerID: 1, KBID: 10, DocumentID: 20, ChunkIndex: 1, Content: "old two"},
+				{ImmutableModel: domain.ImmutableModel{ID: 1, OwnerID: 1}, KnowledgeBaseID: 10, DocumentID: 20, ChunkIndex: 0, Content: "old one"},
+				{ImmutableModel: domain.ImmutableModel{ID: 2, OwnerID: 1}, KnowledgeBaseID: 10, DocumentID: 20, ChunkIndex: 1, Content: "old two"},
 			},
 		},
 	}
@@ -225,10 +213,9 @@ func TestProcessJobReplacesExistingChunksIdempotently(t *testing.T) {
 	)
 
 	err := service.ProcessJob(ctx, &knowledge.IngestionJob{
-		ID:         30,
-		OwnerID:    1,
-		KBID:       10,
-		DocumentID: 20,
+		BaseModel:       domain.BaseModel{ID: 30, OwnerID: 1},
+		KnowledgeBaseID: 10,
+		DocumentID:      20,
 	})
 	if err != nil {
 		t.Fatalf("ProcessJob() error = %v", err)
@@ -252,20 +239,19 @@ func TestProcessJobReplacesExistingChunksIdempotently(t *testing.T) {
 func TestProcessNextMarksJobAndDocumentFailed(t *testing.T) {
 	ctx := context.Background()
 	kbs := &fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{
-		10: {ID: 10, OwnerID: 1, ChunkSize: 20},
+		10: {SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 10, OwnerID: 1}}, ChunkSize: 20},
 	}}
 	docs := &fakeDocumentRepo{items: map[int64]*knowledge.Document{
 		20: {
-			ID:               20,
-			OwnerID:          1,
-			KBID:             10,
+			SoftDeleteModel:  domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 20, OwnerID: 1}},
+			KnowledgeBaseID:  10,
 			OriginalFilename: "guide.md",
-			ObjectKey:        "missing.md",
-			ParserStatus:     knowledge.DocumentStatusPending,
+			StorageObjectKey: "missing.md",
+			IngestionStatus:  knowledge.DocumentStatusPending,
 		},
 	}}
 	jobs := &fakeJobRepo{
-		next: &knowledge.IngestionJob{ID: 30, OwnerID: 1, KBID: 10, DocumentID: 20},
+		next: &knowledge.IngestionJob{BaseModel: domain.BaseModel{ID: 30, OwnerID: 1}, KnowledgeBaseID: 10, DocumentID: 20},
 	}
 	service := NewService(
 		kbs,
@@ -292,10 +278,10 @@ func TestProcessNextMarksJobAndDocumentFailed(t *testing.T) {
 	if jobs.failed[30] == "" {
 		t.Fatal("job was not marked failed")
 	}
-	if docs.items[20].ParserStatus != knowledge.DocumentStatusFailed {
-		t.Fatalf("ParserStatus = %q, want failed", docs.items[20].ParserStatus)
+	if docs.items[20].IngestionStatus != knowledge.DocumentStatusFailed {
+		t.Fatalf("ParserStatus = %q, want failed", docs.items[20].IngestionStatus)
 	}
-	if docs.items[20].ParserError == "" {
+	if docs.items[20].IngestionError == "" {
 		t.Fatal("ParserError is empty")
 	}
 }
@@ -303,26 +289,24 @@ func TestProcessNextMarksJobAndDocumentFailed(t *testing.T) {
 func TestProcessNextRetriesJobBeforeMaxAttempts(t *testing.T) {
 	ctx := context.Background()
 	kbs := &fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{
-		10: {ID: 10, OwnerID: 1, ChunkSize: 20},
+		10: {SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 10, OwnerID: 1}}, ChunkSize: 20},
 	}}
 	docs := &fakeDocumentRepo{items: map[int64]*knowledge.Document{
 		20: {
-			ID:               20,
-			OwnerID:          1,
-			KBID:             10,
+			SoftDeleteModel:  domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 20, OwnerID: 1}},
+			KnowledgeBaseID:  10,
 			OriginalFilename: "guide.md",
-			ObjectKey:        "missing.md",
-			ParserStatus:     knowledge.DocumentStatusPending,
+			StorageObjectKey: "missing.md",
+			IngestionStatus:  knowledge.DocumentStatusPending,
 		},
 	}}
 	jobs := &fakeJobRepo{
 		next: &knowledge.IngestionJob{
-			ID:           30,
-			OwnerID:      1,
-			KBID:         10,
-			DocumentID:   20,
-			AttemptCount: 1,
-			MaxAttempts:  3,
+			BaseModel:       domain.BaseModel{ID: 30, OwnerID: 1},
+			KnowledgeBaseID: 10,
+			DocumentID:      20,
+			AttemptCount:    1,
+			MaxAttempts:     3,
 		},
 	}
 	service := NewService(
@@ -353,22 +337,22 @@ func TestProcessNextRetriesJobBeforeMaxAttempts(t *testing.T) {
 	if jobs.failed[30] != "" {
 		t.Fatalf("job was marked failed before max attempts: %q", jobs.failed[30])
 	}
-	if docs.items[20].ParserStatus == knowledge.DocumentStatusFailed {
+	if docs.items[20].IngestionStatus == knowledge.DocumentStatusFailed {
 		t.Fatal("document was marked failed before max attempts")
 	}
-	if docs.items[20].ParserError == "" {
+	if docs.items[20].IngestionError == "" {
 		t.Fatal("ParserError is empty")
 	}
 }
 
 func TestProcessNextReturnsJobStatePersistenceError(t *testing.T) {
 	jobs := &fakeJobRepo{
-		next:          &knowledge.IngestionJob{ID: 30, OwnerID: 1, KBID: 10, DocumentID: 20},
+		next:          &knowledge.IngestionJob{BaseModel: domain.BaseModel{ID: 30, OwnerID: 1}, KnowledgeBaseID: 10, DocumentID: 20},
 		markFailedErr: errors.New("persist failed state"),
 	}
 	service := NewService(
-		&fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{10: {ID: 10, OwnerID: 1, ChunkSize: 20}}},
-		&fakeDocumentRepo{items: map[int64]*knowledge.Document{20: {ID: 20, OwnerID: 1, KBID: 10, OriginalFilename: "guide.md", ObjectKey: "missing.md"}}},
+		&fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{10: {SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 10, OwnerID: 1}}, ChunkSize: 20}}},
+		&fakeDocumentRepo{items: map[int64]*knowledge.Document{20: {SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 20, OwnerID: 1}}, KnowledgeBaseID: 10, OriginalFilename: "guide.md", StorageObjectKey: "missing.md"}}},
 		&fakeChunkRepo{}, jobs, nil, fakeReadStorage{}, parser.NewTextParser(), chunker.NewDefaultRegistry(), &fakeIndexer{}, nil, nil, "test_chunks",
 	)
 
@@ -380,8 +364,8 @@ func TestProcessNextReturnsJobStatePersistenceError(t *testing.T) {
 
 func TestProcessNextFromQueueProcessesDirectPayloadAndAcks(t *testing.T) {
 	ctx := context.Background()
-	kbs := &fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{10: {ID: 10, OwnerID: 1, ChunkSize: 20, ChunkOverlap: 0}}}
-	docs := &fakeDocumentRepo{items: map[int64]*knowledge.Document{20: {ID: 20, OwnerID: 1, KBID: 10, Name: "Guide", OriginalFilename: "guide.md", FileType: "md", ObjectKey: "raw/guide.md", ParserStatus: knowledge.DocumentStatusPending, Enabled: true}}}
+	kbs := &fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{10: {SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 10, OwnerID: 1}}, ChunkSize: 20, ChunkOverlap: 0}}}
+	docs := &fakeDocumentRepo{items: map[int64]*knowledge.Document{20: {SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 20, OwnerID: 1}}, KnowledgeBaseID: 10, Name: "Guide", OriginalFilename: "guide.md", FileType: "md", StorageObjectKey: "raw/guide.md", IngestionStatus: knowledge.DocumentStatusPending, Enabled: true}}}
 	jobs := &fakeJobRepo{}
 	service := NewService(
 		kbs,
@@ -397,7 +381,7 @@ func TestProcessNextFromQueueProcessesDirectPayloadAndAcks(t *testing.T) {
 		nil,
 		"test_chunks",
 	)
-	q := &fakeQueue{jobs: []queue.Job{{ID: "stream-1", Type: knowledge.IngestionJobTypeDocument, Payload: map[string]any{"owner_id": int64(1), "kb_id": int64(10), "document_id": int64(20)}}}}
+	q := &fakeQueue{jobs: []queue.Job{{ID: "stream-1", Type: knowledge.IngestionJobTypeDocument, Payload: map[string]any{"owner_id": int64(1), "knowledge_base_id": int64(10), "document_id": int64(20)}}}}
 	processed, err := service.ProcessNextFromQueue(ctx, q, "worker-1")
 	if err != nil || !processed {
 		t.Fatalf("ProcessNextFromQueue() = %v, %v", processed, err)
@@ -408,15 +392,13 @@ func TestProcessNextFromQueueProcessesDirectPayloadAndAcks(t *testing.T) {
 	if len(jobs.completed) != 0 {
 		t.Fatalf("direct queue payload should not mark a DB job completed, got %+v", jobs.completed)
 	}
-	if docs.items[20].ParserStatus != knowledge.DocumentStatusCompleted {
-		t.Fatalf("document status = %s, want completed", docs.items[20].ParserStatus)
+	if docs.items[20].IngestionStatus != knowledge.DocumentStatusCompleted {
+		t.Fatalf("document status = %s, want completed", docs.items[20].IngestionStatus)
 	}
 }
 
 func TestProcessNextFromQueueAcksTerminalDatabaseJob(t *testing.T) {
-	jobs := &fakeJobRepo{items: map[int64]*knowledge.IngestionJob{30: {
-		ID: 30, OwnerID: 1, KBID: 10, DocumentID: 20, Status: knowledge.IngestionJobStatusCompleted,
-	}}}
+	jobs := &fakeJobRepo{items: map[int64]*knowledge.IngestionJob{30: {BaseModel: domain.BaseModel{ID: 30, OwnerID: 1}, KnowledgeBaseID: 10, DocumentID: 20, Status: knowledge.IngestionJobStatusCompleted}}}
 	service := NewService(nil, nil, nil, jobs, nil, nil, nil, nil, nil, nil, nil, "")
 	q := &fakeQueue{jobs: []queue.Job{{ID: "stream-1", Type: knowledge.IngestionJobTypeDocument, Payload: map[string]any{
 		"owner_id": int64(1), "ingestion_job_id": int64(30),
@@ -444,7 +426,7 @@ func TestProcessNextFromQueueReturnsNackError(t *testing.T) {
 func TestClaimedIngestionJobUsesOwnedTerminalUpdates(t *testing.T) {
 	repo := &fakeReliableJobRepo{fakeJobRepo: &fakeJobRepo{}}
 	service := NewService(nil, nil, nil, repo, nil, nil, nil, nil, nil, nil, nil, "")
-	job := &knowledge.IngestionJob{ID: 30, LockedBy: "worker-1"}
+	job := &knowledge.IngestionJob{BaseModel: domain.BaseModel{ID: 30}, LockedBy: "worker-1"}
 	if err := service.markJobCompleted(context.Background(), job); err != nil {
 		t.Fatal(err)
 	}
@@ -463,8 +445,7 @@ func TestProcessJobIndexesEmbeddingVectors(t *testing.T) {
 	kbs := &fakeKBRepo{
 		items: map[int64]*knowledge.KnowledgeBase{
 			10: {
-				ID:                  10,
-				OwnerID:             1,
+				SoftDeleteModel:     domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 10, OwnerID: 1}},
 				RetrievalMode:       knowledge.RetrievalModeVector,
 				EmbeddingProviderID: &providerID,
 				EmbeddingModel:      "text-embedding",
@@ -476,14 +457,13 @@ func TestProcessJobIndexesEmbeddingVectors(t *testing.T) {
 	}
 	docs := &fakeDocumentRepo{items: map[int64]*knowledge.Document{
 		20: {
-			ID:               20,
-			OwnerID:          1,
-			KBID:             10,
+			SoftDeleteModel:  domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 20, OwnerID: 1}},
+			KnowledgeBaseID:  10,
 			Name:             "Guide",
 			OriginalFilename: "guide.md",
 			FileType:         "md",
-			ObjectKey:        "raw/guide.md",
-			ParserStatus:     knowledge.DocumentStatusPending,
+			StorageObjectKey: "raw/guide.md",
+			IngestionStatus:  knowledge.DocumentStatusPending,
 		},
 	}}
 	indexer := &fakeIndexer{}
@@ -493,7 +473,7 @@ func TestProcessJobIndexesEmbeddingVectors(t *testing.T) {
 		&fakeChunkRepo{},
 		&fakeJobRepo{},
 		&fakeProviderRepo{items: map[int64]*providerdomain.ModelProvider{
-			90: {ID: 90, OwnerID: 1, ProviderType: providerdomain.TypeOpenAICompatible, Status: providerdomain.StatusActive},
+			90: {SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 90, OwnerID: 1}}, ProviderType: providerdomain.TypeOpenAICompatible, Enabled: providerdomain.ProviderEnabled},
 		}},
 		fakeReadStorage{objects: map[string]string{"raw/guide.md": "Vector enabled retrieval content."}},
 		parser.NewTextParser(),
@@ -504,7 +484,7 @@ func TestProcessJobIndexesEmbeddingVectors(t *testing.T) {
 		"test_chunks",
 	)
 
-	if err := service.ProcessJob(ctx, &knowledge.IngestionJob{ID: 30, OwnerID: 1, KBID: 10, DocumentID: 20}); err != nil {
+	if err := service.ProcessJob(ctx, &knowledge.IngestionJob{BaseModel: domain.BaseModel{ID: 30, OwnerID: 1}, KnowledgeBaseID: 10, DocumentID: 20}); err != nil {
 		t.Fatalf("ProcessJob() error = %v", err)
 	}
 	if len(indexer.indexed) != 1 {
@@ -525,8 +505,7 @@ func TestProcessJobKeywordDoesNotRequireEmbeddingProvider(t *testing.T) {
 	kbs := &fakeKBRepo{
 		items: map[int64]*knowledge.KnowledgeBase{
 			10: {
-				ID:                  10,
-				OwnerID:             1,
+				SoftDeleteModel:     domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 10, OwnerID: 1}},
 				RetrievalMode:       knowledge.RetrievalModeKeyword,
 				EmbeddingProviderID: &providerID,
 				EmbeddingModel:      "text-embedding",
@@ -538,14 +517,13 @@ func TestProcessJobKeywordDoesNotRequireEmbeddingProvider(t *testing.T) {
 	}
 	docs := &fakeDocumentRepo{items: map[int64]*knowledge.Document{
 		20: {
-			ID:               20,
-			OwnerID:          1,
-			KBID:             10,
+			SoftDeleteModel:  domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 20, OwnerID: 1}},
+			KnowledgeBaseID:  10,
 			Name:             "Guide",
 			OriginalFilename: "guide.md",
 			FileType:         "md",
-			ObjectKey:        "raw/guide.md",
-			ParserStatus:     knowledge.DocumentStatusPending,
+			StorageObjectKey: "raw/guide.md",
+			IngestionStatus:  knowledge.DocumentStatusPending,
 		},
 	}}
 	indexer := &fakeIndexer{}
@@ -564,11 +542,11 @@ func TestProcessJobKeywordDoesNotRequireEmbeddingProvider(t *testing.T) {
 		"test_chunks",
 	)
 
-	if err := service.ProcessJob(ctx, &knowledge.IngestionJob{ID: 30, OwnerID: 1, KBID: 10, DocumentID: 20}); err != nil {
+	if err := service.ProcessJob(ctx, &knowledge.IngestionJob{BaseModel: domain.BaseModel{ID: 30, OwnerID: 1}, KnowledgeBaseID: 10, DocumentID: 20}); err != nil {
 		t.Fatalf("ProcessJob() error = %v", err)
 	}
-	if docs.items[20].ParserStatus != knowledge.DocumentStatusCompleted {
-		t.Fatalf("ParserStatus = %q, want completed", docs.items[20].ParserStatus)
+	if docs.items[20].IngestionStatus != knowledge.DocumentStatusCompleted {
+		t.Fatalf("ParserStatus = %q, want completed", docs.items[20].IngestionStatus)
 	}
 	if len(indexer.indexed) == 0 {
 		t.Fatal("indexed chunks = 0, want keyword chunks indexed")
@@ -579,15 +557,13 @@ func TestProcessJobKeywordDoesNotRequireEmbeddingProvider(t *testing.T) {
 }
 
 func TestProcessJobGenerationFailureKeepsActiveGeneration(t *testing.T) {
-	kbs := &fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{10: {
-		ID: 10, OwnerID: 1, RetrievalBackend: knowledge.RetrievalBackendElasticsearch,
+	kbs := &fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{10: {SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 10, OwnerID: 1}}, RetrievalBackend: knowledge.RetrievalBackendElasticsearch,
 		RetrievalMode: knowledge.RetrievalModeKeyword, ChunkSize: 20,
 	}}}
-	docs := &fakeDocumentRepo{items: map[int64]*knowledge.Document{20: {
-		ID: 20, OwnerID: 1, KBID: 10, Name: "Guide", OriginalFilename: "guide.md", FileType: "md",
-		ObjectKey: "raw/guide.md", ParserStatus: knowledge.DocumentStatusCompleted, ActiveGeneration: "gen-old", ChunkCount: 1,
+	docs := &fakeDocumentRepo{items: map[int64]*knowledge.Document{20: {SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 20, OwnerID: 1}}, KnowledgeBaseID: 10, Name: "Guide", OriginalFilename: "guide.md", FileType: "md",
+		StorageObjectKey: "raw/guide.md", IngestionStatus: knowledge.DocumentStatusCompleted, ActiveGenerationID: "gen-old", ChunkCount: 1,
 	}}}
-	oldChunk := knowledge.DocumentChunk{ID: 1, OwnerID: 1, KBID: 10, DocumentID: 20, Generation: "gen-old", Content: "old searchable content"}
+	oldChunk := knowledge.DocumentChunk{ImmutableModel: domain.ImmutableModel{ID: 1, OwnerID: 1}, KnowledgeBaseID: 10, DocumentID: 20, GenerationID: "gen-old", Content: "old searchable content"}
 	chunks := &fakeChunkRepo{nextID: 1, byDocument: map[int64][]knowledge.DocumentChunk{20: {oldChunk}}}
 	indexer := &fakeIndexer{indexErr: errors.New("index failed")}
 	service := NewService(
@@ -596,19 +572,19 @@ func TestProcessJobGenerationFailureKeepsActiveGeneration(t *testing.T) {
 		parser.NewTextParser(), chunker.NewDefaultRegistry(), indexer, nil, nil, "test_chunks",
 	)
 
-	err := service.ProcessJob(context.Background(), &knowledge.IngestionJob{ID: 30, OwnerID: 1, KBID: 10, DocumentID: 20})
+	err := service.ProcessJob(context.Background(), &knowledge.IngestionJob{BaseModel: domain.BaseModel{ID: 30, OwnerID: 1}, KnowledgeBaseID: 10, DocumentID: 20})
 	if err == nil || !strings.Contains(err.Error(), "index failed") {
 		t.Fatalf("ProcessJob() error = %v", err)
 	}
-	if docs.items[20].ActiveGeneration != "gen-old" {
-		t.Fatalf("active generation = %q, want gen-old", docs.items[20].ActiveGeneration)
+	if docs.items[20].ActiveGenerationID != "gen-old" {
+		t.Fatalf("active generation = %q, want gen-old", docs.items[20].ActiveGenerationID)
 	}
 	if chunks.deletedByDocument[20] != 0 || indexer.deletedByDocument[20] != 0 {
 		t.Fatalf("old generation was deleted: chunk deletes=%d index deletes=%d", chunks.deletedByDocument[20], indexer.deletedByDocument[20])
 	}
 	foundOld := false
 	for _, chunk := range chunks.byDocument[20] {
-		if chunk.ID == oldChunk.ID && chunk.Generation == "gen-old" {
+		if chunk.ID == oldChunk.ID && chunk.GenerationID == "gen-old" {
 			foundOld = true
 		}
 	}
@@ -643,9 +619,6 @@ func TestGenerationFailuresAcrossPipelineKeepActiveGeneration(t *testing.T) {
 		{name: "milvus", backend: knowledge.RetrievalBackendMilvus, setup: func(_ *Service, _ *fakeChunkRepo, indexer *fakeIndexer, _ *fakeEmbedder, _ *fakeGenerationCommitter) {
 			indexer.indexErr = pipelineErr
 		}},
-		{name: "mysql index refs", setup: func(_ *Service, chunks *fakeChunkRepo, _ *fakeIndexer, _ *fakeEmbedder, _ *fakeGenerationCommitter) {
-			chunks.updateRefsErr = pipelineErr
-		}},
 		{name: "generation commit", setup: func(_ *Service, _ *fakeChunkRepo, _ *fakeIndexer, _ *fakeEmbedder, committer *fakeGenerationCommitter) {
 			committer.err = pipelineErr
 		}},
@@ -661,16 +634,15 @@ func TestGenerationFailuresAcrossPipelineKeepActiveGeneration(t *testing.T) {
 				mode = knowledge.RetrievalModeKeyword
 			}
 			providerID := int64(90)
-			kb := &knowledge.KnowledgeBase{ID: 10, OwnerID: 1, RetrievalBackend: backend, RetrievalMode: mode, ChunkSize: 20}
+			kb := &knowledge.KnowledgeBase{SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 10, OwnerID: 1}}, RetrievalBackend: backend, RetrievalMode: mode, ChunkSize: 20}
 			if mode == knowledge.RetrievalModeVector {
 				kb.EmbeddingProviderID, kb.EmbeddingModel, kb.EmbeddingDimensions = &providerID, "embedding", 2
 			}
 			kbs := &fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{10: kb}}
-			docs := &fakeDocumentRepo{items: map[int64]*knowledge.Document{20: {
-				ID: 20, OwnerID: 1, KBID: 10, Name: "Guide", OriginalFilename: "guide.md", FileType: "md",
-				ObjectKey: "raw/guide.md", ParserStatus: knowledge.DocumentStatusCompleted, ActiveGeneration: "gen-old", ChunkCount: 1,
+			docs := &fakeDocumentRepo{items: map[int64]*knowledge.Document{20: {SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 20, OwnerID: 1}}, KnowledgeBaseID: 10, Name: "Guide", OriginalFilename: "guide.md", FileType: "md",
+				StorageObjectKey: "raw/guide.md", IngestionStatus: knowledge.DocumentStatusCompleted, ActiveGenerationID: "gen-old", ChunkCount: 1,
 			}}}
-			oldChunk := knowledge.DocumentChunk{ID: 1, OwnerID: 1, KBID: 10, DocumentID: 20, Generation: "gen-old", Content: "old searchable content"}
+			oldChunk := knowledge.DocumentChunk{ImmutableModel: domain.ImmutableModel{ID: 1, OwnerID: 1}, KnowledgeBaseID: 10, DocumentID: 20, GenerationID: "gen-old", Content: "old searchable content"}
 			chunks := &fakeChunkRepo{nextID: 1, byDocument: map[int64][]knowledge.DocumentChunk{20: {oldChunk}}}
 			indexer := &fakeIndexer{}
 			embedder := &fakeEmbedder{vectors: [][]float32{{0.1, 0.2}}}
@@ -678,20 +650,20 @@ func TestGenerationFailuresAcrossPipelineKeepActiveGeneration(t *testing.T) {
 			committer := &fakeGenerationCommitter{documents: docs, kbs: kbs, jobs: jobs}
 			service := NewService(
 				kbs, docs, chunks, jobs,
-				&fakeProviderRepo{items: map[int64]*providerdomain.ModelProvider{providerID: {ID: providerID, OwnerID: 1, ProviderType: providerdomain.TypeOpenAICompatible, Status: providerdomain.StatusActive}}},
+				&fakeProviderRepo{items: map[int64]*providerdomain.ModelProvider{providerID: {SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: providerID, OwnerID: 1}}, ProviderType: providerdomain.TypeOpenAICompatible, Enabled: providerdomain.ProviderEnabled}}},
 				fakeReadStorage{objects: map[string]string{"raw/guide.md": "new content"}}, parser.NewTextParser(), chunker.NewDefaultRegistry(), indexer, embedder, mustSecretBox(t), "test_chunks",
 			).ConfigureIndexers(map[string]retrieval.Indexer{backend: indexer}).ConfigureGenerationCommitter(committer)
 			test.setup(service, chunks, indexer, embedder, committer)
 
-			if err := service.ProcessJob(context.Background(), &knowledge.IngestionJob{ID: 30, OwnerID: 1, KBID: 10, DocumentID: 20}); !errors.Is(err, pipelineErr) {
+			if err := service.ProcessJob(context.Background(), &knowledge.IngestionJob{BaseModel: domain.BaseModel{ID: 30, OwnerID: 1}, KnowledgeBaseID: 10, DocumentID: 20}); !errors.Is(err, pipelineErr) {
 				t.Fatalf("ProcessJob() error = %v, want %v", err, pipelineErr)
 			}
-			if docs.items[20].ActiveGeneration != "gen-old" || chunks.deletedByDocument[20] != 0 || indexer.deletedByDocument[20] != 0 {
+			if docs.items[20].ActiveGenerationID != "gen-old" || chunks.deletedByDocument[20] != 0 || indexer.deletedByDocument[20] != 0 {
 				t.Fatalf("active data changed: doc=%+v chunk_deletes=%d index_deletes=%d", docs.items[20], chunks.deletedByDocument[20], indexer.deletedByDocument[20])
 			}
 			foundOld := false
 			for _, chunk := range chunks.byDocument[20] {
-				foundOld = foundOld || chunk.ID == oldChunk.ID && chunk.Generation == "gen-old"
+				foundOld = foundOld || chunk.ID == oldChunk.ID && chunk.GenerationID == "gen-old"
 			}
 			if !foundOld {
 				t.Fatalf("old generation chunk was lost: %+v", chunks.byDocument[20])
@@ -713,13 +685,10 @@ func (c failingChunker) Chunk(context.Context, string, parser.ParsedDocument, ch
 }
 
 func TestProcessJobDispatchesIndexerByKnowledgeBaseBackend(t *testing.T) {
-	kbs := &fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{10: {
-		ID: 10, OwnerID: 1, RetrievalBackend: knowledge.RetrievalBackendMilvus,
+	kbs := &fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{10: {SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 10, OwnerID: 1}}, RetrievalBackend: knowledge.RetrievalBackendMilvus,
 		RetrievalMode: knowledge.RetrievalModeKeyword, ChunkSize: 20,
 	}}}
-	docs := &fakeDocumentRepo{items: map[int64]*knowledge.Document{20: {
-		ID: 20, OwnerID: 1, KBID: 10, Name: "Guide", OriginalFilename: "guide.md", FileType: "md", ObjectKey: "raw/guide.md",
-	}}}
+	docs := &fakeDocumentRepo{items: map[int64]*knowledge.Document{20: {SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 20, OwnerID: 1}}, KnowledgeBaseID: 10, Name: "Guide", OriginalFilename: "guide.md", FileType: "md", StorageObjectKey: "raw/guide.md"}}}
 	defaultIndexer := &fakeIndexer{}
 	milvusIndexer := &fakeIndexer{}
 	service := NewService(
@@ -728,7 +697,7 @@ func TestProcessJobDispatchesIndexerByKnowledgeBaseBackend(t *testing.T) {
 		parser.NewTextParser(), chunker.NewDefaultRegistry(), defaultIndexer, nil, nil, "test_chunks",
 	).ConfigureIndexers(map[string]retrieval.Indexer{knowledge.RetrievalBackendMilvus: milvusIndexer})
 
-	if err := service.ProcessJob(context.Background(), &knowledge.IngestionJob{ID: 30, OwnerID: 1, KBID: 10, DocumentID: 20}); err != nil {
+	if err := service.ProcessJob(context.Background(), &knowledge.IngestionJob{BaseModel: domain.BaseModel{ID: 30, OwnerID: 1}, KnowledgeBaseID: 10, DocumentID: 20}); err != nil {
 		t.Fatalf("ProcessJob() error = %v", err)
 	}
 	if !milvusIndexer.ensureCalled || len(milvusIndexer.indexed) == 0 {
@@ -740,36 +709,31 @@ func TestProcessJobDispatchesIndexerByKnowledgeBaseBackend(t *testing.T) {
 }
 
 func TestProcessJobRejectsDeclaredBackendWithoutIndexer(t *testing.T) {
-	kbs := &fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{10: {
-		ID: 10, OwnerID: 1, RetrievalBackend: knowledge.RetrievalBackendElasticsearch,
+	kbs := &fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{10: {SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 10, OwnerID: 1}}, RetrievalBackend: knowledge.RetrievalBackendElasticsearch,
 		RetrievalMode: knowledge.RetrievalModeKeyword, ChunkSize: 20,
 	}}}
-	docs := &fakeDocumentRepo{items: map[int64]*knowledge.Document{20: {
-		ID: 20, OwnerID: 1, KBID: 10, Name: "Guide", OriginalFilename: "guide.md", FileType: "md", ObjectKey: "raw/guide.md",
-	}}}
+	docs := &fakeDocumentRepo{items: map[int64]*knowledge.Document{20: {SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 20, OwnerID: 1}}, KnowledgeBaseID: 10, Name: "Guide", OriginalFilename: "guide.md", FileType: "md", StorageObjectKey: "raw/guide.md"}}}
 	service := NewService(
 		kbs, docs, &fakeChunkRepo{}, &fakeJobRepo{}, nil,
 		fakeReadStorage{objects: map[string]string{"raw/guide.md": "backend must be configured"}},
 		parser.NewTextParser(), chunker.NewDefaultRegistry(), &fakeIndexer{}, nil, nil, "test_chunks",
 	).ConfigureIndexers(map[string]retrieval.Indexer{knowledge.RetrievalBackendMilvus: &fakeIndexer{}})
 
-	err := service.ProcessJob(context.Background(), &knowledge.IngestionJob{ID: 30, OwnerID: 1, KBID: 10, DocumentID: 20})
+	err := service.ProcessJob(context.Background(), &knowledge.IngestionJob{BaseModel: domain.BaseModel{ID: 30, OwnerID: 1}, KnowledgeBaseID: 10, DocumentID: 20})
 	if err == nil || !strings.Contains(err.Error(), "retrieval indexer for backend \"elasticsearch\" is not configured") {
 		t.Fatalf("ProcessJob() error = %v", err)
 	}
 }
 
 func TestProcessJobCommitsGenerationAndSchedulesCleanup(t *testing.T) {
-	kbs := &fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{10: {
-		ID: 10, OwnerID: 1, RetrievalBackend: knowledge.RetrievalBackendElasticsearch,
+	kbs := &fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{10: {SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 10, OwnerID: 1}}, RetrievalBackend: knowledge.RetrievalBackendElasticsearch,
 		RetrievalMode: knowledge.RetrievalModeKeyword, ChunkSize: 20,
 	}}}
-	docs := &fakeDocumentRepo{items: map[int64]*knowledge.Document{20: {
-		ID: 20, OwnerID: 1, KBID: 10, Name: "Guide", OriginalFilename: "guide.md", FileType: "md",
-		ObjectKey: "raw/guide.md", ParserStatus: knowledge.DocumentStatusCompleted, ActiveGeneration: "gen-old", ChunkCount: 1,
+	docs := &fakeDocumentRepo{items: map[int64]*knowledge.Document{20: {SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 20, OwnerID: 1}}, KnowledgeBaseID: 10, Name: "Guide", OriginalFilename: "guide.md", FileType: "md",
+		StorageObjectKey: "raw/guide.md", IngestionStatus: knowledge.DocumentStatusCompleted, ActiveGenerationID: "gen-old", ChunkCount: 1,
 	}}}
 	chunks := &fakeChunkRepo{nextID: 1, byDocument: map[int64][]knowledge.DocumentChunk{20: {{
-		ID: 1, OwnerID: 1, KBID: 10, DocumentID: 20, Generation: "gen-old", Content: "old content",
+		ImmutableModel: domain.ImmutableModel{ID: 1, OwnerID: 1}, KnowledgeBaseID: 10, DocumentID: 20, GenerationID: "gen-old", Content: "old content",
 	}}}}
 	jobs := &fakeJobRepo{}
 	committer := &fakeGenerationCommitter{documents: docs, kbs: kbs, jobs: jobs}
@@ -779,10 +743,10 @@ func TestProcessJobCommitsGenerationAndSchedulesCleanup(t *testing.T) {
 		parser.NewTextParser(), chunker.NewDefaultRegistry(), &fakeIndexer{}, nil, nil, "test_chunks",
 	).ConfigureGenerationCommitter(committer)
 
-	if err := service.ProcessJob(context.Background(), &knowledge.IngestionJob{ID: 30, OwnerID: 1, KBID: 10, DocumentID: 20}); err != nil {
+	if err := service.ProcessJob(context.Background(), &knowledge.IngestionJob{BaseModel: domain.BaseModel{ID: 30, OwnerID: 1}, KnowledgeBaseID: 10, DocumentID: 20}); err != nil {
 		t.Fatalf("ProcessJob() error = %v", err)
 	}
-	active := docs.items[20].ActiveGeneration
+	active := docs.items[20].ActiveGenerationID
 	if active == "" || active == "gen-old" || committer.calls != 1 {
 		t.Fatalf("generation commit: active=%q calls=%d", active, committer.calls)
 	}
@@ -803,21 +767,17 @@ func TestProcessJobCommitsGenerationAndSchedulesCleanup(t *testing.T) {
 }
 
 func TestProcessGenerationCleanupDeletesOnlyInactiveGenerations(t *testing.T) {
-	kbs := &fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{10: {
-		ID: 10, OwnerID: 1, RetrievalBackend: knowledge.RetrievalBackendElasticsearch,
-	}}}
-	docs := &fakeDocumentRepo{items: map[int64]*knowledge.Document{20: {
-		ID: 20, OwnerID: 1, KBID: 10, ParserStatus: knowledge.DocumentStatusCompleted, ActiveGeneration: "gen-new",
-	}}}
+	kbs := &fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{10: {SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 10, OwnerID: 1}}, RetrievalBackend: knowledge.RetrievalBackendElasticsearch}}}
+	docs := &fakeDocumentRepo{items: map[int64]*knowledge.Document{20: {SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 20, OwnerID: 1}}, KnowledgeBaseID: 10, IngestionStatus: knowledge.DocumentStatusCompleted, ActiveGenerationID: "gen-new"}}}
 	chunks := &fakeChunkRepo{byDocument: map[int64][]knowledge.DocumentChunk{20: {
-		{ID: 1, OwnerID: 1, DocumentID: 20, Generation: "gen-old"},
-		{ID: 2, OwnerID: 1, DocumentID: 20, Generation: "gen-new"},
+		{ImmutableModel: domain.ImmutableModel{ID: 1, OwnerID: 1}, DocumentID: 20, GenerationID: "gen-old"},
+		{ImmutableModel: domain.ImmutableModel{ID: 2, OwnerID: 1}, DocumentID: 20, GenerationID: "gen-new"},
 	}}}
 	jobs := &fakeJobRepo{}
 	indexer := &fakeIndexer{}
 	service := NewService(kbs, docs, chunks, jobs, nil, nil, nil, nil, indexer, nil, nil, "")
 
-	cleanup := &knowledge.IngestionJob{ID: 31, OwnerID: 1, KBID: 10, DocumentID: 20, JobType: knowledge.IngestionJobTypeGenerationCleanup}
+	cleanup := &knowledge.IngestionJob{BaseModel: domain.BaseModel{ID: 31, OwnerID: 1}, KnowledgeBaseID: 10, DocumentID: 20, JobType: knowledge.IngestionJobTypeGenerationCleanup}
 	if err := service.ProcessJob(context.Background(), cleanup); err != nil {
 		t.Fatalf("ProcessJob(cleanup) error = %v", err)
 	}
@@ -825,7 +785,7 @@ func TestProcessGenerationCleanupDeletesOnlyInactiveGenerations(t *testing.T) {
 		t.Fatalf("ProcessJob(cleanup retry) error = %v", err)
 	}
 	remaining := chunks.byDocument[20]
-	if len(remaining) != 1 || remaining[0].Generation != "gen-new" {
+	if len(remaining) != 1 || remaining[0].GenerationID != "gen-new" {
 		t.Fatalf("remaining chunks = %+v", remaining)
 	}
 	if indexer.cleanedGeneration != "gen-new" || !jobs.completed[31] {
@@ -834,14 +794,10 @@ func TestProcessGenerationCleanupDeletesOnlyInactiveGenerations(t *testing.T) {
 }
 
 func TestGenerationCleanupFailureDoesNotFailDocument(t *testing.T) {
-	docs := &fakeDocumentRepo{items: map[int64]*knowledge.Document{20: {
-		ID: 20, OwnerID: 1, KBID: 10, ParserStatus: knowledge.DocumentStatusCompleted, ActiveGeneration: "gen-new",
-	}}}
-	jobs := &fakeJobRepo{next: &knowledge.IngestionJob{
-		ID: 31, OwnerID: 1, KBID: 10, DocumentID: 20, JobType: knowledge.IngestionJobTypeGenerationCleanup, MaxAttempts: 3,
-	}}
+	docs := &fakeDocumentRepo{items: map[int64]*knowledge.Document{20: {SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 20, OwnerID: 1}}, KnowledgeBaseID: 10, IngestionStatus: knowledge.DocumentStatusCompleted, ActiveGenerationID: "gen-new"}}}
+	jobs := &fakeJobRepo{next: &knowledge.IngestionJob{BaseModel: domain.BaseModel{ID: 31, OwnerID: 1}, KnowledgeBaseID: 10, DocumentID: 20, JobType: knowledge.IngestionJobTypeGenerationCleanup, MaxAttempts: 3}}
 	service := NewService(
-		&fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{10: {ID: 10, OwnerID: 1, RetrievalBackend: knowledge.RetrievalBackendElasticsearch}}},
+		&fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{10: {SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 10, OwnerID: 1}}, RetrievalBackend: knowledge.RetrievalBackendElasticsearch}}},
 		docs, &fakeChunkRepo{}, jobs, nil, nil, nil, nil, &fakeIndexer{cleanupErr: errors.New("cleanup failed")}, nil, nil, "",
 	)
 
@@ -849,7 +805,7 @@ func TestGenerationCleanupFailureDoesNotFailDocument(t *testing.T) {
 	if !processed || err == nil || !strings.Contains(err.Error(), "cleanup failed") {
 		t.Fatalf("ProcessNext() = %v, %v", processed, err)
 	}
-	if docs.items[20].ParserStatus != knowledge.DocumentStatusCompleted || docs.items[20].ParserError != "" {
+	if docs.items[20].IngestionStatus != knowledge.DocumentStatusCompleted || docs.items[20].IngestionError != "" {
 		t.Fatalf("cleanup failure changed document: %+v", docs.items[20])
 	}
 	if jobs.retrying[31] == "" {
@@ -999,7 +955,6 @@ type fakeChunkRepo struct {
 	byDocument        map[int64][]knowledge.DocumentChunk
 	deletedByDocument map[int64]int
 	createErr         error
-	updateRefsErr     error
 }
 
 func (r *fakeChunkRepo) CreateBatch(_ context.Context, chunks []knowledge.DocumentChunk) error {
@@ -1021,26 +976,6 @@ func (r *fakeChunkRepo) ListByDocument(_ context.Context, _ int64, documentID in
 	return append([]knowledge.DocumentChunk(nil), r.byDocument[documentID]...), nil
 }
 
-func (r *fakeChunkRepo) UpdateIndexRefs(_ context.Context, chunks []knowledge.DocumentChunk) error {
-	if r.updateRefsErr != nil {
-		return r.updateRefsErr
-	}
-	if r.byDocument == nil {
-		return nil
-	}
-	for _, incoming := range chunks {
-		stored := r.byDocument[incoming.DocumentID]
-		for i := range stored {
-			if stored[i].ID == incoming.ID {
-				stored[i].ESIndex = incoming.ESIndex
-				stored[i].ESDocID = incoming.ESDocID
-			}
-		}
-		r.byDocument[incoming.DocumentID] = stored
-	}
-	return nil
-}
-
 func (r *fakeChunkRepo) DeleteByDocument(_ context.Context, _ int64, documentID int64) error {
 	if r.deletedByDocument == nil {
 		r.deletedByDocument = make(map[int64]int)
@@ -1060,7 +995,7 @@ func (r *fakeChunkRepo) DeleteInactiveGenerations(_ context.Context, _ int64, do
 	stored := r.byDocument[documentID]
 	remaining := stored[:0]
 	for _, chunk := range stored {
-		if chunk.Generation == activeGeneration {
+		if chunk.GenerationID == activeGeneration {
 			remaining = append(remaining, chunk)
 		}
 	}
@@ -1084,7 +1019,7 @@ func (c *fakeGenerationCommitter) Activate(ctx context.Context, doc *knowledge.D
 	if err := c.documents.Update(ctx, doc); err != nil {
 		return err
 	}
-	if err := c.kbs.AdjustCounts(ctx, doc.OwnerID, doc.KBID, 0, chunkDelta); err != nil {
+	if err := c.kbs.AdjustCounts(ctx, doc.OwnerID, doc.KnowledgeBaseID, 0, chunkDelta); err != nil {
 		return err
 	}
 	return c.jobs.Create(ctx, cleanup)

@@ -39,8 +39,8 @@ func TestShadowChunkerKeepsPrimaryResultWhenCandidateFails(t *testing.T) {
 func TestCompareChunksReportsBoundaryRatio(t *testing.T) {
 	page := 2
 	metrics := compareChunks(
-		[]Chunk{{Content: "same", SectionTitle: "S", PageNo: &page, TokenCount: 2}, {Content: "other", TokenCount: 1}},
-		[]Chunk{{Content: "same", SectionTitle: "S", PageNo: &page, TokenCount: 2}},
+		[]Chunk{{Content: "same", SectionTitle: "S", PageNumber: &page, TokenCount: 2}, {Content: "other", TokenCount: 1}},
+		[]Chunk{{Content: "same", SectionTitle: "S", PageNumber: &page, TokenCount: 2}},
 	)
 	if metrics["boundary_match_ratio"] != 0.5 {
 		t.Fatalf("boundary ratio = %v, want 0.5", metrics["boundary_match_ratio"])

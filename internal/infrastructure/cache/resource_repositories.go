@@ -156,6 +156,13 @@ func (r *MemoryRepository) ListFiltered(ctx context.Context, ownerID int64, filt
 	}
 	return repository.ListFiltered(ctx, ownerID, filter)
 }
+func (r *MemoryRepository) ListForReadScoped(ctx context.Context, ownerID, agentID int64, memoryTypes []string, conversationID, projectID *int64, limit int) ([]memory.Memory, error) {
+	repository, ok := r.Repository.(memory.ScopedReader)
+	if !ok {
+		return nil, fmt.Errorf("memory repository does not support scoped reading")
+	}
+	return repository.ListForReadScoped(ctx, ownerID, agentID, memoryTypes, conversationID, projectID, limit)
+}
 func (r *MemoryRepository) FindByIDs(ctx context.Context, ownerID int64, ids []int64) ([]memory.Memory, error) {
 	byID := make(map[int64]memory.Memory, len(ids))
 	misses := make([]int64, 0, len(ids))
@@ -211,15 +218,15 @@ func (r *MemoryRepository) MarkUsed(ctx context.Context, ownerID int64, ids []in
 	}
 	return nil
 }
-func (r *MemoryRepository) IncrementAccessCount(ctx context.Context, ownerID, id int64) error {
-	if err := r.Repository.IncrementAccessCount(ctx, ownerID, id); err != nil {
+func (r *MemoryRepository) IncrementRecallCount(ctx context.Context, ownerID, id int64) error {
+	if err := r.Repository.IncrementRecallCount(ctx, ownerID, id); err != nil {
 		return err
 	}
 	r.changed(ctx, ownerID)
 	return nil
 }
-func (r *MemoryRepository) IncrementConsolidationCount(ctx context.Context, ownerID, id int64) error {
-	if err := r.Repository.IncrementConsolidationCount(ctx, ownerID, id); err != nil {
+func (r *MemoryRepository) IncrementPromotionCount(ctx context.Context, ownerID, id int64) error {
+	if err := r.Repository.IncrementPromotionCount(ctx, ownerID, id); err != nil {
 		return err
 	}
 	r.changed(ctx, ownerID)

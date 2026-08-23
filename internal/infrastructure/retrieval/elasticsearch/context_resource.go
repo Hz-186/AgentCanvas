@@ -21,7 +21,8 @@ const contextResourceMapping = `{
     "dynamic": "strict",
     "properties": {
       "owner_id": {"type": "long"},
-      "agent_id": {"type": "long"},
+		"agent_id": {"type": "long"},
+		"project_id": {"type": "long"},
       "conversation_id": {"type": "long"},
       "resource_type": {"type": "keyword"},
       "resource_id": {"type": "keyword"},
@@ -67,6 +68,16 @@ func (s *ContextKeywordIndex) EnsureIndex(ctx context.Context) error {
 	}
 	response.Body.Close()
 	if response.StatusCode == http.StatusOK {
+		mapping := `{"properties":{"project_id":{"type":"long"}}}`
+		response, err = s.client.Indices.PutMapping([]string{s.index}, strings.NewReader(mapping), s.client.Indices.PutMapping.WithContext(ctx))
+		if err != nil {
+			return err
+		}
+		if response.IsError() {
+			response.Body.Close()
+			return responseError("update context resource index mapping", response)
+		}
+		response.Body.Close()
 		s.mu.Lock()
 		s.ensured = true
 		s.mu.Unlock()
@@ -108,6 +119,7 @@ func (s *ContextKeywordIndex) Upsert(ctx context.Context, document contextresour
 	payload, err := json.Marshal(map[string]any{
 		"owner_id":        document.OwnerID,
 		"agent_id":        document.AgentID,
+		"project_id":      document.ProjectID,
 		"conversation_id": document.ConversationID,
 		"resource_type":   document.ResourceType,
 		"resource_id":     document.ResourceID,
@@ -172,6 +184,13 @@ func (s *ContextKeywordIndex) Search(ctx context.Context, request contextresourc
 			filters = append(filters, map[string]any{"terms": map[string]any{"agent_id": []int64{0, request.AgentID}}})
 		}
 	}
+	if !messageOnly {
+		if request.ProjectID > 0 {
+			filters = append(filters, map[string]any{"terms": map[string]any{"project_id": []int64{0, request.ProjectID}}})
+		} else {
+			filters = append(filters, map[string]any{"term": map[string]any{"project_id": int64(0)}})
+		}
+	}
 	if request.ConversationID > 0 {
 		if messageOnly {
 			filters = append(filters, map[string]any{"term": map[string]any{"conversation_id": request.ConversationID}})
@@ -196,6 +215,7 @@ func (s *ContextKeywordIndex) Search(ctx context.Context, request contextresourc
 				Score  float64 `json:"_score"`
 				Source struct {
 					AgentID        int64  `json:"agent_id"`
+					ProjectID      int64  `json:"project_id"`
 					ConversationID int64  `json:"conversation_id"`
 					ResourceType   string `json:"resource_type"`
 					ResourceID     string `json:"resource_id"`
@@ -217,12 +237,15 @@ func (s *ContextKeywordIndex) Search(ctx context.Context, request contextresourc
 			if request.AgentID > 0 && hit.Source.AgentID != 0 && hit.Source.AgentID != request.AgentID {
 				continue
 			}
+			if (request.ProjectID <= 0 && hit.Source.ProjectID != 0) || (request.ProjectID > 0 && hit.Source.ProjectID != 0 && hit.Source.ProjectID != request.ProjectID) {
+				continue
+			}
 			if request.ConversationID > 0 && hit.Source.ConversationID != 0 && hit.Source.ConversationID != request.ConversationID {
 				continue
 			}
 		}
 		results = append(results, contextresource.SearchResult{ResourceType: hit.Source.ResourceType, ResourceID: hit.Source.ResourceID, Score: hit.Score,
-			Metadata: map[string]any{"agent_id": hit.Source.AgentID, "conversation_id": hit.Source.ConversationID, "content_hash": hit.Source.ContentHash}})
+			Metadata: map[string]any{"agent_id": hit.Source.AgentID, "project_id": hit.Source.ProjectID, "conversation_id": hit.Source.ConversationID, "content_hash": hit.Source.ContentHash}})
 		if len(results) >= limit {
 			break
 		}

@@ -7,7 +7,3 @@ type SemanticRetriever interface {
 	Search(ctx context.Context, ownerID int64, query string, memoryTypes []string, limit int) ([]int64, error)
 	Delete(ctx context.Context, memoryID int64) error
 }
-
-type MemoryEmbeddingGenerator interface {
-	Generate(ctx context.Context, text string) ([]float32, error)
-}

@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"time"
 
+	"agentcanvas/internal/domain"
 	agentdomain "agentcanvas/internal/domain/agent"
 
 	"gorm.io/gorm"
@@ -108,7 +109,6 @@ func (r *ApprovalRepository) DecideApprovalAndClaimResume(ctx context.Context, i
 func (r *ApprovalRepository) CreateCheckpoint(ctx context.Context, item *agentdomain.RunCheckpoint) error {
 	now := time.Now().UTC()
 	item.CreatedAt = now
-	item.UpdatedAt = now
 	return r.db.WithContext(ctx).Create(item).Error
 }
 
@@ -147,7 +147,7 @@ func (r *ApprovalRepository) SavePausedRun(ctx context.Context, turn *agentdomai
 				return err
 			}
 		}
-		checkpoint.CreatedAt, checkpoint.UpdatedAt = now, now
+		checkpoint.CreatedAt = now
 		return tx.Create(checkpoint).Error
 	})
 	if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -218,9 +218,9 @@ func queueResumeTurn(tx *gorm.DB, run *agentdomain.Run, input []byte, now time.T
 			conversationID = *run.ConversationID
 		}
 		return tx.Create(&agentdomain.Turn{
-			OwnerID: run.OwnerID, AgentID: run.AgentID, AgentReleaseID: releaseID, ConversationID: conversationID,
+			BaseModel: domain.BaseModel{OwnerID: run.OwnerID, CreatedAt: now, UpdatedAt: now}, AgentID: run.AgentID, AgentReleaseID: releaseID, ConversationID: conversationID,
 			RunID: &run.ID, IdempotencyKey: "subagent-resume-" + strconv.FormatInt(run.ID, 10), Status: agentdomain.TurnStatusQueued,
-			InputJSON: input, MaxAttempts: 3, CreatedAt: now, UpdatedAt: now,
+			InputJSON: input, MaxAttempts: 3,
 		}).Error
 	}
 	return nil

@@ -168,7 +168,7 @@ func (s *Service) validateProjectRepository(ctx context.Context, item *projectdo
 	if item == nil || item.OwnerID <= 0 || item.ID <= 0 {
 		return "", agenterrors.ErrInvalidInput
 	}
-	configuredRoot, err := s.canonicalAllowedPath(item.PrimaryPath)
+	configuredRoot, err := s.canonicalAllowedPath(item.RepositoryRoot)
 	if err != nil {
 		return "", err
 	}

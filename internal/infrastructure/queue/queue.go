@@ -14,7 +14,7 @@ type Job struct {
 	ID            string         `json:"id"`
 	Type          string         `json:"type"`
 	Payload       map[string]any `json:"payload,omitempty"`
-	Attempts      int            `json:"attempts"`
+	AttemptCount  int            `json:"attempt_count"`
 	MaxAttempts   int            `json:"max_attempts,omitempty"`
 	AvailableAt   time.Time      `json:"available_at,omitempty"`
 }
@@ -82,7 +82,7 @@ func (q *MemoryQueue) Claim(ctx context.Context, opts ClaimOptions) ([]Job, erro
 			remaining = append(remaining, job)
 			continue
 		}
-		job.Attempts++
+		job.AttemptCount++
 		q.claimed[job.ID] = job
 		claimed = append(claimed, job)
 	}
@@ -119,7 +119,7 @@ func (q *MemoryQueue) Nack(ctx context.Context, jobID string, retryAt time.Time)
 	}
 	delete(q.claimed, jobID)
 	job.AvailableAt = retryAt
-	if job.MaxAttempts > 0 && job.Attempts >= job.MaxAttempts {
+	if job.MaxAttempts > 0 && job.AttemptCount >= job.MaxAttempts {
 		q.deadJobs[job.ID] = job
 		return nil
 	}

@@ -99,7 +99,7 @@ func NewAgentHandler(service *agentusecase.Service, improvement ...*agentusecase
 func (h *AgentHandler) ConfigureWorkspace(service *workspaceusecase.Service) { h.workspace = service }
 
 func workspaceEventPayload(item *workspacedomain.Workspace) map[string]any {
-	return map[string]any{"workspace_id": item.ID, "run_id": item.RunID, "project_id": item.ProjectID, "kind": item.Kind, "repo_root": item.RepositoryRoot, "path": item.WorkspacePath, "branch": item.BranchName, "base_sha": item.BaseSHA, "head_sha": item.HeadSHA, "dirty": item.Dirty, "unpushed": item.Unpushed, "status": item.Status, "locked": item.Locked, "lock_reason": item.LockReason, "cleanup_reason": item.CleanupReason, "error": item.ErrorMessage}
+	return map[string]any{"workspace_id": item.ID, "run_id": item.RunID, "project_id": item.ProjectID, "kind": item.Kind, "repository_root": item.RepositoryRoot, "workspace_path": item.WorkspacePath, "branch_name": item.BranchName, "base_sha": item.BaseSHA, "head_sha": item.HeadSHA, "dirty": item.Dirty, "has_unpushed_commits": item.HasUnpushedCommits, "status": item.Status, "locked": item.Locked, "lock_reason": item.LockReason, "cleanup_reason": item.CleanupReason, "error_message": item.ErrorMessage}
 }
 
 func (h *AgentHandler) workspaceForRun(c *gin.Context, ownerID, runID int64) (*workspacedomain.Workspace, error) {
@@ -741,13 +741,13 @@ func (h *AgentHandler) RunGitStatus(c *gin.Context) {
 	value, err := h.workspace.GitStatus(c.Request.Context(), item)
 	if err != nil {
 		payload := workspaceEventPayload(item)
-		payload["dirty"], payload["unpushed"], payload["error"] = true, true, err.Error()
+		payload["dirty"], payload["has_unpushed_commits"], payload["error_message"] = true, true, err.Error()
 		_ = h.service.EmitWorkspaceEvent(c.Request.Context(), ownerID, runID, runtimeevent.GitStatusChanged, payload)
 		writeAppError(c, err)
 		return
 	}
 	payload := workspaceEventPayload(item)
-	payload["branch"], payload["dirty"], payload["unpushed"] = value.Branch, value.Dirty, value.Unpushed
+	payload["branch_name"], payload["dirty"], payload["has_unpushed_commits"] = value.Branch, value.Dirty, value.HasUnpushedCommits
 	payload["head_sha"] = value.Head
 	_ = h.service.EmitWorkspaceEvent(c.Request.Context(), ownerID, runID, runtimeevent.GitStatusChanged, payload)
 	response.OK(c, value)
@@ -828,7 +828,7 @@ func (h *AgentHandler) RunGitCommit(c *gin.Context) {
 	payload := workspaceEventPayload(item)
 	payload["message"], payload["paths"], payload["hash"], payload["head_sha"] = value.Message, value.Paths, value.Hash, value.Hash
 	if item.Kind == workspacedomain.KindWorktree {
-		payload["unpushed"] = true
+		payload["has_unpushed_commits"] = true
 	}
 	_ = h.service.EmitWorkspaceEvent(c.Request.Context(), ownerID, runID, runtimeevent.GitCommitCreated, payload)
 	response.OK(c, value)
@@ -853,7 +853,7 @@ func (h *AgentHandler) CleanupWorkspace(c *gin.Context) {
 	if err != nil {
 		if value != nil {
 			payload := workspaceEventPayload(value)
-			payload["error"] = err.Error()
+			payload["error_message"] = err.Error()
 			eventType := runtimeevent.WorkspacePreserved
 			if value.Status == workspacedomain.StatusCleaned {
 				eventType = runtimeevent.WorkspaceCleaned
@@ -890,7 +890,7 @@ func (h *AgentHandler) RefreshWorkspace(c *gin.Context) {
 	value, err := h.workspace.RefreshGitStatus(c.Request.Context(), item)
 	if err != nil {
 		payload := workspaceEventPayload(item)
-		payload["error"] = err.Error()
+		payload["error_message"] = err.Error()
 		_ = h.service.EmitWorkspaceEvent(c.Request.Context(), ownerID, item.RunID, runtimeevent.WorkspaceStatusChanged, payload)
 		writeAppError(c, err)
 		return

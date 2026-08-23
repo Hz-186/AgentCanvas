@@ -11,6 +11,7 @@ import (
 	"agentcanvas/internal/domain/memory"
 	"agentcanvas/internal/infrastructure/llm"
 	"agentcanvas/internal/infrastructure/vectorstore"
+	"agentcanvas/internal/observability"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 )
@@ -28,18 +29,33 @@ type DreamMessageRepository interface {
 	ListActiveThrough(ctx context.Context, ownerID, conversationID, throughMessageID int64) ([]conversation.Message, error)
 }
 
+// Optional range readers keep the old message repository contract working while
+// allowing Dream to avoid loading the whole conversation for every extraction.
+type dreamMessageBoundaryReader interface {
+	LatestActiveMessageID(ctx context.Context, ownerID, conversationID int64) (int64, error)
+}
+
+type dreamMessageRangeReader interface {
+	ListActiveAfterThrough(ctx context.Context, ownerID, conversationID, afterMessageID, throughMessageID int64) ([]conversation.Message, error)
+}
+
+type dreamCompletedBoundaryReader interface {
+	LatestCompletedThrough(ctx context.Context, ownerID, conversationID, beforeJobID int64) (int64, error)
+}
+
 type DreamWorker struct {
-	chatClient llm.ChatClient
-	embedder   llm.EmbeddingClient
-	memories   memory.Repository
-	memoryLogs memory.WriteLogRepository
-	messages   DreamMessageRepository
-	vecStore   vectorstore.Store
-	redis      *redis.Client
-	dreamCfg   DreamConfig
-	workerID   string
-	jobs       memory.ExtractionJobRepository
-	candidates memory.CandidateWriter
+	chatClient    llm.ChatClient
+	embedder      llm.EmbeddingClient
+	memories      memory.Repository
+	memoryLogs    memory.WriteLogRepository
+	messages      DreamMessageRepository
+	vecStore      vectorstore.Store
+	redis         *redis.Client
+	dreamCfg      DreamConfig
+	workerID      string
+	jobs          memory.ExtractionJobRepository
+	candidates    memory.CandidateWriter
+	conversations conversation.Repository
 }
 
 type dreamLLMResult struct {
@@ -67,8 +83,20 @@ func (w *DreamWorker) ConfigureCandidates(candidates memory.CandidateWriter) {
 	w.candidates = candidates
 }
 
+func (w *DreamWorker) ConfigureConversations(conversations conversation.Repository) {
+	w.conversations = conversations
+}
+
 func (w *DreamWorker) HandleDreamJob(ctx context.Context, payload DreamPayload) (retErr error) {
+	defer func() {
+		if retErr != nil {
+			observability.MemoryRuntimeMetrics.RecordDreamFailure()
+		}
+	}()
 	if !w.dreamCfg.Enabled || payload.OwnerID <= 0 || payload.ConversationID <= 0 {
+		return nil
+	}
+	if w.messages == nil || w.memories == nil || w.chatClient == nil || w.candidates == nil {
 		return nil
 	}
 	var job *memory.ExtractionJob
@@ -89,7 +117,7 @@ func (w *DreamWorker) HandleDreamJob(ctx context.Context, payload DreamPayload) 
 			if err != nil {
 				return err
 			}
-			if job.Status == string(memory.ExtractionCompleted) || job.Status == string(memory.ExtractionFailed) {
+			if job.Status == string(memory.ExtractionCompleted) || job.Status == string(memory.ExtractionFailed) || job.Status == string(memory.ExtractionSuperseded) {
 				return nil
 			}
 			job.Status = string(memory.ExtractionRunning)
@@ -118,15 +146,28 @@ func (w *DreamWorker) HandleDreamJob(ctx context.Context, payload DreamPayload) 
 			}
 		}()
 		payload.ConversationID = job.ConversationID
+		if job.ThroughMessageID <= 0 {
+			through, boundaryErr := w.latestMessageID(ctx, payload.OwnerID, payload.ConversationID)
+			if boundaryErr != nil {
+				return boundaryErr
+			}
+			job.ThroughMessageID = through
+			if through <= 0 {
+				job.Status = string(memory.ExtractionSuperseded)
+				job.ErrorMessage = "no active messages at extraction boundary"
+				job.LockedBy, job.LockedAt, job.LeaseExpiresAt = "", nil, nil
+				return w.updateJob(ctx, job)
+			}
+			if err := w.updateJob(ctx, job); err != nil {
+				return err
+			}
+		}
 	}
 	unlock, err := w.acquireLock(ctx, payload.OwnerID, payload.ConversationID)
 	if err != nil || unlock == nil {
 		return err
 	}
 	defer unlock()
-	if w.messages == nil || w.memories == nil || w.chatClient == nil || w.candidates == nil {
-		return nil
-	}
 	var messages []conversation.Message
 	if job != nil && job.ThroughMessageID > 0 {
 		if job.TriggerReason == "idle" {
@@ -135,20 +176,60 @@ func (w *DreamWorker) HandleDreamJob(ctx context.Context, payload DreamPayload) 
 				return activeErr
 			}
 			if len(active) > 0 && active[len(active)-1].ID > job.ThroughMessageID {
-				job.Status = string(memory.ExtractionCompleted)
+				job.Status = string(memory.ExtractionSuperseded)
 				job.ErrorMessage = "superseded by newer conversation messages"
 				job.LockedBy, job.LockedAt, job.LeaseExpiresAt = "", nil, nil
 				return w.updateJob(ctx, job)
 			}
 		}
-		messages, err = w.messages.ListActiveThrough(ctx, payload.OwnerID, payload.ConversationID, job.ThroughMessageID)
+		afterMessageID, boundaryErr := w.lastCompletedThrough(ctx, payload.OwnerID, payload.ConversationID, job.ID)
+		if boundaryErr != nil {
+			return boundaryErr
+		}
+		if ranged, ok := w.messages.(dreamMessageRangeReader); ok {
+			messages, err = ranged.ListActiveAfterThrough(ctx, payload.OwnerID, payload.ConversationID, afterMessageID, job.ThroughMessageID)
+		} else {
+			messages, err = w.messages.ListActiveThrough(ctx, payload.OwnerID, payload.ConversationID, job.ThroughMessageID)
+			if err == nil && afterMessageID > 0 {
+				filtered := messages[:0]
+				for _, item := range messages {
+					if item.ID > afterMessageID {
+						filtered = append(filtered, item)
+					}
+				}
+				messages = filtered
+			}
+		}
 	} else {
 		messages, err = w.messages.ListActiveByConversation(ctx, payload.OwnerID, payload.ConversationID)
 	}
-	if err != nil || len(messages) == 0 {
+	if err != nil {
 		return err
 	}
-	coreItems, err := w.memories.ListForRead(ctx, payload.OwnerID, []string{memory.TypeProfile, memory.TypeTask}, &payload.ConversationID, 20)
+	if len(messages) == 0 {
+		if job != nil {
+			job.Status = string(memory.ExtractionCompleted)
+			job.ErrorMessage = "no new messages since last completed extraction"
+			job.LockedBy, job.LockedAt, job.LeaseExpiresAt = "", nil, nil
+			return w.updateJob(ctx, job)
+		}
+		return nil
+	}
+	projectID := int64(0)
+	if job != nil {
+		projectID = job.ProjectID
+	}
+	if projectID <= 0 && w.conversations != nil {
+		if item, findErr := w.conversations.FindByID(ctx, payload.OwnerID, payload.ConversationID); findErr == nil && item.ProjectID != nil {
+			projectID = *item.ProjectID
+		}
+	}
+	var coreItems []memory.Memory
+	if scoped, ok := w.memories.(memory.ScopedReader); ok && projectID > 0 {
+		coreItems, err = scoped.ListForReadScoped(ctx, payload.OwnerID, 0, []string{memory.TypeProfile, memory.TypeTask}, &payload.ConversationID, &projectID, 20)
+	} else {
+		coreItems, err = w.memories.ListForRead(ctx, payload.OwnerID, []string{memory.TypeProfile, memory.TypeTask}, &payload.ConversationID, 20)
+	}
 	if err != nil {
 		return err
 	}
@@ -181,7 +262,7 @@ func (w *DreamWorker) HandleDreamJob(ctx context.Context, payload DreamPayload) 
 	if job != nil && job.ThroughMessageID > 0 {
 		throughMessageID = job.ThroughMessageID
 	}
-	if err := w.createCandidates(ctx, payload, &analysis, jobID, throughMessageID); err != nil {
+	if err := w.createCandidates(ctx, payload, &analysis, jobID, throughMessageID, projectID); err != nil {
 		return err
 	}
 	if job != nil {
@@ -193,7 +274,39 @@ func (w *DreamWorker) HandleDreamJob(ctx context.Context, payload DreamPayload) 
 	return nil
 }
 
-func (w *DreamWorker) createCandidates(ctx context.Context, payload DreamPayload, analysis *dreamLLMResult, jobID, throughMessageID int64) error {
+func (w *DreamWorker) lastCompletedThrough(ctx context.Context, ownerID, conversationID, currentJobID int64) (int64, error) {
+	if w == nil || w.jobs == nil {
+		return 0, nil
+	}
+	if reader, ok := w.jobs.(dreamCompletedBoundaryReader); ok {
+		return reader.LatestCompletedThrough(ctx, ownerID, conversationID, currentJobID)
+	}
+	jobs, err := w.jobs.ListByStatus(ctx, ownerID, string(memory.ExtractionCompleted), 100)
+	if err != nil {
+		return 0, err
+	}
+	latest := int64(0)
+	for _, item := range jobs {
+		if (currentJobID > 0 && item.ID >= currentJobID) || item.ConversationID != conversationID || item.ThroughMessageID <= latest {
+			continue
+		}
+		latest = item.ThroughMessageID
+	}
+	return latest, nil
+}
+
+func (w *DreamWorker) latestMessageID(ctx context.Context, ownerID, conversationID int64) (int64, error) {
+	if reader, ok := w.messages.(dreamMessageBoundaryReader); ok {
+		return reader.LatestActiveMessageID(ctx, ownerID, conversationID)
+	}
+	messages, err := w.messages.ListActiveByConversation(ctx, ownerID, conversationID)
+	if err != nil || len(messages) == 0 {
+		return 0, err
+	}
+	return messages[len(messages)-1].ID, nil
+}
+
+func (w *DreamWorker) createCandidates(ctx context.Context, payload DreamPayload, analysis *dreamLLMResult, jobID, throughMessageID, projectID int64) error {
 	if analysis == nil {
 		return nil
 	}
@@ -211,10 +324,11 @@ func (w *DreamWorker) createCandidates(ctx context.Context, payload DreamPayload
 		if content == "" {
 			continue
 		}
-		if _, err := w.candidates.Suggest(ctx, memory.CandidateRequest{OwnerID: payload.OwnerID, ConversationID: payload.ConversationID,
+		_, err := w.candidates.Suggest(ctx, memory.CandidateRequest{OwnerID: payload.OwnerID, ConversationID: payload.ConversationID, ProjectID: projectID, SourceConversationID: payload.ConversationID, SourceProjectID: projectID,
 			SourceID: fmt.Sprintf("%s:core:%d", sourcePrefix, index), MemoryID: item.MemoryID,
 			MemoryType: strings.TrimSpace(item.MemoryType), Title: strings.TrimSpace(item.Title), Content: content,
-			Action: strings.TrimSpace(item.Action), Importance: .9, Evidence: []string{fmt.Sprintf("conversation:%d through_message:%d", payload.ConversationID, throughMessageID)}, Source: "dream_worker"}); err != nil {
+			Action: strings.TrimSpace(item.Action), Importance: .9, Evidence: []string{fmt.Sprintf("conversation:%d through_message:%d", payload.ConversationID, throughMessageID)}, Source: "dream_worker"})
+		if err != nil {
 			return err
 		}
 	}
@@ -223,9 +337,10 @@ func (w *DreamWorker) createCandidates(ctx context.Context, payload DreamPayload
 		if content == "" {
 			continue
 		}
-		if _, err := w.candidates.Suggest(ctx, memory.CandidateRequest{OwnerID: payload.OwnerID, ConversationID: payload.ConversationID,
+		_, err := w.candidates.Suggest(ctx, memory.CandidateRequest{OwnerID: payload.OwnerID, ConversationID: payload.ConversationID, ProjectID: projectID, SourceConversationID: payload.ConversationID, SourceProjectID: projectID,
 			SourceID: fmt.Sprintf("%s:archival:%d", sourcePrefix, index), MemoryType: memory.TypeArchival,
-			Content: content, Action: "create", Importance: .8, Evidence: []string{fmt.Sprintf("conversation:%d through_message:%d", payload.ConversationID, throughMessageID)}, Source: "dream_worker"}); err != nil {
+			Content: content, Action: "create", Importance: .8, Evidence: []string{fmt.Sprintf("conversation:%d through_message:%d", payload.ConversationID, throughMessageID)}, Source: "dream_worker"})
+		if err != nil {
 			return err
 		}
 	}
@@ -276,7 +391,9 @@ func (w *DreamWorker) heartbeatLease(ctx context.Context, jobs memory.Extraction
 
 func (w *DreamWorker) analyze(ctx context.Context, payload DreamPayload, messages []conversation.Message, coreItems []memory.Memory) (*dreamLLMResult, error) {
 	prompt := buildDreamPrompt(messages, coreItems)
+	started := time.Now()
 	resp, err := w.chatClient.Chat(ctx, w.dreamCfg.Provider, llm.ChatRequest{Model: w.dreamCfg.Model, Messages: []llm.ChatMessage{{Role: conversation.RoleUser, Content: prompt}}})
+	observability.MemoryRuntimeMetrics.RecordDreamLLM(len(messages), time.Since(started).Milliseconds())
 	if err != nil {
 		return nil, err
 	}
@@ -307,7 +424,7 @@ func buildDreamPrompt(messages []conversation.Message, coreItems []memory.Memory
 		coreText.WriteString(strings.TrimSpace(item.Content))
 		coreText.WriteString("\n")
 	}
-	return fmt.Sprintf("Analyze the conversation and update durable memory. Existing core memory:\n%s\nConversation:\n%s\nReturn JSON only with this schema: {\"core_updates\":[{\"memory_type\":\"profile_memory\",\"title\":\"\",\"content\":\"\",\"action\":\"create\"}],\"archival_inserts\":[{\"content\":\"\"}]}", coreText.String(), conversationText.String())
+	return fmt.Sprintf("Analyze the conversation and update durable memory. Existing core memory:\n%s\nConversation:\n%s\nReturn JSON only with this schema: {\"core_updates\":[{\"memory_type\":\"profile\",\"title\":\"\",\"content\":\"\",\"action\":\"create\"}],\"archival_inserts\":[{\"content\":\"\"}]}", coreText.String(), conversationText.String())
 }
 
 func extractJSON(raw string) string {

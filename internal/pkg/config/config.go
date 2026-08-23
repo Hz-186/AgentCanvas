@@ -115,6 +115,8 @@ type MemoryDreamConfig struct {
 	EmbeddingModel        string `yaml:"embedding_model"`
 }
 
+// WorkingMemoryConfig is retained only so existing deployments keep parsing.
+// Deprecated: cross-run continuity is provided by MySQL conversation snapshots.
 type WorkingMemoryConfig struct {
 	TTLSeconds int `yaml:"ttl_seconds"`
 	LockTTLMS  int `yaml:"lock_ttl_ms"`

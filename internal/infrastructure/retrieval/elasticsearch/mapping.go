@@ -13,7 +13,7 @@ const chunkIndexMapping = `{
   "mappings": {
     "properties": {
       "owner_id": { "type": "long" },
-      "kb_id": { "type": "long" },
+      "knowledge_base_id": { "type": "long" },
       "document_id": { "type": "long" },
       "chunk_id": { "type": "long" },
       "chunk_index": { "type": "integer" },
@@ -41,7 +41,7 @@ const chunkIndexMapping = `{
 	  "embedding_provider_id": { "type": "long" },
 	  "embedding_metric": { "type": "keyword" },
 	  "embedding_profile": { "type": "keyword" },
-      "page_no": { "type": "integer" },
+      "page_number": { "type": "integer" },
       "token_count": { "type": "integer" },
       "metadata": { "type": "object", "enabled": true },
       "created_at": { "type": "date" },

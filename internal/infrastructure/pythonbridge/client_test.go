@@ -264,7 +264,7 @@ func TestChunkDocumentConvertsResponseAndContext(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ChunkDocument() error = %v", err)
 	}
-	if len(chunks) != 1 || chunks[0].PageNo == nil || *chunks[0].PageNo != 3 || chunks[0].Metadata["source"] != "test" {
+	if len(chunks) != 1 || chunks[0].PageNumber == nil || *chunks[0].PageNumber != 3 || chunks[0].Metadata["source"] != "test" {
 		t.Fatalf("unexpected chunks: %#v", chunks)
 	}
 }

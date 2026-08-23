@@ -42,18 +42,21 @@ const (
 )
 
 type RunRequest struct {
-	OwnerID         int64
-	AgentID         int64
-	AgentReleaseID  int64
-	RunID           int64
-	DelegationDepth int
-	ConversationID  *int64
-	Provider        llm.ChatProviderConfig
-	Model           string
-	Mode            string
-	Plan            *Plan
-	SystemPrompt    string
-	Task            string
+	OwnerID            int64
+	AgentID            int64
+	AgentReleaseID     int64
+	RunID              int64
+	DelegationDepth    int
+	ConversationID     *int64
+	ProjectID          int64
+	Provider           llm.ChatProviderConfig
+	Model              string
+	CompactionProvider llm.ChatProviderConfig
+	CompactionModel    string
+	Mode               string
+	Plan               *Plan
+	SystemPrompt       string
+	Task               string
 	// EnforceContextPrecedence adds the runtime guardrail that treats the
 	// latest user request/transcript as authoritative over advisory memory.
 	// It is enabled by the Agent Runtime; low-level assembler

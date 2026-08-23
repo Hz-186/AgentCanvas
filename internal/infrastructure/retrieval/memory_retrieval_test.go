@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"agentcanvas/internal/domain"
 	"agentcanvas/internal/domain/memory"
 	"agentcanvas/internal/infrastructure/llm"
 	"agentcanvas/internal/infrastructure/vectorstore"
@@ -29,14 +30,13 @@ func TestMemoryStoreIndexIncludesFilterFields(t *testing.T) {
 	})
 
 	err := store.Index(context.Background(), memory.Memory{
-		ID: 42, OwnerID: 7, MemoryType: memory.TypeProfile, MemoryLevel: memory.LevelLongTerm,
+		SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 42, OwnerID: 7, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}}, MemoryType: memory.TypeProfile, RetentionTier: memory.TierLongTerm,
 		Title: "Preference", Content: "user likes Go", Importance: 0.8,
-		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{"owner_id", "memory_id", "memory_type", "memory_level", "title", "content", "importance", "created_at", "updated_at"} {
+	for _, key := range []string{"owner_id", "memory_id", "memory_type", "retention_tier", "title", "content", "importance", "created_at", "updated_at"} {
 		if _, ok := captured[key]; !ok {
 			t.Fatalf("indexed document missing %s: %#v", key, captured)
 		}
@@ -76,7 +76,7 @@ func TestArchivalMemoryIndexSeparatesEmbeddingProfiles(t *testing.T) {
 		{Store: store, Embedder: archivalEmbeddingClient{}, ProviderID: 1, Model: "embedding-b"},
 	}
 	for _, index := range indexes {
-		if err := index.Index(context.Background(), memory.Memory{ID: 1, OwnerID: 1, Content: "memory"}); err != nil {
+		if err := index.Index(context.Background(), memory.Memory{SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 1, OwnerID: 1}}, Content: "memory"}); err != nil {
 			t.Fatal(err)
 		}
 	}

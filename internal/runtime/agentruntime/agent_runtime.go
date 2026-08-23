@@ -32,6 +32,7 @@ type RunIdentity struct {
 
 type ConversationContext struct {
 	ConversationID *int64
+	ProjectID      int64
 	ContextBlocks  []runtimeagent.ContextBlock
 }
 
@@ -158,7 +159,7 @@ func (r *AgentRuntime) run(ctx context.Context, req RunRequest, emit EventEmitte
 	rc := &RunContext{
 		OwnerID: req.OwnerID, AgentID: req.AgentID, AgentReleaseID: req.AgentReleaseID,
 		RuleHash: req.RuleHash, RunID: req.RunID, ParentRunID: req.ParentRunID, DelegationDepth: req.DelegationDepth,
-		ConversationID: conversationID, Input: map[string]any{"query": req.Task},
+		ConversationID: conversationID, ProjectID: req.ProjectID, Input: map[string]any{"query": req.Task},
 		Workspace: req.Workspace,
 		Events:    emit, AgentSteps: req.StepRecorder,
 	}

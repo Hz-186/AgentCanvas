@@ -10,7 +10,7 @@ func TestRedisStreamQueuePublishAndClaim(t *testing.T) {
 	fake := &fakeRedisStreamClient{}
 	q := NewRedisStreamQueueWithClient(fake, "jobs", "workers", "fallback")
 	availableAt := time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC)
-	if err := q.Publish(context.Background(), Job{ID: "biz-1", Type: "ingest", Attempts: 2, AvailableAt: availableAt, Payload: map[string]any{"document_id": 7}}); err != nil {
+	if err := q.Publish(context.Background(), Job{ID: "biz-1", Type: "ingest", AttemptCount: 2, AvailableAt: availableAt, Payload: map[string]any{"document_id": 7}}); err != nil {
 		t.Fatalf("Publish() error = %v", err)
 	}
 	if fake.ensureStream != "jobs" || fake.ensureGroup != "workers" {
@@ -26,7 +26,7 @@ func TestRedisStreamQueuePublishAndClaim(t *testing.T) {
 	if fake.consumer != "worker-1" || fake.count != 3 {
 		t.Fatalf("expected read group options to be passed, got consumer=%s count=%d", fake.consumer, fake.count)
 	}
-	if len(jobs) != 1 || jobs[0].ID != "1-0" || jobs[0].Type != "ingest" || jobs[0].Attempts != 3 || jobs[0].Payload["document_id"] != float64(7) || jobs[0].Payload["job_id"] != "biz-1" {
+	if len(jobs) != 1 || jobs[0].ID != "1-0" || jobs[0].Type != "ingest" || jobs[0].AttemptCount != 3 || jobs[0].Payload["document_id"] != float64(7) || jobs[0].Payload["job_id"] != "biz-1" {
 		t.Fatalf("unexpected claimed jobs: %+v", jobs)
 	}
 }
@@ -53,11 +53,11 @@ func TestRedisStreamQueueAckAndNack(t *testing.T) {
 
 func TestRedisStreamQueueDoesNotRepublishExhaustedJob(t *testing.T) {
 	fake := &fakeRedisStreamClient{messages: []RedisStreamMessage{{ID: "1-0", Values: map[string]any{
-		"job_id": "biz-1", "type": "ingest", "payload": `{}`, "attempts": "1", "max_attempts": "2",
+		"job_id": "biz-1", "type": "ingest", "payload": `{}`, "attempt_count": "1", "max_attempts": "2",
 	}}}}
 	q := NewRedisStreamQueueWithClient(fake, "jobs", "workers", "fallback")
 	jobs, err := q.Claim(context.Background(), ClaimOptions{Limit: 1})
-	if err != nil || len(jobs) != 1 || jobs[0].Attempts != 2 {
+	if err != nil || len(jobs) != 1 || jobs[0].AttemptCount != 2 {
 		t.Fatalf("Claim() = %+v, %v", jobs, err)
 	}
 	if err := q.Nack(context.Background(), "1-0", time.Now()); err != nil {

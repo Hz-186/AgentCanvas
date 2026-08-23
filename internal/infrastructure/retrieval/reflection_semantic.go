@@ -119,7 +119,7 @@ func (s *ReflectionSemanticIndex) embed(ctx context.Context, ownerID, providerID
 	if err != nil {
 		return nil, "", err
 	}
-	if provider.Status != providerdomain.StatusActive {
+	if !provider.Enabled {
 		return nil, "", fmt.Errorf("reflection embedding provider is disabled")
 	}
 	model := strings.TrimSpace(requestedModel)

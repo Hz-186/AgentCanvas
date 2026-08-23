@@ -39,7 +39,7 @@ func (s *Service) CleanupRunWorkspace(ctx context.Context, ownerID, runID int64,
 	// Neither force nor configuration may bypass the fail-safe preservation
 	// policy. The flags remain in configuration as explicit operator intent,
 	// but dirty or unpublished work is never deleted.
-	if item.Dirty || item.Unpushed {
+	if item.Dirty || item.HasUnpushedCommits {
 		return s.preserveWorkspace(ctx, item, "workspace contains dirty or unpushed work", nil)
 	}
 	if err := s.git.RemoveWorktree(ctx, item.RepositoryRoot, item.WorkspacePath, false); err != nil {

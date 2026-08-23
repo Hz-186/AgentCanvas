@@ -16,9 +16,9 @@ func TestBindStrictAgentJSONRejectsInternalConfiguration(t *testing.T) {
 		name string
 		body string
 	}{
-		{name: "legacy goal", body: `{"name":"agent","settings":{"provider_id":1,"model":"","system_prompt":"","knowledge_ids":[]},"goal":"hidden"}`},
+		{name: "legacy goal", body: `{"name":"agent","settings":{"provider_id":1,"model":"","system_prompt":"","knowledge_base_ids":[]},"goal":"hidden"}`},
 		{name: "complete definition", body: `{"name":"agent","definition":{"provider_id":1}}`},
-		{name: "internal policy", body: `{"provider_id":1,"model":"","system_prompt":"","knowledge_ids":[],"tool_policy_json":{}}`},
+		{name: "internal policy", body: `{"provider_id":1,"model":"","system_prompt":"","knowledge_base_ids":[],"tool_policy_json":{}}`},
 	}
 
 	for _, test := range tests {

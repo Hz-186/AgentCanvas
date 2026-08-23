@@ -81,13 +81,13 @@ func (q *ResourceSummaryQuery) queryForKind(ctx context.Context, ownerID int64, 
 	base := q.db.WithContext(ctx).Where("owner_id = ? AND deleted_at IS NULL", ownerID)
 	switch kind {
 	case resource.KindSkills:
-		return base.Table("skills").Select("id, name, description, status, skill_type AS resource_type, updated_at"), true, nil
+		return base.Table("skills").Select("id, name, description, enabled, skill_type AS resource_type, updated_at"), true, nil
 	case resource.KindMemories:
-		return base.Table("memories").Select("id, COALESCE(NULLIF(title, ''), memory_type) AS name, 1 AS status, memory_type AS resource_type, updated_at"), true, nil
+		return base.Table("memories").Select("id, COALESCE(NULLIF(title, ''), memory_type) AS name, true AS enabled, memory_type AS resource_type, updated_at"), true, nil
 	case resource.KindHTTPTools:
-		return base.Table("tool_definitions").Where("tool_type = ?", "http").Select("id, name, description, status, tool_type AS resource_type, updated_at"), true, nil
+		return base.Table("tool_definitions").Where("tool_type = ?", "http").Select("id, name, description, enabled, tool_type AS resource_type, updated_at"), true, nil
 	case resource.KindKnowledgeBases:
-		return base.Table("knowledge_bases").Select("id, name, description, status, updated_at, document_count, chunk_count"), false, nil
+		return base.Table("knowledge_bases").Select("id, name, description, enabled, updated_at, document_count, chunk_count"), false, nil
 	default:
 		return nil, false, fmt.Errorf("unsupported resource kind %q", kind)
 	}

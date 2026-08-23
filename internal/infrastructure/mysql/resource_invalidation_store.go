@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"agentcanvas/internal/domain"
 	"agentcanvas/internal/domain/resource"
 
 	"gorm.io/gorm"
@@ -24,7 +25,7 @@ func (s *ResourceInvalidationStore) Enqueue(ctx context.Context, ownerID int64, 
 		message = cause.Error()
 	}
 	return s.db.WithContext(ctx).Create(&resource.InvalidationEvent{
-		OwnerID: ownerID, Kind: kind, NextRetryAt: now, LastError: message, CreatedAt: now, UpdatedAt: now,
+		BaseModel: domain.BaseModel{OwnerID: ownerID, CreatedAt: now, UpdatedAt: now}, Kind: kind, NextRetryAt: now, LastError: message,
 	}).Error
 }
 
@@ -45,13 +46,13 @@ func (s *ResourceInvalidationStore) MarkProcessed(ctx context.Context, id int64)
 		Updates(map[string]any{"processed_at": now, "updated_at": now, "last_error": ""}).Error
 }
 
-func (s *ResourceInvalidationStore) MarkFailed(ctx context.Context, id int64, attempts int, nextRetryAt time.Time, cause error) error {
+func (s *ResourceInvalidationStore) MarkFailed(ctx context.Context, id int64, attemptCount int, nextRetryAt time.Time, cause error) error {
 	message := ""
 	if cause != nil {
 		message = cause.Error()
 	}
 	return s.db.WithContext(ctx).Model(&resource.InvalidationEvent{}).Where("id = ? AND processed_at IS NULL", id).
-		Updates(map[string]any{"attempts": attempts, "next_retry_at": nextRetryAt, "last_error": message, "updated_at": time.Now().UTC()}).Error
+		Updates(map[string]any{"attempt_count": attemptCount, "next_retry_at": nextRetryAt, "last_error": message, "updated_at": time.Now().UTC()}).Error
 }
 
 func (s *ResourceInvalidationStore) DeleteProcessedBefore(ctx context.Context, cutoff time.Time, limit int) (int64, error) {

@@ -31,7 +31,7 @@ func (q *MySQLIngestionQueue) Publish(ctx context.Context, job Job) error {
 		item.ID, _ = strconv.ParseInt(job.ID, 10, 64)
 	}
 	item.OwnerID = int64Payload(job.Payload, "owner_id")
-	item.KBID = int64Payload(job.Payload, "kb_id")
+	item.KnowledgeBaseID = int64Payload(job.Payload, "knowledge_base_id")
 	item.DocumentID = int64Payload(job.Payload, "document_id")
 	return q.Repo.Create(ctx, item)
 }
@@ -90,18 +90,18 @@ func jobFromIngestion(item *knowledge.IngestionJob) Job {
 		return Job{}
 	}
 	return Job{
-		ID:          strconv.FormatInt(item.ID, 10),
-		Type:        item.JobType,
-		Attempts:    item.AttemptCount,
-		MaxAttempts: item.MaxAttempts,
-		AvailableAt: valueOrZeroTime(item.RetryAt),
+		ID:           strconv.FormatInt(item.ID, 10),
+		Type:         item.JobType,
+		AttemptCount: item.AttemptCount,
+		MaxAttempts:  item.MaxAttempts,
+		AvailableAt:  valueOrZeroTime(item.RetryAt),
 		Payload: map[string]any{
-			"owner_id":     item.OwnerID,
-			"kb_id":        item.KBID,
-			"document_id":  item.DocumentID,
-			"status":       item.Status,
-			"locked_by":    item.LockedBy,
-			"max_attempts": item.MaxAttempts,
+			"owner_id":          item.OwnerID,
+			"knowledge_base_id": item.KnowledgeBaseID,
+			"document_id":       item.DocumentID,
+			"status":            item.Status,
+			"locked_by":         item.LockedBy,
+			"max_attempts":      item.MaxAttempts,
 		},
 	}
 }

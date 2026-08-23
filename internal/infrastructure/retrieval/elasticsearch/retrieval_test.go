@@ -26,7 +26,7 @@ func TestVectorSearchBuildsKNNBody(t *testing.T) {
 
 	resp, err := store.Search(context.Background(), retrieval.RetrievalRequest{
 		OwnerID:          1,
-		KBIDs:            []int64{10},
+		KnowledgeBaseIDs: []int64{10},
 		Query:            "agent canvas",
 		TopK:             3,
 		Mode:             retrieval.ModeVector,
@@ -67,14 +67,14 @@ func TestHybridSearchFusesWithinElasticsearch(t *testing.T) {
 	})
 
 	resp, err := store.Search(context.Background(), retrieval.RetrievalRequest{
-		OwnerID:      1,
-		KBIDs:        []int64{10},
-		Query:        "agent canvas",
-		TopK:         5,
-		CandidateK:   8,
-		Mode:         retrieval.ModeHybrid,
-		QueryVector:  []float32{0.1, 0.2, 0.3},
-		HybridWeight: 0.5,
+		OwnerID:          1,
+		KnowledgeBaseIDs: []int64{10},
+		Query:            "agent canvas",
+		TopK:             5,
+		CandidateK:       8,
+		Mode:             retrieval.ModeHybrid,
+		QueryVector:      []float32{0.1, 0.2, 0.3},
+		VectorWeight:     0.5,
 	})
 	if err != nil {
 		t.Fatalf("Search() error = %v", err)
@@ -115,11 +115,11 @@ func TestSearchExcludesDisabledDocuments(t *testing.T) {
 	})
 
 	if _, err := store.Search(context.Background(), retrieval.RetrievalRequest{
-		OwnerID: 1,
-		KBIDs:   []int64{10},
-		Query:   "agent canvas",
-		TopK:    3,
-		Mode:    retrieval.ModeKeyword,
+		OwnerID:          1,
+		KnowledgeBaseIDs: []int64{10},
+		Query:            "agent canvas",
+		TopK:             3,
+		Mode:             retrieval.ModeKeyword,
 	}); err != nil {
 		t.Fatalf("Search() error = %v", err)
 	}
@@ -138,13 +138,13 @@ func TestSearchFiltersEachDocumentToItsActiveGeneration(t *testing.T) {
 	})
 
 	if _, err := store.Search(context.Background(), retrieval.RetrievalRequest{
-		OwnerID: 1, KBIDs: []int64{10}, Query: "agent canvas", TopK: 3, Mode: retrieval.ModeKeyword,
-		ActiveGenerations: map[int64]string{20: "gen-a", 21: "gen-b"},
+		OwnerID: 1, KnowledgeBaseIDs: []int64{10}, Query: "agent canvas", TopK: 3, Mode: retrieval.ModeKeyword,
+		ActiveGenerationIDs: map[int64]string{20: "gen-a", 21: "gen-b"},
 	}); err != nil {
 		t.Fatalf("Search() error = %v", err)
 	}
 	raw, _ := json.Marshal(captured)
-	for _, value := range []string{"minimum_should_match", "document_id", "generation", "gen-a", "gen-b"} {
+	for _, value := range []string{"minimum_should_match", "document_id", "generation_id", "gen-a", "gen-b"} {
 		if !strings.Contains(string(raw), value) {
 			t.Fatalf("active generation filter missing %q: %s", value, raw)
 		}
@@ -187,7 +187,7 @@ func TestDeleteInactiveGenerationsKeepsActiveGeneration(t *testing.T) {
 		t.Fatalf("DeleteInactiveGenerations() error = %v", err)
 	}
 	raw, _ := json.Marshal(captured)
-	for _, value := range []string{"owner_id", "document_id", "must_not", "generation", "gen-active"} {
+	for _, value := range []string{"owner_id", "document_id", "must_not", "generation_id", "gen-active"} {
 		if !strings.Contains(string(raw), value) {
 			t.Fatalf("cleanup query missing %q: %s", value, raw)
 		}
@@ -213,18 +213,18 @@ func writeSearchHits(w http.ResponseWriter, hits []map[string]any) {
 		items = append(items, map[string]any{
 			"_score": hit["score"],
 			"_source": map[string]any{
-				"owner_id":      1,
-				"kb_id":         10,
-				"document_id":   20,
-				"chunk_id":      chunkID,
-				"chunk_index":   0,
-				"document_name": "guide.md",
-				"file_type":     "md",
-				"section_title": "",
-				"content":       hit["content"],
-				"content_hash":  "hash",
-				"token_count":   3,
-				"metadata":      map[string]any{},
+				"owner_id":          1,
+				"knowledge_base_id": 10,
+				"document_id":       20,
+				"chunk_id":          chunkID,
+				"chunk_index":       0,
+				"document_name":     "guide.md",
+				"file_type":         "md",
+				"section_title":     "",
+				"content":           hit["content"],
+				"content_hash":      "hash",
+				"token_count":       3,
+				"metadata":          map[string]any{},
 			},
 		})
 	}

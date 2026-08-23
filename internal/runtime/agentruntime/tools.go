@@ -174,15 +174,15 @@ func (n runtimeCore) loadTools(ctx context.Context, ownerID int64, cfg agentRunt
 			tools = append(tools, toolruntime.SkillSearchTool{Skills: loadedSkills, Audits: n.Audits, Limit: 3})
 		}
 	}
-	if len(cfg.KnowledgeIDs) > 0 {
+	if len(cfg.KnowledgeBaseIDs) > 0 {
 		if n.Retriever == nil {
 			return nil, fmt.Errorf("agent runtime retriever is not configured")
 		}
 		tools = append(tools, toolruntime.KnowledgeSearchTool{
-			Retriever: n.Retriever,
-			KBIDs:     cfg.KnowledgeIDs,
-			DefaultK:  cfg.KnowledgeTopK,
-			Mode:      retrieval.Mode(cfg.KnowledgeMode),
+			Retriever:        n.Retriever,
+			KnowledgeBaseIDs: cfg.KnowledgeBaseIDs,
+			DefaultK:         cfg.KnowledgeTopK,
+			Mode:             retrieval.Mode(cfg.KnowledgeMode),
 		})
 	}
 	if cfg.AllowSubagents {
@@ -190,7 +190,7 @@ func (n runtimeCore) loadTools(ctx context.Context, ownerID int64, cfg agentRunt
 			return nil, fmt.Errorf("agent runtime subagent dispatcher is not configured")
 		}
 		tools = append(tools, toolruntime.SubagentTool{Dispatcher: n.SubagentDispatcher, Default: toolruntime.DefaultSubagentConfig{
-			ProviderID: cfg.ProviderID, Model: cfg.Model, AllowedToolIDs: append([]int64(nil), cfg.ToolIDs...), AllowedSkillIDs: append([]int64(nil), cfg.SkillIDs...), AllowedKnowledgeIDs: append([]int64(nil), cfg.KnowledgeIDs...), AllowedMCPServerIDs: append([]int64(nil), cfg.MCPServerIDs...), MaxIterations: cfg.MaxIterations, MaxToolCalls: cfg.MaxToolCalls, MaxExecutionTimeMS: cfg.MaxExecutionTimeMS, MaxParallelChildren: cfg.MaxParallelSubAgents, MaxDepth: cfg.MaxSubagentDepth, RequireApprovalForRisk: append([]string(nil), cfg.RequireApprovalForRisk...), MaxToolTimeoutMS: cfg.MaxToolTimeoutMS, MaxToolOutputBytes: cfg.MaxToolOutputBytes, AllowedHosts: append([]string(nil), cfg.AllowedHosts...), CodeExecutionEnabled: cfg.CodeExecutionEnabled,
+			ProviderID: cfg.ProviderID, Model: cfg.Model, AllowedToolIDs: append([]int64(nil), cfg.ToolIDs...), AllowedSkillIDs: append([]int64(nil), cfg.SkillIDs...), AllowedKnowledgeIDs: append([]int64(nil), cfg.KnowledgeBaseIDs...), AllowedMCPServerIDs: append([]int64(nil), cfg.MCPServerIDs...), MaxIterations: cfg.MaxIterations, MaxToolCalls: cfg.MaxToolCalls, MaxExecutionTimeMS: cfg.MaxExecutionTimeMS, MaxParallelChildren: cfg.MaxParallelSubAgents, MaxDepth: cfg.MaxSubagentDepth, RequireApprovalForRisk: append([]string(nil), cfg.RequireApprovalForRisk...), MaxToolTimeoutMS: cfg.MaxToolTimeoutMS, MaxToolOutputBytes: cfg.MaxToolOutputBytes, AllowedHosts: append([]string(nil), cfg.AllowedHosts...), CodeExecutionEnabled: cfg.CodeExecutionEnabled,
 		}})
 	}
 	if len(cfg.MCPServerIDs) > 0 {
@@ -309,7 +309,7 @@ func (n runtimeCore) loadSkillDefinitions(ctx context.Context, ownerID int64, id
 	}
 	byID := make(map[int64]skill.Skill, len(items))
 	for _, item := range items {
-		if item.Status != skill.StatusActive || item.DeletedAt != nil {
+		if !item.Enabled || item.DeletedAt != nil {
 			continue
 		}
 		byID[item.ID] = item
@@ -467,7 +467,7 @@ func (n runtimeCore) buildAutomaticMemoryBlock(ctx context.Context, rc *RunConte
 		profile.Model = provider.EmbeddingModel
 	}
 	result, err := (memory.RuntimeService{Memories: n.Memories, RecallLogs: n.MemoryRecallLogs, ContextIndex: n.ContextIndex, AgentID: rc.AgentID, Profile: profile}).Read(ctx, memory.ReadRequest{
-		OwnerID: rc.OwnerID, ConversationID: rc.ConversationID, AgentID: rc.AgentID,
+		OwnerID: rc.OwnerID, ConversationID: rc.ConversationID, ProjectID: projectIDFromRunContext(rc), AgentID: rc.AgentID,
 		RunID: rc.RunID, Query: task, Limit: policy.TopK, TokenBudget: policy.TokenBudget, SemanticOnly: true,
 	})
 	if err != nil {
@@ -494,6 +494,19 @@ func (n runtimeCore) buildAutomaticMemoryBlock(ctx context.Context, rc *RunConte
 	return &runtimeagent.ContextBlock{Name: "memory_recall", Role: conversation.RoleSystem, Content: strings.Join(lines, "\n"), Pinned: false}
 }
 
+func projectIDFromRunContext(rc *RunContext) int64 {
+	if rc == nil {
+		return 0
+	}
+	if rc.ProjectID > 0 {
+		return rc.ProjectID
+	}
+	if rc.Workspace == nil {
+		return 0
+	}
+	return rc.Workspace.ProjectID
+}
+
 func skillIDsFromItems(items []skill.Skill) []int64 {
 	ids := make([]int64, 0, len(items))
 	for _, item := range items {
@@ -512,7 +525,7 @@ func (n runtimeCore) loadMCPTools(ctx context.Context, ownerID int64, serverIDs 
 		if err != nil {
 			return nil, err
 		}
-		if server.Status != tool.MCPStatusActive {
+		if !server.Enabled {
 			continue
 		}
 		client := toolruntime.NewMCPClientFromServer(server)
@@ -548,7 +561,7 @@ func cachedMCPToolDefs(ctx context.Context, repo tool.MCPRepository, ownerID, se
 		defs = append(defs, toolruntime.MCPToolDef{
 			Name:        name,
 			Description: item.Description,
-			Parameters:  item.ParametersJSON,
+			Parameters:  item.InputSchemaJSON,
 		})
 	}
 	return defs

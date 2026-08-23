@@ -1,6 +1,7 @@
 package reflection_usecase
 
 import (
+	"agentcanvas/internal/domain"
 	"context"
 	"encoding/json"
 	"errors"
@@ -75,10 +76,11 @@ func TestWorkerStoresQualifiedTerminalReflection(t *testing.T) {
 	}
 	encrypted, _ := box.Encrypt("key")
 	repo := &fakeRepo{}
-	worker := Worker{Service: Service{Reflections: repo}, Providers: workerProviders{item: providerdomain.ModelProvider{ID: 1, OwnerID: 2,
-		Status: providerdomain.StatusActive, ProviderType: providerdomain.TypeOpenAICompatible, BaseURL: "https://example.test", EncryptedAPIKey: encrypted, DefaultChatModel: "m"}},
+	worker := Worker{Service: Service{Reflections: repo}, Providers: workerProviders{item: providerdomain.ModelProvider{
+		SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 1, OwnerID: 2}},
+		Enabled:         providerdomain.ProviderEnabled, ProviderType: providerdomain.TypeOpenAICompatible, BaseURL: "https://example.test", EncryptedAPIKey: encrypted, DefaultChatModel: "m"}},
 		Secrets: box, LLM: workerChat{response: `{"candidates":[{"kind":"error_lesson","scope":"agent","trigger_type":"tool_error","root_cause_category":"tool_input","root_cause":"wrong input","corrective_action":"validate input first","lesson":"validate tool input before calling","applicability":"tool calls","evidence_step_indexes":[2],"severity":0.9,"generalizability":0.9,"confidence":0.9,"tags":["tool"]}]}`}}
-	job := &reflection.Job{OwnerID: 2, AgentID: 3, RunID: 4, ProviderID: 1, Model: "m", Mode: "react", Task: "task", PayloadJSON: []byte(`{"stop_reason":"max_iterations_exceeded"}`)}
+	job := &reflection.Job{BaseModel: domain.BaseModel{OwnerID: 2}, AgentID: 3, RunID: 4, ProviderID: 1, Model: "m", Mode: "react", Task: "task", PayloadJSON: []byte(`{"stop_reason":"max_iterations_exceeded"}`)}
 	if err := worker.process(context.Background(), job); err != nil {
 		t.Fatal(err)
 	}
@@ -113,10 +115,10 @@ func TestWorkerRetriesMalformedAnalysisAndCompletesQualifiedJob(t *testing.T) {
 		t.Fatal(err)
 	}
 	encrypted, _ := box.Encrypt("key")
-	provider := workerProviders{item: providerdomain.ModelProvider{ID: 1, OwnerID: 2, Status: providerdomain.StatusActive,
+	provider := workerProviders{item: providerdomain.ModelProvider{SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 1, OwnerID: 2}}, Enabled: providerdomain.ProviderEnabled,
 		ProviderType: providerdomain.TypeOpenAICompatible, BaseURL: "https://example.test", EncryptedAPIKey: encrypted, DefaultChatModel: "m"}}
 	stateErr := errors.New("persist retry state")
-	badJobs := &workerJobRepo{next: &reflection.Job{OwnerID: 2, AgentID: 3, RunID: 4, ProviderID: 1, Model: "m", MaxAttempts: 3,
+	badJobs := &workerJobRepo{next: &reflection.Job{BaseModel: domain.BaseModel{OwnerID: 2}, AgentID: 3, RunID: 4, ProviderID: 1, Model: "m", MaxAttempts: 3,
 		PayloadJSON: json.RawMessage(`{"stop_reason":"max_iterations_exceeded"}`)}, failErr: stateErr}
 	badWorker := Worker{Service: Service{Reflections: &fakeRepo{}}, Jobs: badJobs, Providers: provider, Secrets: box, LLM: workerChat{response: `not-json`}}
 	processed, processErr := badWorker.ProcessNext(context.Background(), "worker")
@@ -124,7 +126,7 @@ func TestWorkerRetriesMalformedAnalysisAndCompletesQualifiedJob(t *testing.T) {
 		t.Fatalf("malformed analysis should be retried: processed=%v err=%v jobs=%+v", processed, processErr, badJobs)
 	}
 
-	goodJobs := &workerJobRepo{next: &reflection.Job{OwnerID: 2, AgentID: 3, RunID: 5, ProviderID: 1, Model: "m", MaxAttempts: 3,
+	goodJobs := &workerJobRepo{next: &reflection.Job{BaseModel: domain.BaseModel{OwnerID: 2}, AgentID: 3, RunID: 5, ProviderID: 1, Model: "m", MaxAttempts: 3,
 		PayloadJSON: json.RawMessage(`{"stop_reason":"max_iterations_exceeded"}`)}}
 	goodWorker := Worker{Service: Service{Reflections: &fakeRepo{}}, Jobs: goodJobs, Providers: provider, Secrets: box,
 		LLM: workerChat{response: `{"candidates":[]}`}}
@@ -195,10 +197,11 @@ func TestQueueRuntimeCommitsBeforeAck(t *testing.T) {
 		t.Fatal(err)
 	}
 	encrypted, _ := box.Encrypt("key")
-	repo := &reliableWorkerRepo{job: &reflection.Job{ID: 9, OwnerID: 2, AgentID: 3, RunID: 4, ProviderID: 1, Model: "m", MaxAttempts: 3,
+	repo := &reliableWorkerRepo{job: &reflection.Job{BaseModel: domain.BaseModel{ID: 9, OwnerID: 2}, AgentID: 3, RunID: 4, ProviderID: 1, Model: "m", MaxAttempts: 3,
 		PayloadJSON: json.RawMessage(`{"stop_reason":"max_iterations_exceeded"}`)}, state: reflection.ClaimAcquired}
-	worker := Worker{Jobs: repo, DispatchEnabled: true, Providers: workerProviders{item: providerdomain.ModelProvider{ID: 1, OwnerID: 2,
-		Status: providerdomain.StatusActive, ProviderType: providerdomain.TypeOpenAICompatible, EncryptedAPIKey: encrypted, DefaultChatModel: "m"}},
+	worker := Worker{Jobs: repo, DispatchEnabled: true, Providers: workerProviders{item: providerdomain.ModelProvider{
+		SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 1, OwnerID: 2}},
+		Enabled:         providerdomain.ProviderEnabled, ProviderType: providerdomain.TypeOpenAICompatible, EncryptedAPIKey: encrypted, DefaultChatModel: "m"}},
 		Secrets: box, LLM: workerChat{response: `{"candidates":[]}`}}
 	delivery := &workerDelivery{envelope: reflection.Envelope{SchemaVersion: 1, EventID: "event-1", JobID: 9, DispatchSeq: 1}}
 	runtime := &QueueRuntime{Worker: worker, Jobs: repo, Config: config.ReflectionQueueConfig{LeaseSeconds: 180, HeartbeatSeconds: 30}}

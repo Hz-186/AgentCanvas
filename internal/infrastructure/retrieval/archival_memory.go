@@ -32,13 +32,18 @@ func (s ArchivalMemoryIndex) Index(ctx context.Context, item memory.Memory) erro
 	if err := s.Store.EnsureCollection(ctx, collection, len(vector), vectorstore.DefaultHNSWConfig()); err != nil {
 		return err
 	}
-	conversationID := int64(0)
-	if item.ConversationID != nil {
-		conversationID = *item.ConversationID
+	agentID, conversationID, projectID := int64(0), int64(0), int64(0)
+	switch item.ScopeType {
+	case memory.ScopeAgent:
+		agentID = item.ScopeID
+	case memory.ScopeConversation:
+		conversationID = item.ScopeID
+	case memory.ScopeProject:
+		projectID = item.ScopeID
 	}
 	return s.Store.Upsert(ctx, collection, []vectorstore.VectorDocument{{
 		ID: strconv.FormatInt(item.ID, 10), Vector: vector,
-		Metadata: map[string]any{"owner_id": item.OwnerID, "conversation_id": conversationID, "memory_id": item.ID, "memory_type": item.MemoryType},
+		Metadata: map[string]any{"owner_id": item.OwnerID, "agent_id": agentID, "project_id": projectID, "conversation_id": conversationID, "scope_type": item.ScopeType, "scope_id": item.ScopeID, "memory_id": item.ID, "memory_type": item.MemoryType},
 	}})
 }
 

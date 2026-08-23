@@ -78,7 +78,7 @@ func (s *ShadowChunker) ChunkDocument(ctx context.Context, doc parser.ParsedDocu
 func compareChunks(primary, shadow []Chunk) map[string]any {
 	matched := 0
 	for index := 0; index < len(primary) && index < len(shadow); index++ {
-		if primary[index].Content == shadow[index].Content && primary[index].SectionTitle == shadow[index].SectionTitle && samePage(primary[index].PageNo, shadow[index].PageNo) {
+		if primary[index].Content == shadow[index].Content && primary[index].SectionTitle == shadow[index].SectionTitle && samePage(primary[index].PageNumber, shadow[index].PageNumber) {
 			matched++
 		}
 	}

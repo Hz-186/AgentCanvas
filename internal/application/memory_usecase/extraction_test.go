@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"agentcanvas/internal/domain"
 	"agentcanvas/internal/domain/conversation"
 	"agentcanvas/internal/domain/memory"
 )
@@ -14,6 +15,15 @@ type fakeExtractionRepo struct {
 	jobs    map[int64]*memory.ExtractionJob
 	nextID  int64
 	created []*memory.ExtractionJob
+}
+
+type fakeConversationRepo struct {
+	conversation.Repository
+	projectID int64
+}
+
+func (r fakeConversationRepo) FindByID(context.Context, int64, int64) (*conversation.Conversation, error) {
+	return &conversation.Conversation{ProjectID: &r.projectID}, nil
 }
 
 func (r *fakeExtractionRepo) Create(ctx context.Context, job *memory.ExtractionJob) error {
@@ -81,28 +91,11 @@ func (r *fakeExtractionRepo) ListPending(ctx context.Context, limit int) ([]memo
 
 var _ memory.ExtractionJobRepository = (*fakeExtractionRepo)(nil)
 
-type fakeMergeRepo struct {
-	logs []memory.MergeLog
-	err  error
-}
-
-func (r *fakeMergeRepo) Create(ctx context.Context, log *memory.MergeLog) error {
-	if r.err != nil {
-		return r.err
-	}
-	r.logs = append(r.logs, *log)
-	return nil
-}
-
-func (r *fakeMergeRepo) ListByOwner(ctx context.Context, ownerID int64, limit int) ([]memory.MergeLog, error) {
-	return r.logs, nil
-}
-
 func TestExtractionService_CompleteExtractionFailsWhenCreateFails(t *testing.T) {
 	memRepo := &fakeMemRepo{items: map[int64]*memory.Memory{}}
 	memRepo.created = nil
 	extRepo := &fakeExtractionRepo{}
-	svc := NewExtractionService(memRepo, extRepo, &fakeMergeRepo{})
+	svc := NewExtractionService(memRepo, extRepo)
 	svc.ConfigureCandidates(&fakeCandidateWriter{err: errors.New("candidate failed")})
 
 	jobID, _ := svc.StartExtraction(context.Background(), 100, 1, []int64{1})
@@ -120,9 +113,9 @@ func TestExtractionService_CompleteExtractionFailsWhenCreateFails(t *testing.T) 
 
 func TestExtractionService_CompatibilityAdapterDoesNotMergeDirectly(t *testing.T) {
 	memRepo := &fakeMemRepo{items: map[int64]*memory.Memory{}}
-	memRepo.Create(context.Background(), &memory.Memory{OwnerID: 100, MemoryType: memory.TypeProfile, Content: "alpha beta gamma delta epsilon zeta eta theta", Importance: 0.1})
+	memRepo.Create(context.Background(), &memory.Memory{SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{OwnerID: 100}}, MemoryType: memory.TypeProfile, Content: "alpha beta gamma delta epsilon zeta eta theta", Importance: 0.1})
 	extRepo := &fakeExtractionRepo{}
-	svc := NewExtractionService(memRepo, extRepo, &fakeMergeRepo{err: errors.New("merge log failed")})
+	svc := NewExtractionService(memRepo, extRepo)
 	candidates := &fakeCandidateWriter{}
 	svc.ConfigureCandidates(candidates)
 
@@ -139,11 +132,9 @@ func TestExtractionService_CompatibilityAdapterDoesNotMergeDirectly(t *testing.T
 	}
 }
 
-var _ memory.MergeLogRepository = (*fakeMergeRepo)(nil)
-
 func TestExtractionService_StartExtraction(t *testing.T) {
 	extRepo := &fakeExtractionRepo{}
-	svc := NewExtractionService(&fakeMemRepo{items: map[int64]*memory.Memory{}}, extRepo, &fakeMergeRepo{})
+	svc := NewExtractionService(&fakeMemRepo{items: map[int64]*memory.Memory{}}, extRepo)
 
 	jobID, err := svc.StartExtraction(context.Background(), 100, 1, []int64{1, 2, 3})
 	if err != nil {
@@ -162,11 +153,12 @@ func TestExtractionService_StartExtraction(t *testing.T) {
 
 func TestExtractionServiceScheduleDreamUsesTurnAndIdleConfig(t *testing.T) {
 	extractions := &fakeExtractionRepo{}
-	messages := &fakeDreamMessages{items: []conversation.Message{{ID: 10, OwnerID: 1, ConversationID: 2, Content: "hello"}}}
-	service := NewExtractionService(&fakeMemRepo{}, extractions, &fakeMergeRepo{}, messages)
+	messages := &fakeDreamMessages{items: []conversation.Message{{ImmutableModel: domain.ImmutableModel{ID: 10, OwnerID: 1}, ConversationID: 2, Content: "hello"}}}
+	service := NewExtractionService(&fakeMemRepo{}, extractions, messages)
+	service.ConfigureConversations(fakeConversationRepo{projectID: 42})
 	cfg := DreamConfig{Enabled: true, TriggerEveryNTurns: 5, IdleTimeout: 3 * time.Minute}
 	idleJob, err := service.ScheduleDream(context.Background(), 1, 2, 4, cfg)
-	if err != nil || idleJob == nil || idleJob.TriggerReason != "idle" || idleJob.DueAt == nil || !idleJob.DueAt.After(time.Now().UTC()) {
+	if err != nil || idleJob == nil || idleJob.ProjectID != 42 || idleJob.TriggerReason != "idle" || idleJob.DueAt == nil || !idleJob.DueAt.After(time.Now().UTC()) {
 		t.Fatalf("unexpected idle job: job=%+v err=%v", idleJob, err)
 	}
 	turnJob, err := service.ScheduleDream(context.Background(), 1, 2, 5, cfg)
@@ -177,7 +169,7 @@ func TestExtractionServiceScheduleDreamUsesTurnAndIdleConfig(t *testing.T) {
 
 func TestExtractionService_StartExtractionReusesOpenJob(t *testing.T) {
 	extRepo := &fakeExtractionRepo{}
-	svc := NewExtractionService(&fakeMemRepo{items: map[int64]*memory.Memory{}}, extRepo, &fakeMergeRepo{})
+	svc := NewExtractionService(&fakeMemRepo{items: map[int64]*memory.Memory{}}, extRepo)
 
 	first, err := svc.StartExtraction(context.Background(), 100, 1, []int64{1})
 	if err != nil {
@@ -195,8 +187,7 @@ func TestExtractionService_StartExtractionReusesOpenJob(t *testing.T) {
 func TestExtractionService_CompleteExtraction(t *testing.T) {
 	memRepo := &fakeMemRepo{items: map[int64]*memory.Memory{}}
 	extRepo := &fakeExtractionRepo{}
-	mergeRepo := &fakeMergeRepo{}
-	svc := NewExtractionService(memRepo, extRepo, mergeRepo)
+	svc := NewExtractionService(memRepo, extRepo)
 	candidates := &fakeCandidateWriter{}
 	svc.ConfigureCandidates(candidates)
 
@@ -204,9 +195,6 @@ func TestExtractionService_CompleteExtraction(t *testing.T) {
 	result := &memory.ExtractionResult{
 		ProfileMemories: []memory.ExtractedMemoryItem{
 			{Title: "User preference", Content: "User prefers dark mode", Importance: 0.8, Confidence: 0.9},
-		},
-		SummaryMemories: []memory.ExtractedMemoryItem{
-			{Title: "Key decision", Content: "Chose Gin framework for API", Importance: 0.7, Confidence: 0.85},
 		},
 	}
 	err := svc.CompleteExtraction(context.Background(), jobID, 100, result)
@@ -227,7 +215,7 @@ func TestExtractionService_CompleteExtraction(t *testing.T) {
 
 func TestExtractionService_FailExtraction(t *testing.T) {
 	extRepo := &fakeExtractionRepo{}
-	svc := NewExtractionService(&fakeMemRepo{items: map[int64]*memory.Memory{}}, extRepo, &fakeMergeRepo{})
+	svc := NewExtractionService(&fakeMemRepo{items: map[int64]*memory.Memory{}}, extRepo)
 
 	jobID, _ := svc.StartExtraction(context.Background(), 100, 1, []int64{1, 2, 3})
 	svc.FailExtraction(context.Background(), jobID, 100, "extraction failed: timeout")
@@ -244,11 +232,10 @@ func TestExtractionService_FailExtraction(t *testing.T) {
 func TestExtractionService_Deduplication(t *testing.T) {
 	memRepo := &fakeMemRepo{items: map[int64]*memory.Memory{}}
 	memRepo.Create(context.Background(), &memory.Memory{
-		OwnerID: 100, MemoryType: memory.TypeProfile, Content: "user prefers dark mode for the interface",
+		SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{OwnerID: 100}}, MemoryType: memory.TypeProfile, Content: "user prefers dark mode for the interface",
 	})
 	extRepo := &fakeExtractionRepo{}
-	mergeRepo := &fakeMergeRepo{}
-	svc := NewExtractionService(memRepo, extRepo, mergeRepo)
+	svc := NewExtractionService(memRepo, extRepo)
 	candidates := &fakeCandidateWriter{}
 	svc.ConfigureCandidates(candidates)
 
@@ -274,7 +261,7 @@ func TestExtractionService_Deduplication(t *testing.T) {
 func TestExtractionService_LowConfidenceFiltered(t *testing.T) {
 	memRepo := &fakeMemRepo{items: map[int64]*memory.Memory{}}
 	extRepo := &fakeExtractionRepo{}
-	svc := NewExtractionService(memRepo, extRepo, &fakeMergeRepo{})
+	svc := NewExtractionService(memRepo, extRepo)
 	candidates := &fakeCandidateWriter{}
 	svc.ConfigureCandidates(candidates)
 

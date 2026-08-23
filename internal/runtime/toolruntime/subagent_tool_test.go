@@ -18,7 +18,7 @@ func (f *fakeSubagentDispatcher) RunSubagent(_ context.Context, req SubagentRequ
 func TestSubagentToolInheritsParentPolicy(t *testing.T) {
 	dispatcher := &fakeSubagentDispatcher{}
 	tool := SubagentTool{Dispatcher: dispatcher, Default: DefaultSubagentConfig{ProviderID: 2, Model: "model", AllowedToolIDs: []int64{1, 2}, AllowedMCPServerIDs: []int64{3}, MaxIterations: 10, MaxToolCalls: 20, MaxExecutionTimeMS: 30000, MaxParallelChildren: 4, MaxDepth: 2, RequireApprovalForRisk: []string{RiskHigh}, MaxToolTimeoutMS: 5000, MaxToolOutputBytes: 1024, AllowedHosts: []string{"api.example.com"}}}
-	_, err := tool.Execute(context.Background(), ToolRunContext{OwnerID: 1, AgentID: 2, RunID: 3}, json.RawMessage(`{"name":"researcher","system_prompt":"research carefully","task":"inspect code","tool_ids":[1],"mcp_server_ids":[3],"max_iterations":50}`))
+	_, err := tool.Execute(context.Background(), ToolRunContext{OwnerID: 1, AgentID: 2, RunID: 3, ProjectID: 42}, json.RawMessage(`{"name":"researcher","system_prompt":"research carefully","task":"inspect code","tool_ids":[1],"mcp_server_ids":[3],"max_iterations":50}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -28,6 +28,9 @@ func TestSubagentToolInheritsParentPolicy(t *testing.T) {
 	}
 	if definition.MaxDepth != 2 || dispatcher.req.MaxDepth != 2 {
 		t.Fatalf("delegation depth was not inherited: definition=%+v request=%+v", definition, dispatcher.req)
+	}
+	if dispatcher.req.ProjectID != 42 {
+		t.Fatalf("project context was not inherited: %+v", dispatcher.req)
 	}
 	if len(definition.RequireApprovalForRisk) != 1 || definition.MaxToolTimeoutMS != 5000 || definition.MaxToolOutputBytes != 1024 || len(definition.AllowedHosts) != 1 {
 		t.Fatalf("tool policy was not inherited: %+v", definition)

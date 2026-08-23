@@ -1,6 +1,7 @@
 package provider_usecase
 
 import (
+	"agentcanvas/internal/domain"
 	"context"
 	"errors"
 	"testing"
@@ -13,7 +14,7 @@ func TestProviderTestReturnsFailedStatusPersistenceError(t *testing.T) {
 	testErr := errors.New("provider unavailable")
 	updateErr := errors.New("provider update unavailable")
 	repository := &providerTestRepository{
-		item:      &providerdomain.ModelProvider{ID: 2, OwnerID: 1, ProviderType: providerdomain.TypeOpenAICompatible, EncryptedAPIKey: "encrypted", DefaultChatModel: "model"},
+		item:      &providerdomain.ModelProvider{SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 2, OwnerID: 1}}, ProviderType: providerdomain.TypeOpenAICompatible, EncryptedAPIKey: "encrypted", DefaultChatModel: "model"},
 		updateErr: updateErr,
 	}
 	service := NewService(repository, nil, providerTestSecrets{}, providerTester{err: testErr})

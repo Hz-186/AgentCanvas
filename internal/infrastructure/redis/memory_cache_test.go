@@ -5,11 +5,16 @@ import (
 	"testing"
 	"time"
 
+	"agentcanvas/internal/domain"
 	"agentcanvas/internal/domain/memory"
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
 )
+
+func testMemory(id, owner int64, content string) memory.Memory {
+	return memory.Memory{SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: id, OwnerID: owner}}, Content: content}
+}
 
 func newTestCache(t *testing.T) (*MemoryCache, func()) {
 	t.Helper()
@@ -36,10 +41,7 @@ func TestMemoryCache_SetAndGet(t *testing.T) {
 	defer cleanup()
 	ctx := context.Background()
 
-	items := []memory.Memory{
-		{ID: 1, OwnerID: 100, MemoryType: memory.TypeProfile, Content: "user likes Go"},
-		{ID: 2, OwnerID: 100, MemoryType: memory.TypeProfile, Content: "user prefers clean code"},
-	}
+	items := []memory.Memory{testMemory(1, 100, "user likes Go"), testMemory(2, 100, "user prefers clean code")}
 	err := cache.Set(ctx, 100, "list:profile", items, 5*time.Minute)
 	if err != nil {
 		t.Fatalf("set failed: %v", err)
@@ -79,7 +81,7 @@ func TestMemoryCache_InvalidateOwner(t *testing.T) {
 	defer cleanup()
 	ctx := context.Background()
 
-	items := []memory.Memory{{ID: 1, OwnerID: 100, Content: "test"}}
+	items := []memory.Memory{testMemory(1, 100, "test")}
 	cache.Set(ctx, 100, "list:all", items, 5*time.Minute)
 	cache.Set(ctx, 100, "list:profile", items, 5*time.Minute)
 
@@ -103,7 +105,7 @@ func TestMemoryCache_InvalidateItem(t *testing.T) {
 	defer cleanup()
 	ctx := context.Background()
 
-	items := []memory.Memory{{ID: 42, OwnerID: 100, Content: "test"}}
+	items := []memory.Memory{testMemory(42, 100, "test")}
 	cache.Set(ctx, 100, "id:42", items, 5*time.Minute)
 	cache.Set(ctx, 100, "list:all", items, 5*time.Minute)
 
@@ -128,7 +130,7 @@ func TestMemoryCache_TTL(t *testing.T) {
 	defer cleanup()
 	ctx := context.Background()
 
-	items := []memory.Memory{{ID: 1, OwnerID: 100, Content: "ephemeral"}}
+	items := []memory.Memory{testMemory(1, 100, "ephemeral")}
 	cache.Set(ctx, 100, "ttl", items, 5*time.Second)
 
 	_, hit, _ := cache.Get(ctx, 100, "ttl")
@@ -149,8 +151,8 @@ func TestMemoryCache_DifferentOwnersIsolated(t *testing.T) {
 	defer cleanup()
 	ctx := context.Background()
 
-	itemsA := []memory.Memory{{ID: 1, OwnerID: 100, Content: "A"}}
-	itemsB := []memory.Memory{{ID: 2, OwnerID: 200, Content: "B"}}
+	itemsA := []memory.Memory{testMemory(1, 100, "A")}
+	itemsB := []memory.Memory{testMemory(2, 200, "B")}
 
 	cache.Set(ctx, 100, "list", itemsA, 5*time.Minute)
 	cache.Set(ctx, 200, "list", itemsB, 5*time.Minute)

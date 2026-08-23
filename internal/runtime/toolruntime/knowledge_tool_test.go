@@ -16,9 +16,9 @@ func (r *fakeRetriever) Search(ctx context.Context, req retrieval.RetrievalReque
 	r.req = req
 	return &retrieval.RetrievalResponse{
 		Results: []retrieval.RetrievalResult{{
-			ChunkID: 1,
-			KBID:    req.KBIDs[0],
-			Content: "agent runtime context",
+			ChunkID:         1,
+			KnowledgeBaseID: req.KnowledgeBaseIDs[0],
+			Content:         "agent runtime context",
 		}},
 		LatencyMS: 7,
 	}, nil
@@ -27,10 +27,10 @@ func (r *fakeRetriever) Search(ctx context.Context, req retrieval.RetrievalReque
 func TestKnowledgeSearchToolExecutesRetrieval(t *testing.T) {
 	retriever := &fakeRetriever{}
 	tool := KnowledgeSearchTool{
-		Retriever: retriever,
-		KBIDs:     []int64{10},
-		DefaultK:  4,
-		Mode:      retrieval.ModeKeyword,
+		Retriever:        retriever,
+		KnowledgeBaseIDs: []int64{10},
+		DefaultK:         4,
+		Mode:             retrieval.ModeKeyword,
 	}
 	result, err := tool.Execute(context.Background(), ToolRunContext{OwnerID: 2}, json.RawMessage(`{"query":"agent loop"}`))
 	if err != nil {
