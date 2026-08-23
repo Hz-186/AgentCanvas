@@ -1,6 +1,7 @@
 package mysql
 
 import (
+	"agentcanvas/internal/domain"
 	"context"
 	"database/sql"
 	"errors"
@@ -72,16 +73,16 @@ func TestAgentRuntimeRunPersistenceIntegration(t *testing.T) {
 		}
 	}
 	now := time.Now().UTC()
-	run := &agentdomain.Run{OwnerID: ownerID, AgentID: 7, RunType: agentdomain.RunTypeTurn, Status: agentdomain.RunStatusQueued,
+	run := &agentdomain.Run{BaseModel: domain.BaseModel{OwnerID: ownerID}, AgentID: 7, RunType: agentdomain.RunTypeTurn, Status: agentdomain.RunStatusQueued,
 		DefinitionJSON: []byte(`{"mode":"react"}`), DefinitionHash: "definition-hash", RuleHash: "rule-hash",
 		InputJSON: []byte(`{"query":"integration"}`), StartedAt: now}
 	if err := runRepo.Create(context.Background(), run); err != nil {
 		t.Fatal(err)
 	}
-	if err := eventRepo.Create(context.Background(), &agentdomain.RunEvent{OwnerID: ownerID, RunID: run.ID, EventType: "run.queued", PayloadJSON: []byte(`{}`)}); err != nil {
+	if err := eventRepo.Create(context.Background(), &agentdomain.RunEvent{ImmutableModel: domain.ImmutableModel{OwnerID: ownerID}, RunID: run.ID, EventType: "run.queued", PayloadJSON: []byte(`{}`)}); err != nil {
 		t.Fatal(err)
 	}
-	if err := stepRepo.Create(context.Background(), &agentdomain.RunStep{OwnerID: ownerID, RunID: run.ID, StepIndex: 1, StepType: "llm_response", ProviderID: 3, Model: "mock", TokenCount: 4, LatencyMS: 8}); err != nil {
+	if err := stepRepo.Create(context.Background(), &agentdomain.RunStep{ImmutableModel: domain.ImmutableModel{OwnerID: ownerID}, RunID: run.ID, StepIndex: 1, StepType: "llm_response", ProviderID: 3, Model: "mock", TokenCount: 4, LatencyMS: 8}); err != nil {
 		t.Fatal(err)
 	}
 	loaded, err := runRepo.FindByID(context.Background(), ownerID, run.ID)
@@ -120,12 +121,12 @@ func TestAgentTurnClaimLeaseRecoveryIntegration(t *testing.T) {
 	turnRepo := NewAgentTurnRepository(db)
 	now := time.Now().UTC()
 	releaseID := int64(1)
-	run := &agentdomain.Run{OwnerID: ownerID, AgentID: 1, AgentReleaseID: &releaseID, RunType: agentdomain.RunTypeTurn,
+	run := &agentdomain.Run{BaseModel: domain.BaseModel{OwnerID: ownerID}, AgentID: 1, AgentReleaseID: &releaseID, RunType: agentdomain.RunTypeTurn,
 		Status: agentdomain.RunStatusQueued, DefinitionJSON: []byte(`{}`), InputJSON: []byte(`{}`), StartedAt: now}
 	if err := runRepo.Create(ctx, run); err != nil {
 		t.Fatal(err)
 	}
-	turn := &agentdomain.Turn{OwnerID: ownerID, AgentID: 1, AgentReleaseID: 1, ConversationID: ownerID,
+	turn := &agentdomain.Turn{BaseModel: domain.BaseModel{OwnerID: ownerID}, AgentID: 1, AgentReleaseID: 1, ConversationID: ownerID,
 		RunID: &run.ID, UserMessageID: 1, IdempotencyKey: "claim-once", Status: agentdomain.TurnStatusQueued, InputJSON: []byte(`{}`)}
 	if err := turnRepo.Create(ctx, turn); err != nil {
 		t.Fatal(err)
@@ -219,13 +220,13 @@ func TestProjectWorkspaceRepositoriesIntegration(t *testing.T) {
 
 	projects := NewProjectRepository(db)
 	workspaces := NewWorkspaceRepository(db)
-	projectItem := &projectdomain.Project{OwnerID: ownerID, Slug: "atomic-project", Name: "Atomic Project", PrimaryPath: "/tmp/atomic-project"}
+	projectItem := &projectdomain.Project{BaseModel: domain.BaseModel{OwnerID: ownerID}, Slug: "atomic-project", Name: "Atomic Project", RepositoryRoot: "/tmp/atomic-project"}
 	primaryFolder := &projectdomain.ProjectFolder{Label: "Primary"}
 	if err := projects.CreateWithPrimaryFolder(ctx, projectItem, primaryFolder); err != nil {
 		t.Fatal(err)
 	}
 	loaded, err := projects.FindByID(ctx, ownerID, projectItem.ID)
-	if err != nil || len(loaded.Folders) != 1 || !loaded.Folders[0].IsPrimary || loaded.Folders[0].Path != projectItem.PrimaryPath {
+	if err != nil || len(loaded.Folders) != 1 || countRepositoryRoots(loaded.Folders) != 1 || !loaded.Folders[0].IsRepositoryRoot || loaded.Folders[0].Path != loaded.RepositoryRoot || loaded.Folders[0].Path != projectItem.RepositoryRoot {
 		t.Fatalf("atomic project creation mismatch: project=%#v err=%v", loaded, err)
 	}
 	secondaryFolder := &projectdomain.ProjectFolder{OwnerID: ownerID, ProjectID: projectItem.ID, Path: "/tmp/atomic-project-secondary", Label: "Secondary"}
@@ -236,7 +237,7 @@ func TestProjectWorkspaceRepositoriesIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	loaded, err = projects.FindByID(ctx, ownerID, projectItem.ID)
-	if err != nil || loaded.PrimaryPath != secondaryFolder.Path || len(loaded.Folders) != 2 || !loaded.Folders[0].IsPrimary || loaded.Folders[0].ID != secondaryFolder.ID {
+	if err != nil || loaded.RepositoryRoot != secondaryFolder.Path || len(loaded.Folders) != 2 || countRepositoryRoots(loaded.Folders) != 1 || !loaded.Folders[0].IsRepositoryRoot || loaded.Folders[0].ID != secondaryFolder.ID || loaded.Folders[0].Path != loaded.RepositoryRoot {
 		t.Fatalf("primary folder switch mismatch: project=%#v err=%v", loaded, err)
 	}
 	if err := projects.SetPrimaryFolder(ctx, ownerID+1, projectItem.ID, secondaryFolder.ID); !errors.Is(err, agenterrors.ErrNotFound) {
@@ -246,11 +247,11 @@ func TestProjectWorkspaceRepositoriesIntegration(t *testing.T) {
 		t.Fatalf("missing primary folder switch error = %v, want not found", err)
 	}
 	loaded, err = projects.FindByID(ctx, ownerID, projectItem.ID)
-	if err != nil || loaded.PrimaryPath != secondaryFolder.Path || len(loaded.Folders) != 2 || !loaded.Folders[0].IsPrimary || loaded.Folders[0].ID != secondaryFolder.ID {
+	if err != nil || loaded.RepositoryRoot != secondaryFolder.Path || len(loaded.Folders) != 2 || countRepositoryRoots(loaded.Folders) != 1 || !loaded.Folders[0].IsRepositoryRoot || loaded.Folders[0].ID != secondaryFolder.ID || loaded.Folders[0].Path != loaded.RepositoryRoot {
 		t.Fatalf("failed primary switch changed the existing primary folder: project=%#v err=%v", loaded, err)
 	}
 
-	rolledBack := &projectdomain.Project{OwnerID: ownerID, Slug: "rolled-back", Name: "Rolled Back", PrimaryPath: "/tmp/rolled-back"}
+	rolledBack := &projectdomain.Project{BaseModel: domain.BaseModel{OwnerID: ownerID}, Slug: "rolled-back", Name: "Rolled Back", RepositoryRoot: "/tmp/rolled-back"}
 	duplicateFolderID := &projectdomain.ProjectFolder{ID: primaryFolder.ID, Label: "duplicate primary key"}
 	if err := projects.CreateWithPrimaryFolder(ctx, rolledBack, duplicateFolderID); !errors.Is(err, agenterrors.ErrConflict) {
 		t.Fatalf("atomic rollback error = %v, want conflict", err)
@@ -260,7 +261,7 @@ func TestProjectWorkspaceRepositoriesIntegration(t *testing.T) {
 		t.Fatalf("project survived failed primary folder transaction: count=%d err=%v", rolledBackCount, err)
 	}
 
-	secondProject := &projectdomain.Project{OwnerID: ownerID, Slug: "second-project", Name: "Second", PrimaryPath: "/tmp/second-project"}
+	secondProject := &projectdomain.Project{BaseModel: domain.BaseModel{OwnerID: ownerID}, Slug: "second-project", Name: "Second", RepositoryRoot: "/tmp/second-project"}
 	secondFolder := &projectdomain.ProjectFolder{Label: "Primary"}
 	if err := projects.CreateWithPrimaryFolder(ctx, secondProject, secondFolder); err != nil {
 		t.Fatal(err)
@@ -270,8 +271,8 @@ func TestProjectWorkspaceRepositoriesIntegration(t *testing.T) {
 		t.Fatalf("project update duplicate error = %v, want conflict", err)
 	}
 
-	firstWorkspace := &workspacedomain.Workspace{OwnerID: ownerID, ProjectID: projectItem.ID, RunID: ownerID + 1, Kind: workspacedomain.KindWorktree, RepositoryRoot: projectItem.PrimaryPath, WorkspacePath: projectItem.PrimaryPath + "/.worktrees/one", BranchName: "atomic/one", Status: workspacedomain.StatusReady}
-	secondWorkspace := &workspacedomain.Workspace{OwnerID: ownerID, ProjectID: projectItem.ID, RunID: ownerID + 2, Kind: workspacedomain.KindWorktree, RepositoryRoot: projectItem.PrimaryPath, WorkspacePath: projectItem.PrimaryPath + "/.worktrees/two", BranchName: "atomic/two", Status: workspacedomain.StatusReady}
+	firstWorkspace := &workspacedomain.Workspace{BaseModel: domain.BaseModel{OwnerID: ownerID}, ProjectID: projectItem.ID, RunID: ownerID + 1, Kind: workspacedomain.KindWorktree, RepositoryRoot: projectItem.RepositoryRoot, WorkspacePath: projectItem.RepositoryRoot + "/.worktrees/one", BranchName: "atomic/one", Status: workspacedomain.StatusReady}
+	secondWorkspace := &workspacedomain.Workspace{BaseModel: domain.BaseModel{OwnerID: ownerID}, ProjectID: projectItem.ID, RunID: ownerID + 2, Kind: workspacedomain.KindWorktree, RepositoryRoot: projectItem.RepositoryRoot, WorkspacePath: projectItem.RepositoryRoot + "/.worktrees/two", BranchName: "atomic/two", Status: workspacedomain.StatusReady}
 	if err := workspaces.Create(ctx, firstWorkspace); err != nil {
 		t.Fatal(err)
 	}
@@ -282,6 +283,16 @@ func TestProjectWorkspaceRepositoriesIntegration(t *testing.T) {
 	if err := workspaces.Update(ctx, secondWorkspace); !errors.Is(err, agenterrors.ErrConflict) {
 		t.Fatalf("workspace update duplicate error = %v, want conflict", err)
 	}
+}
+
+func countRepositoryRoots(folders []projectdomain.ProjectFolder) int {
+	count := 0
+	for _, folder := range folders {
+		if folder.IsRepositoryRoot {
+			count++
+		}
+	}
+	return count
 }
 
 func TestGitWorkspaceMigrationRoundTripIntegration(t *testing.T) {
@@ -327,10 +338,42 @@ func TestGitWorkspaceMigrationRoundTripIntegration(t *testing.T) {
 	if _, err := testDB.Exec(`INSERT INTO document_chunks (owner_id, kb_id, document_id, chunk_index, content, content_hash) VALUES (1, 1, 1, 0, 'legacy', 'legacy')`); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := testDB.Exec(`INSERT INTO agent_releases (owner_id, agent_id, version_no, definition_json, checksum, rule_hash, tool_schema_hash, resource_versions_json, created_by) VALUES (1, 1, 1, '{}', 'checksum', 'rule', 'tool', '{}', 1)`); err != nil {
+		t.Fatal(err)
+	}
 	applyIntegrationMigration(t, testDB, filepath.Join(migrationRoot, "000003_document_generations.up.sql"))
 	applyIntegrationMigration(t, testDB, filepath.Join(migrationRoot, "000004_embedding_profiles.up.sql"))
 	applyIntegrationMigration(t, testDB, filepath.Join(migrationRoot, "000005_ingestion_retry_at.up.sql"))
+	applyIntegrationMigration(t, testDB, filepath.Join(migrationRoot, "000006_project_memory_scope.up.sql"))
+	applyIntegrationMigration(t, testDB, filepath.Join(migrationRoot, "000007_dream_project_scope.up.sql"))
 	assertAdditiveMigrationState(t, testDB, true)
+	assertMemoryProjectMigrationState(t, testDB, true)
+	if _, err := testDB.Exec(`INSERT INTO memories (owner_id, scope_type, scope_id, memory_type, memory_level, content, importance, source, created_at, updated_at) VALUES (1, 'project', 42, 'task_memory', 'working', 'project fact', 0.8, 'test', NOW(), NOW())`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := testDB.Exec(`INSERT INTO memory_extraction_jobs (owner_id, conversation_id, project_id, status, created_at) VALUES (1, 1, 42, 'superseded', NOW())`); err != nil {
+		t.Fatal(err)
+	}
+	applyIntegrationMigration(t, testDB, filepath.Join(migrationRoot, "000008_model_schema_cleanup.up.sql"))
+	assertModelCleanupMigrationState(t, testDB, true)
+	var memoryType, retentionTier string
+	if err := testDB.QueryRow("SELECT memory_type, retention_tier FROM memories WHERE owner_id = 1 LIMIT 1").Scan(&memoryType, &retentionTier); err != nil {
+		t.Fatal(err)
+	}
+	if memoryType != "task" || retentionTier != "short_term" {
+		t.Fatalf("memory enum migration = (%q, %q), want (task, short_term)", memoryType, retentionTier)
+	}
+	applyIntegrationMigration(t, testDB, filepath.Join(migrationRoot, "000008_model_schema_cleanup.down.sql"))
+	assertModelCleanupMigrationState(t, testDB, false)
+	if err := testDB.QueryRow("SELECT memory_type, memory_level FROM memories WHERE owner_id = 1 LIMIT 1").Scan(&memoryType, &retentionTier); err != nil {
+		t.Fatal(err)
+	}
+	if memoryType != "task_memory" || retentionTier != "short_term" {
+		t.Fatalf("memory enum rollback = (%q, %q), want (task_memory, short_term)", memoryType, retentionTier)
+	}
+	applyIntegrationMigration(t, testDB, filepath.Join(migrationRoot, "000007_dream_project_scope.down.sql"))
+	applyIntegrationMigration(t, testDB, filepath.Join(migrationRoot, "000006_project_memory_scope.down.sql"))
+	assertMemoryProjectMigrationState(t, testDB, false)
 	applyIntegrationMigration(t, testDB, filepath.Join(migrationRoot, "000005_ingestion_retry_at.down.sql"))
 	applyIntegrationMigration(t, testDB, filepath.Join(migrationRoot, "000004_embedding_profiles.down.sql"))
 	applyIntegrationMigration(t, testDB, filepath.Join(migrationRoot, "000003_document_generations.down.sql"))
@@ -338,7 +381,12 @@ func TestGitWorkspaceMigrationRoundTripIntegration(t *testing.T) {
 	applyIntegrationMigration(t, testDB, filepath.Join(migrationRoot, "000003_document_generations.up.sql"))
 	applyIntegrationMigration(t, testDB, filepath.Join(migrationRoot, "000004_embedding_profiles.up.sql"))
 	applyIntegrationMigration(t, testDB, filepath.Join(migrationRoot, "000005_ingestion_retry_at.up.sql"))
+	applyIntegrationMigration(t, testDB, filepath.Join(migrationRoot, "000006_project_memory_scope.up.sql"))
+	applyIntegrationMigration(t, testDB, filepath.Join(migrationRoot, "000007_dream_project_scope.up.sql"))
 	assertAdditiveMigrationState(t, testDB, true)
+	assertMemoryProjectMigrationState(t, testDB, true)
+	applyIntegrationMigration(t, testDB, filepath.Join(migrationRoot, "000008_model_schema_cleanup.up.sql"))
+	assertModelCleanupMigrationState(t, testDB, true)
 	applyIntegrationMigration(t, testDB, filepath.Join(migrationRoot, "000002_git_workspace.down.sql"))
 	assertGitWorkspaceMigrationState(t, testDB, false)
 	applyIntegrationMigration(t, testDB, filepath.Join(migrationRoot, "000002_git_workspace.up.sql"))
@@ -462,5 +510,185 @@ func assertAdditiveMigrationState(t *testing.T, db *sql.DB, expected bool) {
 	}
 	if activeGeneration != "legacy" || generation != "legacy" || metric != "COSINE" {
 		t.Fatalf("unexpected additive migration backfill/defaults: active_generation=%q generation=%q embedding_metric=%q", activeGeneration, generation, metric)
+	}
+}
+
+func assertMemoryProjectMigrationState(t *testing.T, db *sql.DB, expected bool) {
+	t.Helper()
+	for table, column := range map[string]string{"memories": "project_id", "memory_extraction_jobs": "project_id"} {
+		var count int
+		if err := db.QueryRow("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?", table, column).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if (count == 1) != expected {
+			t.Fatalf("column %s.%s existence = %v, want %v", table, column, count == 1, expected)
+		}
+	}
+	for _, index := range []string{"idx_memories_project", "idx_memory_extraction_project"} {
+		var count int
+		if err := db.QueryRow("SELECT COUNT(DISTINCT index_name) FROM information_schema.statistics WHERE table_schema = DATABASE() AND index_name = ?", index).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if (count == 1) != expected {
+			t.Fatalf("index %s existence = %v, want %v", index, count == 1, expected)
+		}
+	}
+	for table, column := range map[string]string{"memories": "scope_type", "memory_extraction_jobs": "status"} {
+		var columnType string
+		if err := db.QueryRow("SELECT column_type FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?", table, column).Scan(&columnType); err != nil {
+			t.Fatal(err)
+		}
+		value := "'project'"
+		if table == "memory_extraction_jobs" {
+			value = "'superseded'"
+		}
+		if strings.Contains(columnType, value) != expected {
+			t.Fatalf("column %s.%s type = %q, expected extension=%v", table, column, columnType, expected)
+		}
+	}
+}
+
+func assertModelCleanupMigrationState(t *testing.T, db *sql.DB, expected bool) {
+	t.Helper()
+	for table, columns := range map[string][]string{
+		"agent_run_checkpoints":     {"checkpoint_json"},
+		"agent_releases":            {"version_number"},
+		"knowledge_bases":           {"enabled", "vector_weight"},
+		"documents":                 {"knowledge_base_id", "file_size_bytes", "storage_object_key", "active_generation_id", "ingestion_status", "ingestion_error"},
+		"document_chunks":           {"knowledge_base_id", "generation_id", "page_number"},
+		"memories":                  {"conflict_with_id", "has_conflict", "source_conversation_id", "source_project_id", "retention_tier", "recall_count", "promotion_count", "deduplication_key", "last_recalled_at"},
+		"mcp_servers":               {"enabled", "discovery_error", "tools_discovered_at"},
+		"mcp_tool_cache":            {"mcp_server_id", "input_schema_json"},
+		"skills":                    {"content_markdown", "enabled", "active_name"},
+		"projects":                  {"repository_root", "repository_root_hash"},
+		"project_folders":           {"is_repository_root"},
+		"agent_workspaces":          {"has_unpushed_commits"},
+		"cache_invalidation_outbox": {"attempt_count"},
+	} {
+		for _, column := range columns {
+			var count int
+			if err := db.QueryRow("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?", table, column).Scan(&count); err != nil {
+				t.Fatal(err)
+			}
+			if (count == 1) != expected {
+				t.Fatalf("column %s.%s existence = %v, want %v", table, column, count == 1, expected)
+			}
+		}
+	}
+	for table, columns := range map[string][]string{
+		"agent_run_checkpoints":     {"runtime_checkpoint_json", "status", "snapshot_version", "interaction_id", "messages_json", "messages_summary", "steps_json", "pending_tool_call_json", "context_json", "tool_registry_hash", "tool_policy_hash", "updated_at"},
+		"agent_releases":            {"version_no", "tool_schema_hash", "resource_versions_json", "created_by"},
+		"knowledge_bases":           {"status", "hybrid_weight"},
+		"documents":                 {"kb_id", "file_size", "object_key", "active_generation", "parser_status", "parser_error"},
+		"document_chunks":           {"kb_id", "generation", "page_no", "es_index", "es_doc_id", "updated_at"},
+		"memories":                  {"parent_id", "conflict_flag", "conversation_id", "project_id", "memory_level", "access_count", "consolidation_count", "source_key", "last_used_at", "session_id", "embedding"},
+		"mcp_servers":               {"status", "last_error", "discovered_at"},
+		"mcp_tool_cache":            {"server_id", "parameters_json", "schema_hash", "cached_at", "updated_at"},
+		"oauth_accounts":            {"provider_username", "provider_email", "avatar_url", "access_token_encrypted", "refresh_token_encrypted", "scopes", "token_expires_at", "updated_at"},
+		"auth_sessions":             {"user_agent", "ip_address"},
+		"api_tokens":                {"last_used_at"},
+		"conversations":             {"source", "message_json", "reference_json"},
+		"messages":                  {"content_type", "metadata_json"},
+		"skills":                    {"content_md", "status", "version"},
+		"projects":                  {"primary_path", "primary_path_hash", "icon", "color"},
+		"project_folders":           {"is_primary"},
+		"agent_workspaces":          {"unpushed"},
+		"cache_invalidation_outbox": {"attempts"},
+	} {
+		for _, column := range columns {
+			var count int
+			if err := db.QueryRow("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?", table, column).Scan(&count); err != nil {
+				t.Fatal(err)
+			}
+			if (count == 1) != !expected {
+				t.Fatalf("legacy column %s.%s existence = %v, want %v", table, column, count == 1, !expected)
+			}
+		}
+	}
+	if !expected {
+		for _, column := range []string{"resource_versions_json", "created_by"} {
+			var nullable string
+			if err := db.QueryRow("SELECT is_nullable FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'agent_releases' AND column_name = ?", column).Scan(&nullable); err != nil {
+				t.Fatal(err)
+			}
+			if nullable != "NO" {
+				t.Fatalf("agent_releases.%s nullability = %q, want NO after rollback", column, nullable)
+			}
+		}
+		for _, column := range []string{"cached_at", "updated_at"} {
+			var nullable, extra string
+			var defaultValue sql.NullString
+			if err := db.QueryRow("SELECT is_nullable, column_default, extra FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'mcp_tool_cache' AND column_name = ?", column).Scan(&nullable, &defaultValue, &extra); err != nil {
+				t.Fatal(err)
+			}
+			if nullable != "NO" || defaultValue.Valid || strings.Contains(strings.ToUpper(extra), "ON UPDATE") {
+				t.Fatalf("mcp_tool_cache.%s definition = nullable=%q default=%v extra=%q, want NOT NULL without default or ON UPDATE", column, nullable, defaultValue, extra)
+			}
+		}
+	}
+	for _, table := range []string{"model_usage_logs", "message_references", "memory_merge_logs", "tool_policies"} {
+		var count int
+		if err := db.QueryRow("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = ?", table).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if (count == 1) != !expected {
+			t.Fatalf("removed table %s existence = %v, want %v", table, count == 1, !expected)
+		}
+	}
+	for table, indexes := range map[string][]string{
+		"knowledge_bases": {"idx_enabled"},
+		"documents":       {"idx_documents_owner_knowledge_base", "idx_documents_ingestion_status", "idx_documents_knowledge_base_enabled"},
+		"document_chunks": {"idx_document_chunks_owner_knowledge_base"},
+		"memories":        {"idx_memories_retention_tier", "uq_memories_owner_deduplication_key", "idx_memories_source_conversation", "idx_memories_source_project"},
+		"mcp_tool_cache":  {"uk_mcp_tool_cache_server_tool", "idx_mcp_tool_cache_server_id"},
+		"skills":          {"idx_skills_owner_enabled_updated"},
+		"tool_pack_items": {"uk_tool_pack_item", "idx_tool_pack_items_owner_pack"},
+	} {
+		for _, index := range indexes {
+			var count int
+			if err := db.QueryRow("SELECT COUNT(DISTINCT index_name) FROM information_schema.statistics WHERE table_schema = DATABASE() AND table_name = ? AND index_name = ?", table, index).Scan(&count); err != nil {
+				t.Fatal(err)
+			}
+			if (count == 1) != expected {
+				t.Fatalf("index %s.%s existence = %v, want %v", table, index, count == 1, expected)
+			}
+		}
+	}
+	for table, indexes := range map[string][]string{
+		"knowledge_bases": {"idx_status"},
+		"documents":       {"idx_owner_kb", "idx_parser_status", "idx_kb_enabled"},
+		"document_chunks": {"idx_owner_kb"},
+		"memories":        {"idx_memory_level", "uq_memories_owner_source_key", "idx_conversation_id", "idx_memories_project"},
+		"mcp_tool_cache":  {"uniq_mcp_tool_cache_server_name", "idx_mcp_tool_cache_server"},
+		"skills":          {"idx_skills_owner_status_updated"},
+		"tool_pack_items": {"uk_pack_tool", "idx_owner_pack"},
+	} {
+		for _, index := range indexes {
+			var count int
+			if err := db.QueryRow("SELECT COUNT(DISTINCT index_name) FROM information_schema.statistics WHERE table_schema = DATABASE() AND table_name = ? AND index_name = ?", table, index).Scan(&count); err != nil {
+				t.Fatal(err)
+			}
+			if (count == 1) != !expected {
+				t.Fatalf("legacy index %s.%s existence = %v, want %v", table, index, count == 1, !expected)
+			}
+		}
+	}
+	for column, wantNew := range map[string]bool{"memory_type": expected, "retention_tier": expected, "memory_level": !expected} {
+		var columnType string
+		if err := db.QueryRow("SELECT column_type FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'memories' AND column_name = ?", column).Scan(&columnType); err != nil {
+			if wantNew {
+				t.Fatal(err)
+			}
+			continue
+		}
+		if column == "memory_type" && strings.Contains(columnType, "enum('profile','episodic','task','archival')") != wantNew {
+			t.Fatalf("memories.memory_type type = %q, want new=%v", columnType, wantNew)
+		}
+		if column == "retention_tier" && strings.Contains(columnType, "enum('short_term','long_term')") != wantNew {
+			t.Fatalf("memories.retention_tier type = %q, want new=%v", columnType, wantNew)
+		}
+		if column == "memory_level" && strings.Contains(columnType, "enum('working','short_term','long_term')") != wantNew {
+			t.Fatalf("memories.memory_level type = %q, want old=%v", columnType, wantNew)
+		}
 	}
 }
