@@ -92,7 +92,7 @@ HTTP / SPA / future Gateway
 
 ### RAG 与统一上下文
 
-知识库支持 `keyword`、`vector`、`hybrid` 三种检索模式。通过 `retrieval.backend` 选择默认的 Elasticsearch 或 Milvus，每个知识库持久化自己的 `retrieval_backend`，检索和 ingestion 会按知识库 dispatch；选中的后端独立负责三种模式，两个后端不会跨系统融合，未配置的 backend 会明确报错。文档重建使用 `active_generation`/`generation` 追加式切换：解析、切块、embedding 和索引全部成功后才切换活动版本，旧版本异步清理。Milvus 使用 BM25 sparse full-text search，Elasticsearch 使用 BM25 与 dense_vector。切换到 Milvus 时必须配置 `milvus.dimensions`，并重建版本化 collection（默认 `agentcanvas_chunks_v2`），不进行 ES/Milvus 双写。统一上下文索引按 `owner_id`、`agent_id` 与 `conversation_id` 隔离，并使用 Outbox、lease、重试和 dead letter 保证最终一致性。
+知识库支持 `keyword`、`vector`、`hybrid` 三种检索模式。通过 `retrieval.backend` 选择默认的 Elasticsearch 或 Milvus，每个知识库持久化自己的 `retrieval_backend`，检索和 ingestion 会按知识库 dispatch；选中的后端独立负责三种模式，两个后端不会跨系统融合，未配置的 backend 会明确报错。文档重建使用 `active_generation_id`/`generation_id` 追加式切换：解析、切块、embedding 和索引全部成功后才切换活动版本，旧版本异步清理。Milvus 使用 BM25 sparse full-text search，Elasticsearch 使用 BM25 与 dense_vector。切换到 Milvus 时必须配置 `milvus.dimensions`，并重建版本化 collection（默认 `agentcanvas_chunks_v2`），不进行 ES/Milvus 双写。统一上下文索引按 `owner_id`、`agent_id` 与 `conversation_id` 隔离，并使用 Outbox、lease、重试和 dead letter 保证最终一致性。
 
 Embedding provider、model、dimensions 与 profile hash 会被持久化；不同向量空间不会混用。
 
@@ -158,7 +158,7 @@ internal/
     toolruntime/          RuntimeTool、MCP、Skills、Memory、Subagent
     sandbox/              Docker 代码沙箱
     conversationcontext/  会话压缩与滚动快照
-migrations/               基线与 additive generation 迁移
+migrations/               基线、生成版本与模型清理迁移
 proto/                    Python Bridge Protobuf v1 合约
 python/                   Python 常驻侧车、工具与切片实现
 web/                      React SPA
@@ -210,7 +210,7 @@ make test-python
 
 评估新切片策略时可同时设置 `python_bridge.shadow_enabled: true`；评估 PDF 解析时设置 `shadow_document_parser: true`。Worker 会保留 Go 结果，只限时调用 Python 并输出块数、字符覆盖率、边界、token、元数据和延迟对比日志；shadow 失败不会污染入库结果。Python 侧只接收受限文件字节，不访问数据库、对象存储、宿主机文件或用户密钥。
 
-数据库迁移按版本执行；`000003_document_generations` 只增加 generation 字段并回填 `legacy`，`000004_embedding_profiles` 只增加 embedding metric/profile 元数据，`000005_ingestion_retry_at` 为失败任务增加持久化退避时间，均不会删除文档或 chunk 数据。执行前仍需确认迁移窗口，并重新检查 Elasticsearch/Milvus 的向量维度、metric 与 collection。不要对无法确认归属的外部实例执行清理。
+数据库迁移按版本执行；`000003_document_generations` 历史上增加 generation 字段并回填 `legacy`，最终由 `000008_model_schema_cleanup` 统一为 `generation_id`/`active_generation_id`，同时清理废弃模型和字段。`000004_embedding_profiles` 只增加 embedding metric/profile 元数据，`000005_ingestion_retry_at` 为失败任务增加持久化退避时间。执行清理迁移前仍需确认迁移窗口，并重新检查 Elasticsearch/Milvus 的向量维度、metric 与 collection；删除项的数据不承诺由 down 迁移恢复。
 
 生产拓扑中 API 的 `agent_runtime.worker_enabled` 必须保持 `false`。普通 `worker` 处理 ingestion、generation cleanup、Memory Dream/Consolidation 与 Reflection；`agent-worker` 使用 `AGENTCANVAS_WORKER_ROLE=agent`，只通过 MySQL `agent_turns` claim/lease 执行 Agent Turn 和 Review。Compose 开发配置已分别启动两个进程；本地需要显式内嵌执行时，才在 `configs/config.local.yaml` 打开 `worker_enabled`。
 
