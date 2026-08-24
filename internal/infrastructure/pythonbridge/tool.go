@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"agentcanvas/internal/domain"
 	"agentcanvas/internal/domain/tool"
 	"agentcanvas/internal/runtime/toolruntime"
 )
@@ -57,7 +58,7 @@ func (t RuntimeTool) Execute(ctx context.Context, rc toolruntime.ToolRunContext,
 		auditCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
 		defer cancel()
 		_ = t.Invocations.Create(auditCtx, &tool.Invocation{
-			OwnerID: rc.OwnerID, RunID: rc.RunID, AgentID: rc.AgentID, ToolName: t.Name(), ToolType: "python_bridge",
+			ImmutableModel: domain.ImmutableModel{OwnerID: rc.OwnerID}, RunID: rc.RunID, AgentID: rc.AgentID, ToolName: t.Name(), ToolType: "python_bridge",
 			InputJSON: input, OutputJSON: output, Status: invocationStatus, ErrorMessage: errorMessage,
 			LatencyMS: int(time.Since(started).Milliseconds()),
 		})

@@ -13,6 +13,7 @@ import (
 	"time"
 	"unicode"
 
+	"agentcanvas/internal/domain"
 	"agentcanvas/internal/domain/reflection"
 	"agentcanvas/internal/observability"
 	agenterrors "agentcanvas/internal/pkg/errors"
@@ -174,7 +175,7 @@ func (s Service) Recall(ctx context.Context, req reflection.RecallRequest) (refl
 		result.Lessons = append(result.Lessons, reflection.RecalledLesson{ID: item.Reflection.ID, Lesson: item.Reflection.Lesson,
 			CorrectiveAction: item.Reflection.CorrectiveAction, Applicability: item.Reflection.Applicability, Score: item.Score})
 		if s.RecallLogs != nil {
-			_ = s.RecallLogs.Create(ctx, &reflection.RecallLog{OwnerID: req.OwnerID, ReflectionID: item.Reflection.ID, RunID: req.RunID,
+			_ = s.RecallLogs.Create(ctx, &reflection.RecallLog{BaseModel: domain.BaseModel{OwnerID: req.OwnerID}, ReflectionID: item.Reflection.ID, RunID: req.RunID,
 				Score: item.Score, Rank: len(result.Lessons), InjectedTokens: lineTokens})
 		}
 	}
@@ -361,7 +362,7 @@ func (s Service) enqueueRunEvidence(ctx context.Context, ownerID, runID int64, e
 		return
 	}
 	job := &reflection.Job{
-		OwnerID: source.OwnerID, AgentID: source.AgentID, RunID: source.RunID,
+		BaseModel: domain.BaseModel{OwnerID: source.OwnerID}, AgentID: source.AgentID, RunID: source.RunID,
 		ProviderID: source.ProviderID, Model: source.Model, Mode: source.Mode, Task: source.Task,
 		PayloadJSON: payloadJSON, Status: reflection.JobPending, MaxAttempts: source.MaxAttempts,
 		TriggerHash: ContentHash(append([]string{evidenceKey, fmt.Sprint(runID)}, triggerParts...)...),

@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"agentcanvas/internal/domain"
 	"agentcanvas/internal/domain/memory"
 	"agentcanvas/internal/observability"
 
@@ -19,12 +20,12 @@ import (
 func TestConsolidationService_UpgradeShortTerm(t *testing.T) {
 	repo := &fakeMemRepo{items: map[int64]*memory.Memory{}}
 	repo.Create(context.Background(), &memory.Memory{
-		OwnerID: 100, MemoryType: memory.TypeProfile, MemoryLevel: memory.LevelShortTerm,
-		Importance: 0.8, AccessCount: 5, Content: "high importance and accessed",
+		SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{OwnerID: 100}}, MemoryType: memory.TypeProfile, RetentionTier: memory.TierShortTerm,
+		Importance: 0.8, RecallCount: 5, Content: "high importance and accessed",
 	})
 	repo.Create(context.Background(), &memory.Memory{
-		OwnerID: 100, MemoryType: memory.TypeProfile, MemoryLevel: memory.LevelShortTerm,
-		Importance: 0.7, AccessCount: 1, Content: "low access",
+		SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{OwnerID: 100}}, MemoryType: memory.TypeProfile, RetentionTier: memory.TierShortTerm,
+		Importance: 0.7, RecallCount: 1, Content: "low access",
 	})
 
 	svc := NewConsolidationService(repo)
@@ -38,8 +39,8 @@ func TestConsolidationService_UpgradeShortTerm(t *testing.T) {
 
 	items, _ := repo.List(context.Background(), 100, nil, nil, 50, 0)
 	for _, item := range items {
-		if item.Content == "high importance and accessed" && item.MemoryLevel != memory.LevelLongTerm {
-			t.Fatalf("expected long_term for upgraded memory, got %s", item.MemoryLevel)
+		if item.Content == "high importance and accessed" && item.RetentionTier != memory.TierLongTerm {
+			t.Fatalf("expected long_term for upgraded memory, got %s", item.RetentionTier)
 		}
 	}
 }
@@ -47,12 +48,12 @@ func TestConsolidationService_UpgradeShortTerm(t *testing.T) {
 func TestConsolidationService_DowngradeWeak(t *testing.T) {
 	repo := &fakeMemRepo{items: map[int64]*memory.Memory{}}
 	repo.Create(context.Background(), &memory.Memory{
-		OwnerID: 100, MemoryType: memory.TypeProfile, MemoryLevel: memory.LevelLongTerm,
-		Importance: 0.1, AccessCount: 1, Content: "low importance long term",
+		SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{OwnerID: 100}}, MemoryType: memory.TypeProfile, RetentionTier: memory.TierLongTerm,
+		Importance: 0.1, RecallCount: 1, Content: "low importance long term",
 	})
 	repo.Create(context.Background(), &memory.Memory{
-		OwnerID: 100, MemoryType: memory.TypeProfile, MemoryLevel: memory.LevelLongTerm,
-		Importance: 0.9, AccessCount: 10, Content: "high importance long term",
+		SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{OwnerID: 100}}, MemoryType: memory.TypeProfile, RetentionTier: memory.TierLongTerm,
+		Importance: 0.9, RecallCount: 10, Content: "high importance long term",
 	})
 
 	svc := NewConsolidationService(repo)
@@ -68,12 +69,12 @@ func TestConsolidationService_DowngradeWeak(t *testing.T) {
 func TestConsolidationService_RunFullCycle(t *testing.T) {
 	repo := &fakeMemRepo{items: map[int64]*memory.Memory{}}
 	repo.Create(context.Background(), &memory.Memory{
-		OwnerID: 100, MemoryType: memory.TypeProfile, MemoryLevel: memory.LevelShortTerm,
-		Importance: 0.7, AccessCount: 4, Content: "should upgrade",
+		SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{OwnerID: 100}}, MemoryType: memory.TypeProfile, RetentionTier: memory.TierShortTerm,
+		Importance: 0.7, RecallCount: 4, Content: "should upgrade",
 	})
 	repo.Create(context.Background(), &memory.Memory{
-		OwnerID: 100, MemoryType: memory.TypeProfile, MemoryLevel: memory.LevelLongTerm,
-		Importance: 0.1, AccessCount: 1, Content: "should downgrade",
+		SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{OwnerID: 100}}, MemoryType: memory.TypeProfile, RetentionTier: memory.TierLongTerm,
+		Importance: 0.1, RecallCount: 1, Content: "should downgrade",
 	})
 
 	svc := NewConsolidationService(repo)

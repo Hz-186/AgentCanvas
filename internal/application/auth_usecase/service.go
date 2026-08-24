@@ -1,6 +1,7 @@
 package auth_usecase
 
 import (
+	"agentcanvas/internal/domain"
 	"agentcanvas/internal/domain/audit"
 	authdomain "agentcanvas/internal/domain/auth"
 	"agentcanvas/internal/domain/user"
@@ -258,13 +259,13 @@ func (s *Service) HandleGitHubCallback(ctx context.Context, code, state string, 
 			if delErr := s.oauth.DeleteByProviderUserID(ctx, "github", providerUserID); delErr != nil {
 				return nil, delErr
 			}
-			u, account, err = s.createGitHubUser(ctx, ghUser, providerUserID, token.Scope)
+			u, account, err = s.createGitHubUser(ctx, ghUser, providerUserID)
 			if err != nil {
 				return nil, err
 			}
 		}
 	} else if errors.Is(err, gorm.ErrRecordNotFound) {
-		u, account, err = s.createGitHubUser(ctx, ghUser, providerUserID, token.Scope)
+		u, account, err = s.createGitHubUser(ctx, ghUser, providerUserID)
 		if err != nil {
 			return nil, err
 		}
@@ -356,7 +357,7 @@ func (s *Service) CreateAPIToken(ctx context.Context, ownerID int64, req CreateA
 		return nil, err
 	}
 	token := &authdomain.APIToken{
-		OwnerID:     ownerID,
+		BaseModel:   domain.BaseModel{OwnerID: ownerID},
 		Name:        name,
 		TokenHash:   s.tokenHasher.Hash(fullToken),
 		TokenPrefix: fullToken[:12],
@@ -393,7 +394,7 @@ func (s *Service) HashToken(raw string) string {
 	return s.tokenHasher.Hash(raw)
 }
 
-func (s *Service) createGitHubUser(ctx context.Context, ghUser *authdomain.GitHubUser, providerUserID, scopes string) (*user.User, *authdomain.OAuthAccount, error) {
+func (s *Service) createGitHubUser(ctx context.Context, ghUser *authdomain.GitHubUser, providerUserID string) (*user.User, *authdomain.OAuthAccount, error) {
 	username := strings.TrimSpace(ghUser.Login)
 	if username == "" {
 		username = "github_" + providerUserID
@@ -407,13 +408,9 @@ func (s *Service) createGitHubUser(ctx context.Context, ghUser *authdomain.GitHu
 		email := strings.ToLower(ghUser.Email)
 		if existing, err := s.users.FindByEmail(ctx, email); err == nil {
 			account := &authdomain.OAuthAccount{
-				UserID:           existing.ID,
-				Provider:         "github",
-				ProviderUserID:   providerUserID,
-				ProviderUsername: ghUser.Login,
-				ProviderEmail:    ghUser.Email,
-				AvatarURL:        ghUser.AvatarURL,
-				Scopes:           scopes,
+				UserID:         existing.ID,
+				Provider:       "github",
+				ProviderUserID: providerUserID,
 			}
 			if err := s.oauth.Create(ctx, account); err != nil {
 				return nil, nil, err
@@ -434,13 +431,9 @@ func (s *Service) createGitHubUser(ctx context.Context, ghUser *authdomain.GitHu
 		return nil, nil, err
 	}
 	account := &authdomain.OAuthAccount{
-		UserID:           u.ID,
-		Provider:         "github",
-		ProviderUserID:   providerUserID,
-		ProviderUsername: ghUser.Login,
-		ProviderEmail:    ghUser.Email,
-		AvatarURL:        ghUser.AvatarURL,
-		Scopes:           scopes,
+		UserID:         u.ID,
+		Provider:       "github",
+		ProviderUserID: providerUserID,
 	}
 	if err := s.oauth.Create(ctx, account); err != nil {
 		return nil, nil, err
@@ -460,8 +453,6 @@ func (s *Service) issueTokens(ctx context.Context, userID int64, client ClientIn
 	session := &authdomain.Session{
 		UserID:           userID,
 		RefreshTokenHash: s.tokenHasher.Hash(refresh),
-		UserAgent:        client.UserAgent,
-		IPAddress:        client.IPAddress,
 		ExpiresAt:        time.Now().UTC().Add(s.refreshTTL),
 	}
 	if err := s.sessions.Create(ctx, session); err != nil {

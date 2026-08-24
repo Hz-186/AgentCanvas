@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"agentcanvas/internal/domain"
 	"agentcanvas/internal/domain/memory"
 )
 
@@ -198,7 +199,7 @@ func (r *fakeMemRepo) ListByLevel(ctx context.Context, ownerID int64, level stri
 		if ownerID > 0 && m.OwnerID != ownerID {
 			continue
 		}
-		if m.MemoryLevel != level {
+		if m.RetentionTier != level {
 			continue
 		}
 		if len(memoryTypes) > 0 {
@@ -231,10 +232,10 @@ func (r *fakeMemRepo) ListActiveOwnerIDs(ctx context.Context, limit int) ([]int6
 	}
 	return ids, nil
 }
-func (r *fakeMemRepo) IncrementAccessCount(ctx context.Context, ownerID int64, id int64) error {
+func (r *fakeMemRepo) IncrementRecallCount(ctx context.Context, ownerID int64, id int64) error {
 	return nil
 }
-func (r *fakeMemRepo) IncrementConsolidationCount(ctx context.Context, ownerID int64, id int64) error {
+func (r *fakeMemRepo) IncrementPromotionCount(ctx context.Context, ownerID int64, id int64) error {
 	return nil
 }
 func (r *fakeMemRepo) MarkExpired(ctx context.Context, ownerID int64, maxAgeDays int) (int64, error) {
@@ -250,9 +251,6 @@ func (r *fakeMemRepo) MarkExpired(ctx context.Context, ownerID int64, maxAgeDays
 }
 func (r *fakeMemRepo) UpdateDecayedImportance(ctx context.Context, ownerID int64, decayRate float64) (int64, error) {
 	return 0, nil
-}
-func (r *fakeMemRepo) SetEmbedding(ctx context.Context, ownerID, id int64, embedding []byte) error {
-	return nil
 }
 
 var _ memory.Repository = (*fakeMemRepo)(nil)
@@ -284,7 +282,7 @@ func TestServiceCreateInvalidatesCache(t *testing.T) {
 
 func TestServiceListUsesCacheAndFallsBack(t *testing.T) {
 	repo := &fakeMemRepo{items: map[int64]*memory.Memory{}}
-	repo.Create(context.Background(), &memory.Memory{OwnerID: 100, MemoryType: memory.TypeProfile, Content: "from db"})
+	repo.Create(context.Background(), &memory.Memory{SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{OwnerID: 100}}, MemoryType: memory.TypeProfile, Content: "from db"})
 
 	cache := &fakeCacheStore{store: map[string]fakeCacheEntry{}}
 	svcWithoutCache := NewService(repo)
@@ -295,7 +293,7 @@ func TestServiceListUsesCacheAndFallsBack(t *testing.T) {
 		t.Fatalf("expected 1 item from db, got %d", len(itemsNoCache))
 	}
 
-	cached := []memory.Memory{{ID: 99, OwnerID: 100, MemoryType: memory.TypeProfile, Content: "from cache"}}
+	cached := []memory.Memory{{SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 99, OwnerID: 100}}, MemoryType: memory.TypeProfile, Content: "from cache"}}
 	cache.Set(context.Background(), 100, "list::_:50:0", cached, time.Minute)
 
 	itemsWithCache, err := svcWithCache.List(context.Background(), 100, nil, nil, 50, 0)
@@ -309,7 +307,7 @@ func TestServiceListUsesCacheAndFallsBack(t *testing.T) {
 
 func TestServiceUpdateInvalidatesCache(t *testing.T) {
 	repo := &fakeMemRepo{items: map[int64]*memory.Memory{
-		1: {ID: 1, OwnerID: 100, MemoryType: memory.TypeProfile, Content: "old"},
+		1: {SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 1, OwnerID: 100}}, MemoryType: memory.TypeProfile, Content: "old"},
 	}}
 	cache := &fakeCacheStore{store: map[string]fakeCacheEntry{}}
 	svc := NewServiceWithCache(repo, cache)
@@ -342,7 +340,7 @@ func TestServiceUpdateInvalidatesCache(t *testing.T) {
 
 func TestServiceDeleteInvalidatesCache(t *testing.T) {
 	repo := &fakeMemRepo{items: map[int64]*memory.Memory{
-		1: {ID: 1, OwnerID: 100, MemoryType: memory.TypeProfile, Content: "test"},
+		1: {SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 1, OwnerID: 100}}, MemoryType: memory.TypeProfile, Content: "test"},
 	}}
 	cache := &fakeCacheStore{store: map[string]fakeCacheEntry{}}
 	svc := NewServiceWithCache(repo, cache)
@@ -398,7 +396,7 @@ func TestServiceCreateUsesTransactionalOutboxInsteadOfLegacyIndex(t *testing.T) 
 }
 
 func TestServiceDeleteUsesTransactionalOutboxInsteadOfLegacyIndex(t *testing.T) {
-	repo := &fakeMemRepo{items: map[int64]*memory.Memory{1: {ID: 1, OwnerID: 100, MemoryType: memory.TypeProfile, Content: "delete me"}}}
+	repo := &fakeMemRepo{items: map[int64]*memory.Memory{1: {SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 1, OwnerID: 100}}, MemoryType: memory.TypeProfile, Content: "delete me"}}}
 	retriever := &fakeServiceRetriever{}
 	svc := NewServiceWithCacheAndRetriever(repo, nil, retriever)
 
@@ -428,5 +426,16 @@ func TestNewServiceWithoutCacheWorks(t *testing.T) {
 	}
 	if len(items) != 1 {
 		t.Fatalf("expected 1 item, got %d", len(items))
+	}
+}
+
+func TestMemoryCommandServiceAcceptsProjectScope(t *testing.T) {
+	repo := &fakeMemRepo{items: map[int64]*memory.Memory{}}
+	projectID := int64(42)
+	result, err := NewMemoryCommandService(repo, nil).Execute(context.Background(), memory.WriteRequest{
+		OwnerID: 100, SourceProjectID: &projectID, MemoryType: memory.TypeTask, Content: "project fact", ScopeType: memory.ScopeProject, ScopeID: projectID,
+	})
+	if err != nil || result.Memory.ScopeType != memory.ScopeProject || result.Memory.ScopeID != projectID || result.Memory.SourceProjectID == nil || *result.Memory.SourceProjectID != projectID {
+		t.Fatalf("project-scoped command was rejected or normalized incorrectly: result=%+v err=%v", result, err)
 	}
 }

@@ -118,20 +118,12 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 		contextTrace = req.ResumeContext
 		contextTrace.Strategy = "resumed_from_checkpoint"
 	} else {
-		compactedBlocks, compactionUsage, initialCompaction := r.compactInitialHistory(ctx, req, tools)
-		req.ContextBlocks = compactedBlocks
-		result.Usage = addUsage(result.Usage, compactionUsage)
 		baseMessages, contextTrace = ContextAssembler{}.Build(req)
 		counter := modelTokenCount(req, "token counter probe")
 		contextTrace.TokenCounterMethod = counter.Method
 		contextTrace.TokenCounterError = counter.Error
 		contextTrace.AutoCompactTokenLimit = autoCompactLimit(req)
 		contextTrace.AutoCompactLimitScope = autoCompactScope(req)
-		if initialCompaction != nil {
-			observability.ContextSystemMetrics.RecordCompaction(initialCompaction.Status)
-			contextTrace.Compactions = append(contextTrace.Compactions, *initialCompaction)
-			contextTrace.SavedTokens += initialCompaction.SavedTokens
-		}
 		contextTrace.RuleHash = req.RuleHash
 		if contextTrace.CoreOverflow {
 			observability.RuleSystemMetrics.RecordMandatoryOverflow()
@@ -749,6 +741,8 @@ func (r *Runner) executeToolBatch(
 			RunID:           req.RunID,
 			DelegationDepth: req.DelegationDepth,
 			ConversationID:  req.ConversationID,
+			ProjectID:       req.ProjectID,
+			Task:            req.Task,
 			Workspace:       req.Workspace,
 			EmitEvent:       req.EmitEvent,
 		}, item.call.Arguments)

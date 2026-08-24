@@ -176,10 +176,10 @@ func RetrievalResultKey(item retrieval.RetrievalResult) string {
 		return fmt.Sprintf("chunk:%d", item.ChunkID)
 	}
 	page := ""
-	if item.PageNo != nil {
-		page = fmt.Sprint(*item.PageNo)
+	if item.PageNumber != nil {
+		page = fmt.Sprint(*item.PageNumber)
 	}
-	return fmt.Sprintf("doc:%d:kb:%d:page:%s:content:%s", item.DocumentID, item.KBID, page, strings.TrimSpace(item.Content))
+	return fmt.Sprintf("doc:%d:kb:%d:page:%s:content:%s", item.DocumentID, item.KnowledgeBaseID, page, strings.TrimSpace(item.Content))
 }
 
 func rrfRetrievalResultKey(item retrieval.RetrievalResult) string {
@@ -187,7 +187,7 @@ func rrfRetrievalResultKey(item retrieval.RetrievalResult) string {
 		return fmt.Sprintf("chunk:%d", item.ChunkID)
 	}
 	if item.DocumentID > 0 {
-		return fmt.Sprintf("document:%d:page:%v", item.DocumentID, item.PageNo)
+		return fmt.Sprintf("document:%d:page:%v", item.DocumentID, item.PageNumber)
 	}
 	return "content:" + strings.TrimSpace(item.Content)
 }
@@ -219,8 +219,8 @@ func mergeRetrievalFields(existing, candidate retrieval.RetrievalResult) retriev
 	if existing.DocumentName == "" {
 		existing.DocumentName = candidate.DocumentName
 	}
-	if existing.PageNo == nil {
-		existing.PageNo = candidate.PageNo
+	if existing.PageNumber == nil {
+		existing.PageNumber = candidate.PageNumber
 	}
 	if existing.Metadata == nil {
 		existing.Metadata = candidate.Metadata

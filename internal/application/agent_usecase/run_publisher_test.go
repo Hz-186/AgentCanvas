@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"agentcanvas/internal/domain"
 	agentdomain "agentcanvas/internal/domain/agent"
 	"agentcanvas/internal/domain/conversation"
 	workspacedomain "agentcanvas/internal/domain/workspace"
@@ -150,9 +151,9 @@ func TestTerminalSnapshotIsAuthoritativeAndClosesCompletedRun(t *testing.T) {
 	defer cancel()
 	service := &Service{streamHub: hub}
 	now := time.Now().UTC()
-	run := &agentdomain.Run{ID: 11, OwnerID: 1, AgentID: 2, RunType: agentdomain.RunTypeTurn, Status: agentdomain.RunStatusSucceeded,
+	run := &agentdomain.Run{BaseModel: domain.BaseModel{ID: 11, OwnerID: 1}, AgentID: 2, RunType: agentdomain.RunTypeTurn, Status: agentdomain.RunStatusSucceeded,
 		DefinitionJSON: json.RawMessage(`{"system_prompt":"private"}`), OutputJSON: json.RawMessage(`{"final_answer":"final"}`), StartedAt: now, FinishedAt: &now}
-	message := &conversation.Message{ID: 12, OwnerID: 1, ConversationID: 3, Role: conversation.RoleAssistant, Content: "final"}
+	message := &conversation.Message{ImmutableModel: domain.ImmutableModel{ID: 12, OwnerID: 1}, ConversationID: 3, Role: conversation.RoleAssistant, Content: "final"}
 	service.publishRunSnapshot(run, nil, message, llm.Usage{TotalTokens: 7})
 	event := receiveStreamEvent(t, live)
 	if event.Kind != eventhub.RunComplete {
@@ -173,8 +174,8 @@ func TestTerminalSnapshotIsAuthoritativeAndClosesCompletedRun(t *testing.T) {
 
 func TestPublicStreamRunIncludesResolvedWorkspace(t *testing.T) {
 	workspaceID := int64(70)
-	run := &agentdomain.Run{ID: 11, OwnerID: 1, AgentID: 2, WorkspaceID: &workspaceID, RunType: agentdomain.RunTypeTurn}
-	workspace := &workspacedomain.Workspace{ID: workspaceID, OwnerID: 1, RunID: 7, Kind: workspacedomain.KindShared, WorkspacePath: "/repo", BranchName: "main"}
+	run := &agentdomain.Run{BaseModel: domain.BaseModel{ID: 11, OwnerID: 1}, AgentID: 2, WorkspaceID: &workspaceID, RunType: agentdomain.RunTypeTurn}
+	workspace := &workspacedomain.Workspace{BaseModel: domain.BaseModel{ID: workspaceID, OwnerID: 1}, RunID: 7, Kind: workspacedomain.KindShared, WorkspacePath: "/repo", BranchName: "main"}
 	snapshot := publicStreamRun(run, workspace)
 	if snapshot.Workspace == nil || snapshot.Workspace.ID != workspaceID || snapshot.Workspace.BranchName != "main" || snapshot.Workspace.RunID != run.ID {
 		t.Fatalf("workspace missing from terminal run snapshot: %#v", snapshot)
@@ -185,19 +186,18 @@ func TestPublicStreamRunIncludesResolvedWorkspace(t *testing.T) {
 }
 
 func TestWorkspaceEventPayloadPreservesCompleteGitSnapshot(t *testing.T) {
-	item := &workspacedomain.Workspace{
-		ID: 70, OwnerID: 1, ProjectID: 3, RunID: 11, Kind: workspacedomain.KindWorktree,
+	item := &workspacedomain.Workspace{BaseModel: domain.BaseModel{ID: 70, OwnerID: 1}, ProjectID: 3, RunID: 11, Kind: workspacedomain.KindWorktree,
 		RepositoryRoot: "/repo", WorkspacePath: "/repo/.worktrees/11-task", BranchName: "demo/11-task",
 		BaseSHA: "aaaaaaaa", HeadSHA: "bbbbbbbb", Status: workspacedomain.StatusReady,
-		Dirty: true, Unpushed: true, Locked: true, LockReason: "agentcanvas run=11 pid=1234",
+		Dirty: true, HasUnpushedCommits: true, Locked: true, LockReason: "agentcanvas run=11 pid=1234",
 	}
 	payload := workspaceEventPayload(item, nil)
 	want := map[string]any{
 		"workspace_id": int64(70), "project_id": int64(3), "run_id": int64(11),
-		"kind": workspacedomain.KindWorktree, "repo_root": "/repo", "path": "/repo/.worktrees/11-task",
-		"branch": "demo/11-task", "base_sha": "aaaaaaaa", "head_sha": "bbbbbbbb",
-		"status": workspacedomain.StatusReady, "dirty": true, "unpushed": true, "locked": true,
-		"lock_reason": "agentcanvas run=11 pid=1234", "error": "",
+		"kind": workspacedomain.KindWorktree, "repository_root": "/repo", "workspace_path": "/repo/.worktrees/11-task",
+		"branch_name": "demo/11-task", "base_sha": "aaaaaaaa", "head_sha": "bbbbbbbb",
+		"status": workspacedomain.StatusReady, "dirty": true, "has_unpushed_commits": true, "locked": true,
+		"lock_reason": "agentcanvas run=11 pid=1234", "error_message": "",
 	}
 	for key, expected := range want {
 		if payload[key] != expected {
@@ -211,7 +211,7 @@ func TestPausedSnapshotKeepsStreamOpenForResume(t *testing.T) {
 	_, live, cancel := hub.Subscribe(12, 0)
 	defer cancel()
 	service := &Service{streamHub: hub}
-	run := &agentdomain.Run{ID: 12, OwnerID: 1, AgentID: 2, RunType: agentdomain.RunTypeTurn, Status: agentdomain.RunStatusPaused}
+	run := &agentdomain.Run{BaseModel: domain.BaseModel{ID: 12, OwnerID: 1}, AgentID: 2, RunType: agentdomain.RunTypeTurn, Status: agentdomain.RunStatusPaused}
 	service.publishRunSnapshot(run, nil, nil, llm.Usage{})
 	if got := receiveStreamEvent(t, live); got.Kind != eventhub.RunPaused {
 		t.Fatalf("pause event = %+v", got)

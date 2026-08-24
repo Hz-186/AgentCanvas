@@ -84,7 +84,7 @@ func (t GitTool) Execute(ctx context.Context, rc ToolRunContext, input json.RawM
 			statusError = err.Error()
 		}
 		if rc.EmitEvent != nil {
-			_ = rc.EmitEvent(ctx, "git.status_changed", map[string]any{"workspace_id": rc.Workspace.ID, "project_id": rc.Workspace.ProjectID, "run_id": rc.RunID, "kind": rc.Workspace.Kind, "repo_root": rc.Workspace.RepositoryRoot, "path": rc.Workspace.WorkspacePath, "branch": value.Branch, "base_sha": rc.Workspace.BaseSHA, "head_sha": value.Head, "dirty": rc.Workspace.Dirty, "unpushed": rc.Workspace.Unpushed, "status": "ready", "error": statusError})
+			_ = rc.EmitEvent(ctx, "git.status_changed", map[string]any{"workspace_id": rc.Workspace.ID, "project_id": rc.Workspace.ProjectID, "run_id": rc.RunID, "kind": rc.Workspace.Kind, "repository_root": rc.Workspace.RepositoryRoot, "workspace_path": rc.Workspace.WorkspacePath, "branch_name": value.Branch, "base_sha": rc.Workspace.BaseSHA, "head_sha": value.Head, "dirty": rc.Workspace.Dirty, "has_unpushed_commits": rc.Workspace.HasUnpushedCommits, "status": "ready", "error_message": statusError})
 		}
 		return resultOrError(value, err)
 	case "git_diff":
@@ -153,11 +153,11 @@ func (t GitTool) Execute(ctx context.Context, rc ToolRunContext, input json.RawM
 			}
 		}
 		if err == nil && rc.EmitEvent != nil {
-			_ = rc.EmitEvent(ctx, "git.commit_created", map[string]any{"workspace_id": rc.Workspace.ID, "project_id": rc.Workspace.ProjectID, "run_id": rc.RunID, "kind": rc.Workspace.Kind, "repo_root": rc.Workspace.RepositoryRoot, "path": rc.Workspace.WorkspacePath, "branch": rc.Workspace.BranchName, "base_sha": rc.Workspace.BaseSHA, "head_sha": value.Hash, "dirty": rc.Workspace.Dirty, "unpushed": rc.Workspace.Unpushed, "status": "ready", "error": statusError, "hash": value.Hash, "message": value.Message, "paths": value.Paths})
+			_ = rc.EmitEvent(ctx, "git.commit_created", map[string]any{"workspace_id": rc.Workspace.ID, "project_id": rc.Workspace.ProjectID, "run_id": rc.RunID, "kind": rc.Workspace.Kind, "repository_root": rc.Workspace.RepositoryRoot, "workspace_path": rc.Workspace.WorkspacePath, "branch_name": rc.Workspace.BranchName, "base_sha": rc.Workspace.BaseSHA, "head_sha": value.Hash, "dirty": rc.Workspace.Dirty, "has_unpushed_commits": rc.Workspace.HasUnpushedCommits, "status": "ready", "error_message": statusError, "hash": value.Hash, "message": value.Message, "paths": value.Paths})
 		}
 		result, resultErr := resultOrError(value, err)
 		if result != nil {
-			result.Metadata = map[string]any{"before_head": beforeHead, "after_head": value.Hash, "paths": value.Paths, "dirty": rc.Workspace.Dirty, "unpushed": rc.Workspace.Unpushed, "status_error": statusError}
+			result.Metadata = map[string]any{"before_head": beforeHead, "after_head": value.Hash, "paths": value.Paths, "dirty": rc.Workspace.Dirty, "has_unpushed_commits": rc.Workspace.HasUnpushedCommits, "status_error": statusError}
 		}
 		return result, resultErr
 	default:
@@ -169,15 +169,15 @@ func currentGitToolStatus(ctx context.Context, service GitOperations, workspace 
 	status, err := service.Status(ctx, workspace.WorkspacePath)
 	if err != nil {
 		workspace.Dirty = true
-		workspace.Unpushed = true
-		return workspacedomain.GitStatus{Root: workspace.RepositoryRoot, Branch: workspace.BranchName, Dirty: true, Unpushed: true}, err
+		workspace.HasUnpushedCommits = true
+		return workspacedomain.GitStatus{Root: workspace.RepositoryRoot, Branch: workspace.BranchName, Dirty: true, HasUnpushedCommits: true}, err
 	}
 	if workspace.Kind == "worktree" && workspace.BaseSHA != "" && status.Head != "" && status.Head != workspace.BaseSHA {
-		status.Unpushed = true
+		status.HasUnpushedCommits = true
 	}
 	workspace.HeadSHA = status.Head
 	workspace.Dirty = status.Dirty
-	workspace.Unpushed = status.Unpushed
+	workspace.HasUnpushedCommits = status.HasUnpushedCommits
 	return status, nil
 }
 

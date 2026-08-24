@@ -5,7 +5,6 @@ import { Panel } from '../components/ui';
 import type { AuditLog } from '../types/api';
 import { formatDate, friendlyErrorMessage } from '../utils/format';
 import { MCPSettings } from './MCPSettings';
-import { PolicySettings } from './PolicySettings';
 import { ProviderSettings } from './ProviderSettings';
 import { SkillSettings } from './SkillSettings';
 import { TokenSettings } from './TokenSettings';
@@ -17,7 +16,7 @@ type ManagementView = 'settings' | 'tools' | 'skills';
 
 const tabs = {
   settings: ['models', 'access', 'audit'],
-  tools: ['http', 'mcp', 'packs', 'policies'],
+  tools: ['http', 'mcp', 'packs'],
   skills: ['skills'],
 } as const;
 
@@ -28,7 +27,6 @@ const tabDescriptions: Record<string, string> = {
   http: 'HTTP endpoints',
   mcp: 'Model Context Protocol',
   packs: 'Reusable tool sets',
-  policies: 'Risk & approval',
   skills: 'Reusable instructions',
 };
 
@@ -79,7 +77,6 @@ function ManagementPage({ view }: { view: ManagementView }) {
         {activeSection === 'http' ? <ToolSettings section="http" /> : null}
         {activeSection === 'mcp' ? <MCPSettings /> : null}
         {activeSection === 'packs' ? <ToolSettings section="packs" /> : null}
-        {activeSection === 'policies' ? <PolicySettings /> : null}
         {activeSection === 'skills' ? <SkillSettings /> : null}
       </div>
     </div>

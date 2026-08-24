@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	"agentcanvas/internal/domain"
 	"agentcanvas/internal/domain/conversation"
 	"agentcanvas/internal/domain/memory"
 )
@@ -46,6 +47,7 @@ type fakeMemoryRepo struct {
 		ownerID int64
 		types   []string
 		limit   int
+		project *int64
 	}
 	marked []int64
 }
@@ -114,7 +116,15 @@ func (r *fakeMemoryRepo) ListForRead(ctx context.Context, ownerID int64, memoryT
 	r.readReq.ownerID = ownerID
 	r.readReq.types = memoryTypes
 	r.readReq.limit = limit
-	return []memory.Memory{{ID: 7, OwnerID: ownerID, MemoryType: memory.TypeSummary, Content: "remember this"}}, nil
+	return []memory.Memory{{SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 7, OwnerID: ownerID}}, Status: memory.StatusActive, ScopeType: memory.ScopeUser, ScopeID: ownerID, MemoryType: memory.TypeProfile, RetentionTier: memory.TierLongTerm, Content: "remember this"}}, nil
+}
+
+func (r *fakeMemoryRepo) ListForReadScoped(ctx context.Context, ownerID, _ int64, memoryTypes []string, conversationID, projectID *int64, limit int) ([]memory.Memory, error) {
+	if projectID != nil {
+		value := *projectID
+		r.readReq.project = &value
+	}
+	return r.ListForRead(ctx, ownerID, memoryTypes, conversationID, limit)
 }
 
 func (r *fakeMemoryRepo) SoftDelete(ctx context.Context, ownerID, id int64) error { return nil }
@@ -130,10 +140,10 @@ func (r *fakeMemoryRepo) ListByLevel(ctx context.Context, ownerID int64, level s
 func (r *fakeMemoryRepo) ListActiveOwnerIDs(ctx context.Context, limit int) ([]int64, error) {
 	return nil, nil
 }
-func (r *fakeMemoryRepo) IncrementAccessCount(ctx context.Context, ownerID int64, id int64) error {
+func (r *fakeMemoryRepo) IncrementRecallCount(ctx context.Context, ownerID int64, id int64) error {
 	return nil
 }
-func (r *fakeMemoryRepo) IncrementConsolidationCount(ctx context.Context, ownerID int64, id int64) error {
+func (r *fakeMemoryRepo) IncrementPromotionCount(ctx context.Context, ownerID int64, id int64) error {
 	return nil
 }
 func (r *fakeMemoryRepo) MarkExpired(ctx context.Context, ownerID int64, maxAgeDays int) (int64, error) {
@@ -141,9 +151,6 @@ func (r *fakeMemoryRepo) MarkExpired(ctx context.Context, ownerID int64, maxAgeD
 }
 func (r *fakeMemoryRepo) UpdateDecayedImportance(ctx context.Context, ownerID int64, decayRate float64) (int64, error) {
 	return 0, nil
-}
-func (r *fakeMemoryRepo) SetEmbedding(ctx context.Context, ownerID, id int64, embedding []byte) error {
-	return nil
 }
 
 type fakeMemoryLogRepo struct {
@@ -175,7 +182,7 @@ func (r *fakeMemoryLogRepo) ListByRun(ctx context.Context, ownerID, runID int64)
 func TestMemoryReadToolReadsAndMarksMemory(t *testing.T) {
 	repo := &fakeMemoryRepo{}
 	tool := MemoryReadTool{Memories: repo, AllowLegacyListFallback: true}
-	result, err := tool.Execute(context.Background(), ToolRunContext{OwnerID: 1}, json.RawMessage(`{"memory_types":["summary_memory"],"limit":3}`))
+	result, err := tool.Execute(context.Background(), ToolRunContext{OwnerID: 1}, json.RawMessage(`{"memory_types":["profile"],"limit":3}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -188,6 +195,17 @@ func TestMemoryReadToolReadsAndMarksMemory(t *testing.T) {
 	}
 	if output["memory_context"] != "remember this" || output["count"].(float64) != 1 {
 		t.Fatalf("unexpected output: %+v", output)
+	}
+}
+
+func TestMemoryReadToolUsesProjectWithoutWorkspace(t *testing.T) {
+	repo := &fakeMemoryRepo{}
+	tool := MemoryReadTool{Memories: repo, AllowLegacyListFallback: true}
+	if _, err := tool.Execute(context.Background(), ToolRunContext{OwnerID: 1, ProjectID: 42}, json.RawMessage(`{"limit":3}`)); err != nil {
+		t.Fatal(err)
+	}
+	if repo.readReq.project == nil || *repo.readReq.project != 42 {
+		t.Fatalf("project scope was not used without a workspace: %+v", repo.readReq)
 	}
 }
 
@@ -208,7 +226,7 @@ func TestMemoryWriteToolCreatesReviewCandidate(t *testing.T) {
 	candidates := &fakeMemoryCandidateWriter{}
 	tool := MemoryWriteTool{Candidates: candidates}
 	result, err := tool.Execute(context.Background(), ToolRunContext{OwnerID: 1, RunID: 2}, json.RawMessage(`{
-		"memory_type":"task_memory",
+		"memory_type":"task",
 		"title":"Preference",
 		"content":"User prefers concise answers",
 		"importance":0.8,
@@ -245,7 +263,7 @@ var _ memory.SemanticRetriever = (*fakeSemanticRetriever)(nil)
 
 func TestMemoryReadToolWithSemanticQuery(t *testing.T) {
 	repo := &fakeMemoryRepo{}
-	repo.Create(context.Background(), &memory.Memory{ID: 42, OwnerID: 1, Content: "user prefers dark mode"})
+	repo.Create(context.Background(), &memory.Memory{SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 42, OwnerID: 1}}, Status: memory.StatusActive, ScopeType: memory.ScopeUser, ScopeID: 1, MemoryType: memory.TypeProfile, RetentionTier: memory.TierLongTerm, Content: "user prefers dark mode"})
 	retriever := &fakeSemanticRetriever{ids: []int64{42}}
 	tool := MemoryReadTool{Memories: repo, Retriever: retriever}
 
@@ -274,7 +292,7 @@ func TestMemoryReadToolFallsBackWithoutQuery(t *testing.T) {
 	tool := MemoryReadTool{Memories: repo, Retriever: retriever, AllowLegacyListFallback: true}
 
 	_, err := tool.Execute(context.Background(), ToolRunContext{OwnerID: 1}, json.RawMessage(`{
-		"memory_types": ["summary_memory"],
+		"memory_types": ["profile"],
 		"limit": 3
 	}`))
 	if err != nil {
@@ -292,7 +310,7 @@ func TestMemoryReadToolFallsBackWhenSearchFails(t *testing.T) {
 
 	_, err := tool.Execute(context.Background(), ToolRunContext{OwnerID: 1}, json.RawMessage(`{
 		"query": "something",
-		"memory_types": ["profile_memory"],
+		"memory_types": ["profile"],
 		"limit": 3
 	}`))
 	if err != nil {
@@ -306,8 +324,17 @@ func TestMemoryReadToolFallsBackWhenSearchFails(t *testing.T) {
 func TestMemoryWriteToolNeverSelfApprovesConflictingFact(t *testing.T) {
 	candidates := &fakeMemoryCandidateWriter{}
 	tool := MemoryWriteTool{Candidates: candidates}
-	result, err := tool.Execute(context.Background(), ToolRunContext{OwnerID: 1, RunID: 2}, json.RawMessage(`{"memory_type":"profile_memory","title":"response style","content":"User prefers detailed answers"}`))
+	result, err := tool.Execute(context.Background(), ToolRunContext{OwnerID: 1, RunID: 2}, json.RawMessage(`{"memory_type":"profile","title":"response style","content":"User prefers detailed answers"}`))
 	if err != nil || result == nil || result.Approval != nil || candidates.request.Content == "" {
 		t.Fatalf("expected pending proposal without direct memory approval, result=%+v candidate=%+v err=%v", result, candidates.request, err)
+	}
+}
+
+func TestMemoryWriteToolCarriesExplicitProjectScopeWithoutWorkspace(t *testing.T) {
+	candidates := &fakeMemoryCandidateWriter{}
+	tool := MemoryWriteTool{Candidates: candidates}
+	_, err := tool.Execute(context.Background(), ToolRunContext{OwnerID: 1, AgentID: 7, RunID: 2, ProjectID: 42}, json.RawMessage(`{"memory_type":"task","content":"project fact","scope":"project"}`))
+	if err != nil || candidates.request.ScopeType != memory.ScopeProject || candidates.request.SourceProjectID != 42 || candidates.request.AgentID != 7 {
+		t.Fatalf("project scope was not carried to pending candidate: request=%+v err=%v", candidates.request, err)
 	}
 }

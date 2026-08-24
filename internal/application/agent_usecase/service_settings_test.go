@@ -11,6 +11,7 @@ import (
 	"time"
 
 	workspaceusecase "agentcanvas/internal/application/workspace_usecase"
+	"agentcanvas/internal/domain"
 	agentdomain "agentcanvas/internal/domain/agent"
 	"agentcanvas/internal/domain/conversation"
 	"agentcanvas/internal/domain/knowledge"
@@ -31,7 +32,7 @@ func TestManagedDefinitionOwnsInternalDefaults(t *testing.T) {
 	temperature := 0.4
 	definition := ManagedDefinition(AgentEditableSettings{
 		ProviderID: 8, Model: "  gpt-test  ", SystemPrompt: "  be useful  ",
-		KnowledgeIDs: []int64{4, 4, 2}, PythonToolNames: []string{" python_text_stats ", "python_text_stats"}, Temperature: &temperature,
+		KnowledgeBaseIDs: []int64{4, 4, 2}, PythonToolNames: []string{" python_text_stats ", "python_text_stats"}, Temperature: &temperature,
 	})
 
 	if definition.Mode != "react" || !definition.MemoryEnabled || !definition.ReflectionEnabled || !definition.AllowSubagents {
@@ -42,8 +43,8 @@ func TestManagedDefinitionOwnsInternalDefaults(t *testing.T) {
 		definition.MaxParallelSubAgents != 4 || definition.MaxSubagentDepth != 3 || definition.OutputMode != "final_answer" {
 		t.Fatalf("unexpected managed limits: %+v", definition)
 	}
-	if definition.Model != "gpt-test" || definition.SystemPrompt != "be useful" || len(definition.KnowledgeIDs) != 2 ||
-		definition.KnowledgeIDs[0] != 4 || definition.KnowledgeIDs[1] != 2 || len(definition.PythonToolNames) != 1 || definition.PythonToolNames[0] != "python_text_stats" {
+	if definition.Model != "gpt-test" || definition.SystemPrompt != "be useful" || len(definition.KnowledgeBaseIDs) != 2 ||
+		definition.KnowledgeBaseIDs[0] != 4 || definition.KnowledgeBaseIDs[1] != 2 || len(definition.PythonToolNames) != 1 || definition.PythonToolNames[0] != "python_text_stats" {
 		t.Fatalf("editable settings were not normalized: %+v", definition)
 	}
 }
@@ -52,12 +53,12 @@ func TestCreateAgentValidatesResourcesAndPublishesFirstRelease(t *testing.T) {
 	agents := newSettingsAgentRepo()
 	service := NewService(agents, nil, nil, nil, nil, nil, nil, nil, nil)
 	service.ConfigureEditableResources(
-		&settingsProviderRepo{items: map[int64]*provider.ModelProvider{7: {ID: 7, OwnerID: 3, Status: provider.StatusActive}}},
-		&settingsKnowledgeRepo{items: map[int64]*knowledge.KnowledgeBase{9: {ID: 9, OwnerID: 3, Status: knowledge.KnowledgeBaseStatusActive}}},
+		&settingsProviderRepo{items: map[int64]*provider.ModelProvider{7: {SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 7, OwnerID: 3}}, Enabled: provider.ProviderEnabled}}},
+		&settingsKnowledgeRepo{items: map[int64]*knowledge.KnowledgeBase{9: {SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 9, OwnerID: 3}}, Enabled: knowledge.KnowledgeBaseEnabled}}},
 	)
 
 	view, err := service.CreateAgent(context.Background(), 3, CreateAgentRequest{
-		Name: " Planner ", Settings: AgentEditableSettings{ProviderID: 7, KnowledgeIDs: []int64{9}},
+		Name: " Planner ", Settings: AgentEditableSettings{ProviderID: 7, KnowledgeBaseIDs: []int64{9}},
 	})
 	if err != nil {
 		t.Fatalf("CreateAgent returned error: %v", err)
@@ -80,7 +81,7 @@ func TestCreateAgentValidatesResourcesAndPublishesFirstRelease(t *testing.T) {
 func TestConversationModeLifecycleAndForkInheritance(t *testing.T) {
 	agentID, releaseID := int64(10), int64(100)
 	agents := newSettingsAgentRepo()
-	agents.items[agentID] = &agentdomain.Agent{ID: agentID, OwnerID: 3, Status: agentdomain.StatusActive, CurrentReleaseID: &releaseID}
+	agents.items[agentID] = &agentdomain.Agent{SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: agentID, OwnerID: 3}}, Status: agentdomain.StatusActive, CurrentReleaseID: &releaseID}
 	conversations := &settingsConversationRepo{items: map[int64]*conversation.Conversation{}, nextID: 20}
 	turns := &settingsTurnRepo{latestErr: agentdomain.ErrNoTurnAvailable}
 	messages := &settingsMessageRepo{byConversation: map[int64][]conversation.Message{}}
@@ -119,11 +120,11 @@ func TestConversationModeLifecycleAndForkInheritance(t *testing.T) {
 func TestCreateConversationRejectsArchivedProject(t *testing.T) {
 	agentID, releaseID, projectID := int64(10), int64(100), int64(11)
 	agents := newSettingsAgentRepo()
-	agents.items[agentID] = &agentdomain.Agent{ID: agentID, OwnerID: 3, Status: agentdomain.StatusActive, CurrentReleaseID: &releaseID}
+	agents.items[agentID] = &agentdomain.Agent{SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: agentID, OwnerID: 3}}, Status: agentdomain.StatusActive, CurrentReleaseID: &releaseID}
 	conversations := &settingsConversationRepo{items: map[int64]*conversation.Conversation{}, nextID: 20}
 	service := NewService(agents, nil, conversations, nil, nil, nil, nil, nil, nil)
 	service.ConfigureWorkspace(workspaceusecase.NewService(
-		&staticLifecycleProjectRepo{item: projectdomain.Project{ID: projectID, OwnerID: 3, Archived: true}},
+		&staticLifecycleProjectRepo{item: projectdomain.Project{BaseModel: domain.BaseModel{ID: projectID, OwnerID: 3}, Archived: true}},
 		nil,
 		gitinfra.NewService(gitinfra.Config{}),
 		workspaceusecase.Config{Enabled: true},
@@ -140,7 +141,7 @@ func TestCreateConversationRejectsArchivedProject(t *testing.T) {
 
 func TestStartTurnSnapshotsModeAndReturnsPersistentUserMessage(t *testing.T) {
 	agentID, releaseID := int64(10), int64(100)
-	conv := &conversation.Conversation{ID: 20, OwnerID: 3, AgentID: &agentID, AgentReleaseID: &releaseID, Source: conversation.SourceAgent, AgentMode: "plan_execute"}
+	conv := &conversation.Conversation{SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 20, OwnerID: 3}}, AgentID: &agentID, AgentReleaseID: &releaseID, AgentMode: "plan_execute"}
 	conversations := &settingsConversationRepo{items: map[int64]*conversation.Conversation{20: conv}}
 	turns := &settingsTurnRepo{latestErr: agentdomain.ErrNoTurnAvailable}
 	definition := agentdomain.Definition{ModelConfig: agentdomain.ModelConfig{ProviderID: 1, Model: "test-model"}, PromptConfig: agentdomain.PromptConfig{SystemPrompt: "test"}, ExecutionLimits: agentdomain.ExecutionLimits{Mode: "react"}}
@@ -148,7 +149,7 @@ func TestStartTurnSnapshotsModeAndReturnsPersistentUserMessage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	agents := &settingsAgentRepo{releases: []agentdomain.Release{{ID: releaseID, OwnerID: 3, AgentID: agentID, DefinitionJSON: definitionJSON, Checksum: checksum, RuleHash: "rules"}}}
+	agents := &settingsAgentRepo{releases: []agentdomain.Release{{ImmutableModel: domain.ImmutableModel{ID: releaseID, OwnerID: 3}, AgentID: agentID, DefinitionJSON: definitionJSON, Checksum: checksum, RuleHash: "rules"}}}
 	service := NewService(agents, turns, conversations, nil, nil, nil, nil, nil, nil)
 
 	accepted, err := service.StartTurn(context.Background(), 3, agentID, 20, "request-1", CreateTurnRequest{Content: " investigate "})
@@ -179,8 +180,8 @@ func TestExecuteTurnAcceptsEmptyHistoricalInputAndFailsNilRuntimeResult(t *testi
 		t.Fatal(err)
 	}
 	runID := int64(401)
-	run := &agentdomain.Run{ID: runID, OwnerID: 3, AgentID: 10, Status: agentdomain.RunStatusQueued, DefinitionJSON: definitionJSON, StartedAt: time.Now().UTC()}
-	turn := &agentdomain.Turn{ID: 201, OwnerID: 3, AgentID: 10, RunID: &runID, Status: agentdomain.TurnStatusRunning}
+	run := &agentdomain.Run{BaseModel: domain.BaseModel{ID: runID, OwnerID: 3}, AgentID: 10, Status: agentdomain.RunStatusQueued, DefinitionJSON: definitionJSON, StartedAt: time.Now().UTC()}
+	turn := &agentdomain.Turn{BaseModel: domain.BaseModel{ID: 201, OwnerID: 3}, AgentID: 10, RunID: &runID, Status: agentdomain.TurnStatusRunning}
 	runs := &settingsRunRepo{items: map[int64]*agentdomain.Run{runID: run}}
 	turns := &settingsTurnRepo{}
 	runtime := &settingsAgentRuntime{}
@@ -189,6 +190,32 @@ func TestExecuteTurnAcceptsEmptyHistoricalInputAndFailsNilRuntimeResult(t *testi
 
 	if runtime.executeReq.RunID != runID || turn.Status != agentdomain.TurnStatusFailed || run.Status != agentdomain.RunStatusFailed || !strings.Contains(run.ErrorMessage, "returned no result") {
 		t.Fatalf("empty input or nil result handling mismatch: request=%+v turn=%+v run=%+v", runtime.executeReq, turn, run)
+	}
+}
+
+func TestProjectTurnPassesProjectIDWithoutWorkspace(t *testing.T) {
+	definitionJSON, _, err := (agentdomain.Definition{
+		ModelConfig:  agentdomain.ModelConfig{ProviderID: 1, Model: "test-model"},
+		PromptConfig: agentdomain.PromptConfig{SystemPrompt: "test"},
+	}).Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	conversationID, projectID, runID, agentID := int64(20), int64(11), int64(401), int64(10)
+	run := &agentdomain.Run{BaseModel: domain.BaseModel{ID: runID, OwnerID: 3}, AgentID: agentID, ConversationID: &conversationID, Status: agentdomain.RunStatusQueued, DefinitionJSON: definitionJSON, StartedAt: time.Now().UTC()}
+	turn := &agentdomain.Turn{BaseModel: domain.BaseModel{ID: 201, OwnerID: 3}, AgentID: agentID, ConversationID: conversationID, RunID: &runID, Status: agentdomain.TurnStatusQueued}
+	runs := &settingsRunRepo{items: map[int64]*agentdomain.Run{runID: run}}
+	conversations := &settingsConversationRepo{items: map[int64]*conversation.Conversation{
+		conversationID: {SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: conversationID, OwnerID: 3}}, AgentID: &agentID, ProjectID: &projectID},
+	}}
+	runtime := &settingsAgentRuntime{}
+	service := NewService(nil, &settingsTurnRepo{}, conversations, nil, runs, nil, nil, nil, runtime)
+	service.ConfigureWorkspace(workspaceusecase.NewService(nil, nil, nil, workspaceusecase.Config{Enabled: false}))
+
+	service.executeTurnOwned(context.Background(), turn)
+
+	if runtime.executeReq.ProjectID != projectID || runtime.executeReq.Workspace != nil {
+		t.Fatalf("project context depends on workspace: %+v", runtime.executeReq)
 	}
 }
 
@@ -201,8 +228,8 @@ func TestExecuteTurnFailsInvalidPersistedInputBeforeRuntime(t *testing.T) {
 		t.Fatal(err)
 	}
 	runID := int64(402)
-	run := &agentdomain.Run{ID: runID, OwnerID: 3, AgentID: 10, Status: agentdomain.RunStatusQueued, DefinitionJSON: definitionJSON, StartedAt: time.Now().UTC()}
-	turn := &agentdomain.Turn{ID: 202, OwnerID: 3, AgentID: 10, RunID: &runID, Status: agentdomain.TurnStatusRunning, InputJSON: json.RawMessage(`{"query":`)}
+	run := &agentdomain.Run{BaseModel: domain.BaseModel{ID: runID, OwnerID: 3}, AgentID: 10, Status: agentdomain.RunStatusQueued, DefinitionJSON: definitionJSON, StartedAt: time.Now().UTC()}
+	turn := &agentdomain.Turn{BaseModel: domain.BaseModel{ID: 202, OwnerID: 3}, AgentID: 10, RunID: &runID, Status: agentdomain.TurnStatusRunning, InputJSON: json.RawMessage(`{"query":`)}
 	runs := &settingsRunRepo{items: map[int64]*agentdomain.Run{runID: run}}
 	runtime := &settingsAgentRuntime{executeResult: &agentruntime.RunResult{Output: agentruntime.RunOutput{"final_answer": "must not execute"}}}
 
@@ -220,16 +247,15 @@ func TestRootRunNeverEntersRunningWhenWorkspacePreparationFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	conversationID, projectID, runID, agentID := int64(20), int64(11), int64(401), int64(10)
-	run := &agentdomain.Run{
-		ID: runID, OwnerID: 3, AgentID: agentID, ConversationID: &conversationID,
+	run := &agentdomain.Run{BaseModel: domain.BaseModel{ID: runID, OwnerID: 3}, AgentID: agentID, ConversationID: &conversationID,
 		Status: agentdomain.RunStatusQueued, DefinitionJSON: definitionJSON,
 		InputJSON: json.RawMessage(`{"query":"edit README","mode":"react"}`), StartedAt: time.Now().UTC(),
 	}
 	runs := &workspaceLifecycleRunRepo{settingsRunRepo: settingsRunRepo{items: map[int64]*agentdomain.Run{runID: run}}}
 	turns := &settingsTurnRepo{}
-	turn := &agentdomain.Turn{ID: 201, OwnerID: 3, AgentID: agentID, ConversationID: conversationID, RunID: &runID, InputJSON: run.InputJSON, Status: agentdomain.TurnStatusQueued}
+	turn := &agentdomain.Turn{BaseModel: domain.BaseModel{ID: 201, OwnerID: 3}, AgentID: agentID, ConversationID: conversationID, RunID: &runID, InputJSON: run.InputJSON, Status: agentdomain.TurnStatusQueued}
 	conversations := &settingsConversationRepo{items: map[int64]*conversation.Conversation{
-		conversationID: {ID: conversationID, OwnerID: 3, AgentID: &agentID, ProjectID: &projectID, WorkspaceMode: "worktree"},
+		conversationID: {SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: conversationID, OwnerID: 3}}, AgentID: &agentID, ProjectID: &projectID, WorkspaceMode: "worktree"},
 	}}
 	events := &workspaceLifecycleEventRepo{}
 	runtime := &settingsAgentRuntime{executeResult: &agentruntime.RunResult{Output: agentruntime.RunOutput{"final_answer": "should not run"}}}
@@ -258,7 +284,7 @@ func TestRootRunNeverEntersRunningWhenWorkspacePreparationFails(t *testing.T) {
 	if err := json.Unmarshal(events.items[0].PayloadJSON, &payload); err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{"workspace_id", "project_id", "run_id", "repo_root", "path", "branch", "base_sha", "head_sha", "dirty", "unpushed", "status", "locked", "error"} {
+	for _, key := range []string{"workspace_id", "project_id", "run_id", "repository_root", "workspace_path", "branch_name", "base_sha", "head_sha", "dirty", "has_unpushed_commits", "status", "locked", "error_message"} {
 		if _, ok := payload[key]; !ok {
 			t.Fatalf("workspace.failed payload is missing %q: %#v", key, payload)
 		}
@@ -273,17 +299,16 @@ func TestRootRunDoesNotExecuteWhenWorkspaceLinkPersistenceFails(t *testing.T) {
 	}
 	root := t.TempDir()
 	conversationID, projectID, runID, agentID := int64(20), int64(11), int64(402), int64(10)
-	run := &agentdomain.Run{
-		ID: runID, OwnerID: 3, AgentID: agentID, ConversationID: &conversationID,
+	run := &agentdomain.Run{BaseModel: domain.BaseModel{ID: runID, OwnerID: 3}, AgentID: agentID, ConversationID: &conversationID,
 		Status: agentdomain.RunStatusQueued, DefinitionJSON: definitionJSON,
 		InputJSON: json.RawMessage(`{"query":"edit README","mode":"react"}`), StartedAt: time.Now().UTC(),
 	}
 	linkErr := errors.New("run workspace link unavailable")
 	runs := &workspaceLifecycleRunRepo{settingsRunRepo: settingsRunRepo{items: map[int64]*agentdomain.Run{runID: run}}}
 	turns := &settingsTurnRepo{ownedUpdateErr: linkErr}
-	turn := &agentdomain.Turn{ID: 202, OwnerID: 3, AgentID: agentID, ConversationID: conversationID, RunID: &runID, InputJSON: run.InputJSON, Status: agentdomain.TurnStatusQueued}
+	turn := &agentdomain.Turn{BaseModel: domain.BaseModel{ID: 202, OwnerID: 3}, AgentID: agentID, ConversationID: conversationID, RunID: &runID, InputJSON: run.InputJSON, Status: agentdomain.TurnStatusQueued}
 	conversations := &settingsConversationRepo{items: map[int64]*conversation.Conversation{
-		conversationID: {ID: conversationID, OwnerID: 3, AgentID: &agentID, ProjectID: &projectID, WorkspaceMode: workspacedomain.KindWorktree},
+		conversationID: {SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: conversationID, OwnerID: 3}}, AgentID: &agentID, ProjectID: &projectID, WorkspaceMode: workspacedomain.KindWorktree},
 	}}
 	events := &workspaceLifecycleEventRepo{}
 	runtime := &settingsAgentRuntime{executeResult: &agentruntime.RunResult{Output: agentruntime.RunOutput{"final_answer": "should not run"}}}
@@ -291,7 +316,7 @@ func TestRootRunDoesNotExecuteWhenWorkspaceLinkPersistenceFails(t *testing.T) {
 	gitService := gitinfra.NewService(gitinfra.Config{GitUserName: "AgentCanvas Test", GitUserEmail: "agentcanvas@example.test"})
 	service := NewService(nil, turns, conversations, nil, runs, events, nil, nil, runtime)
 	service.ConfigureWorkspace(workspaceusecase.NewService(
-		&staticLifecycleProjectRepo{item: projectdomain.Project{ID: projectID, OwnerID: 3, Slug: "demo", Name: "Demo", PrimaryPath: root}},
+		&staticLifecycleProjectRepo{item: projectdomain.Project{BaseModel: domain.BaseModel{ID: projectID, OwnerID: 3}, Slug: "demo", Name: "Demo", RepositoryRoot: root}},
 		workspaceRepository, gitService,
 		workspaceusecase.Config{Enabled: true, AllowedRoots: []string{root}, WorktreeDirName: ".worktrees", AutoInitRepository: true},
 	))
@@ -324,7 +349,7 @@ func TestSubagentDoesNotExecuteWhenWorkspaceLinkPersistenceFails(t *testing.T) {
 	workspaceRepository := &lifecycleWorkspaceRepository{items: make(map[int64]workspacedomain.Workspace)}
 	gitService := gitinfra.NewService(gitinfra.Config{GitUserName: "AgentCanvas Test", GitUserEmail: "agentcanvas@example.test"})
 	workspaceService := workspaceusecase.NewService(
-		&staticLifecycleProjectRepo{item: projectdomain.Project{ID: projectID, OwnerID: 3, Slug: "demo", Name: "Demo", PrimaryPath: root}},
+		&staticLifecycleProjectRepo{item: projectdomain.Project{BaseModel: domain.BaseModel{ID: projectID, OwnerID: 3}, Slug: "demo", Name: "Demo", RepositoryRoot: root}},
 		workspaceRepository, gitService,
 		workspaceusecase.Config{Enabled: true, AllowedRoots: []string{root}, WorktreeDirName: ".worktrees", AutoInitRepository: true},
 	)
@@ -332,7 +357,7 @@ func TestSubagentDoesNotExecuteWhenWorkspaceLinkPersistenceFails(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	parent := &agentdomain.Run{ID: parentRunID, OwnerID: 3, AgentID: 10, RunType: agentdomain.RunTypeTurn, DelegationDepth: 0, Status: agentdomain.RunStatusRunning, WorkspaceID: &parentWorkspace.ID}
+	parent := &agentdomain.Run{BaseModel: domain.BaseModel{ID: parentRunID, OwnerID: 3}, AgentID: 10, RunType: agentdomain.RunTypeTurn, DelegationDepth: 0, Status: agentdomain.RunStatusRunning, WorkspaceID: &parentWorkspace.ID}
 	linkErr := errors.New("child workspace link unavailable")
 	runs := &workspaceLifecycleRunRepo{
 		settingsRunRepo:  settingsRunRepo{items: map[int64]*agentdomain.Run{parent.ID: parent}, nextID: parentRunID + 1},
@@ -374,16 +399,15 @@ func TestRootRunEmitsFinalWorkspaceStatusAfterRuntimeMutation(t *testing.T) {
 	}
 	root := t.TempDir()
 	conversationID, projectID, runID, agentID := int64(20), int64(11), int64(404), int64(10)
-	run := &agentdomain.Run{
-		ID: runID, OwnerID: 3, AgentID: agentID, ConversationID: &conversationID,
+	run := &agentdomain.Run{BaseModel: domain.BaseModel{ID: runID, OwnerID: 3}, AgentID: agentID, ConversationID: &conversationID,
 		Status: agentdomain.RunStatusQueued, DefinitionJSON: definitionJSON,
 		InputJSON: json.RawMessage(`{"query":"edit README","mode":"react"}`), StartedAt: time.Now().UTC(),
 	}
 	runs := &workspaceLifecycleRunRepo{settingsRunRepo: settingsRunRepo{items: map[int64]*agentdomain.Run{runID: run}}}
 	turns := &settingsTurnRepo{}
-	turn := &agentdomain.Turn{ID: 204, OwnerID: 3, AgentID: agentID, ConversationID: conversationID, RunID: &runID, InputJSON: run.InputJSON, Status: agentdomain.TurnStatusQueued}
+	turn := &agentdomain.Turn{BaseModel: domain.BaseModel{ID: 204, OwnerID: 3}, AgentID: agentID, ConversationID: conversationID, RunID: &runID, InputJSON: run.InputJSON, Status: agentdomain.TurnStatusQueued}
 	conversations := &settingsConversationRepo{items: map[int64]*conversation.Conversation{
-		conversationID: {ID: conversationID, OwnerID: 3, AgentID: &agentID, ProjectID: &projectID, WorkspaceMode: workspacedomain.KindShared},
+		conversationID: {SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: conversationID, OwnerID: 3}}, AgentID: &agentID, ProjectID: &projectID, WorkspaceMode: workspacedomain.KindShared},
 	}}
 	events := &workspaceLifecycleEventRepo{}
 	runtime := &settingsAgentRuntime{
@@ -399,7 +423,7 @@ func TestRootRunEmitsFinalWorkspaceStatusAfterRuntimeMutation(t *testing.T) {
 	}
 	workspaceRepository := &lifecycleWorkspaceRepository{items: make(map[int64]workspacedomain.Workspace)}
 	workspaceService := workspaceusecase.NewService(
-		&staticLifecycleProjectRepo{item: projectdomain.Project{ID: projectID, OwnerID: 3, Slug: "demo", Name: "Demo", PrimaryPath: root}},
+		&staticLifecycleProjectRepo{item: projectdomain.Project{BaseModel: domain.BaseModel{ID: projectID, OwnerID: 3}, Slug: "demo", Name: "Demo", RepositoryRoot: root}},
 		workspaceRepository,
 		gitinfra.NewService(gitinfra.Config{GitUserName: "AgentCanvas Test", GitUserEmail: "agentcanvas@example.test"}),
 		workspaceusecase.Config{Enabled: true, AllowedRoots: []string{root}, AutoInitRepository: true},
@@ -428,7 +452,7 @@ func TestRefreshWorkspaceSnapshotPersistsRuntimeFileChanges(t *testing.T) {
 	workspaceRepository := &lifecycleWorkspaceRepository{items: make(map[int64]workspacedomain.Workspace)}
 	gitService := gitinfra.NewService(gitinfra.Config{GitUserName: "AgentCanvas Test", GitUserEmail: "agentcanvas@example.test"})
 	workspaceService := workspaceusecase.NewService(
-		&staticLifecycleProjectRepo{item: projectdomain.Project{ID: projectID, OwnerID: 3, Slug: "demo", Name: "Demo", PrimaryPath: root}},
+		&staticLifecycleProjectRepo{item: projectdomain.Project{BaseModel: domain.BaseModel{ID: projectID, OwnerID: 3}, Slug: "demo", Name: "Demo", RepositoryRoot: root}},
 		workspaceRepository, gitService,
 		workspaceusecase.Config{Enabled: true, AllowedRoots: []string{root}, AutoInitRepository: true},
 	)
@@ -454,9 +478,9 @@ func TestRefreshWorkspaceSnapshotPersistsRuntimeFileChanges(t *testing.T) {
 
 func TestCancelRunCancelsQueuedTurn(t *testing.T) {
 	runID := int64(401)
-	turn := &agentdomain.Turn{ID: 201, OwnerID: 3, RunID: &runID, Status: agentdomain.TurnStatusQueued}
+	turn := &agentdomain.Turn{BaseModel: domain.BaseModel{ID: 201, OwnerID: 3}, RunID: &runID, Status: agentdomain.TurnStatusQueued}
 	turns := &settingsTurnRepo{byRun: map[int64]*agentdomain.Turn{runID: turn}}
-	runs := &settingsRunRepo{item: &agentdomain.Run{ID: runID, OwnerID: 3, Status: agentdomain.RunStatusQueued}}
+	runs := &settingsRunRepo{item: &agentdomain.Run{BaseModel: domain.BaseModel{ID: runID, OwnerID: 3}, Status: agentdomain.RunStatusQueued}}
 	service := NewService(nil, turns, nil, nil, runs, nil, nil, nil, nil)
 
 	if err := service.CancelRun(context.Background(), 3, runID); err != nil {
@@ -472,12 +496,12 @@ func TestCancelRunReturnsChildCancellationError(t *testing.T) {
 	childErr := errors.New("child cancel failed")
 	runs := &settingsRunRepo{
 		items: map[int64]*agentdomain.Run{
-			parentID: {ID: parentID, OwnerID: 3, Status: agentdomain.RunStatusRunning},
-			childID:  {ID: childID, OwnerID: 3, ParentRunID: &parentID, Status: agentdomain.RunStatusRunning},
+			parentID: {BaseModel: domain.BaseModel{ID: parentID, OwnerID: 3}, Status: agentdomain.RunStatusRunning},
+			childID:  {BaseModel: domain.BaseModel{ID: childID, OwnerID: 3}, ParentRunID: &parentID, Status: agentdomain.RunStatusRunning},
 		},
 		cancelErrors: map[int64]error{childID: childErr},
 	}
-	turns := &settingsTurnRepo{byRun: map[int64]*agentdomain.Turn{parentID: {ID: 201, OwnerID: 3, RunID: &parentID, Status: agentdomain.TurnStatusRunning}}}
+	turns := &settingsTurnRepo{byRun: map[int64]*agentdomain.Turn{parentID: {BaseModel: domain.BaseModel{ID: 201, OwnerID: 3}, RunID: &parentID, Status: agentdomain.TurnStatusRunning}}}
 	service := NewService(nil, turns, nil, nil, runs, nil, nil, nil, nil)
 
 	err := service.CancelRun(context.Background(), 3, parentID)
@@ -490,7 +514,7 @@ func TestCancelRunReturnsChildCancellationError(t *testing.T) {
 }
 
 func TestRunSubagentPersistsParentAndDelegationMetadata(t *testing.T) {
-	parent := &agentdomain.Run{ID: 41, OwnerID: 3, AgentID: 10, RunType: agentdomain.RunTypeTurn, DelegationDepth: 0}
+	parent := &agentdomain.Run{BaseModel: domain.BaseModel{ID: 41, OwnerID: 3}, AgentID: 10, RunType: agentdomain.RunTypeTurn, DelegationDepth: 0}
 	runs := &settingsRunRepo{items: map[int64]*agentdomain.Run{parent.ID: parent}, nextID: 42}
 	runtime := &settingsAgentRuntime{executeResult: &agentruntime.RunResult{Output: agentruntime.RunOutput{"final_answer": "done"}}}
 	service := NewService(nil, nil, nil, nil, runs, nil, nil, nil, runtime)
@@ -498,7 +522,7 @@ func TestRunSubagentPersistsParentAndDelegationMetadata(t *testing.T) {
 
 	result, err := service.RunSubagent(context.Background(), toolruntime.SubagentRequest{
 		OwnerID: 3, ParentRunID: parent.ID, AgentID: parent.AgentID, ConversationID: &conversationID,
-		DelegationDepth: 0, MaxDepth: 3,
+		ProjectID: 11, DelegationDepth: 0, MaxDepth: 3,
 		Definition: toolruntime.SubagentDefinition{Task: " research ", SystemPrompt: "be precise", MaxDepth: 3},
 	})
 	if err != nil {
@@ -510,13 +534,13 @@ func TestRunSubagentPersistsParentAndDelegationMetadata(t *testing.T) {
 		t.Fatalf("subagent relationship was not persisted: %+v", child)
 	}
 	if child.FinishedAt == nil || runtime.executeReq.RunID != child.ID || runtime.executeReq.ParentRunID == nil ||
-		*runtime.executeReq.ParentRunID != parent.ID || runtime.executeReq.DelegationDepth != 1 || runtime.executeReq.Task != "research" {
+		*runtime.executeReq.ParentRunID != parent.ID || runtime.executeReq.ProjectID != 11 || runtime.executeReq.DelegationDepth != 1 || runtime.executeReq.Task != "research" {
 		t.Fatalf("runtime request did not preserve delegation context: run=%+v request=%+v", child, runtime.executeReq)
 	}
 }
 
 func TestRunSubagentRejectsDepthAndParentContextMismatch(t *testing.T) {
-	parent := &agentdomain.Run{ID: 41, OwnerID: 3, AgentID: 10, DelegationDepth: 2}
+	parent := &agentdomain.Run{BaseModel: domain.BaseModel{ID: 41, OwnerID: 3}, AgentID: 10, DelegationDepth: 2}
 	runs := &settingsRunRepo{items: map[int64]*agentdomain.Run{parent.ID: parent}, nextID: 42}
 	service := NewService(nil, nil, nil, nil, runs, nil, nil, nil, &settingsAgentRuntime{})
 	base := toolruntime.SubagentRequest{OwnerID: 3, ParentRunID: parent.ID, AgentID: parent.AgentID,
@@ -536,7 +560,7 @@ func TestRunSubagentRejectsDepthAndParentContextMismatch(t *testing.T) {
 }
 
 func TestRunSubagentLeavesPausedRunOpenAndPersistsCheckpoint(t *testing.T) {
-	parent := &agentdomain.Run{ID: 41, OwnerID: 3, AgentID: 10, DelegationDepth: 0}
+	parent := &agentdomain.Run{BaseModel: domain.BaseModel{ID: 41, OwnerID: 3}, AgentID: 10, DelegationDepth: 0}
 	runs := &settingsRunRepo{items: map[int64]*agentdomain.Run{parent.ID: parent}, nextID: 42}
 	approvals := &settingsApprovalRepo{}
 	runtime := &settingsAgentRuntime{executeResult: &agentruntime.RunResult{Output: agentruntime.RunOutput{
@@ -561,7 +585,7 @@ func TestRunSubagentLeavesPausedRunOpenAndPersistsCheckpoint(t *testing.T) {
 func TestPersistCheckpointRoundTripsAgentState(t *testing.T) {
 	approvals := &settingsApprovalRepo{}
 	service := NewService(nil, nil, nil, nil, nil, nil, nil, approvals, nil)
-	run := &agentdomain.Run{ID: 42, OwnerID: 3, AgentID: 10}
+	run := &agentdomain.Run{BaseModel: domain.BaseModel{ID: 42, OwnerID: 3}, AgentID: 10}
 	checkpoint := runtimeagent.Checkpoint{
 		SnapshotVersion: 2,
 		BaseMessages:    []llm.ChatMessage{{Role: conversation.RoleSystem, Content: "system"}},
@@ -585,8 +609,7 @@ func TestPersistCheckpointRoundTripsAgentState(t *testing.T) {
 		t.Fatalf("approval interaction was not persisted: %+v", approvals.createdApproval)
 	}
 	stored := approvals.createdCheckpoint
-	if stored == nil || stored.SnapshotVersion != 2 || stored.InteractionID != "approval-42" ||
-		stored.ToolRegistryHash != "registry-hash" || stored.ToolPolicyHash != "policy-hash" || len(stored.RuntimeCheckpointJSON) == 0 {
+	if stored == nil || len(stored.CheckpointJSON) == 0 {
 		t.Fatalf("checkpoint state was not persisted: %+v", stored)
 	}
 	decoded, err := decodeCheckpoint(stored)
@@ -599,7 +622,7 @@ func TestPersistCheckpointRoundTripsAgentState(t *testing.T) {
 }
 
 func TestResumeByIDPropagatesPendingApprovalStorageFailure(t *testing.T) {
-	run := &agentdomain.Run{ID: 42, OwnerID: 3, AgentID: 10, Status: agentdomain.RunStatusPaused}
+	run := &agentdomain.Run{BaseModel: domain.BaseModel{ID: 42, OwnerID: 3}, AgentID: 10, Status: agentdomain.RunStatusPaused}
 	runs := &settingsRunRepo{items: map[int64]*agentdomain.Run{run.ID: run}}
 	storageErr := errors.New("approval storage unavailable")
 	service := NewService(nil, nil, nil, nil, runs, nil, nil, &settingsApprovalRepo{pendingErr: storageErr}, nil)
@@ -610,12 +633,10 @@ func TestResumeByIDPropagatesPendingApprovalStorageFailure(t *testing.T) {
 }
 
 func TestResumeByIDQueuesTurnInsideApprovalTransaction(t *testing.T) {
-	run := &agentdomain.Run{ID: 42, OwnerID: 3, AgentID: 10, RunType: agentdomain.RunTypeTurn, Status: agentdomain.RunStatusPaused}
+	run := &agentdomain.Run{BaseModel: domain.BaseModel{ID: 42, OwnerID: 3}, AgentID: 10, RunType: agentdomain.RunTypeTurn, Status: agentdomain.RunStatusPaused}
 	runs := &settingsRunRepo{items: map[int64]*agentdomain.Run{run.ID: run}}
-	turns := &settingsTurnRepo{byRun: map[int64]*agentdomain.Turn{run.ID: {
-		ID: 9, OwnerID: 3, RunID: &run.ID, Status: agentdomain.TurnStatusPaused, InputJSON: json.RawMessage(`{"query":"continue"}`),
-	}}}
-	approvals := &settingsApprovalRepo{checkpoint: &agentdomain.RunCheckpoint{ID: 8, OwnerID: 3, RunID: run.ID}}
+	turns := &settingsTurnRepo{byRun: map[int64]*agentdomain.Turn{run.ID: {BaseModel: domain.BaseModel{ID: 9, OwnerID: 3}, RunID: &run.ID, Status: agentdomain.TurnStatusPaused, InputJSON: json.RawMessage(`{"query":"continue"}`)}}}
+	approvals := &settingsApprovalRepo{checkpoint: &agentdomain.RunCheckpoint{ImmutableModel: domain.ImmutableModel{ID: 8, OwnerID: 3}, RunID: run.ID}}
 	service := NewService(nil, turns, nil, nil, runs, nil, nil, approvals, nil)
 
 	if _, err := service.ResumeByID(context.Background(), 3, run.ID); err != nil {
@@ -635,11 +656,11 @@ func TestDecideApprovalQueuesSubagentResumeWithoutHTTPRuntimeCall(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	run := &agentdomain.Run{ID: 42, OwnerID: 3, AgentID: 10, RunType: agentdomain.RunTypeSubagent,
+	run := &agentdomain.Run{BaseModel: domain.BaseModel{ID: 42, OwnerID: 3}, AgentID: 10, RunType: agentdomain.RunTypeSubagent,
 		Status: agentdomain.RunStatusWaitingHuman, DefinitionJSON: definitionJSON, DefinitionHash: jsonutil.Hash(definitionJSON), InputJSON: json.RawMessage(`{"query":"continue"}`)}
 	runs := &settingsRunRepo{items: map[int64]*agentdomain.Run{run.ID: run}}
-	request := &agentdomain.ApprovalRequest{ID: 7, OwnerID: 3, RunID: run.ID, Status: agentdomain.ApprovalStatusPending}
-	checkpoint := &agentdomain.RunCheckpoint{ID: 8, OwnerID: 3, RunID: run.ID, MessagesJSON: json.RawMessage(`[]`), PendingToolCallJSON: json.RawMessage(`null`), ContextJSON: json.RawMessage(`{}`)}
+	request := &agentdomain.ApprovalRequest{BaseModel: domain.BaseModel{ID: 7, OwnerID: 3}, RunID: run.ID, Status: agentdomain.ApprovalStatusPending}
+	checkpoint := &agentdomain.RunCheckpoint{ImmutableModel: domain.ImmutableModel{ID: 8, OwnerID: 3}, RunID: run.ID, CheckpointJSON: json.RawMessage(`{}`)}
 	approvals := &settingsApprovalRepo{request: request, checkpoint: checkpoint}
 	runtime := &settingsAgentRuntime{resumeResult: &agentruntime.RunResult{Output: agentruntime.RunOutput{"final_answer": "approved"}}}
 	service := NewService(nil, nil, nil, nil, runs, nil, nil, approvals, runtime)
@@ -662,20 +683,23 @@ func TestWorkerResumesSubagentThroughClaimedTurn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	runID := int64(43)
-	run := &agentdomain.Run{ID: runID, OwnerID: 3, AgentID: 10, RunType: agentdomain.RunTypeSubagent,
+	runID, conversationID, projectID := int64(43), int64(20), int64(11)
+	run := &agentdomain.Run{BaseModel: domain.BaseModel{ID: runID, OwnerID: 3}, AgentID: 10, RunType: agentdomain.RunTypeSubagent,
 		Status: agentdomain.RunStatusResuming, DefinitionJSON: definitionJSON, DefinitionHash: jsonutil.Hash(definitionJSON),
-		InputJSON: json.RawMessage(`{"query":"continue"}`), StartedAt: time.Now().UTC()}
-	turn := &agentdomain.Turn{ID: 9, OwnerID: 3, AgentID: 10, RunID: &runID, Status: agentdomain.TurnStatusRunning,
+		ConversationID: &conversationID, InputJSON: json.RawMessage(`{"query":"continue"}`), StartedAt: time.Now().UTC()}
+	turn := &agentdomain.Turn{BaseModel: domain.BaseModel{ID: 9, OwnerID: 3}, AgentID: 10, ConversationID: conversationID, RunID: &runID, Status: agentdomain.TurnStatusRunning,
 		LeaseToken: "owned", InputJSON: json.RawMessage(`{"query":"continue","resume_approved":true}`)}
 	turns := &settingsTurnRepo{byRun: map[int64]*agentdomain.Turn{runID: turn}}
 	runs := &settingsRunRepo{items: map[int64]*agentdomain.Run{runID: run}}
-	approvals := &settingsApprovalRepo{checkpoint: &agentdomain.RunCheckpoint{ID: 8, OwnerID: 3, RunID: runID, MessagesJSON: json.RawMessage(`[]`), PendingToolCallJSON: json.RawMessage(`null`), ContextJSON: json.RawMessage(`{}`)}}
+	approvals := &settingsApprovalRepo{checkpoint: &agentdomain.RunCheckpoint{ImmutableModel: domain.ImmutableModel{ID: 8, OwnerID: 3}, RunID: runID, CheckpointJSON: json.RawMessage(`{}`)}}
 	runtime := &settingsAgentRuntime{resumeResult: &agentruntime.RunResult{Output: agentruntime.RunOutput{"final_answer": "approved"}}}
+	conversations := &settingsConversationRepo{items: map[int64]*conversation.Conversation{
+		conversationID: {SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: conversationID, OwnerID: 3}}, ProjectID: &projectID},
+	}}
 
-	NewService(nil, turns, nil, nil, runs, nil, nil, approvals, runtime).executeTurnOwned(context.Background(), turn)
+	NewService(nil, turns, conversations, nil, runs, nil, nil, approvals, runtime).executeTurnOwned(context.Background(), turn)
 
-	if runtime.resumeReq.RunID != runID || turn.Status != agentdomain.TurnStatusSucceeded || run.Status != agentdomain.RunStatusSucceeded || turns.completedRun != run {
+	if runtime.resumeReq.RunID != runID || runtime.resumeReq.ProjectID != projectID || runtime.resumeReq.Workspace != nil || turn.Status != agentdomain.TurnStatusSucceeded || run.Status != agentdomain.RunStatusSucceeded || turns.completedRun != run {
 		t.Fatalf("claimed subagent resume did not complete under the Turn lease: request=%+v turn=%+v run=%+v", runtime.resumeReq, turn, run)
 	}
 }
@@ -690,7 +714,7 @@ func TestResumeRunEmitsFinalWorkspaceStatusAfterRuntimeMutation(t *testing.T) {
 	projectID, runID := int64(11), int64(43)
 	workspaceRepository := &lifecycleWorkspaceRepository{items: make(map[int64]workspacedomain.Workspace)}
 	workspaceService := workspaceusecase.NewService(
-		&staticLifecycleProjectRepo{item: projectdomain.Project{ID: projectID, OwnerID: 3, Slug: "demo", Name: "Demo", PrimaryPath: root}},
+		&staticLifecycleProjectRepo{item: projectdomain.Project{BaseModel: domain.BaseModel{ID: projectID, OwnerID: 3}, Slug: "demo", Name: "Demo", RepositoryRoot: root}},
 		workspaceRepository,
 		gitinfra.NewService(gitinfra.Config{GitUserName: "AgentCanvas Test", GitUserEmail: "agentcanvas@example.test"}),
 		workspaceusecase.Config{Enabled: true, AllowedRoots: []string{root}, AutoInitRepository: true},
@@ -699,8 +723,7 @@ func TestResumeRunEmitsFinalWorkspaceStatusAfterRuntimeMutation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	run := &agentdomain.Run{
-		ID: runID, OwnerID: 3, AgentID: 10, RunType: agentdomain.RunTypeSubagent,
+	run := &agentdomain.Run{BaseModel: domain.BaseModel{ID: runID, OwnerID: 3}, AgentID: 10, RunType: agentdomain.RunTypeSubagent,
 		Status: agentdomain.RunStatusWaitingHuman, DefinitionJSON: definitionJSON, DefinitionHash: jsonutil.Hash(definitionJSON),
 		InputJSON: json.RawMessage(`{"query":"continue"}`), WorkspaceID: &workspace.ID, StartedAt: time.Now().UTC(),
 	}
@@ -719,7 +742,7 @@ func TestResumeRunEmitsFinalWorkspaceStatusAfterRuntimeMutation(t *testing.T) {
 	}
 	service := NewService(nil, nil, nil, nil, runs, events, nil, nil, runtime)
 	service.ConfigureWorkspace(workspaceService)
-	checkpoint := &agentdomain.RunCheckpoint{ID: 8, OwnerID: 3, RunID: run.ID, MessagesJSON: json.RawMessage(`[]`), PendingToolCallJSON: json.RawMessage(`null`), ContextJSON: json.RawMessage(`{}`)}
+	checkpoint := &agentdomain.RunCheckpoint{ImmutableModel: domain.ImmutableModel{ID: 8, OwnerID: 3}, RunID: run.ID, CheckpointJSON: json.RawMessage(`{}`)}
 
 	resumed, err := service.ResumeRun(ctx, run, checkpoint, &agentdomain.ApprovalRequest{Status: agentdomain.ApprovalStatusApproved})
 	if err != nil {

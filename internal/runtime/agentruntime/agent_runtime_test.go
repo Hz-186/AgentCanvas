@@ -16,6 +16,15 @@ import (
 	"agentcanvas/internal/runtime/toolruntime"
 )
 
+func TestCoordinatorExtraTokensIncludesPreparedBlocks(t *testing.T) {
+	base := coordinatorExtraTokens("openai_compatible", "gpt-4o", "system", "task", 50, nil, nil)
+	withMemory := coordinatorExtraTokens("openai_compatible", "gpt-4o", "system", "task", 50, nil,
+		[]runtimeagent.ContextBlock{{Name: "memory_recall", Content: strings.Repeat("project fact ", 100)}})
+	if withMemory <= base {
+		t.Fatalf("prepared context blocks were not included in coordinator budget: base=%d with_memory=%d", base, withMemory)
+	}
+}
+
 func TestDecodeDefinitionBuildsIdentityAndCapabilities(t *testing.T) {
 	raw := json.RawMessage(`{"provider_id":2,"model":"m","mode":"react","system_prompt":"base","role":"researcher","goal":"verify","tool_pack_ids":[3],"allow_subagents":true,"max_subagent_depth":3}`)
 	definition, err := DecodeDefinition(raw)

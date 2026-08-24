@@ -60,7 +60,7 @@ func TestFileToolsHashAndPatchConflict(t *testing.T) {
 	if eventType != "workspace.status_changed" {
 		t.Fatalf("file mutation event type = %q", eventType)
 	}
-	for _, key := range []string{"workspace_id", "project_id", "run_id", "kind", "repo_root", "path", "branch", "base_sha", "head_sha", "dirty", "unpushed", "status", "error", "mutation"} {
+	for _, key := range []string{"workspace_id", "project_id", "run_id", "kind", "repository_root", "workspace_path", "branch_name", "base_sha", "head_sha", "dirty", "has_unpushed_commits", "status", "error_message", "mutation"} {
 		if _, ok := eventPayload[key]; !ok {
 			t.Fatalf("file mutation event is missing %q: %#v", key, eventPayload)
 		}
@@ -117,7 +117,7 @@ func TestAuditedFileToolRedactsSourceContent(t *testing.T) {
 	if len(repository.logs) != 1 {
 		t.Fatalf("got %d audit logs, want 1", len(repository.logs))
 	}
-	detail := repository.logs[0].DetailJSON
+	detail := string(repository.logs[0].DetailJSON)
 	if strings.Contains(detail, "private source body") || !strings.Contains(detail, "content_sha256") || !strings.Contains(detail, `"run_id":1`) {
 		t.Fatalf("source content was not safely summarized: %s", detail)
 	}
@@ -234,7 +234,7 @@ func TestGitToolsEnforceApprovalMetadataBranchBindingAndCompleteEvents(t *testin
 	if eventType != "git.commit_created" || eventPayload["workspace_id"] != int64(70) || eventPayload["project_id"] != int64(11) || eventPayload["kind"] != "worktree" || eventPayload["head_sha"] == "" || eventPayload["status"] != "ready" {
 		t.Fatalf("incomplete git.commit_created event: type=%q payload=%#v", eventType, eventPayload)
 	}
-	if eventPayload["dirty"] != true || eventPayload["unpushed"] != true || !rc.Workspace.Dirty || !rc.Workspace.Unpushed {
+	if eventPayload["dirty"] != true || eventPayload["has_unpushed_commits"] != true || !rc.Workspace.Dirty || !rc.Workspace.HasUnpushedCommits {
 		t.Fatalf("git.commit_created did not preserve the real post-commit status: payload=%#v workspace=%#v", eventPayload, rc.Workspace)
 	}
 	if rc.Workspace.HeadSHA != eventPayload["head_sha"] {
@@ -243,7 +243,7 @@ func TestGitToolsEnforceApprovalMetadataBranchBindingAndCompleteEvents(t *testin
 	if _, err := (GitTool{Kind: "git_status", Git: service}).Execute(context.Background(), rc, json.RawMessage(`{}`)); err != nil {
 		t.Fatal(err)
 	}
-	if eventType != "git.status_changed" || eventPayload["dirty"] != true || eventPayload["unpushed"] != true || !rc.Workspace.Dirty || !rc.Workspace.Unpushed {
+	if eventType != "git.status_changed" || eventPayload["dirty"] != true || eventPayload["has_unpushed_commits"] != true || !rc.Workspace.Dirty || !rc.Workspace.HasUnpushedCommits {
 		t.Fatalf("git_status did not update the workspace snapshot: type=%q payload=%#v workspace=%#v", eventType, eventPayload, rc.Workspace)
 	}
 

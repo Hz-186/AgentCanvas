@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"agentcanvas/internal/domain"
 	"agentcanvas/internal/domain/contextresource"
 )
 
@@ -31,6 +32,7 @@ type RuntimeService struct {
 type ReadRequest struct {
 	OwnerID        int64
 	ConversationID *int64
+	ProjectID      int64
 	AgentID        int64
 	RunID          int64
 	MemoryTypes    []string
@@ -64,23 +66,26 @@ type RecallDetail struct {
 }
 
 type WriteRequest struct {
-	OwnerID        int64
-	AgentID        int64
-	ConversationID *int64
-	RunID          int64
-	MemoryID       int64
-	MemoryType     string
-	Title          string
-	Content        string
-	Importance     float64
-	Reason         string
-	Source         string
-	SourceKey      *string
-	MetadataJSON   json.RawMessage
-	ScopeType      string
-	ScopeID        int64
-	Status         string
-	SupersedesID   *int64
+	OwnerID              int64
+	AgentID              int64
+	ConversationID       int64
+	ProjectID            int64
+	SourceConversationID *int64
+	SourceProjectID      *int64
+	RunID                int64
+	MemoryID             int64
+	MemoryType           string
+	Title                string
+	Content              string
+	Importance           float64
+	Reason               string
+	Source               string
+	DeduplicationKey     *string
+	MetadataJSON         json.RawMessage
+	ScopeType            string
+	ScopeID              int64
+	Status               string
+	SupersedesID         *int64
 	// ConflictResolution is injected only after a user decision. Supported
 	// values are keep_existing:<id>, replace:<id>, and keep_both.
 	ConflictResolution string
@@ -135,7 +140,7 @@ func (s RuntimeService) Read(ctx context.Context, req ReadRequest) (ReadResult, 
 				agentID = s.AgentID
 			}
 			hits, searchErr := s.ContextIndex.Search(ctx, contextresource.SearchRequest{OwnerID: req.OwnerID, AgentID: agentID,
-				ConversationID: conversationID, ResourceTypes: []string{contextresource.TypeLongTermMemory}, Query: query,
+				ProjectID: req.ProjectID, ConversationID: conversationID, ResourceTypes: []string{contextresource.TypeLongTermMemory}, Query: query,
 				Mode: "hybrid", TopK: limit * 2, Profile: s.Profile})
 			err = searchErr
 			for _, hit := range hits {
@@ -163,10 +168,18 @@ func (s RuntimeService) Read(ctx context.Context, req ReadRequest) (ReadResult, 
 			return s.readResult(ctx, req, nil, query, scores, reason)
 		}
 	}
-	items, err := s.Memories.ListForRead(ctx, req.OwnerID, req.MemoryTypes, req.ConversationID, limit)
+	var items []Memory
+	var err error
+	if scoped, ok := s.Memories.(ScopedReader); ok && req.ProjectID > 0 {
+		projectID := req.ProjectID
+		items, err = scoped.ListForReadScoped(ctx, req.OwnerID, req.AgentID, req.MemoryTypes, req.ConversationID, &projectID, limit)
+	} else {
+		items, err = s.Memories.ListForRead(ctx, req.OwnerID, req.MemoryTypes, req.ConversationID, limit)
+	}
 	if err != nil {
 		return ReadResult{}, err
 	}
+	items = filterReadableMemories(items, req)
 	return s.readResult(ctx, req, trimMemoriesToTokenBudget(items, req.TokenBudget), query, scores, reason)
 }
 
@@ -179,6 +192,11 @@ func (s RuntimeService) Write(ctx context.Context, req WriteRequest) (WriteResul
 	if memoryType == "" || content == "" {
 		return WriteResult{}, fmt.Errorf("memory_type and content are required")
 	}
+	scopeType, scopeID, err := ResolveScope(memoryType, req.OwnerID, req.AgentID, req.ProjectID, req.ConversationID, req.ScopeType, req.ScopeID)
+	if err != nil {
+		return WriteResult{}, err
+	}
+	req.ScopeType, req.ScopeID = scopeType, scopeID
 	resolution := strings.TrimSpace(req.ConflictResolution)
 	resolutionTarget := int64(0)
 	if strings.HasPrefix(resolution, "keep_existing:") {
@@ -232,8 +250,9 @@ func (s RuntimeService) Write(ctx context.Context, req WriteRequest) (WriteResul
 	}
 	action := WriteActionCreate
 	var beforeJSON json.RawMessage
-	item := &Memory{OwnerID: req.OwnerID, ConversationID: req.ConversationID}
-	item.ParentID = conflictParent
+	item := &Memory{SourceConversationID: req.SourceConversationID, SourceProjectID: req.SourceProjectID}
+	item.OwnerID = req.OwnerID
+	item.ConflictWithID = conflictParent
 	if req.MemoryID == 0 && req.SupersedesID != nil {
 		if *req.SupersedesID <= 0 {
 			return WriteResult{}, fmt.Errorf("invalid superseded memory id")
@@ -245,11 +264,10 @@ func (s RuntimeService) Write(ctx context.Context, req WriteRequest) (WriteResul
 		if previous.Status != "" && previous.Status != StatusActive {
 			return WriteResult{}, fmt.Errorf("superseded memory is not active")
 		}
-		item.ParentID = req.SupersedesID
 	}
 	// keep_both is explicitly resolved, so the new version remains readable;
-	// ParentID preserves the relationship for audit and later review.
-	item.ConflictFlag = false
+	// ConflictWithID preserves the relationship for audit and later review.
+	item.HasConflict = false
 	if req.MemoryID > 0 {
 		existing, err := s.Memories.FindByID(ctx, req.OwnerID, req.MemoryID)
 		if err != nil {
@@ -263,7 +281,7 @@ func (s RuntimeService) Write(ctx context.Context, req WriteRequest) (WriteResul
 		action = WriteActionUpdate
 	}
 	item.MemoryType = memoryType
-	item.MemoryLevel = LevelLongTerm
+	item.RetentionTier = TierLongTerm
 	item.Title = strings.TrimSpace(req.Title)
 	item.Content = content
 	item.Importance = req.Importance
@@ -274,14 +292,11 @@ func (s RuntimeService) Write(ctx context.Context, req WriteRequest) (WriteResul
 		item.Importance = 1
 	}
 	item.Source = strings.TrimSpace(req.Source)
-	item.SourceKey = req.SourceKey
+	item.DeduplicationKey = req.DeduplicationKey
 	if len(req.MetadataJSON) > 0 {
 		item.MetadataJSON = req.MetadataJSON
 	}
-	if strings.TrimSpace(req.ScopeType) != "" {
-		item.ScopeType = strings.TrimSpace(req.ScopeType)
-		item.ScopeID = req.ScopeID
-	}
+	item.ScopeType, item.ScopeID = req.ScopeType, req.ScopeID
 	if strings.TrimSpace(req.Status) != "" {
 		item.Status = strings.TrimSpace(req.Status)
 	}
@@ -289,7 +304,6 @@ func (s RuntimeService) Write(ctx context.Context, req WriteRequest) (WriteResul
 	if item.Source == "" {
 		item.Source = "agent_tool"
 	}
-	var err error
 	replacementApplied := false
 	if action == WriteActionCreate && item.SupersedesID != nil {
 		if replacements, ok := s.Memories.(AtomicReplacementRepository); ok {
@@ -311,7 +325,7 @@ func (s RuntimeService) Write(ctx context.Context, req WriteRequest) (WriteResul
 		return WriteResult{}, err
 	}
 	if s.Logs != nil {
-		if err := s.Logs.Create(ctx, &WriteLog{OwnerID: req.OwnerID, MemoryID: item.ID, RunID: req.RunID, Action: action, BeforeJSON: beforeJSON, AfterJSON: afterJSON, Reason: strings.TrimSpace(req.Reason)}); err != nil {
+		if err := s.Logs.Create(ctx, &WriteLog{ImmutableModel: domain.ImmutableModel{OwnerID: req.OwnerID}, MemoryID: item.ID, RunID: req.RunID, Action: action, BeforeJSON: beforeJSON, AfterJSON: afterJSON, Reason: strings.TrimSpace(req.Reason)}); err != nil {
 			return WriteResult{}, err
 		}
 	}
@@ -327,20 +341,33 @@ func (s RuntimeService) findConflict(ctx context.Context, req WriteRequest, memo
 		// A failed semantic lookup must not degrade into a broad database scan.
 		return nil, nil, err
 	}
-	items := s.fetchValid(ctx, ReadRequest{OwnerID: req.OwnerID, AgentID: req.AgentID, ConversationID: req.ConversationID, MemoryTypes: []string{memoryType}}, ids, 5)
-	incoming := Memory{OwnerID: req.OwnerID, ConversationID: req.ConversationID, MemoryType: memoryType, MemoryLevel: LevelLongTerm,
-		Title: strings.TrimSpace(req.Title), Content: content, Importance: req.Importance, Source: strings.TrimSpace(req.Source)}
+	readRequest := ReadRequest{OwnerID: req.OwnerID, AgentID: req.AgentID, MemoryTypes: []string{memoryType}}
+	switch req.ScopeType {
+	case ScopeProject:
+		readRequest.ProjectID = req.ScopeID
+	case ScopeConversation:
+		conversationID := req.ScopeID
+		readRequest.ConversationID = &conversationID
+	case ScopeAgent:
+		readRequest.AgentID = req.ScopeID
+	}
+	items := s.fetchValid(ctx, readRequest, ids, 5)
+	incoming := Memory{SourceConversationID: req.SourceConversationID, SourceProjectID: req.SourceProjectID, MemoryType: memoryType, RetentionTier: TierLongTerm, Title: strings.TrimSpace(req.Title)}
+	incoming.OwnerID = req.OwnerID
 	for i := range items {
 		existing := items[i]
+		if existing.ScopeType != req.ScopeType || existing.ScopeID != req.ScopeID {
+			continue
+		}
 		if normalizeMemoryText(existing.Content) == normalizeMemoryText(content) {
 			return nil, &existing, nil
 		}
 		if !sameMemorySubject(existing, incoming) {
 			continue
 		}
-		existing.ConflictFlag = true
-		incoming.ParentID = &existing.ID
-		incoming.ConflictFlag = true
+		existing.HasConflict = true
+		incoming.ConflictWithID = &existing.ID
+		incoming.HasConflict = true
 		return &MemoryConflict{Existing: existing, Incoming: incoming, Options: []ConflictOption{
 			{ID: "keep_existing:" + strconv.FormatInt(existing.ID, 10), Label: "保留原记忆", Description: "忽略这次写入，继续使用现有记忆。"},
 			{ID: "replace:" + strconv.FormatInt(existing.ID, 10), Label: "使用新记忆", Description: "用本次内容替换现有记忆。"},
@@ -348,6 +375,13 @@ func (s RuntimeService) findConflict(ctx context.Context, req WriteRequest, memo
 		}}, nil, nil
 	}
 	return nil, nil, nil
+}
+
+func valueOrInt64(value *int64) int64 {
+	if value == nil {
+		return 0
+	}
+	return *value
 }
 
 func normalizeMemoryText(value string) string {
@@ -409,13 +443,13 @@ func (s RuntimeService) fetchValid(ctx context.Context, req ReadRequest, ids []i
 			continue
 		}
 		item, err := s.Memories.FindByID(ctx, req.OwnerID, id)
-		if err != nil || !item.IsRecallable(now) || !matchesLevel(item.MemoryLevel) || !matchesType(item.MemoryType, req.MemoryTypes) || !matchesScope(*item, req) {
+		if err != nil || !item.IsRecallable(now) || !matchesLevel(item.RetentionTier) || !matchesType(item.MemoryType, req.MemoryTypes) || !matchesScope(*item, req) {
 			continue
 		}
 		contentKey := normalizeMemoryText(item.Content)
 		sourceKey := ""
-		if item.SourceKey != nil {
-			sourceKey = strings.TrimSpace(*item.SourceKey)
+		if item.DeduplicationKey != nil {
+			sourceKey = strings.TrimSpace(*item.DeduplicationKey)
 		}
 		if seenContent[contentKey] || (sourceKey != "" && seenSources[sourceKey]) {
 			continue
@@ -432,11 +466,20 @@ func (s RuntimeService) fetchValid(ctx context.Context, req ReadRequest, ids []i
 	return items
 }
 
-// matchesLevel keeps working memory out of semantic memory recall. Working
-// memory is injected through its dedicated runtime channel and must not be
-// duplicated or allowed to override the current transcript.
+func filterReadableMemories(items []Memory, req ReadRequest) []Memory {
+	filtered := make([]Memory, 0, len(items))
+	for _, item := range items {
+		if item.IsRecallable(time.Now()) && matchesLevel(item.RetentionTier) && matchesType(item.MemoryType, req.MemoryTypes) && matchesScope(item, req) {
+			filtered = append(filtered, item)
+		}
+	}
+	return filtered
+}
+
+// matchesLevel keeps deprecated Redis working memory out of semantic recall.
+// Cross-run conversation continuity is provided by durable compaction snapshots.
 func matchesLevel(level string) bool {
-	return level == "" || level == LevelShortTerm || level == LevelLongTerm
+	return level == "" || level == TierShortTerm || level == TierLongTerm
 }
 
 func (s RuntimeService) readResult(ctx context.Context, request ReadRequest, items []Memory, query string, scores map[int64]float64, reason string) (ReadResult, error) {
@@ -470,7 +513,7 @@ func (s RuntimeService) readResult(ctx context.Context, request ReadRequest, ite
 		for i := range details {
 			tokens += details[i].TokenCost
 		}
-		if err := s.RecallLogs.Create(ctx, &RecallLog{OwnerID: request.OwnerID, AgentID: request.AgentID,
+		if err := s.RecallLogs.Create(ctx, &RecallLog{ImmutableModel: domain.ImmutableModel{OwnerID: request.OwnerID}, AgentID: request.AgentID,
 			ConversationID: conversationID, RunID: request.RunID, Query: query, CandidateJSON: candidateJSON,
 			InjectedJSON: injectedJSON, TokenCost: tokens}); err != nil {
 			return ReadResult{}, fmt.Errorf("record memory recall: %w", err)
@@ -512,16 +555,9 @@ func matchesType(value string, types []string) bool {
 	return false
 }
 
-func matchesConversation(item, requested *int64) bool {
-	if requested == nil || item == nil {
-		return true
-	}
-	return *item == *requested
-}
-
 func matchesScope(item Memory, request ReadRequest) bool {
 	if item.ScopeType == "" {
-		return matchesConversation(item.ConversationID, request.ConversationID)
+		return false
 	}
 	switch item.ScopeType {
 	case ScopeUser:
@@ -530,6 +566,8 @@ func matchesScope(item Memory, request ReadRequest) bool {
 		return request.ConversationID != nil && item.ScopeID == *request.ConversationID
 	case ScopeAgent:
 		return request.AgentID > 0 && item.ScopeID == request.AgentID
+	case ScopeProject:
+		return request.ProjectID > 0 && item.ScopeID == request.ProjectID
 	default:
 		return false
 	}

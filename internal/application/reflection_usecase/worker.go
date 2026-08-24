@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"agentcanvas/internal/domain"
 	"agentcanvas/internal/domain/conversation"
 	"agentcanvas/internal/domain/provider"
 	"agentcanvas/internal/domain/reflection"
@@ -104,7 +105,7 @@ func (w Worker) analyze(ctx context.Context, job *reflection.Job) ([]reflection.
 	if err != nil {
 		return nil, err
 	}
-	if p.Status != provider.StatusActive {
+	if !p.Enabled {
 		return nil, fmt.Errorf("reflection provider is not active")
 	}
 	apiKey, err := w.Secrets.Decrypt(p.EncryptedAPIKey)
@@ -155,7 +156,7 @@ func (w Worker) analyze(ctx context.Context, job *reflection.Job) ([]reflection.
 		if scope != reflection.ScopeGlobal {
 			scope = reflection.ScopeAgent
 		}
-		item := reflection.Reflection{OwnerID: job.OwnerID, AgentID: job.AgentID,
+		item := reflection.Reflection{SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{OwnerID: job.OwnerID}}, AgentID: job.AgentID,
 			SourceRunID: job.RunID, Scope: scope, Kind: candidate.Kind, Mode: job.Mode, TriggerType: candidate.TriggerType,
 			EmbeddingProviderID: job.ProviderID,
 			TaskFingerprint:     TaskFingerprint(job.Task), TaskSummary: compactText(job.Task, 1000), RootCauseCategory: candidate.RootCauseCategory,

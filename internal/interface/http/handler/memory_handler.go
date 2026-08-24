@@ -34,7 +34,7 @@ func (h *MemoryHandler) List(c *gin.Context) {
 		return
 	}
 	items, err := h.service.ListFiltered(c.Request.Context(), ownerID, memoryusecase.ListMemoryFilter{
-		MemoryTypes: splitQuery(c.Query("memory_type")), ConversationID: optionalInt64Query(c, "conversation_id"),
+		MemoryTypes: splitQuery(c.Query("memory_type")), SourceConversationID: optionalInt64Query(c, "source_conversation_id"), SourceProjectID: optionalInt64Query(c, "source_project_id"),
 		Statuses: splitQuery(c.Query("status")), ScopeTypes: splitQuery(c.Query("scope_type")), ScopeID: optionalInt64Query(c, "scope_id"),
 		Sources: splitQuery(c.Query("source")), Limit: intQuery(c, "limit", 50), Offset: intQuery(c, "offset", 0),
 	})

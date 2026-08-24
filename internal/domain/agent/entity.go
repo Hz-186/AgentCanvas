@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"agentcanvas/internal/domain"
 )
 
 const (
@@ -53,7 +55,7 @@ type ToolConfig struct {
 type ResourceRefs struct {
 	SkillIDs         []int64 `json:"skill_ids,omitempty"`
 	SkillLoadingMode string  `json:"skill_loading_mode,omitempty"`
-	KnowledgeIDs     []int64 `json:"knowledge_ids,omitempty"`
+	KnowledgeBaseIDs []int64 `json:"knowledge_base_ids,omitempty"`
 	KnowledgeTopK    int     `json:"knowledge_top_k,omitempty"`
 	KnowledgeMode    string  `json:"knowledge_mode,omitempty"`
 }
@@ -111,7 +113,7 @@ type definitionFlat struct {
 	PythonToolNames           []string        `json:"python_tool_names,omitempty"`
 	SkillIDs                  []int64         `json:"skill_ids,omitempty"`
 	SkillLoadingMode          string          `json:"skill_loading_mode,omitempty"`
-	KnowledgeIDs              []int64         `json:"knowledge_ids,omitempty"`
+	KnowledgeBaseIDs          []int64         `json:"knowledge_base_ids,omitempty"`
 	KnowledgeTopK             int             `json:"knowledge_top_k,omitempty"`
 	KnowledgeMode             string          `json:"knowledge_mode,omitempty"`
 	MCPServerIDs              []int64         `json:"mcp_server_ids,omitempty"`
@@ -185,7 +187,7 @@ func (d Definition) flat() definitionFlat {
 	return definitionFlat{
 		ProviderID: d.ProviderID, Model: d.Model, SystemPrompt: d.SystemPrompt, Role: d.Role, Goal: d.Goal, Backstory: d.Backstory,
 		Mode: d.Mode, Temperature: d.Temperature, ToolPackIDs: d.ToolPackIDs, ToolIDs: d.ToolIDs, PythonToolNames: d.PythonToolNames,
-		SkillIDs: d.SkillIDs, SkillLoadingMode: d.SkillLoadingMode, KnowledgeIDs: d.KnowledgeIDs, KnowledgeTopK: d.KnowledgeTopK,
+		SkillIDs: d.SkillIDs, SkillLoadingMode: d.SkillLoadingMode, KnowledgeBaseIDs: d.KnowledgeBaseIDs, KnowledgeTopK: d.KnowledgeTopK,
 		KnowledgeMode: d.KnowledgeMode, MCPServerIDs: d.MCPServerIDs, AllowSubagents: d.AllowSubagents,
 		MaxParallelSubAgents: d.MaxParallelSubAgents, MaxSubagentDepth: d.MaxSubagentDepth, MemoryEnabled: d.MemoryEnabled,
 		ReflectionEnabled: d.ReflectionEnabled, MemoryPolicyJSON: d.MemoryPolicyJSON, ReflectionPolicyJSON: d.ReflectionPolicyJSON,
@@ -205,7 +207,7 @@ func definitionFromFlat(f definitionFlat) Definition {
 			OutputSchemaJSON: f.OutputSchemaJSON, OutputMode: f.OutputMode, ReturnIntermediateSteps: f.ReturnIntermediateSteps},
 		ToolConfig: ToolConfig{ToolPackIDs: f.ToolPackIDs, ToolIDs: f.ToolIDs, PythonToolNames: f.PythonToolNames,
 			MCPServerIDs: f.MCPServerIDs, ToolPolicyJSON: f.ToolPolicyJSON},
-		ResourceRefs: ResourceRefs{SkillIDs: f.SkillIDs, SkillLoadingMode: f.SkillLoadingMode, KnowledgeIDs: f.KnowledgeIDs,
+		ResourceRefs: ResourceRefs{SkillIDs: f.SkillIDs, SkillLoadingMode: f.SkillLoadingMode, KnowledgeBaseIDs: f.KnowledgeBaseIDs,
 			KnowledgeTopK: f.KnowledgeTopK, KnowledgeMode: f.KnowledgeMode},
 		MemoryPolicy: MemoryPolicy{MemoryEnabled: f.MemoryEnabled, ReflectionEnabled: f.ReflectionEnabled,
 			MemoryPolicyJSON: f.MemoryPolicyJSON, ReflectionPolicyJSON: f.ReflectionPolicyJSON, ContextPolicyJSON: f.ContextPolicyJSON, RulesJSON: f.RulesJSON},
@@ -327,7 +329,7 @@ func (d Definition) Snapshot() (json.RawMessage, string, error) {
 func (d Definition) ResourceSnapshot() (json.RawMessage, string, string, error) {
 	resources := map[string]any{
 		"tool_pack_ids": d.ToolPackIDs, "tool_ids": d.ToolIDs, "skill_ids": d.SkillIDs,
-		"python_tool_names": d.PythonToolNames, "knowledge_ids": d.KnowledgeIDs, "mcp_server_ids": d.MCPServerIDs,
+		"python_tool_names": d.PythonToolNames, "knowledge_base_ids": d.KnowledgeBaseIDs, "mcp_server_ids": d.MCPServerIDs,
 	}
 	raw, err := json.Marshal(resources)
 	if err != nil {
@@ -359,8 +361,7 @@ func normalizeNames(names []string) []string {
 }
 
 type Agent struct {
-	ID                  int64           `json:"id" gorm:"primaryKey;column:id"`
-	OwnerID             int64           `json:"owner_id" gorm:"column:owner_id"`
+	domain.SoftDeleteModel
 	Name                string          `json:"name" gorm:"column:name"`
 	Description         string          `json:"description" gorm:"column:description"`
 	AvatarURL           string          `json:"avatar_url" gorm:"column:avatar_url"`
@@ -368,33 +369,24 @@ type Agent struct {
 	DraftDefinitionJSON json.RawMessage `json:"-" gorm:"column:draft_definition_json"`
 	DraftDefinition     Definition      `json:"definition" gorm:"-"`
 	CurrentReleaseID    *int64          `json:"current_release_id,omitempty" gorm:"column:current_release_id"`
-	CreatedAt           time.Time       `json:"created_at" gorm:"column:created_at"`
-	UpdatedAt           time.Time       `json:"updated_at" gorm:"column:updated_at"`
-	DeletedAt           *time.Time      `json:"-" gorm:"column:deleted_at"`
 }
 
 func (Agent) TableName() string { return "agents" }
 
 type Release struct {
-	ID               int64           `json:"id" gorm:"primaryKey;column:id"`
-	OwnerID          int64           `json:"owner_id" gorm:"column:owner_id"`
-	AgentID          int64           `json:"agent_id" gorm:"column:agent_id"`
-	VersionNo        int             `json:"version_no" gorm:"column:version_no"`
-	DefinitionJSON   json.RawMessage `json:"-" gorm:"column:definition_json"`
-	Definition       Definition      `json:"definition" gorm:"-"`
-	Checksum         string          `json:"checksum" gorm:"column:checksum"`
-	RuleHash         string          `json:"rule_hash" gorm:"column:rule_hash"`
-	ToolSchemaHash   string          `json:"tool_schema_hash" gorm:"column:tool_schema_hash"`
-	ResourceVersions json.RawMessage `json:"resource_versions" gorm:"column:resource_versions_json"`
-	CreatedBy        int64           `json:"created_by" gorm:"column:created_by"`
-	CreatedAt        time.Time       `json:"created_at" gorm:"column:created_at"`
+	domain.ImmutableModel
+	AgentID        int64           `json:"agent_id" gorm:"column:agent_id"`
+	VersionNumber  int             `json:"version_number" gorm:"column:version_number"`
+	DefinitionJSON json.RawMessage `json:"-" gorm:"column:definition_json"`
+	Definition     Definition      `json:"definition" gorm:"-"`
+	Checksum       string          `json:"checksum" gorm:"column:checksum"`
+	RuleHash       string          `json:"rule_hash" gorm:"column:rule_hash"`
 }
 
 func (Release) TableName() string { return "agent_releases" }
 
 type Turn struct {
-	ID                 int64           `json:"id" gorm:"primaryKey;column:id"`
-	OwnerID            int64           `json:"owner_id" gorm:"column:owner_id"`
+	domain.BaseModel
 	AgentID            int64           `json:"agent_id" gorm:"column:agent_id"`
 	AgentReleaseID     int64           `json:"agent_release_id" gorm:"column:agent_release_id"`
 	ConversationID     int64           `json:"conversation_id" gorm:"column:conversation_id"`
@@ -415,8 +407,6 @@ type Turn struct {
 	RetryAt            *time.Time      `json:"retry_at,omitempty" gorm:"column:retry_at"`
 	StartedAt          *time.Time      `json:"started_at,omitempty" gorm:"column:started_at"`
 	FinishedAt         *time.Time      `json:"finished_at,omitempty" gorm:"column:finished_at"`
-	CreatedAt          time.Time       `json:"created_at" gorm:"column:created_at"`
-	UpdatedAt          time.Time       `json:"updated_at" gorm:"column:updated_at"`
 }
 
 const (
@@ -438,8 +428,7 @@ const (
 )
 
 type ImprovementReview struct {
-	ID              int64      `json:"id" gorm:"primaryKey;column:id"`
-	OwnerID         int64      `json:"owner_id" gorm:"column:owner_id"`
+	domain.BaseModel
 	AgentID         int64      `json:"agent_id" gorm:"column:agent_id"`
 	AgentReleaseID  int64      `json:"agent_release_id" gorm:"column:agent_release_id"`
 	ConversationID  int64      `json:"conversation_id" gorm:"column:conversation_id"`
@@ -456,16 +445,13 @@ type ImprovementReview struct {
 	LastHeartbeatAt *time.Time `json:"last_heartbeat_at,omitempty" gorm:"column:last_heartbeat_at"`
 	RetryAt         *time.Time `json:"retry_at,omitempty" gorm:"column:retry_at"`
 	ErrorMessage    string     `json:"error_message,omitempty" gorm:"column:error_message"`
-	CreatedAt       time.Time  `json:"created_at" gorm:"column:created_at"`
-	UpdatedAt       time.Time  `json:"updated_at" gorm:"column:updated_at"`
 	CompletedAt     *time.Time `json:"completed_at,omitempty" gorm:"column:completed_at"`
 }
 
 func (ImprovementReview) TableName() string { return "agent_improvement_reviews" }
 
 type ChangeProposal struct {
-	ID             int64           `json:"id" gorm:"primaryKey;column:id"`
-	OwnerID        int64           `json:"owner_id" gorm:"column:owner_id"`
+	domain.BaseModel
 	AgentID        int64           `json:"agent_id" gorm:"column:agent_id"`
 	ReviewID       int64           `json:"review_id" gorm:"column:review_id"`
 	TurnID         int64           `json:"turn_id" gorm:"column:turn_id"`
@@ -485,8 +471,6 @@ type ChangeProposal struct {
 	DecidedBy      *int64          `json:"decided_by,omitempty" gorm:"column:decided_by"`
 	DecidedAt      *time.Time      `json:"decided_at,omitempty" gorm:"column:decided_at"`
 	AppliedAt      *time.Time      `json:"applied_at,omitempty" gorm:"column:applied_at"`
-	CreatedAt      time.Time       `json:"created_at" gorm:"column:created_at"`
-	UpdatedAt      time.Time       `json:"updated_at" gorm:"column:updated_at"`
 }
 
 func (ChangeProposal) TableName() string { return "agent_change_proposals" }

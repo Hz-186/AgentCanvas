@@ -51,6 +51,7 @@ type RunContext struct {
 	ParentRunID     *int64                        `json:"parent_run_id" tag:"optional parent run ID"`
 	DelegationDepth int                           `json:"delegation_depth" tag:"nested subagent depth"`
 	ConversationID  *int64                        `json:"conversation_id" tag:"optional conversation ID"`
+	ProjectID       int64                         `json:"project_id,omitempty" tag:"optional project ID"`
 	Input           map[string]any                `json:"input" tag:"original user input"`
 	Events          EventEmitter                  `json:"events" tag:"event emitter"`
 	AgentSteps      AgentStepRecorder             `json:"agent_steps" tag:"agent step recorder"`

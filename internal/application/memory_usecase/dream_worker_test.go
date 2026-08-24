@@ -3,9 +3,11 @@ package memory_usecase
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
+	"agentcanvas/internal/domain"
 	"agentcanvas/internal/domain/conversation"
 	"agentcanvas/internal/domain/memory"
 	"agentcanvas/internal/infrastructure/llm"
@@ -25,11 +27,36 @@ func (f fakeDreamChatClient) StreamChat(context.Context, llm.ChatProviderConfig,
 	return nil
 }
 
+type recordingDreamChatClient struct {
+	content  string
+	requests []llm.ChatRequest
+}
+
+func (f *recordingDreamChatClient) Chat(_ context.Context, _ llm.ChatProviderConfig, request llm.ChatRequest) (*llm.ChatResponse, error) {
+	f.requests = append(f.requests, request)
+	return &llm.ChatResponse{Content: f.content}, nil
+}
+
+func (*recordingDreamChatClient) StreamChat(context.Context, llm.ChatProviderConfig, llm.ChatRequest, func(llm.StreamEvent) error) error {
+	return nil
+}
+
 type fakeLeasedExtractionRepo struct {
 	*fakeExtractionRepo
 	claimAllowed bool
 	claims       int
 	ownedUpdates int
+}
+
+type fakeBoundaryExtractionRepo struct {
+	*fakeExtractionRepo
+	boundary int64
+	calls    int
+}
+
+func (r *fakeBoundaryExtractionRepo) LatestCompletedThrough(context.Context, int64, int64, int64) (int64, error) {
+	r.calls++
+	return r.boundary, nil
 }
 
 func (r *fakeLeasedExtractionRepo) ClaimByID(_ context.Context, ownerID, id int64, workerID string, leaseUntil time.Time) (*memory.ExtractionJob, bool, error) {
@@ -78,6 +105,23 @@ func (f *fakeDreamMessages) ListActiveThrough(_ context.Context, _, _, throughMe
 	return items, nil
 }
 
+func (f *fakeDreamMessages) LatestActiveMessageID(_ context.Context, _, _ int64) (int64, error) {
+	if len(f.items) == 0 {
+		return 0, nil
+	}
+	return f.items[len(f.items)-1].ID, nil
+}
+
+func (f *fakeDreamMessages) ListActiveAfterThrough(_ context.Context, _, _, afterMessageID, throughMessageID int64) ([]conversation.Message, error) {
+	items := make([]conversation.Message, 0, len(f.items))
+	for _, item := range f.items {
+		if item.ID > afterMessageID && item.ID <= throughMessageID {
+			items = append(items, item)
+		}
+	}
+	return items, nil
+}
+
 type fakeCandidateWriter struct {
 	items map[string]memory.CandidateRequest
 	err   error
@@ -103,9 +147,9 @@ func (f *fakeDreamMemoryRepo) Create(_ context.Context, item *memory.Memory) err
 		f.items = map[int64]*memory.Memory{}
 	}
 	if item.ID == 0 {
-		if item.SourceKey != nil {
+		if item.DeduplicationKey != nil {
 			for _, existing := range f.items {
-				if existing.SourceKey != nil && *existing.SourceKey == *item.SourceKey {
+				if existing.DeduplicationKey != nil && *existing.DeduplicationKey == *item.DeduplicationKey {
 					item.ID = existing.ID
 					return nil
 				}
@@ -153,8 +197,8 @@ func (f *fakeDreamMemoryRepo) ListByLevel(context.Context, int64, string, []stri
 func (f *fakeDreamMemoryRepo) ListActiveOwnerIDs(context.Context, int) ([]int64, error) {
 	return nil, nil
 }
-func (f *fakeDreamMemoryRepo) IncrementAccessCount(context.Context, int64, int64) error { return nil }
-func (f *fakeDreamMemoryRepo) IncrementConsolidationCount(context.Context, int64, int64) error {
+func (f *fakeDreamMemoryRepo) IncrementRecallCount(context.Context, int64, int64) error { return nil }
+func (f *fakeDreamMemoryRepo) IncrementPromotionCount(context.Context, int64, int64) error {
 	return nil
 }
 func (f *fakeDreamMemoryRepo) SoftDelete(context.Context, int64, int64) error { return nil }
@@ -165,17 +209,16 @@ func (f *fakeDreamMemoryRepo) MarkExpired(context.Context, int64, int) (int64, e
 func (f *fakeDreamMemoryRepo) UpdateDecayedImportance(context.Context, int64, float64) (int64, error) {
 	return 0, nil
 }
-func (f *fakeDreamMemoryRepo) SetEmbedding(context.Context, int64, int64, []byte) error { return nil }
 
 func TestDreamWorkerCreatesCandidatesWithoutArchivingMessages(t *testing.T) {
 	redisServer := miniredis.RunT(t)
 	defer redisServer.Close()
 	redisClient := redis.NewClient(&redis.Options{Addr: redisServer.Addr()})
 	defer redisClient.Close()
-	repo := &fakeDreamMemoryRepo{items: map[int64]*memory.Memory{1: {ID: 1, OwnerID: 1, MemoryType: memory.TypeProfile, Content: "Existing preference", Importance: 0.9}}}
-	messages := &fakeDreamMessages{items: []conversation.Message{{ID: 1, OwnerID: 1, ConversationID: 10, Role: conversation.RoleUser, Content: "我喜欢简洁回答"}}}
+	repo := &fakeDreamMemoryRepo{items: map[int64]*memory.Memory{1: {MemoryType: memory.TypeProfile, Content: "Existing preference", Importance: 0.9}}}
+	messages := &fakeDreamMessages{items: []conversation.Message{{ImmutableModel: domain.ImmutableModel{ID: 1, OwnerID: 1}, ConversationID: 10, Role: conversation.RoleUser, Content: "我喜欢简洁回答"}}}
 	candidates := &fakeCandidateWriter{}
-	worker := NewDreamWorker(fakeDreamChatClient{content: `{"core_updates":[{"memory_type":"profile_memory","title":"style","content":"User prefers concise answers","action":"create"}],"archival_inserts":[{"content":"User discussed answer style preference"}]}`}, nil, repo, nil, messages, nil, redisClient, DreamConfig{Enabled: true, Model: "dream-model"}, "worker-1")
+	worker := NewDreamWorker(fakeDreamChatClient{content: `{"core_updates":[{"memory_type":"profile","title":"style","content":"User prefers concise answers","action":"create"}],"archival_inserts":[{"content":"User discussed answer style preference"}]}`}, nil, repo, nil, messages, nil, redisClient, DreamConfig{Enabled: true, Model: "dream-model"}, "worker-1")
 	worker.ConfigureCandidates(candidates)
 	if err := worker.HandleDreamJob(context.Background(), DreamPayload{OwnerID: 1, ConversationID: 10}); err != nil {
 		t.Fatal(err)
@@ -190,11 +233,9 @@ func TestDreamWorkerCreatesCandidatesWithoutArchivingMessages(t *testing.T) {
 
 func TestDreamWorkerJobRetryIsIdempotent(t *testing.T) {
 	repo := &fakeDreamMemoryRepo{items: map[int64]*memory.Memory{}}
-	messages := &fakeDreamMessages{items: []conversation.Message{{ID: 1, OwnerID: 1, ConversationID: 10, Role: conversation.RoleUser, Content: "remember this"}}}
-	jobs := &fakeExtractionRepo{jobs: map[int64]*memory.ExtractionJob{7: {
-		ID: 7, OwnerID: 1, ConversationID: 10, ThroughMessageID: 1, Status: string(memory.ExtractionPending),
-	}}}
-	worker := NewDreamWorker(fakeDreamChatClient{content: `{"core_updates":[{"memory_type":"profile_memory","content":"fact","action":"create"}],"archival_inserts":[{"content":"episode"}]}`}, nil, repo, nil, messages, nil, nil, DreamConfig{Enabled: true, Model: "dream-model"}, "worker", jobs)
+	messages := &fakeDreamMessages{items: []conversation.Message{{ImmutableModel: domain.ImmutableModel{ID: 1, OwnerID: 1}, ConversationID: 10, Role: conversation.RoleUser, Content: "remember this"}}}
+	jobs := &fakeExtractionRepo{jobs: map[int64]*memory.ExtractionJob{7: {BaseModel: domain.BaseModel{ID: 7, OwnerID: 1}, ConversationID: 10, ThroughMessageID: 1, Status: string(memory.ExtractionPending)}}}
+	worker := NewDreamWorker(fakeDreamChatClient{content: `{"core_updates":[{"memory_type":"profile","content":"fact","action":"create"}],"archival_inserts":[{"content":"episode"}]}`}, nil, repo, nil, messages, nil, nil, DreamConfig{Enabled: true, Model: "dream-model"}, "worker", jobs)
 	candidates := &fakeCandidateWriter{}
 	worker.ConfigureCandidates(candidates)
 	payload := DreamPayload{JobID: 7, OwnerID: 1, ConversationID: 10}
@@ -210,15 +251,51 @@ func TestDreamWorkerJobRetryIsIdempotent(t *testing.T) {
 	}
 }
 
-func TestDreamWorkerUsesDurableLeaseAndIgnoresDuplicateDelivery(t *testing.T) {
-	base := &fakeExtractionRepo{jobs: map[int64]*memory.ExtractionJob{7: {
-		ID: 7, OwnerID: 1, ConversationID: 10, ThroughMessageID: 1, Status: string(memory.ExtractionPending),
+func TestDreamWorkerReadsOnlyMessagesAfterCompletedBoundary(t *testing.T) {
+	chat := &recordingDreamChatClient{content: `{"core_updates":[],"archival_inserts":[]}`}
+	jobs := &fakeBoundaryExtractionRepo{boundary: 1, fakeExtractionRepo: &fakeExtractionRepo{jobs: map[int64]*memory.ExtractionJob{
+		2: {BaseModel: domain.BaseModel{ID: 2, OwnerID: 1}, ConversationID: 10, ThroughMessageID: 3, Status: string(memory.ExtractionPending)},
 	}}}
+	worker := NewDreamWorker(chat, nil, &fakeDreamMemoryRepo{items: map[int64]*memory.Memory{}}, nil,
+		&fakeDreamMessages{items: []conversation.Message{{ImmutableModel: domain.ImmutableModel{ID: 1}, ConversationID: 10, Role: conversation.RoleUser, Content: "old"}, {ImmutableModel: domain.ImmutableModel{ID: 2}, ConversationID: 10, Role: conversation.RoleUser, Content: "new one"}, {ImmutableModel: domain.ImmutableModel{ID: 3}, ConversationID: 10, Role: conversation.RoleAssistant, Content: "new two"}}},
+		nil, nil, DreamConfig{Enabled: true, Model: "dream-model"}, "worker", jobs)
+	worker.ConfigureCandidates(&fakeCandidateWriter{})
+	if err := worker.HandleDreamJob(context.Background(), DreamPayload{JobID: 2, OwnerID: 1, ConversationID: 10}); err != nil {
+		t.Fatal(err)
+	}
+	if jobs.calls != 1 || len(chat.requests) != 1 || strings.Contains(chat.requests[0].Messages[0].Content, "old") || !strings.Contains(chat.requests[0].Messages[0].Content, "new one") {
+		t.Fatalf("dream extraction reloaded already processed history: %+v", chat.requests)
+	}
+}
+
+func TestDreamWorkerCarriesProjectIDIntoProjectCandidates(t *testing.T) {
+	chat := fakeDreamChatClient{content: `{"core_updates":[{"memory_type":"task","content":"project task","action":"create"}],"archival_inserts":[{"content":"project archive"}]}`}
+	worker := NewDreamWorker(chat, nil, &fakeDreamMemoryRepo{items: map[int64]*memory.Memory{}}, nil,
+		&fakeDreamMessages{items: []conversation.Message{{ImmutableModel: domain.ImmutableModel{ID: 1}, ConversationID: 10, Role: conversation.RoleUser, Content: "remember project facts"}}},
+		nil, nil, DreamConfig{Enabled: true, Model: "dream-model"}, "worker")
+	worker.ConfigureConversations(fakeConversationRepo{projectID: 42})
+	candidates := &fakeCandidateWriter{}
+	worker.ConfigureCandidates(candidates)
+	if err := worker.HandleDreamJob(context.Background(), DreamPayload{OwnerID: 1, ConversationID: 10}); err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates.items) != 2 {
+		t.Fatalf("unexpected candidates: %+v", candidates.items)
+	}
+	for _, candidate := range candidates.items {
+		if candidate.SourceProjectID != 42 {
+			t.Fatalf("Dream project candidate lost project_id: %+v", candidate)
+		}
+	}
+}
+
+func TestDreamWorkerUsesDurableLeaseAndIgnoresDuplicateDelivery(t *testing.T) {
+	base := &fakeExtractionRepo{jobs: map[int64]*memory.ExtractionJob{7: {BaseModel: domain.BaseModel{ID: 7, OwnerID: 1}, ConversationID: 10, ThroughMessageID: 1, Status: string(memory.ExtractionPending)}}}
 	jobs := &fakeLeasedExtractionRepo{fakeExtractionRepo: base, claimAllowed: true}
 	worker := NewDreamWorker(
-		fakeDreamChatClient{content: `{"core_updates":[{"memory_type":"profile_memory","content":"fact","action":"create"}]}`},
+		fakeDreamChatClient{content: `{"core_updates":[{"memory_type":"profile","content":"fact","action":"create"}]}`},
 		nil, &fakeDreamMemoryRepo{items: map[int64]*memory.Memory{}}, nil,
-		&fakeDreamMessages{items: []conversation.Message{{ID: 1, OwnerID: 1, ConversationID: 10, Role: conversation.RoleUser, Content: "remember this"}}},
+		&fakeDreamMessages{items: []conversation.Message{{ImmutableModel: domain.ImmutableModel{ID: 1, OwnerID: 1}, ConversationID: 10, Role: conversation.RoleUser, Content: "remember this"}}},
 		nil, nil, DreamConfig{Enabled: true, Model: "dream-model"}, "worker", jobs,
 	)
 	worker.ConfigureCandidates(&fakeCandidateWriter{})
@@ -320,16 +397,15 @@ func TestDreamTriggerSupportsDatabaseOnlyQueue(t *testing.T) {
 }
 
 func TestDreamWorkerMarksExhaustedJobFailed(t *testing.T) {
-	jobs := &fakeExtractionRepo{jobs: map[int64]*memory.ExtractionJob{7: {
-		ID: 7, OwnerID: 1, ConversationID: 10, ThroughMessageID: 1,
+	jobs := &fakeExtractionRepo{jobs: map[int64]*memory.ExtractionJob{7: {BaseModel: domain.BaseModel{ID: 7, OwnerID: 1}, ConversationID: 10, ThroughMessageID: 1,
 		Status: string(memory.ExtractionPending), AttemptCount: 4,
 	}}}
 	worker := NewDreamWorker(
-		fakeDreamChatClient{content: `{"core_updates":[{"memory_type":"profile_memory","content":"fact","action":"create"}]}`},
+		fakeDreamChatClient{content: `{"core_updates":[{"memory_type":"profile","content":"fact","action":"create"}]}`},
 		nil,
 		&fakeDreamMemoryRepo{items: map[int64]*memory.Memory{}},
 		nil,
-		&fakeDreamMessages{items: []conversation.Message{{ID: 1, OwnerID: 1, ConversationID: 10, Role: conversation.RoleUser, Content: "remember this"}}},
+		&fakeDreamMessages{items: []conversation.Message{{ImmutableModel: domain.ImmutableModel{ID: 1, OwnerID: 1}, ConversationID: 10, Role: conversation.RoleUser, Content: "remember this"}}},
 		nil,
 		nil,
 		DreamConfig{Enabled: true, Model: "dream-model"},

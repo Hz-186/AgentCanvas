@@ -11,6 +11,7 @@ import (
 
 type WorkerMetrics interface {
 	RecordOutbox(success bool)
+	RecordOutboxLatency(latencyMS int64)
 }
 
 type Worker struct {
@@ -72,6 +73,9 @@ func (w *Worker) ProcessBatch(ctx context.Context) (int, error) {
 			joined = errors.Join(joined, err)
 		} else if w.Metrics != nil {
 			w.Metrics.RecordOutbox(true)
+			if !items[i].CreatedAt.IsZero() {
+				w.Metrics.RecordOutboxLatency(time.Since(items[i].CreatedAt).Milliseconds())
+			}
 		}
 	}
 	return len(items), joined

@@ -1,6 +1,7 @@
 package knowledge_usecase
 
 import (
+	"agentcanvas/internal/domain"
 	"bytes"
 	"context"
 	"errors"
@@ -23,10 +24,9 @@ func TestUploadDocumentStoresFileCreatesDocumentAndJob(t *testing.T) {
 	kbs := &fakeKBRepo{
 		items: map[int64]*knowledge.KnowledgeBase{
 			10: {
-				ID:           10,
-				OwnerID:      1,
-				ChunkSize:    800,
-				ChunkOverlap: 100,
+				SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 10, OwnerID: 1}},
+				ChunkSize:       800,
+				ChunkOverlap:    100,
 			},
 		},
 	}
@@ -57,19 +57,19 @@ func TestUploadDocumentStoresFileCreatesDocumentAndJob(t *testing.T) {
 	if resp.Document.ID == 0 {
 		t.Fatal("document ID was not assigned")
 	}
-	if resp.Document.ParserStatus != knowledge.DocumentStatusPending {
-		t.Fatalf("ParserStatus = %q, want pending", resp.Document.ParserStatus)
+	if resp.Document.IngestionStatus != knowledge.DocumentStatusPending {
+		t.Fatalf("ParserStatus = %q, want pending", resp.Document.IngestionStatus)
 	}
 	if resp.Document.FileType != "md" {
 		t.Fatalf("FileType = %q, want md", resp.Document.FileType)
 	}
-	if resp.Document.ObjectKey == "" {
+	if resp.Document.StorageObjectKey == "" {
 		t.Fatal("ObjectKey is empty")
 	}
 	if resp.Document.ContentHash == "" {
 		t.Fatal("ContentHash is empty")
 	}
-	if got := storage.objects[resp.Document.ObjectKey]; got != "# Intro\nAgentCanvas supports txt and md." {
+	if got := storage.objects[resp.Document.StorageObjectKey]; got != "# Intro\nAgentCanvas supports txt and md." {
 		t.Fatalf("stored object = %q", got)
 	}
 	if resp.Job.ID == 0 {
@@ -85,7 +85,7 @@ func TestUploadDocumentStoresFileCreatesDocumentAndJob(t *testing.T) {
 
 func TestUploadDocumentPublishesConfiguredJobQueue(t *testing.T) {
 	ctx := context.Background()
-	kbs := &fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{10: {ID: 10, OwnerID: 1, ChunkSize: 800, ChunkOverlap: 100}}}
+	kbs := &fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{10: {SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 10, OwnerID: 1}}, ChunkSize: 800, ChunkOverlap: 100}}}
 	documents := &fakeDocumentRepo{}
 	jobs := &fakeJobRepo{}
 	jobQueue := &fakeQueue{}
@@ -174,7 +174,7 @@ func TestCreateKnowledgeBaseRequiresExperimentalPythonChunkingFlag(t *testing.T)
 
 func TestUploadDocumentRejectsUnsupportedFileType(t *testing.T) {
 	service := NewService(
-		&fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{10: {ID: 10, OwnerID: 1}}},
+		&fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{10: {SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 10, OwnerID: 1}}}}},
 		&fakeDocumentRepo{},
 		&fakeChunkRepo{},
 		&fakeJobRepo{},
@@ -195,7 +195,7 @@ func TestUploadDocumentMarksDocumentFailedWhenStorageFails(t *testing.T) {
 	ctx := context.Background()
 	documents := &fakeDocumentRepo{}
 	jobs := &fakeJobRepo{}
-	kbs := &fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{10: {ID: 10, OwnerID: 1}}}
+	kbs := &fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{10: {SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 10, OwnerID: 1}}}}}
 	service := NewService(
 		kbs,
 		documents,
@@ -216,10 +216,10 @@ func TestUploadDocumentMarksDocumentFailedWhenStorageFails(t *testing.T) {
 	if doc == nil {
 		t.Fatal("document was not created")
 	}
-	if doc.ParserStatus != knowledge.DocumentStatusFailed {
-		t.Fatalf("ParserStatus = %q, want failed", doc.ParserStatus)
+	if doc.IngestionStatus != knowledge.DocumentStatusFailed {
+		t.Fatalf("ParserStatus = %q, want failed", doc.IngestionStatus)
 	}
-	if doc.ParserError == "" {
+	if doc.IngestionError == "" {
 		t.Fatal("ParserError is empty")
 	}
 	if len(jobs.items) != 0 {
@@ -235,7 +235,7 @@ func TestUploadDocumentReturnsFailureStatePersistenceErrors(t *testing.T) {
 	updateErr := errors.New("document update unavailable")
 	documents := &fakeDocumentRepo{updateErr: updateErr, updateErrAt: 1}
 	service := NewService(
-		&fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{10: {ID: 10, OwnerID: 1}}},
+		&fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{10: {SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 10, OwnerID: 1}}}}},
 		documents, &fakeChunkRepo{}, &fakeJobRepo{}, &fakeRetrievalLogRepo{}, nil,
 		&fakeWriteStorage{err: storageErr}, &fakeRetriever{}, &fakeIndexer{},
 	)
@@ -250,7 +250,7 @@ func TestUploadDocumentReturnsFailureStatePersistenceErrors(t *testing.T) {
 func TestUploadDocumentMarksDocumentFailedWhenOpenFails(t *testing.T) {
 	documents := &fakeDocumentRepo{}
 	service := NewService(
-		&fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{10: {ID: 10, OwnerID: 1}}},
+		&fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{10: {SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 10, OwnerID: 1}}}}},
 		documents, &fakeChunkRepo{}, &fakeJobRepo{}, &fakeRetrievalLogRepo{}, nil,
 		&fakeWriteStorage{}, &fakeRetriever{}, &fakeIndexer{},
 	)
@@ -258,7 +258,7 @@ func TestUploadDocumentMarksDocumentFailedWhenOpenFails(t *testing.T) {
 	_, err := service.UploadDocument(context.Background(), 1, 10, UploadDocumentRequest{
 		FileHeader: &multipart.FileHeader{Filename: "guide.md", Size: 1},
 	}, ClientInfo{})
-	if err == nil || documents.items[1].ParserStatus != knowledge.DocumentStatusFailed || documents.items[1].ParserError == "" {
+	if err == nil || documents.items[1].IngestionStatus != knowledge.DocumentStatusFailed || documents.items[1].IngestionError == "" {
 		t.Fatalf("open failure was not persisted: document=%+v error=%v", documents.items[1], err)
 	}
 }
@@ -266,7 +266,7 @@ func TestUploadDocumentMarksDocumentFailedWhenOpenFails(t *testing.T) {
 func TestUploadDocumentMarksDocumentFailedWhenJobCreateFails(t *testing.T) {
 	ctx := context.Background()
 	documents := &fakeDocumentRepo{}
-	kbs := &fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{10: {ID: 10, OwnerID: 1}}}
+	kbs := &fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{10: {SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 10, OwnerID: 1}}}}}
 	service := NewService(
 		kbs,
 		documents,
@@ -287,10 +287,10 @@ func TestUploadDocumentMarksDocumentFailedWhenJobCreateFails(t *testing.T) {
 	if doc == nil {
 		t.Fatal("document was not created")
 	}
-	if doc.ParserStatus != knowledge.DocumentStatusFailed {
-		t.Fatalf("ParserStatus = %q, want failed", doc.ParserStatus)
+	if doc.IngestionStatus != knowledge.DocumentStatusFailed {
+		t.Fatalf("ParserStatus = %q, want failed", doc.IngestionStatus)
 	}
-	if doc.ParserError == "" {
+	if doc.IngestionError == "" {
 		t.Fatal("ParserError is empty")
 	}
 	if kbs.documentDelta != 0 {
@@ -303,7 +303,7 @@ func TestUploadDocumentReturnsJobAndFailureStatePersistenceErrors(t *testing.T) 
 	updateErr := errors.New("document update unavailable")
 	documents := &fakeDocumentRepo{updateErr: updateErr, updateErrAt: 2}
 	service := NewService(
-		&fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{10: {ID: 10, OwnerID: 1}}},
+		&fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{10: {SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 10, OwnerID: 1}}}}},
 		documents, &fakeChunkRepo{}, &fakeJobRepo{createErr: jobErr}, &fakeRetrievalLogRepo{}, nil,
 		&fakeWriteStorage{objects: map[string]string{}}, &fakeRetriever{}, &fakeIndexer{},
 	)
@@ -322,20 +322,20 @@ func TestSearchCallsRetrieverAndWritesRetrievalLog(t *testing.T) {
 		response: &retrieval.RetrievalResponse{
 			Results: []retrieval.RetrievalResult{
 				{
-					ChunkID:      100,
-					DocumentID:   20,
-					KBID:         10,
-					Score:        1.25,
-					Content:      "AgentCanvas knowledge retrieval",
-					Highlight:    "<em>AgentCanvas</em> knowledge retrieval",
-					DocumentName: "guide.md",
+					ChunkID:         100,
+					DocumentID:      20,
+					KnowledgeBaseID: 10,
+					Score:           1.25,
+					Content:         "AgentCanvas knowledge retrieval",
+					Highlight:       "<em>AgentCanvas</em> knowledge retrieval",
+					DocumentName:    "guide.md",
 				},
 			},
 			LatencyMS: 12,
 		},
 	}
 	service := NewService(
-		&fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{10: {ID: 10, OwnerID: 1}}},
+		&fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{10: {SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 10, OwnerID: 1}}}}},
 		&fakeDocumentRepo{},
 		&fakeChunkRepo{},
 		&fakeJobRepo{},
@@ -353,7 +353,7 @@ func TestSearchCallsRetrieverAndWritesRetrievalLog(t *testing.T) {
 	if len(resp.Results) != 1 {
 		t.Fatalf("results = %d, want 1", len(resp.Results))
 	}
-	if retriever.request.OwnerID != 1 || len(retriever.request.KBIDs) != 1 || retriever.request.KBIDs[0] != 10 {
+	if retriever.request.OwnerID != 1 || len(retriever.request.KnowledgeBaseIDs) != 1 || retriever.request.KnowledgeBaseIDs[0] != 10 {
 		t.Fatalf("retriever request = %#v", retriever.request)
 	}
 	if retriever.request.Query != "AgentCanvas" {
@@ -374,13 +374,9 @@ func TestSearchDispatchesRetrieverAndLogsKnowledgeBaseBackend(t *testing.T) {
 	logs := &fakeRetrievalLogRepo{}
 	defaultRetriever := &fakeRetriever{}
 	milvusRetriever := &fakeRetriever{}
-	documents := &fakeDocumentRepo{items: map[int64]*knowledge.Document{20: {
-		ID: 20, OwnerID: 1, KBID: 10, ActiveGeneration: "gen-active",
-	}}}
+	documents := &fakeDocumentRepo{items: map[int64]*knowledge.Document{20: {SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 20, OwnerID: 1}}, KnowledgeBaseID: 10, ActiveGenerationID: "gen-active"}}}
 	service := NewService(
-		&fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{10: {
-			ID: 10, OwnerID: 1, RetrievalBackend: knowledge.RetrievalBackendMilvus,
-		}}},
+		&fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{10: {SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 10, OwnerID: 1}}, RetrievalBackend: knowledge.RetrievalBackendMilvus}}},
 		documents, &fakeChunkRepo{}, &fakeJobRepo{}, logs, nil, &fakeWriteStorage{}, defaultRetriever, &fakeIndexer{},
 	).ConfigureRetrievalBackends(map[string]retrieval.Retriever{
 		knowledge.RetrievalBackendMilvus: milvusRetriever,
@@ -392,8 +388,8 @@ func TestSearchDispatchesRetrieverAndLogsKnowledgeBaseBackend(t *testing.T) {
 	if !milvusRetriever.called || defaultRetriever.called {
 		t.Fatalf("retriever dispatch: default=%v milvus=%v", defaultRetriever.called, milvusRetriever.called)
 	}
-	if milvusRetriever.request.ActiveGenerations[20] != "gen-active" {
-		t.Fatalf("active generations = %+v", milvusRetriever.request.ActiveGenerations)
+	if milvusRetriever.request.ActiveGenerationIDs[20] != "gen-active" {
+		t.Fatalf("active generations = %+v", milvusRetriever.request.ActiveGenerationIDs)
 	}
 	if len(logs.items) != 1 || logs.items[0].RetrievalBackend != knowledge.RetrievalBackendMilvus {
 		t.Fatalf("retrieval logs = %+v", logs.items)
@@ -416,7 +412,7 @@ func TestSearchRejectsInvalidRequests(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			retriever := &fakeRetriever{}
 			service := NewService(
-				&fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{10: {ID: 10, OwnerID: 1}}},
+				&fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{10: {SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 10, OwnerID: 1}}}}},
 				&fakeDocumentRepo{},
 				&fakeChunkRepo{},
 				&fakeJobRepo{},
@@ -440,11 +436,11 @@ func TestSearchRejectsInvalidRequests(t *testing.T) {
 func TestSetDocumentEnabledTogglesAndSyncsIndex(t *testing.T) {
 	ctx := context.Background()
 	documents := &fakeDocumentRepo{items: map[int64]*knowledge.Document{
-		20: {ID: 20, OwnerID: 1, KBID: 10, Enabled: true},
+		20: {SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 20, OwnerID: 1}}, KnowledgeBaseID: 10, Enabled: true},
 	}}
 	indexer := &fakeIndexer{}
 	service := NewService(
-		&fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{10: {ID: 10, OwnerID: 1}}},
+		&fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{10: {SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 10, OwnerID: 1}}}}},
 		documents,
 		&fakeChunkRepo{},
 		&fakeJobRepo{},
@@ -473,11 +469,11 @@ func TestSetDocumentEnabledTogglesAndSyncsIndex(t *testing.T) {
 func TestSetDocumentEnabledIsNoopWhenUnchanged(t *testing.T) {
 	ctx := context.Background()
 	documents := &fakeDocumentRepo{items: map[int64]*knowledge.Document{
-		20: {ID: 20, OwnerID: 1, KBID: 10, Enabled: true},
+		20: {SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 20, OwnerID: 1}}, KnowledgeBaseID: 10, Enabled: true},
 	}}
 	indexer := &fakeIndexer{}
 	service := NewService(
-		&fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{10: {ID: 10, OwnerID: 1}}},
+		&fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{10: {SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 10, OwnerID: 1}}}}},
 		documents,
 		&fakeChunkRepo{},
 		&fakeJobRepo{},
@@ -500,10 +496,10 @@ func TestSetDocumentEnabledReturnsIndexAndRollbackErrors(t *testing.T) {
 	indexErr := errors.New("index unavailable")
 	rollbackErr := errors.New("rollback unavailable")
 	documents := &fakeDocumentRepo{items: map[int64]*knowledge.Document{
-		20: {ID: 20, OwnerID: 1, KBID: 10, Enabled: true},
+		20: {SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 20, OwnerID: 1}}, KnowledgeBaseID: 10, Enabled: true},
 	}, setEnabledErr: rollbackErr, setEnabledErrAt: 2}
 	service := NewService(
-		&fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{10: {ID: 10, OwnerID: 1}}},
+		&fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{10: {SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 10, OwnerID: 1}}}}},
 		documents, &fakeChunkRepo{}, &fakeJobRepo{}, &fakeRetrievalLogRepo{}, nil,
 		&fakeWriteStorage{}, &fakeRetriever{}, &fakeIndexer{setEnabledErr: indexErr},
 	)
@@ -518,7 +514,7 @@ func TestUpdateKnowledgeBaseResetsDimensionsWhenEmbeddingChanges(t *testing.T) {
 	ctx := context.Background()
 	providerID := int64(5)
 	kbs := &fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{
-		10: {ID: 10, OwnerID: 1, RetrievalMode: "keyword", EmbeddingProviderID: &providerID, EmbeddingDimensions: 1024, ChunkSize: 800, ChunkOverlap: 100},
+		10: {SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 10, OwnerID: 1}}, RetrievalMode: "keyword", EmbeddingProviderID: &providerID, EmbeddingDimensions: 1024, ChunkSize: 800, ChunkOverlap: 100},
 	}}
 	service := NewService(kbs, &fakeDocumentRepo{}, &fakeChunkRepo{}, &fakeJobRepo{}, &fakeRetrievalLogRepo{}, nil, &fakeWriteStorage{}, &fakeRetriever{}, &fakeIndexer{})
 
@@ -536,7 +532,7 @@ func TestUpdateKnowledgeBaseKeepsDimensionsWhenEmbeddingUnchanged(t *testing.T) 
 	ctx := context.Background()
 	providerID := int64(5)
 	kbs := &fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{
-		10: {ID: 10, OwnerID: 1, RetrievalMode: "vector", EmbeddingProviderID: &providerID, EmbeddingDimensions: 1024, ChunkSize: 800, ChunkOverlap: 100},
+		10: {SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 10, OwnerID: 1}}, RetrievalMode: "vector", EmbeddingProviderID: &providerID, EmbeddingDimensions: 1024, ChunkSize: 800, ChunkOverlap: 100},
 	}}
 	service := NewService(kbs, &fakeDocumentRepo{}, &fakeChunkRepo{}, &fakeJobRepo{}, &fakeRetrievalLogRepo{}, nil, &fakeWriteStorage{}, &fakeRetriever{}, &fakeIndexer{})
 
@@ -553,11 +549,11 @@ func TestUpdateKnowledgeBaseKeepsDimensionsWhenEmbeddingUnchanged(t *testing.T) 
 func TestUpdateKnowledgeBaseRejectsIndexedVectorSpaceChange(t *testing.T) {
 	providerID := int64(5)
 	kbs := &fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{
-		10: {ID: 10, OwnerID: 1, RetrievalBackend: knowledge.RetrievalBackendElasticsearch, RetrievalMode: knowledge.RetrievalModeVector,
+		10: {SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 10, OwnerID: 1}}, RetrievalBackend: knowledge.RetrievalBackendElasticsearch, RetrievalMode: knowledge.RetrievalModeVector,
 			EmbeddingProviderID: &providerID, EmbeddingModel: "model-a", EmbeddingDimensions: 2, EmbeddingMetric: knowledge.EmbeddingMetricCosine,
 			ChunkSize: 800, ChunkOverlap: 100},
 	}}
-	documents := &fakeDocumentRepo{items: map[int64]*knowledge.Document{20: {ID: 20, OwnerID: 1, KBID: 10}}}
+	documents := &fakeDocumentRepo{items: map[int64]*knowledge.Document{20: {SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 20, OwnerID: 1}}, KnowledgeBaseID: 10}}}
 	service := NewService(kbs, documents, &fakeChunkRepo{}, &fakeJobRepo{}, &fakeRetrievalLogRepo{}, nil, &fakeWriteStorage{}, &fakeRetriever{}, &fakeIndexer{})
 	model := "model-b"
 
@@ -570,7 +566,7 @@ func TestUpdateKnowledgeBaseRejectsIndexedVectorSpaceChange(t *testing.T) {
 func TestUpdateKnowledgeBaseRejectsVectorWithoutProvider(t *testing.T) {
 	ctx := context.Background()
 	kbs := &fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{
-		10: {ID: 10, OwnerID: 1, RetrievalMode: "keyword", ChunkSize: 800, ChunkOverlap: 100},
+		10: {SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 10, OwnerID: 1}}, RetrievalMode: "keyword", ChunkSize: 800, ChunkOverlap: 100},
 	}}
 	service := NewService(kbs, &fakeDocumentRepo{}, &fakeChunkRepo{}, &fakeJobRepo{}, &fakeRetrievalLogRepo{}, nil, &fakeWriteStorage{}, &fakeRetriever{}, &fakeIndexer{})
 
@@ -583,7 +579,7 @@ func TestUpdateKnowledgeBaseRejectsVectorWithoutProvider(t *testing.T) {
 func TestUpdateKnowledgeBaseUpdatesChunkMethod(t *testing.T) {
 	ctx := context.Background()
 	kbs := &fakeKBRepo{items: map[int64]*knowledge.KnowledgeBase{
-		10: {ID: 10, OwnerID: 1, RetrievalMode: "keyword", ChunkMethod: knowledge.ChunkMethodRecursive, ChunkSize: 800, ChunkOverlap: 100},
+		10: {SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 10, OwnerID: 1}}, RetrievalMode: "keyword", ChunkMethod: knowledge.ChunkMethodRecursive, ChunkSize: 800, ChunkOverlap: 100},
 	}}
 	service := NewService(kbs, &fakeDocumentRepo{}, &fakeChunkRepo{}, &fakeJobRepo{}, &fakeRetrievalLogRepo{}, nil, &fakeWriteStorage{}, &fakeRetriever{}, &fakeIndexer{})
 
@@ -792,7 +788,7 @@ func (r *fakeDocumentRepo) Create(_ context.Context, doc *knowledge.Document) er
 func (r *fakeDocumentRepo) ListByKnowledgeBase(_ context.Context, ownerID, kbID int64) ([]knowledge.Document, error) {
 	items := make([]knowledge.Document, 0)
 	for _, item := range r.items {
-		if item.OwnerID == ownerID && item.KBID == kbID {
+		if item.OwnerID == ownerID && item.KnowledgeBaseID == kbID {
 			items = append(items, *item)
 		}
 	}

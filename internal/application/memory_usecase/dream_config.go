@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"time"
 
+	"agentcanvas/internal/domain"
 	"agentcanvas/internal/domain/memory"
 	"agentcanvas/internal/infrastructure/llm"
 	queueinfra "agentcanvas/internal/infrastructure/queue"
@@ -71,7 +72,7 @@ func NewDreamTrigger(jobQueue queueinfra.JobQueue, redisClient *redis.Client, cf
 		payload := map[string]any{"owner_id": ownerID, "conversation_id": conversationID, "round_number": roundNumber}
 		if jobs != nil {
 			key := fmt.Sprintf("dream:%d:%d:%d", ownerID, conversationID, roundNumber)
-			job := &memory.ExtractionJob{OwnerID: ownerID, ConversationID: conversationID, IdempotencyKey: key, TriggerReason: "turns", Status: string(memory.ExtractionPending), DueAt: ptrTime(time.Now().UTC())}
+			job := &memory.ExtractionJob{BaseModel: domain.BaseModel{OwnerID: ownerID}, ConversationID: conversationID, IdempotencyKey: key, TriggerReason: "turns", Status: string(memory.ExtractionPending), DueAt: ptrTime(time.Now().UTC())}
 			if err := jobs.Create(ctx, job); err != nil {
 				if existing, findErr := jobs.FindByIdempotencyKey(ctx, ownerID, key); findErr == nil {
 					job = existing

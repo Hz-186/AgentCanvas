@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"agentcanvas/internal/domain"
 	agentdomain "agentcanvas/internal/domain/agent"
 	workspacedomain "agentcanvas/internal/domain/workspace"
 	"agentcanvas/internal/infrastructure/llm"
@@ -36,6 +37,20 @@ func (s *Service) RunSubagent(ctx context.Context, req toolruntime.SubagentReque
 	if parent.Status == agentdomain.RunStatusCancelled || parent.Status == agentdomain.RunStatusFailed {
 		return nil, fmt.Errorf("%w: parent run is not active", agenterrors.ErrForbidden)
 	}
+	projectID := req.ProjectID
+	if projectID <= 0 && req.Workspace != nil {
+		projectID = req.Workspace.ProjectID
+	}
+	if s.conversations != nil && req.ConversationID != nil {
+		conv, findErr := s.conversations.FindByID(ctx, req.OwnerID, *req.ConversationID)
+		if findErr != nil {
+			return nil, mapNotFound(findErr)
+		}
+		projectID = 0
+		if conv.ProjectID != nil {
+			projectID = *conv.ProjectID
+		}
+	}
 	if req.Definition.MaxParallelChildren > 0 {
 		children, listErr := s.runs.ListByParent(ctx, req.OwnerID, req.ParentRunID)
 		if listErr != nil {
@@ -59,7 +74,7 @@ func (s *Service) RunSubagent(ctx context.Context, req toolruntime.SubagentReque
 	now := time.Now().UTC()
 	inputJSON, _ := json.Marshal(map[string]any{"query": strings.TrimSpace(req.Definition.Task)})
 	run := &agentdomain.Run{
-		OwnerID:         req.OwnerID,
+		BaseModel:       domain.BaseModel{OwnerID: req.OwnerID},
 		RunType:         agentdomain.RunTypeSubagent,
 		AgentID:         parent.AgentID,
 		ConversationID:  req.ConversationID,
@@ -119,7 +134,7 @@ func (s *Service) RunSubagent(ctx context.Context, req toolruntime.SubagentReque
 	result, execErr := s.runtime.Execute(ctx,
 		agentruntime.RunRequest{
 			RunIdentity:         agentruntime.RunIdentity{OwnerID: req.OwnerID, AgentID: parent.AgentID, RunID: run.ID, ParentRunID: &req.ParentRunID},
-			ConversationContext: agentruntime.ConversationContext{ConversationID: req.ConversationID},
+			ConversationContext: agentruntime.ConversationContext{ConversationID: req.ConversationID, ProjectID: projectID},
 			ExecutionTask:       agentruntime.ExecutionTask{Task: strings.TrimSpace(req.Definition.Task)},
 			RuntimeResources:    agentruntime.RuntimeResources{Definition: definition},
 			RuntimePolicy:       agentruntime.RuntimePolicy{DelegationDepth: run.DelegationDepth},
@@ -198,7 +213,7 @@ func subagentRuntimeDefinition(source toolruntime.SubagentDefinition) (agentrunt
 		"provider_id": source.ProviderID, "model": source.Model, "mode": source.Mode,
 		"workspace_mode": source.WorkspaceMode,
 		"system_prompt":  source.SystemPrompt, "tool_ids": source.ToolIDs, "skill_ids": source.SkillIDs,
-		"knowledge_ids": source.KnowledgeIDs, "mcp_server_ids": source.MCPServerIDs,
+		"knowledge_base_ids": source.KnowledgeBaseIDs, "mcp_server_ids": source.MCPServerIDs,
 		"max_iterations": source.MaxIterations, "max_tool_calls": source.MaxToolCalls,
 		"max_execution_time_ms": source.MaxExecutionTimeMS, "max_parallel_sub_agents": source.MaxParallelChildren,
 		"allow_subagents": true, "max_subagent_depth": source.MaxDepth,
@@ -219,22 +234,21 @@ type runStepRecorder struct{ repo agentdomain.RunStepRepository }
 
 func (r *runStepRecorder) RecordAgentStep(ctx context.Context, rc *agentruntime.RunContext, step agentruntime.AgentStepRecord) error {
 	return r.repo.Create(ctx, &agentdomain.RunStep{
-		OwnerID:       rc.OwnerID,
-		RunID:         rc.RunID,
-		StepIndex:     step.StepIndex,
-		StepType:      step.StepType,
-		Role:          step.Role,
-		Content:       step.Content,
-		ToolCallID:    step.ToolCallID,
-		ToolName:      step.ToolName,
-		ArgumentsJSON: step.ArgumentsJSON,
-		OutputJSON:    step.OutputJSON,
-		Compressed:    step.Compressed,
-		ErrorMessage:  step.ErrorMessage,
-		TokenCount:    step.TokenCount,
-		LatencyMS:     step.LatencyMS,
-		ProviderID:    step.ProviderID,
-		Model:         step.Model,
-		CreatedAt:     time.Now().UTC(),
+		ImmutableModel: domain.ImmutableModel{OwnerID: rc.OwnerID},
+		RunID:          rc.RunID,
+		StepIndex:      step.StepIndex,
+		StepType:       step.StepType,
+		Role:           step.Role,
+		Content:        step.Content,
+		ToolCallID:     step.ToolCallID,
+		ToolName:       step.ToolName,
+		ArgumentsJSON:  step.ArgumentsJSON,
+		OutputJSON:     step.OutputJSON,
+		Compressed:     step.Compressed,
+		ErrorMessage:   step.ErrorMessage,
+		TokenCount:     step.TokenCount,
+		LatencyMS:      step.LatencyMS,
+		ProviderID:     step.ProviderID,
+		Model:          step.Model,
 	})
 }

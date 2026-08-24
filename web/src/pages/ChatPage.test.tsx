@@ -72,7 +72,7 @@ const agent: Agent = {
   description: '',
   avatar_url: '',
   status: 'active',
-  settings: { provider_id: 4, model: 'gpt-test', system_prompt: 'Answer carefully', knowledge_ids: [], temperature: 0.3 },
+  settings: { provider_id: 4, model: 'gpt-test', system_prompt: 'Answer carefully', knowledge_base_ids: [], temperature: 0.3 },
   current_release_id: 9,
   created_at: '2026-07-26T00:00:00Z',
   updated_at: '2026-07-26T00:00:00Z',
@@ -82,7 +82,6 @@ const conversation: Conversation = {
   id: 2,
   owner_id: 7,
   title: 'First task',
-  source: 'agent',
   agent_id: 1,
   agent_release_id: 9,
   agent_mode: 'react',
@@ -92,9 +91,9 @@ const conversation: Conversation = {
 };
 
 const messages: Message[] = [
-  { id: 10, owner_id: 7, conversation_id: 2, role: 'system', content: 'internal state', content_type: 'text', token_count: 0, created_at: '2026-07-26T00:00:00Z' },
-  { id: 11, owner_id: 7, conversation_id: 2, role: 'user', content: 'hello agent', content_type: 'text', token_count: 2, created_at: '2026-07-26T00:00:01Z' },
-  { id: 12, owner_id: 7, conversation_id: 2, role: 'assistant', content: 'hello human', content_type: 'text', token_count: 2, created_at: '2026-07-26T00:00:02Z' },
+  { id: 10, owner_id: 7, conversation_id: 2, role: 'system', content: 'internal state', token_count: 0, created_at: '2026-07-26T00:00:00Z' },
+  { id: 11, owner_id: 7, conversation_id: 2, role: 'user', content: 'hello agent', token_count: 2, created_at: '2026-07-26T00:00:01Z' },
+  { id: 12, owner_id: 7, conversation_id: 2, role: 'assistant', content: 'hello human', token_count: 2, created_at: '2026-07-26T00:00:02Z' },
 ];
 
 const activeRun: Run = {
@@ -138,9 +137,7 @@ const project = {
   slug: 'agent-canvas',
   name: 'AgentCanvas',
   description: '',
-  icon: '',
-  color: '',
-  primary_path: '/Users/test/AgentCanvas',
+  repository_root: '/Users/test/AgentCanvas',
   archived: false,
   folders: [],
   created_at: '2026-07-26T00:00:00Z',
@@ -153,15 +150,15 @@ const readyWorkspace = {
   project_id: project.id,
   run_id: activeRun.id,
   kind: 'worktree' as const,
-  repository_root: project.primary_path,
-  workspace_path: `${project.primary_path}/.worktrees/20-first-task`,
+  repository_root: project.repository_root,
+  workspace_path: `${project.repository_root}/.worktrees/20-first-task`,
   branch_name: 'agent-canvas/20-first-task',
   base_ref: 'origin/main',
   base_sha: 'aaaaaaaaaaaaaaaa',
   head_sha: 'bbbbbbbbbbbbbbbb',
   status: 'ready' as const,
   dirty: false,
-  unpushed: false,
+  has_unpushed_commits: false,
   locked: true,
   lock_reason: 'run:20 pid:1234',
   cleanup_reason: '',
@@ -224,7 +221,7 @@ beforeEach(() => {
     user_message: { ...messages[1], id: 53, conversation_id: 50, content: 'edit README' },
   });
   apiMocks.workspace.mockResolvedValue(readyWorkspace);
-  apiMocks.gitStatus.mockResolvedValue({ root: readyWorkspace.workspace_path, branch: readyWorkspace.branch_name, head: readyWorkspace.head_sha, dirty: false, unpushed: false });
+  apiMocks.gitStatus.mockResolvedValue({ root: readyWorkspace.workspace_path, branch: readyWorkspace.branch_name, head: readyWorkspace.head_sha, dirty: false, has_unpushed_commits: false });
   apiMocks.gitDiff.mockResolvedValue({ diff: '' });
   apiMocks.gitLog.mockResolvedValue({ log: 'abc123 feat: update' });
   apiMocks.gitCommit.mockResolvedValue({ hash: 'cccccccc', message: 'feat: update README', paths: ['README.md'] });
@@ -379,7 +376,6 @@ describe('Agent chat page', () => {
       conversation_id: 2,
       role: 'assistant',
       content: 'final answer',
-      content_type: 'text',
       token_count: 3,
       created_at: '2026-07-26T00:00:10Z',
     };
@@ -427,7 +423,7 @@ describe('Agent chat page', () => {
       branch: updatedWorkspace.branch_name,
       head: updatedWorkspace.head_sha,
       dirty: true,
-      unpushed: false,
+      has_unpushed_commits: false,
     });
     const handlers = apiMocks.streamRunEventsV1.mock.calls[0][2] as {
       onMessage: (message: { id?: string; event: string; data: string }) => void;
@@ -438,13 +434,13 @@ describe('Agent chat page', () => {
         workspace_id: updatedWorkspace.id,
         run_id: activeRun.id,
         project_id: project.id,
-        repo_root: updatedWorkspace.repository_root,
-        path: updatedWorkspace.workspace_path,
-        branch: updatedWorkspace.branch_name,
+		repository_root: updatedWorkspace.repository_root,
+		workspace_path: updatedWorkspace.workspace_path,
+		branch_name: updatedWorkspace.branch_name,
         base_sha: updatedWorkspace.base_sha,
         head_sha: updatedWorkspace.head_sha,
         dirty: true,
-        unpushed: false,
+      has_unpushed_commits: false,
         status: 'ready',
         locked: true,
       });
@@ -467,7 +463,7 @@ describe('Agent chat page', () => {
       branch: readyWorkspace.branch_name,
       head: readyWorkspace.head_sha,
       dirty: true,
-      unpushed: true,
+      has_unpushed_commits: true,
     });
     renderChat();
 

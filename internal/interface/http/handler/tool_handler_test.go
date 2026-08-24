@@ -33,3 +33,13 @@ func TestNormalizeMCPServerRequestRejectsMissingEndpoint(t *testing.T) {
 		t.Fatal("expected missing endpoint error")
 	}
 }
+
+func TestMCPServerRequestAcceptsEnvironmentWithoutReturningIt(t *testing.T) {
+	var request mcpServerRequest
+	if err := json.Unmarshal([]byte(`{"name":"local","transport":"stdio","command":"node","env_json":{"TOKEN":"secret"}}`), &request); err != nil {
+		t.Fatal(err)
+	}
+	if string(request.EnvJSON) != `{"TOKEN":"secret"}` {
+		t.Fatalf("environment was not accepted as a write-only request field: %s", request.EnvJSON)
+	}
+}

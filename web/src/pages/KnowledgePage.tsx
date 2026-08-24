@@ -32,7 +32,7 @@ export function KnowledgePage() {
   const [embeddingProviderId, setEmbeddingProviderId] = useState('');
   const [embeddingModel, setEmbeddingModel] = useState('');
   const [embeddingDimensions, setEmbeddingDimensions] = useState(0);
-  const [hybridWeight, setHybridWeight] = useState(0.5);
+  const [vectorWeight, setVectorWeight] = useState(0.5);
   const [rerankEnabled, setRerankEnabled] = useState(false);
   const [rerankProviderId, setRerankProviderId] = useState('');
   const [rerankModel, setRerankModel] = useState('');
@@ -63,14 +63,14 @@ export function KnowledgePage() {
       embedding_provider_id: null,
       embedding_model: '',
       embedding_dimensions: 0,
-      hybrid_weight: 0.5,
+      vector_weight: 0.5,
       rerank_enabled: false,
       rerank_provider_id: null,
       rerank_model: '',
       chunk_method: 'recursive',
       chunk_size: 800,
       chunk_overlap: 100,
-      status: item.status ?? 1,
+      enabled: item.enabled ?? true,
       document_count: item.document_count ?? 0,
       chunk_count: item.chunk_count ?? 0,
       created_at: item.updated_at,
@@ -104,7 +104,7 @@ export function KnowledgePage() {
   }, [routeId]);
 
   useEffect(() => {
-    if (!routeId || !documents.some((doc) => ACTIVE_DOCUMENT_STATUSES.has(doc.parser_status))) return;
+    if (!routeId || !documents.some((doc) => ACTIVE_DOCUMENT_STATUSES.has(doc.ingestion_status))) return;
     let cancelled = false;
     let timer = 0;
     let delay = 2500;
@@ -119,7 +119,7 @@ export function KnowledgePage() {
         if (cancelled) return;
         setDocuments(docs);
         delay = 2500;
-        if (!docs.some((doc) => ACTIVE_DOCUMENT_STATUSES.has(doc.parser_status))) return;
+        if (!docs.some((doc) => ACTIVE_DOCUMENT_STATUSES.has(doc.ingestion_status))) return;
       } catch (err) {
         if (cancelled) return;
         setError(friendlyErrorMessage(err, '刷新文档状态失败'));
@@ -132,7 +132,7 @@ export function KnowledgePage() {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [routeId, documents.some((doc) => ACTIVE_DOCUMENT_STATUSES.has(doc.parser_status))]);
+  }, [routeId, documents.some((doc) => ACTIVE_DOCUMENT_STATUSES.has(doc.ingestion_status))]);
 
   useEffect(() => {
     if (!routeId) {
@@ -149,7 +149,7 @@ export function KnowledgePage() {
     setEmbeddingProviderId(selected.embedding_provider_id ? String(selected.embedding_provider_id) : '');
     setEmbeddingModel(selected.embedding_model || '');
     setEmbeddingDimensions(selected.embedding_dimensions || 0);
-    setHybridWeight(selected.hybrid_weight || 0.5);
+    setVectorWeight(selected.vector_weight || 0.5);
     setRerankEnabled(Boolean(selected.rerank_enabled));
     setRerankProviderId(selected.rerank_provider_id ? String(selected.rerank_provider_id) : '');
     setRerankModel(selected.rerank_model || '');
@@ -265,7 +265,7 @@ export function KnowledgePage() {
       retrieval_mode: retrievalMode,
       embedding_model: embeddingModel,
       embedding_dimensions: embeddingDimensions,
-      hybrid_weight: hybridWeight,
+      vector_weight: vectorWeight,
       rerank_enabled: rerankEnabled,
       rerank_model: rerankModel,
       chunk_method: chunkMethod,
@@ -311,7 +311,7 @@ export function KnowledgePage() {
       setError('向量 / 混合检索需要先在「检索设置」中配置 Embedding Provider');
       return;
     }
-    const completedDocs = documents.filter((doc) => doc.parser_status === 'completed');
+    const completedDocs = documents.filter((doc) => doc.ingestion_status === 'completed');
     if (completedDocs.length === 0 || completedDocs.every((doc) => doc.chunk_count === 0)) {
       setError('当前知识库还没有完成索引的文档，请等待文档处理完成后再检索。');
       return;
@@ -328,7 +328,7 @@ export function KnowledgePage() {
 
   const selected = items.find((item) => item.id === routeId);
   const isDetail = Boolean(routeId);
-  const hasActiveDocuments = documents.some((doc) => ACTIVE_DOCUMENT_STATUSES.has(doc.parser_status));
+  const hasActiveDocuments = documents.some((doc) => ACTIVE_DOCUMENT_STATUSES.has(doc.ingestion_status));
 
   return (
     <div className="page knowledge-page">
@@ -440,12 +440,12 @@ export function KnowledgePage() {
                             />
                           </td>
                           <td><button type="button" onClick={() => void showChunks(doc.id)}>{doc.name}</button></td>
-                          <td><StatusBadge tone={doc.parser_status === 'completed' ? 'good' : doc.parser_status === 'failed' ? 'bad' : 'warn'}>{doc.parser_status}</StatusBadge></td>
-                          <td>{formatBytes(doc.file_size)}</td>
+                          <td><StatusBadge tone={doc.ingestion_status === 'completed' ? 'good' : doc.ingestion_status === 'failed' ? 'bad' : 'warn'}>{doc.ingestion_status}</StatusBadge></td>
+                          <td>{formatBytes(doc.file_size_bytes)}</td>
                           <td>{doc.chunk_count}</td>
                           <td>
                             <div>{formatDate(doc.created_at)}</div>
-                            {doc.parser_error ? <div className="error-text">{doc.parser_error}</div> : null}
+                            {doc.ingestion_error ? <div className="error-text">{doc.ingestion_error}</div> : null}
                           </td>
                           <td className="col-actions">
                             <IconButton label="删除文档" className="icon-btn-danger" onClick={() => setDocToDelete(doc)}>
@@ -481,7 +481,7 @@ export function KnowledgePage() {
                     </Select>
                   </Field>
                   <Field label="Hybrid 权重">
-                    <TextInput type="number" min={0} max={1} step={0.05} value={hybridWeight} onChange={(event) => setHybridWeight(Number(event.target.value))} />
+                    <TextInput type="number" min={0} max={1} step={0.05} value={vectorWeight} onChange={(event) => setVectorWeight(Number(event.target.value))} />
                   </Field>
                 </div>
                 <div className="dense-grid">

@@ -105,7 +105,7 @@ func (l ProviderLoader) LoadChatProviderConfig(ctx context.Context, ownerID, pro
 	if err != nil {
 		return nil, err
 	}
-	if provider.Status != providerdomain.StatusActive || l.Secrets == nil {
+	if !provider.Enabled || l.Secrets == nil {
 		return nil, agenterrors.ErrInvalidInput
 	}
 	apiKey, err := l.Secrets.Decrypt(provider.EncryptedAPIKey)

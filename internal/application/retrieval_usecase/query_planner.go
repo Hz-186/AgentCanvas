@@ -72,7 +72,7 @@ func (r ProviderQueryRewriter) Rewrite(ctx context.Context, req QueryRewriteRequ
 	if err != nil {
 		return QueryRewriteResult{}, err
 	}
-	if provider.Status != providerdomain.StatusActive {
+	if !provider.Enabled {
 		return QueryRewriteResult{}, fmt.Errorf("query rewrite provider is disabled")
 	}
 	model := strings.TrimSpace(req.Model)

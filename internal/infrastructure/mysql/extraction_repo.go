@@ -26,7 +26,7 @@ func (r *ExtractionJobRepository) Create(ctx context.Context, job *memory.Extrac
 func (r *ExtractionJobRepository) Update(ctx context.Context, job *memory.ExtractionJob) error {
 	now := time.Now().UTC()
 	job.UpdatedAt = now
-	if job.Status == string(memory.ExtractionCompleted) || job.Status == string(memory.ExtractionFailed) || job.Status == "superseded" {
+	if job.Status == string(memory.ExtractionCompleted) || job.Status == string(memory.ExtractionFailed) || job.Status == string(memory.ExtractionSuperseded) {
 		job.CompletedAt = &now
 	}
 	return r.db.WithContext(ctx).Save(job).Error
@@ -39,7 +39,7 @@ func (r *ExtractionJobRepository) ClaimByID(ctx context.Context, ownerID, id int
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("owner_id = ? AND id = ?", ownerID, id).First(&job).Error; err != nil {
 			return err
 		}
-		if job.Status == string(memory.ExtractionCompleted) || job.Status == string(memory.ExtractionFailed) {
+		if job.Status == string(memory.ExtractionCompleted) || job.Status == string(memory.ExtractionFailed) || job.Status == string(memory.ExtractionSuperseded) {
 			return nil
 		}
 		now := time.Now().UTC()
@@ -84,7 +84,7 @@ func (r *ExtractionJobRepository) UpdateOwned(ctx context.Context, job *memory.E
 	}
 	now := time.Now().UTC()
 	job.UpdatedAt = now
-	if job.Status == string(memory.ExtractionCompleted) || job.Status == string(memory.ExtractionFailed) {
+	if job.Status == string(memory.ExtractionCompleted) || job.Status == string(memory.ExtractionFailed) || job.Status == string(memory.ExtractionSuperseded) {
 		job.CompletedAt = &now
 	}
 	updates := map[string]any{
@@ -134,6 +134,17 @@ func (r *ExtractionJobRepository) ListByStatus(ctx context.Context, ownerID int6
 	return jobs, err
 }
 
+func (r *ExtractionJobRepository) LatestCompletedThrough(ctx context.Context, ownerID, conversationID, beforeJobID int64) (int64, error) {
+	var through int64
+	query := r.db.WithContext(ctx).Model(&memory.ExtractionJob{}).
+		Where("owner_id = ? AND conversation_id = ? AND status = ?", ownerID, conversationID, string(memory.ExtractionCompleted))
+	if beforeJobID > 0 {
+		query = query.Where("id < ?", beforeJobID)
+	}
+	err := query.Select("COALESCE(MAX(through_message_id), 0)").Scan(&through).Error
+	return through, err
+}
+
 func (r *ExtractionJobRepository) ListPending(ctx context.Context, limit int) ([]memory.ExtractionJob, error) {
 	if limit <= 0 {
 		limit = 10
@@ -147,26 +158,3 @@ func (r *ExtractionJobRepository) ListPending(ctx context.Context, limit int) ([
 }
 
 var _ memory.ExtractionLeaseRepository = (*ExtractionJobRepository)(nil)
-
-type MergeLogRepository struct{ db *gorm.DB }
-
-func NewMergeLogRepository(db *gorm.DB) *MergeLogRepository {
-	return &MergeLogRepository{db: db}
-}
-
-func (r *MergeLogRepository) Create(ctx context.Context, log *memory.MergeLog) error {
-	if log.CreatedAt.IsZero() {
-		log.CreatedAt = time.Now().UTC()
-	}
-	return r.db.WithContext(ctx).Create(log).Error
-}
-
-func (r *MergeLogRepository) ListByOwner(ctx context.Context, ownerID int64, limit int) ([]memory.MergeLog, error) {
-	var logs []memory.MergeLog
-	if limit <= 0 {
-		limit = 50
-	}
-	err := r.db.WithContext(ctx).Where("owner_id = ?", ownerID).
-		Order("id DESC").Limit(limit).Find(&logs).Error
-	return logs, err
-}

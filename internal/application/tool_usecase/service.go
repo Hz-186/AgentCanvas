@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 
+	"agentcanvas/internal/domain"
 	"agentcanvas/internal/domain/tool"
 	"agentcanvas/internal/runtime/toolruntime"
 
@@ -35,7 +36,7 @@ type UpdateToolRequest struct {
 	ConfigJSON       json.RawMessage `json:"config_json"`
 	InputSchemaJSON  json.RawMessage `json:"input_schema_json"`
 	OutputSchemaJSON json.RawMessage `json:"output_schema_json"`
-	Status           *int            `json:"status"`
+	Enabled          *bool           `json:"enabled"`
 }
 
 func (s *Service) Create(ctx context.Context, ownerID int64, req CreateToolRequest) (*tool.Definition, error) {
@@ -48,9 +49,9 @@ func (s *Service) Create(ctx context.Context, ownerID int64, req CreateToolReque
 		return nil, agenterrors.ErrInvalidInput
 	}
 	item := &tool.Definition{
-		OwnerID: ownerID, Name: name, ToolType: toolType, Description: strings.TrimSpace(req.Description),
+		SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{OwnerID: ownerID}}, Name: name, ToolType: toolType, Description: strings.TrimSpace(req.Description),
 		ConfigJSON: req.ConfigJSON, InputSchemaJSON: req.InputSchemaJSON, OutputSchemaJSON: req.OutputSchemaJSON,
-		Status: tool.StatusActive,
+		Enabled: tool.Enabled,
 	}
 	if err := s.definitions.Create(ctx, item); err != nil {
 		return nil, err
@@ -90,8 +91,8 @@ func (s *Service) Update(ctx context.Context, ownerID, id int64, req UpdateToolR
 	if len(req.OutputSchemaJSON) > 0 {
 		item.OutputSchemaJSON = req.OutputSchemaJSON
 	}
-	if req.Status != nil {
-		item.Status = *req.Status
+	if req.Enabled != nil {
+		item.Enabled = *req.Enabled
 	}
 	if err := s.definitions.Update(ctx, item); err != nil {
 		return nil, err
@@ -108,7 +109,7 @@ func (s *Service) Test(ctx context.Context, ownerID, id int64, input map[string]
 	if err != nil {
 		return nil, err
 	}
-	if item.Status != tool.StatusActive || item.ToolType != tool.TypeHTTP {
+	if !item.Enabled || item.ToolType != tool.TypeHTTP {
 		return nil, agenterrors.ErrInvalidInput
 	}
 	inputJSON, _ := json.Marshal(input)

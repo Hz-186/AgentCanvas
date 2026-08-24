@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"agentcanvas/internal/domain"
 	agentdomain "agentcanvas/internal/domain/agent"
 	"agentcanvas/internal/domain/conversation"
 	workspacedomain "agentcanvas/internal/domain/workspace"
@@ -69,8 +70,8 @@ func (e *runEventEmitter) Emit(ctx context.Context, event runtimeevent.Event) er
 	}
 	projected := e.prepare(projectRuntimeEvent(event, e.conversationID))
 	payload, _ := json.Marshal(event.Payload)
-	if err := e.repo.Create(ctx, &agentdomain.RunEvent{OwnerID: e.ownerID, RunID: event.RunID, EventType: event.Type,
-		PayloadJSON: payload, CreatedAt: event.CreatedAt}); err != nil {
+	if err := e.repo.Create(ctx, &agentdomain.RunEvent{ImmutableModel: domain.ImmutableModel{OwnerID: e.ownerID, CreatedAt: event.CreatedAt}, RunID: event.RunID, EventType: event.Type,
+		PayloadJSON: payload}); err != nil {
 		return err
 	}
 	e.publish(projected)

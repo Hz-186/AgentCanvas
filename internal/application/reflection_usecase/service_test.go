@@ -1,6 +1,7 @@
 package reflection_usecase
 
 import (
+	"agentcanvas/internal/domain"
 	"context"
 	"encoding/json"
 	"errors"
@@ -125,8 +126,8 @@ func (f *fakeRepo) SetStatus(_ context.Context, _ int64, _ int64, status string)
 
 func TestRecallRanksRelevantNodeLessonAndRespectsBudget(t *testing.T) {
 	repo := &fakeRepo{items: []reflection.Reflection{
-		{ID: 1, OwnerID: 1, AgentID: 2, Mode: "react", Lesson: "分页接口必须继续读取 next page", CorrectiveAction: "循环读取 next_page", Applicability: "分页 API", Importance: .9, Confidence: .9},
-		{ID: 2, OwnerID: 1, AgentID: 2, Lesson: "写文件前检查目录", CorrectiveAction: "检查目录", Applicability: "文件任务", Importance: .9, Confidence: .9},
+		{SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 1, OwnerID: 1}}, AgentID: 2, Mode: "react", Lesson: "分页接口必须继续读取 next page", CorrectiveAction: "循环读取 next_page", Applicability: "分页 API", Importance: .9, Confidence: .9},
+		{SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 2, OwnerID: 1}}, AgentID: 2, Lesson: "写文件前检查目录", CorrectiveAction: "检查目录", Applicability: "文件任务", Importance: .9, Confidence: .9},
 	}}
 	result, err := (Service{Reflections: repo}).Recall(context.Background(), reflection.RecallRequest{OwnerID: 1, AgentID: 2, RunID: 3, Mode: "react", Task: "读取分页 API 的全部结果", Policy: reflection.DefaultPolicy()})
 	if err != nil {
@@ -146,12 +147,12 @@ func TestRecallRanksRelevantNodeLessonAndRespectsBudget(t *testing.T) {
 func TestStoreDeduplicatesByContentHash(t *testing.T) {
 	repo := &fakeRepo{}
 	svc := Service{Reflections: repo}
-	first := &reflection.Reflection{OwnerID: 1, AgentID: 2, Kind: reflection.KindErrorLesson, Lesson: "avoid retry", CorrectiveAction: "change input", Importance: .8, Confidence: .9}
+	first := &reflection.Reflection{SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{OwnerID: 1}}, AgentID: 2, Kind: reflection.KindErrorLesson, Lesson: "avoid retry", CorrectiveAction: "change input", Importance: .8, Confidence: .9}
 	stored, err := svc.Store(context.Background(), first)
 	if err != nil || stored.ID != 99 {
 		t.Fatalf("%+v %v", stored, err)
 	}
-	second := &reflection.Reflection{OwnerID: 1, AgentID: 2, Kind: reflection.KindErrorLesson, Lesson: "avoid retry", CorrectiveAction: "change input", Importance: .9, Confidence: .95}
+	second := &reflection.Reflection{SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{OwnerID: 1}}, AgentID: 2, Kind: reflection.KindErrorLesson, Lesson: "avoid retry", CorrectiveAction: "change input", Importance: .9, Confidence: .95}
 	stored, err = svc.Store(context.Background(), second)
 	if err != nil || len(repo.items) != 1 || stored.Importance != .9 {
 		t.Fatalf("%+v %v items=%d", stored, err, len(repo.items))
@@ -160,7 +161,7 @@ func TestStoreDeduplicatesByContentHash(t *testing.T) {
 
 func TestStoreActivatesHighConfidenceImportantStrategy(t *testing.T) {
 	repo := &fakeRepo{}
-	stored, err := (Service{Reflections: repo}).Store(context.Background(), &reflection.Reflection{OwnerID: 1, AgentID: 2,
+	stored, err := (Service{Reflections: repo}).Store(context.Background(), &reflection.Reflection{SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{OwnerID: 1}}, AgentID: 2,
 		Kind: reflection.KindImportantStrategy, Lesson: "reuse the verified pagination strategy", CorrectiveAction: "iterate until next is empty",
 		Applicability: "paginated APIs", Importance: .86, Confidence: .9})
 	if err != nil {
@@ -175,7 +176,7 @@ func TestEnqueueUsesDeterministicTriggerHash(t *testing.T) {
 	jobs := &fakeReflectionJobs{}
 	service := Service{Jobs: jobs}
 	for range 2 {
-		if err := service.Enqueue(context.Background(), &reflection.Job{OwnerID: 1, AgentID: 2, RunID: 3, PayloadJSON: json.RawMessage(`{"result":"done"}`)}); err != nil {
+		if err := service.Enqueue(context.Background(), &reflection.Job{BaseModel: domain.BaseModel{OwnerID: 1}, AgentID: 2, RunID: 3, PayloadJSON: json.RawMessage(`{"result":"done"}`)}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -185,8 +186,8 @@ func TestEnqueueUsesDeterministicTriggerHash(t *testing.T) {
 }
 
 func TestRecordEvaluationPassMarksRecalledLessonsHelpful(t *testing.T) {
-	repo := &fakeRepo{items: []reflection.Reflection{{ID: 7, OwnerID: 1, AgentID: 2}}}
-	logs := &fakeRecallLogs{items: []reflection.RecallLog{{ReflectionID: 7, OwnerID: 1, RunID: 3}}}
+	repo := &fakeRepo{items: []reflection.Reflection{{SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 7, OwnerID: 1}}, AgentID: 2}}}
+	logs := &fakeRecallLogs{items: []reflection.RecallLog{{BaseModel: domain.BaseModel{OwnerID: 1}, ReflectionID: 7, RunID: 3}}}
 	Service{Reflections: repo, RecallLogs: logs}.RecordEvaluation(context.Background(), 1, 3, true, "matched expected output")
 	if logs.outcome != "eval_passed" || logs.verdict != "helpful" || len(repo.usefulness) != 1 || repo.usefulness[0] != "helpful" {
 		t.Fatalf("eval pass was not propagated: logs=%+v usefulness=%+v", logs, repo.usefulness)
@@ -194,7 +195,7 @@ func TestRecordEvaluationPassMarksRecalledLessonsHelpful(t *testing.T) {
 }
 
 func TestRecordEvaluationFailureEnqueuesEvidenceBackedFollowUp(t *testing.T) {
-	jobs := &fakeReflectionJobs{items: []*reflection.Job{{OwnerID: 1, AgentID: 2, RunID: 3, ProviderID: 4,
+	jobs := &fakeReflectionJobs{items: []*reflection.Job{{BaseModel: domain.BaseModel{OwnerID: 1}, AgentID: 2, RunID: 3, ProviderID: 4,
 		Model: "model", Mode: "react", Task: "task", PayloadJSON: json.RawMessage(`{"stop_reason":"succeeded"}`), TriggerHash: "terminal", MaxAttempts: 3}}}
 	service := Service{Jobs: jobs}
 	service.RecordEvaluation(context.Background(), 1, 3, false, "missing required citation")
@@ -214,9 +215,9 @@ func TestRecordEvaluationFailureEnqueuesEvidenceBackedFollowUp(t *testing.T) {
 
 func TestReflectionManagementEnforcesOwnerAndAgentScope(t *testing.T) {
 	repo := &fakeRepo{items: []reflection.Reflection{
-		{ID: 1, OwnerID: 10, AgentID: 20, Status: reflection.StatusActive},
-		{ID: 2, OwnerID: 10, AgentID: 21, Status: reflection.StatusActive},
-		{ID: 3, OwnerID: 11, AgentID: 20, Status: reflection.StatusActive},
+		{SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 1, OwnerID: 10}}, AgentID: 20, Status: reflection.StatusActive},
+		{SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 2, OwnerID: 10}}, AgentID: 21, Status: reflection.StatusActive},
+		{SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 3, OwnerID: 11}}, AgentID: 20, Status: reflection.StatusActive},
 	}}
 	service := Service{Reflections: repo}
 	items, err := service.List(context.Background(), 10, 20, reflection.StatusActive, 50, 0)
@@ -232,7 +233,7 @@ func TestReflectionManagementEnforcesOwnerAndAgentScope(t *testing.T) {
 }
 
 func TestFeedbackRequiresReflectionToHaveBeenRecalledInRun(t *testing.T) {
-	repo := &fakeRepo{items: []reflection.Reflection{{ID: 7, OwnerID: 1, AgentID: 2, Status: reflection.StatusActive}}}
+	repo := &fakeRepo{items: []reflection.Reflection{{SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 7, OwnerID: 1}}, AgentID: 2, Status: reflection.StatusActive}}}
 	service := Service{Reflections: repo, RecallLogs: &fakeRecallLogs{}}
 	err := service.Feedback(context.Background(), 1, 3, 7, FeedbackRequest{Verdict: "helpful"})
 	if !errors.Is(err, agenterrors.ErrForbidden) || len(repo.usefulness) != 0 {
@@ -241,9 +242,9 @@ func TestFeedbackRequiresReflectionToHaveBeenRecalledInRun(t *testing.T) {
 }
 
 func TestHarmfulFeedbackEnqueuesUserCorrectionReflection(t *testing.T) {
-	repo := &fakeRepo{items: []reflection.Reflection{{ID: 7, OwnerID: 1, AgentID: 2, Status: reflection.StatusActive}}}
-	logs := &fakeRecallLogs{items: []reflection.RecallLog{{ReflectionID: 7, OwnerID: 1, RunID: 3}}}
-	jobs := &fakeReflectionJobs{items: []*reflection.Job{{OwnerID: 1, AgentID: 2, RunID: 3, ProviderID: 4,
+	repo := &fakeRepo{items: []reflection.Reflection{{SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 7, OwnerID: 1}}, AgentID: 2, Status: reflection.StatusActive}}}
+	logs := &fakeRecallLogs{items: []reflection.RecallLog{{BaseModel: domain.BaseModel{OwnerID: 1}, ReflectionID: 7, RunID: 3}}}
+	jobs := &fakeReflectionJobs{items: []*reflection.Job{{BaseModel: domain.BaseModel{OwnerID: 1}, AgentID: 2, RunID: 3, ProviderID: 4,
 		Model: "model", Mode: "react", Task: "task", PayloadJSON: json.RawMessage(`{"stop_reason":"final_answer"}`), TriggerHash: "terminal"}}}
 	service := Service{Reflections: repo, RecallLogs: logs, Jobs: jobs}
 	if err := service.Feedback(context.Background(), 1, 3, 7, FeedbackRequest{Verdict: "harmful", Note: "this caused a repeated write"}); err != nil {

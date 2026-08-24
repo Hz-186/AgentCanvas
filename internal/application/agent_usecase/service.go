@@ -11,6 +11,7 @@ import (
 	"time"
 
 	workspaceusecase "agentcanvas/internal/application/workspace_usecase"
+	"agentcanvas/internal/domain"
 	agentdomain "agentcanvas/internal/domain/agent"
 	"agentcanvas/internal/domain/conversation"
 	"agentcanvas/internal/domain/knowledge"
@@ -50,25 +51,25 @@ func runtimeWorkspaceContext(item *workspacedomain.Context) *toolruntime.Workspa
 	return &toolruntime.WorkspaceContext{
 		ID: item.ID, ProjectID: item.ProjectID, RunID: item.RunID, Kind: item.Kind,
 		RepositoryRoot: item.RepositoryRoot, WorkspacePath: item.WorkspacePath,
-		BranchName: item.BranchName, BaseSHA: item.BaseSHA, HeadSHA: item.HeadSHA, Dirty: item.Dirty, Unpushed: item.Unpushed,
+		BranchName: item.BranchName, BaseSHA: item.BaseSHA, HeadSHA: item.HeadSHA, Dirty: item.Dirty, HasUnpushedCommits: item.HasUnpushedCommits,
 		FileWriteEnabled: item.FileWriteEnabled, GitEnabled: item.GitEnabled, ExecEnabled: item.ExecEnabled,
 	}
 }
 
 func workspaceEventPayload(item *workspacedomain.Workspace, err error) map[string]any {
-	payload := map[string]any{"workspace_id": int64(0), "project_id": int64(0), "run_id": int64(0), "kind": "", "repo_root": "", "path": "", "branch": "", "base_sha": "", "head_sha": "", "dirty": false, "unpushed": false, "status": "", "locked": false, "lock_reason": "", "cleanup_reason": "", "error": ""}
+	payload := map[string]any{"workspace_id": int64(0), "project_id": int64(0), "run_id": int64(0), "kind": "", "repository_root": "", "workspace_path": "", "branch_name": "", "base_sha": "", "head_sha": "", "dirty": false, "has_unpushed_commits": false, "status": "", "locked": false, "lock_reason": "", "cleanup_reason": "", "error_message": ""}
 	if item != nil {
 		payload["workspace_id"], payload["project_id"], payload["run_id"] = item.ID, item.ProjectID, item.RunID
-		payload["kind"], payload["repo_root"], payload["path"] = item.Kind, item.RepositoryRoot, item.WorkspacePath
-		payload["branch"], payload["base_sha"], payload["head_sha"] = item.BranchName, item.BaseSHA, item.HeadSHA
-		payload["dirty"], payload["unpushed"] = item.Dirty, item.Unpushed
+		payload["kind"], payload["repository_root"], payload["workspace_path"] = item.Kind, item.RepositoryRoot, item.WorkspacePath
+		payload["branch_name"], payload["base_sha"], payload["head_sha"] = item.BranchName, item.BaseSHA, item.HeadSHA
+		payload["dirty"], payload["has_unpushed_commits"] = item.Dirty, item.HasUnpushedCommits
 		payload["status"], payload["locked"], payload["lock_reason"], payload["cleanup_reason"] = item.Status, item.Locked, item.LockReason, item.CleanupReason
 		if item.ErrorMessage != "" {
-			payload["error"] = item.ErrorMessage
+			payload["error_message"] = item.ErrorMessage
 		}
 	}
 	if err != nil {
-		payload["error"] = err.Error()
+		payload["error_message"] = err.Error()
 	}
 	return payload
 }
@@ -102,12 +103,12 @@ type UpdateAgentRequest struct {
 }
 
 type AgentEditableSettings struct {
-	ProviderID      int64    `json:"provider_id"`
-	Model           string   `json:"model"`
-	SystemPrompt    string   `json:"system_prompt"`
-	KnowledgeIDs    []int64  `json:"knowledge_ids"`
-	PythonToolNames []string `json:"python_tool_names,omitempty"`
-	Temperature     *float64 `json:"temperature,omitempty"`
+	ProviderID       int64    `json:"provider_id"`
+	Model            string   `json:"model"`
+	SystemPrompt     string   `json:"system_prompt"`
+	KnowledgeBaseIDs []int64  `json:"knowledge_base_ids"`
+	PythonToolNames  []string `json:"python_tool_names,omitempty"`
+	Temperature      *float64 `json:"temperature,omitempty"`
 }
 
 type AgentView struct {
@@ -130,7 +131,7 @@ func ManagedDefinition(settings AgentEditableSettings) agentdomain.Definition {
 		ModelConfig:  agentdomain.ModelConfig{ProviderID: settings.ProviderID, Model: strings.TrimSpace(settings.Model), Temperature: settings.Temperature},
 		PromptConfig: agentdomain.PromptConfig{SystemPrompt: strings.TrimSpace(settings.SystemPrompt), OutputMode: "final_answer"},
 		ToolConfig:   agentdomain.ToolConfig{PythonToolNames: append([]string(nil), settings.PythonToolNames...)},
-		ResourceRefs: agentdomain.ResourceRefs{KnowledgeIDs: normalizeIDs(settings.KnowledgeIDs), KnowledgeTopK: 5, KnowledgeMode: "hybrid", SkillLoadingMode: "auto"},
+		ResourceRefs: agentdomain.ResourceRefs{KnowledgeBaseIDs: normalizeIDs(settings.KnowledgeBaseIDs), KnowledgeTopK: 5, KnowledgeMode: "hybrid", SkillLoadingMode: "auto"},
 		MemoryPolicy: agentdomain.MemoryPolicy{MemoryEnabled: true, ReflectionEnabled: true},
 		ExecutionLimits: agentdomain.ExecutionLimits{
 			Mode: "react", AllowSubagents: true, MaxIterations: 8, MaxToolCalls: 16, MaxExecutionTimeMS: 120000,
@@ -157,7 +158,7 @@ func normalizeIDs(ids []int64) []int64 {
 
 func settingsFromDefinition(definition agentdomain.Definition) AgentEditableSettings {
 	return AgentEditableSettings{ProviderID: definition.ProviderID, Model: definition.Model, SystemPrompt: definition.SystemPrompt,
-		KnowledgeIDs: append([]int64(nil), definition.KnowledgeIDs...), PythonToolNames: append([]string(nil), definition.PythonToolNames...), Temperature: definition.Temperature}
+		KnowledgeBaseIDs: append([]int64(nil), definition.KnowledgeBaseIDs...), PythonToolNames: append([]string(nil), definition.PythonToolNames...), Temperature: definition.Temperature}
 }
 
 func viewAgent(item *agentdomain.Agent) *AgentView {
@@ -185,12 +186,12 @@ func (s *Service) validateEditableSettings(ctx context.Context, ownerID int64, s
 		return errors.New("agent editable resource validation is not configured")
 	}
 	providerItem, err := s.providers.FindByID(ctx, ownerID, settings.ProviderID)
-	if err != nil || providerItem.Status != provider.StatusActive {
+	if err != nil || !providerItem.Enabled {
 		return agenterrors.ErrInvalidInput
 	}
-	for _, id := range definition.KnowledgeIDs {
+	for _, id := range definition.KnowledgeBaseIDs {
 		item, findErr := s.knowledge.FindByID(ctx, ownerID, id)
-		if findErr != nil || item.Status != knowledge.KnowledgeBaseStatusActive {
+		if findErr != nil || !item.Enabled {
 			return agenterrors.ErrInvalidInput
 		}
 	}
@@ -209,7 +210,7 @@ func (s *Service) CreateAgent(ctx context.Context, ownerID int64, req CreateAgen
 		definition.SystemPrompt = defaultAgentSystemPrompt
 	}
 	item := &agentdomain.Agent{
-		OwnerID:         ownerID,
+		SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{OwnerID: ownerID}},
 		Name:            strings.TrimSpace(req.Name),
 		Description:     strings.TrimSpace(req.Description),
 		AvatarURL:       strings.TrimSpace(req.AvatarURL),
@@ -344,12 +345,12 @@ func (s *Service) Publish(ctx context.Context, ownerID, id int64) (*agentdomain.
 	if err != nil {
 		return nil, err
 	}
-	resources, ruleHash, toolHash, err := item.DraftDefinition.ResourceSnapshot()
+	_, ruleHash, _, err := item.DraftDefinition.ResourceSnapshot()
 	if err != nil {
 		return nil, err
 	}
-	release := &agentdomain.Release{OwnerID: ownerID, AgentID: id, VersionNo: version, Definition: item.DraftDefinition,
-		ResourceVersions: resources, RuleHash: ruleHash, ToolSchemaHash: toolHash, CreatedBy: ownerID}
+	release := &agentdomain.Release{ImmutableModel: domain.ImmutableModel{OwnerID: ownerID}, AgentID: id, VersionNumber: version,
+		Definition: item.DraftDefinition, RuleHash: ruleHash}
 	if err := s.agents.CreateRelease(ctx, release); err != nil {
 		return nil, err
 	}
@@ -395,7 +396,7 @@ func (s *Service) Capabilities(ctx context.Context, ownerID, releaseID int64) (m
 		"release_id": release.ID, "checksum": release.Checksum, "mode": d.Mode,
 		"tools": len(d.ToolIDs), "tool_packs": len(d.ToolPackIDs), "skills": len(d.SkillIDs),
 		"python_tools":    len(d.PythonToolNames),
-		"knowledge_bases": len(d.KnowledgeIDs), "mcp_servers": len(d.MCPServerIDs),
+		"knowledge_bases": len(d.KnowledgeBaseIDs), "mcp_servers": len(d.MCPServerIDs),
 		"dynamic_subagents": d.AllowSubagents,
 		"memory":            d.MemoryEnabled, "reflection": d.ReflectionEnabled,
 	}, nil
@@ -466,8 +467,8 @@ func (s *Service) CreateConversation(ctx context.Context, ownerID, agentID int64
 			return nil, fmt.Errorf("%w: project is archived", agenterrors.ErrForbidden)
 		}
 	}
-	item := &conversation.Conversation{OwnerID: ownerID, AgentID: &agentID, AgentReleaseID: agentItem.CurrentReleaseID,
-		ProjectID: req.ProjectID, WorkspaceMode: workspaceMode, Title: title, Name: title, Source: conversation.SourceAgent, AgentMode: mode}
+	item := &conversation.Conversation{SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{OwnerID: ownerID}}, AgentID: &agentID, AgentReleaseID: agentItem.CurrentReleaseID,
+		ProjectID: req.ProjectID, WorkspaceMode: workspaceMode, Title: title, AgentMode: mode}
 	if err := s.conversations.Create(ctx, item); err != nil {
 		return nil, err
 	}
@@ -514,7 +515,7 @@ func (s *Service) GetConversation(ctx context.Context, ownerID, agentID, convers
 	if err != nil {
 		return nil, mapNotFound(err)
 	}
-	if item.AgentID == nil || *item.AgentID != agentID || item.Source != conversation.SourceAgent {
+	if item.AgentID == nil || *item.AgentID != agentID {
 		return nil, agenterrors.ErrNotFound
 	}
 	return item, nil
@@ -558,13 +559,11 @@ func (s *Service) ForkConversation(ctx context.Context, ownerID, agentID, conver
 	}
 	title := source.Title + " (fork)"
 	fork := &conversation.Conversation{
-		OwnerID:              ownerID,
+		SoftDeleteModel:      domain.SoftDeleteModel{BaseModel: domain.BaseModel{OwnerID: ownerID}},
 		AgentID:              &agentID,
 		AgentReleaseID:       releaseID,
 		ParentConversationID: &source.ID,
 		Title:                title,
-		Name:                 title,
-		Source:               conversation.SourceAgent,
 		AgentMode:            source.AgentMode,
 		ProjectID:            source.ProjectID,
 		WorkspaceMode:        source.WorkspaceMode,
@@ -578,13 +577,11 @@ func (s *Service) ForkConversation(ctx context.Context, ownerID, agentID, conver
 	}
 	for _, message := range messages {
 		copyMessage := &conversation.Message{
-			OwnerID:        ownerID,
+			ImmutableModel: domain.ImmutableModel{OwnerID: ownerID},
 			ConversationID: fork.ID,
 			Role:           message.Role,
 			Content:        message.Content,
-			ContentType:    message.ContentType,
 			TokenCount:     message.TokenCount,
-			MetadataJSON:   message.MetadataJSON,
 		}
 		if err := s.messages.Create(ctx, copyMessage); err != nil {
 			return nil, err
@@ -650,12 +647,10 @@ func (s *Service) StartTurn(ctx context.Context, ownerID, agentID, conversationI
 		return nil, fmt.Errorf("%w: agent release snapshot is incomplete", agenterrors.ErrInvalidInput)
 	}
 	userMessage := &conversation.Message{
-		OwnerID:        ownerID,
+		ImmutableModel: domain.ImmutableModel{OwnerID: ownerID},
 		ConversationID: conversationID,
 		Role:           conversation.RoleUser,
 		Content:        content,
-		ContentType:    conversation.ContentTypeText,
-		MetadataJSON:   "{}",
 	}
 	now := time.Now().UTC()
 	mode, err := normalizeAgentMode(conv.AgentMode)
@@ -664,7 +659,7 @@ func (s *Service) StartTurn(ctx context.Context, ownerID, agentID, conversationI
 	}
 	inputJSON, _ := json.Marshal(map[string]any{"query": content, "mode": mode})
 	run := &agentdomain.Run{
-		OwnerID:        ownerID,
+		BaseModel:      domain.BaseModel{OwnerID: ownerID, CreatedAt: now, UpdatedAt: now},
 		RunType:        agentdomain.RunTypeTurn,
 		AgentID:        agentID,
 		AgentReleaseID: conv.AgentReleaseID,
@@ -675,11 +670,9 @@ func (s *Service) StartTurn(ctx context.Context, ownerID, agentID, conversationI
 		RuleHash:       release.RuleHash,
 		InputJSON:      inputJSON,
 		StartedAt:      now,
-		CreatedAt:      now,
-		UpdatedAt:      now,
 	}
 	turn := &agentdomain.Turn{
-		OwnerID:        ownerID,
+		BaseModel:      domain.BaseModel{OwnerID: ownerID},
 		AgentID:        agentID,
 		AgentReleaseID: *conv.AgentReleaseID,
 		ConversationID: conversationID,

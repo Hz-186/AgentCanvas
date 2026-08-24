@@ -1,6 +1,7 @@
 package cache
 
 import (
+	"agentcanvas/internal/domain"
 	"context"
 	"errors"
 	"io"
@@ -29,7 +30,7 @@ type fakeInvalidationStore struct {
 
 func (s *fakeInvalidationStore) Enqueue(_ context.Context, ownerID int64, kind resource.Kind, cause error) error {
 	s.enqueued++
-	s.events = append(s.events, resource.InvalidationEvent{ID: int64(s.enqueued), OwnerID: ownerID, Kind: kind, LastError: cause.Error()})
+	s.events = append(s.events, resource.InvalidationEvent{BaseModel: domain.BaseModel{ID: int64(s.enqueued), OwnerID: ownerID}, Kind: kind, LastError: cause.Error()})
 	return nil
 }
 func (s *fakeInvalidationStore) ListPending(context.Context, int) ([]resource.InvalidationEvent, error) {

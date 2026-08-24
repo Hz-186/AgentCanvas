@@ -7,6 +7,8 @@ import (
 	"errors"
 	"strings"
 	"time"
+
+	"agentcanvas/internal/domain"
 )
 
 const (
@@ -69,8 +71,7 @@ func (p EmbeddingProfile) Normalized() EmbeddingProfile {
 }
 
 type OutboxItem struct {
-	ID                   int64      `gorm:"primaryKey;column:id"`
-	OwnerID              int64      `gorm:"column:owner_id"`
+	domain.BaseModel
 	AgentID              int64      `gorm:"column:agent_id"`
 	ConversationID       int64      `gorm:"column:conversation_id"`
 	ResourceType         string     `gorm:"column:resource_type"`
@@ -90,8 +91,6 @@ type OutboxItem struct {
 	LeaseExpiresAt       *time.Time `gorm:"column:lease_expires_at"`
 	LastError            string     `gorm:"column:last_error"`
 	CompletedAt          *time.Time `gorm:"column:completed_at"`
-	CreatedAt            time.Time  `gorm:"column:created_at"`
-	UpdatedAt            time.Time  `gorm:"column:updated_at"`
 }
 
 func (OutboxItem) TableName() string { return "context_resource_index_outbox" }
@@ -99,6 +98,7 @@ func (OutboxItem) TableName() string { return "context_resource_index_outbox" }
 type Document struct {
 	OwnerID        int64
 	AgentID        int64
+	ProjectID      int64
 	ResourceType   string
 	ResourceID     string
 	Content        string
@@ -110,6 +110,7 @@ type Document struct {
 type SearchRequest struct {
 	OwnerID        int64
 	AgentID        int64
+	ProjectID      int64
 	ConversationID int64
 	ResourceTypes  []string
 	Query          string

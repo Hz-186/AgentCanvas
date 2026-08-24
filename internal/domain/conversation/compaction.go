@@ -3,6 +3,8 @@ package conversation
 import (
 	"context"
 	"time"
+
+	"agentcanvas/internal/domain"
 )
 
 const (
@@ -14,8 +16,7 @@ const (
 )
 
 type Compaction struct {
-	ID                int64      `json:"id" gorm:"primaryKey;column:id"`
-	OwnerID           int64      `json:"owner_id" gorm:"column:owner_id"`
+	domain.ImmutableModel
 	ConversationID    int64      `json:"conversation_id" gorm:"column:conversation_id"`
 	FirstMessageID    int64      `json:"first_message_id" gorm:"column:first_message_id"`
 	LastMessageID     int64      `json:"last_message_id" gorm:"column:last_message_id"`
@@ -35,7 +36,6 @@ type Compaction struct {
 	SummaryTokens     int        `json:"summary_tokens" gorm:"column:summary_tokens"`
 	ErrorMessage      string     `json:"error_message,omitempty" gorm:"column:error_message"`
 	CompletedAt       *time.Time `json:"completed_at,omitempty" gorm:"column:completed_at"`
-	CreatedAt         time.Time  `json:"created_at" gorm:"column:created_at"`
 }
 
 func (Compaction) TableName() string { return "conversation_compactions" }

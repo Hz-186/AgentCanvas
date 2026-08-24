@@ -20,7 +20,7 @@ func (s *Service) WorkspaceContext(item *workspacedomain.Workspace) *workspacedo
 	if item == nil || item.Status != workspacedomain.StatusReady {
 		return nil
 	}
-	return &workspacedomain.Context{ID: item.ID, ProjectID: item.ProjectID, RunID: item.RunID, Kind: item.Kind, RepositoryRoot: item.RepositoryRoot, WorkspacePath: item.WorkspacePath, BranchName: item.BranchName, BaseSHA: item.BaseSHA, HeadSHA: item.HeadSHA, Dirty: item.Dirty, Unpushed: item.Unpushed, FileWriteEnabled: true, GitEnabled: true, ExecEnabled: true}
+	return &workspacedomain.Context{ID: item.ID, ProjectID: item.ProjectID, RunID: item.RunID, Kind: item.Kind, RepositoryRoot: item.RepositoryRoot, WorkspacePath: item.WorkspacePath, BranchName: item.BranchName, BaseSHA: item.BaseSHA, HeadSHA: item.HeadSHA, Dirty: item.Dirty, HasUnpushedCommits: item.HasUnpushedCommits, FileWriteEnabled: true, GitEnabled: true, ExecEnabled: true}
 }
 
 func (s *Service) GetWorkspace(ctx context.Context, ownerID, id int64) (*workspacedomain.Workspace, error) {
@@ -40,7 +40,7 @@ func (s *Service) GitStatus(ctx context.Context, item *workspacedomain.Workspace
 	}
 	status, err := s.git.Status(ctx, item.WorkspacePath)
 	if err == nil && item.Kind == workspacedomain.KindWorktree && item.BaseSHA != "" && status.Head != "" && status.Head != item.BaseSHA {
-		status.Unpushed = true
+		status.HasUnpushedCommits = true
 	}
 	return status, err
 }
@@ -111,7 +111,7 @@ func (s *Service) Commit(ctx context.Context, item *workspacedomain.Workspace, m
 		}
 		refreshed, refreshErr := s.RefreshGitStatus(ctx, refreshTarget)
 		if refreshErr != nil {
-			refreshTarget.HeadSHA, refreshTarget.Dirty, refreshTarget.Unpushed = result.Hash, true, true
+			refreshTarget.HeadSHA, refreshTarget.Dirty, refreshTarget.HasUnpushedCommits = result.Hash, true, true
 			refreshTarget.ErrorMessage = "post-commit Git status could not be verified: " + refreshErr.Error()
 			if updateErr := s.workspaces.Update(ctx, refreshTarget); updateErr != nil {
 				return result, fmt.Errorf("commit %s succeeded but workspace status persistence failed: %w", result.Hash, errors.Join(refreshErr, updateErr))
@@ -120,7 +120,7 @@ func (s *Service) Commit(ctx context.Context, item *workspacedomain.Workspace, m
 			refreshTarget = refreshed
 		}
 		if refreshTarget != item {
-			item.HeadSHA, item.Dirty, item.Unpushed, item.LastCheckedAt, item.ErrorMessage = refreshTarget.HeadSHA, refreshTarget.Dirty, refreshTarget.Unpushed, refreshTarget.LastCheckedAt, refreshTarget.ErrorMessage
+			item.HeadSHA, item.Dirty, item.HasUnpushedCommits, item.LastCheckedAt, item.ErrorMessage = refreshTarget.HeadSHA, refreshTarget.Dirty, refreshTarget.HasUnpushedCommits, refreshTarget.LastCheckedAt, refreshTarget.ErrorMessage
 		}
 		detail := workspaceAuditDetail(item)
 		detail["message"], detail["paths"], detail["before_head"], detail["after_head"] = result.Message, result.Paths, beforeHead, result.Hash
@@ -130,7 +130,7 @@ func (s *Service) Commit(ctx context.Context, item *workspacedomain.Workspace, m
 }
 
 func workspaceAuditDetail(item *workspacedomain.Workspace) map[string]any {
-	return map[string]any{"run_id": item.RunID, "project_id": item.ProjectID, "kind": item.Kind, "repo_root": item.RepositoryRoot, "path": item.WorkspacePath, "branch": item.BranchName, "base_sha": item.BaseSHA, "head_sha": item.HeadSHA, "status": item.Status, "dirty": item.Dirty, "unpushed": item.Unpushed, "locked": item.Locked, "reason": item.CleanupReason, "error": item.ErrorMessage}
+	return map[string]any{"run_id": item.RunID, "project_id": item.ProjectID, "kind": item.Kind, "repository_root": item.RepositoryRoot, "workspace_path": item.WorkspacePath, "branch_name": item.BranchName, "base_sha": item.BaseSHA, "head_sha": item.HeadSHA, "status": item.Status, "dirty": item.Dirty, "has_unpushed_commits": item.HasUnpushedCommits, "locked": item.Locked, "cleanup_reason": item.CleanupReason, "error_message": item.ErrorMessage}
 }
 
 func (s *Service) ensureWorktreeIgnore(root string) error {

@@ -37,7 +37,6 @@ type coreRepositories struct {
 	MemoryLogs       memory.WriteLogRepository
 	MemoryRecallLogs memory.RecallLogRepository
 	MemoryCandidates memory.CandidateWriter
-	WorkingMemory    memory.WorkingMemoryRepository
 	MessageHistory   MessageHistoryReader
 	Compactions      conversation.CompactionRepository
 	SessionSearch    conversation.MessageSearchIndex
@@ -137,7 +136,7 @@ type RuntimeToolConfig struct {
 type RuntimeResourceRefs struct {
 	SkillIDs         []int64 `json:"skill_ids"`
 	SkillLoadingMode string  `json:"skill_loading_mode"`
-	KnowledgeIDs     []int64 `json:"knowledge_ids"`
+	KnowledgeBaseIDs []int64 `json:"knowledge_base_ids"`
 	KnowledgeTopK    int     `json:"knowledge_top_k"`
 	KnowledgeMode    string  `json:"knowledge_mode"`
 }
@@ -164,6 +163,8 @@ type RuntimeExecutionLimits struct {
 	ContextSafetyMarginTokens       int    `json:"context_safety_margin_tokens"`
 	ModelAutoCompactTokenLimit      int    `json:"model_auto_compact_token_limit"`
 	ModelAutoCompactTokenLimitScope string `json:"model_auto_compact_token_limit_scope"`
+	CompactionProviderID            int64  `json:"compaction_provider_id"`
+	CompactionModel                 string `json:"compaction_model"`
 	MaxRuleTokens                   int    `json:"max_rule_tokens"`
 }
 

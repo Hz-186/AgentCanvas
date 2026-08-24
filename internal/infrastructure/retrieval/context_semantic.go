@@ -62,6 +62,7 @@ func (s *ContextSemanticIndex) Upsert(ctx context.Context, document contextresou
 	metadata := cloneContextMetadata(document.Metadata)
 	metadata["owner_id"] = document.OwnerID
 	metadata["agent_id"] = document.AgentID
+	metadata["project_id"] = document.ProjectID
 	metadata["conversation_id"] = document.ConversationID
 	metadata["resource_type"] = document.ResourceType
 	metadata["resource_id"] = document.ResourceID
@@ -171,6 +172,7 @@ func (s *ContextSemanticIndex) contextResults(request contextresource.SearchRequ
 	results := make([]contextresource.SearchResult, 0, limit)
 	for _, hit := range hits {
 		agentID := contextMetadataInt64(hit.Metadata["agent_id"])
+		projectID := contextMetadataInt64(hit.Metadata["project_id"])
 		conversationID := contextMetadataInt64(hit.Metadata["conversation_id"])
 		resourceType, _ := hit.Metadata["resource_type"].(string)
 		resourceID := fmt.Sprint(hit.Metadata["resource_id"])
@@ -183,6 +185,9 @@ func (s *ContextSemanticIndex) contextResults(request contextresource.SearchRequ
 			}
 		} else {
 			if request.AgentID > 0 && agentID != 0 && agentID != request.AgentID {
+				continue
+			}
+			if (request.ProjectID <= 0 && projectID != 0) || (request.ProjectID > 0 && projectID != 0 && projectID != request.ProjectID) {
 				continue
 			}
 			if request.ConversationID > 0 && conversationID != 0 && conversationID != request.ConversationID {
@@ -215,6 +220,13 @@ func contextScopeFilter(request contextresource.SearchRequest) map[string]any {
 			filter["agent_id"] = []int64{0, request.AgentID}
 		}
 	}
+	if !messageOnly {
+		if request.ProjectID > 0 {
+			filter["project_id"] = []int64{0, request.ProjectID}
+		} else {
+			filter["project_id"] = int64(0)
+		}
+	}
 	if request.ConversationID > 0 {
 		if messageOnly {
 			filter["conversation_id"] = request.ConversationID
@@ -240,7 +252,7 @@ func (s *ContextSemanticIndex) embed(ctx context.Context, ownerID int64, request
 	if err != nil {
 		return nil, requested, err
 	}
-	if provider.Status != providerdomain.StatusActive {
+	if !provider.Enabled {
 		return nil, requested, fmt.Errorf("context embedding provider is disabled")
 	}
 	model := strings.TrimSpace(requested.Model)

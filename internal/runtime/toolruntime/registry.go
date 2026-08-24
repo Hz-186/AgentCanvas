@@ -34,7 +34,7 @@ func (r BasicRegistry) LoadForAgent(ctx context.Context, ownerID int64, toolIDs 
 		if err != nil {
 			return nil, err
 		}
-		if def.Status != tool.StatusActive {
+		if !def.Enabled {
 			return nil, fmt.Errorf("%w: tool %d is not active", agenterrors.ErrInvalidInput, id)
 		}
 		switch def.ToolType {

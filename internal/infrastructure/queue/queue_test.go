@@ -15,7 +15,7 @@ func TestMemoryQueuePublishClaimAck(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Claim() error = %v", err)
 	}
-	if len(jobs) != 1 || jobs[0].ID != "job1" || jobs[0].Attempts != 1 {
+	if len(jobs) != 1 || jobs[0].ID != "job1" || jobs[0].AttemptCount != 1 {
 		t.Fatalf("unexpected claimed jobs: %+v", jobs)
 	}
 	if err := q.Ack(context.Background(), "job1"); err != nil {
@@ -54,7 +54,7 @@ func TestMemoryQueueNackDelaysRetry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Claim() error = %v", err)
 	}
-	if len(jobs) != 1 || jobs[0].Attempts != 2 {
+	if len(jobs) != 1 || jobs[0].AttemptCount != 2 {
 		t.Fatalf("expected retry claim, got %+v", jobs)
 	}
 }
@@ -76,7 +76,7 @@ func TestMemoryQueueMovesExhaustedJobToDeadJobs(t *testing.T) {
 		t.Fatalf("exhausted job was requeued: %+v, %v", jobs, err)
 	}
 	dead := q.DeadJobs()
-	if len(dead) != 1 || dead[0].ID != "job1" || dead[0].Attempts != 1 {
+	if len(dead) != 1 || dead[0].ID != "job1" || dead[0].AttemptCount != 1 {
 		t.Fatalf("dead jobs = %+v", dead)
 	}
 }

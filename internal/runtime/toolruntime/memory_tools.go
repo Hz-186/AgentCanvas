@@ -10,6 +10,7 @@ import (
 	"agentcanvas/internal/domain/contextresource"
 	"agentcanvas/internal/domain/conversation"
 	"agentcanvas/internal/domain/memory"
+	"agentcanvas/internal/observability"
 )
 
 type SessionSearchTool struct {
@@ -27,6 +28,7 @@ func (SessionSearchTool) Metadata() ToolMetadata {
 	return ToolMetadata{RiskLevel: RiskLow, SideEffect: SideEffectRead}
 }
 func (t SessionSearchTool) Execute(ctx context.Context, rc ToolRunContext, input json.RawMessage) (*ToolResult, error) {
+	observability.ContextSystemMetrics.RecordHistorySearch()
 	if t.Index == nil || rc.AgentID <= 0 {
 		return nil, fmt.Errorf("session search is not configured")
 	}
@@ -92,7 +94,7 @@ func (MemoryReadTool) Description() string {
 }
 
 func (MemoryReadTool) Parameters() json.RawMessage {
-	return json.RawMessage(`{"type":"object","properties":{"memory_types":{"type":"array","items":{"type":"string"},"description":"Memory types to read. Common values: profile_memory, summary_memory, episodic_memory, task_memory, archival_memory."},"limit":{"type":"number","description":"Maximum memories to read. Default 5, maximum 20."},"query":{"type":"string","description":"Semantic search query to find relevant memories. When provided, results are ranked by relevance to this query."}},"additionalProperties":false}`)
+	return json.RawMessage(`{"type":"object","properties":{"memory_types":{"type":"array","items":{"type":"string"},"description":"Memory types to read: profile, episodic, task, archival."},"limit":{"type":"number","description":"Maximum memories to read. Default 5, maximum 20."},"query":{"type":"string","description":"Semantic search query to find relevant memories. When provided, results are ranked by relevance to this query."}},"additionalProperties":false}`)
 }
 
 func (MemoryReadTool) Metadata() ToolMetadata {
@@ -122,8 +124,9 @@ func (t MemoryReadTool) Execute(ctx context.Context, rc ToolRunContext, input js
 	if agentID == 0 {
 		agentID = rc.AgentID
 	}
+	projectID := projectIDFromToolRunContext(rc)
 	result, err := (memory.RuntimeService{Memories: t.Memories, RecallLogs: t.RecallLogs, Retriever: t.Retriever, Archival: t.Archival, ContextIndex: t.ContextIndex, AgentID: agentID, Profile: t.Profile}).Read(ctx, memory.ReadRequest{
-		OwnerID: rc.OwnerID, ConversationID: rc.ConversationID, AgentID: agentID, RunID: rc.RunID, MemoryTypes: parsed.MemoryTypes, Query: query, Limit: parsed.Limit, TokenBudget: t.TokenBudget, SemanticOnly: semanticOnly, AllowLegacyListFallback: allowLegacyFallback,
+		OwnerID: rc.OwnerID, ConversationID: rc.ConversationID, ProjectID: projectID, AgentID: agentID, RunID: rc.RunID, MemoryTypes: parsed.MemoryTypes, Query: query, Limit: parsed.Limit, TokenBudget: t.TokenBudget, SemanticOnly: semanticOnly, AllowLegacyListFallback: allowLegacyFallback,
 	})
 	if err != nil {
 		return &ToolResult{ContentText: err.Error(), IsError: true}, err
@@ -149,6 +152,7 @@ type memoryWriteInput struct {
 	Importance         float64 `json:"importance"`
 	Reason             string  `json:"reason"`
 	ConflictResolution string  `json:"conflict_resolution"`
+	Scope              string  `json:"scope"`
 }
 
 func (MemoryWriteTool) Name() string { return "write_memory" }
@@ -158,7 +162,7 @@ func (MemoryWriteTool) Description() string {
 }
 
 func (MemoryWriteTool) Parameters() json.RawMessage {
-	return json.RawMessage(`{"type":"object","properties":{"memory_id":{"type":"number","description":"Existing memory ID to update. Omit or use 0 to create."},"memory_type":{"type":"string","enum":["profile_memory","episodic_memory","task_memory","archival_memory"]},"title":{"type":"string"},"content":{"type":"string","description":"Durable memory content to propose for review."},"importance":{"type":"number","description":"0 to 1. Defaults to 0.5."},"reason":{"type":"string","description":"Why this memory should be stored."}},"required":["memory_type","content"],"additionalProperties":false}`)
+	return json.RawMessage(`{"type":"object","properties":{"memory_id":{"type":"number","description":"Existing memory ID to update. Omit or use 0 to create."},"memory_type":{"type":"string","enum":["profile","episodic","task","archival"]},"title":{"type":"string"},"content":{"type":"string","description":"Durable memory content to propose for review."},"importance":{"type":"number","description":"0 to 1. Defaults to 0.5."},"reason":{"type":"string","description":"Why this memory should be stored."},"scope":{"type":"string","enum":["user","agent","project","conversation"],"description":"Optional memory scope. Defaults by memory type and current project or conversation."}},"required":["memory_type","content"],"additionalProperties":false}`)
 }
 
 func (MemoryWriteTool) Metadata() ToolMetadata {
@@ -177,12 +181,13 @@ func (t MemoryWriteTool) Execute(ctx context.Context, rc ToolRunContext, input j
 	if rc.ConversationID != nil {
 		conversationID = *rc.ConversationID
 	}
+	projectID := projectIDFromToolRunContext(rc)
 	action := "create"
 	if parsed.MemoryID > 0 {
 		action = "update"
 	}
 	proposalID, err := t.Candidates.Suggest(ctx, memory.CandidateRequest{OwnerID: rc.OwnerID, AgentID: rc.AgentID,
-		ConversationID: conversationID, RunID: rc.RunID, SourceID: fmt.Sprintf("agent-tool:%d:%s", rc.RunID, strings.TrimSpace(parsed.Content)),
+		ConversationID: conversationID, ProjectID: projectID, SourceConversationID: conversationID, SourceProjectID: projectID, RunID: rc.RunID, ScopeType: strings.TrimSpace(parsed.Scope), SourceID: fmt.Sprintf("agent-tool:%d:%s", rc.RunID, strings.TrimSpace(parsed.Content)),
 		MemoryID: parsed.MemoryID, MemoryType: parsed.MemoryType, Title: parsed.Title, Content: parsed.Content,
 		Action: action, Importance: parsed.Importance, Evidence: []string{strings.TrimSpace(parsed.Reason)}, Source: "agent_tool"})
 	if err != nil {
@@ -191,4 +196,14 @@ func (t MemoryWriteTool) Execute(ctx context.Context, rc ToolRunContext, input j
 	return ResultFromValue(map[string]any{
 		"proposal_id": proposalID, "status": "pending", "action": "suggest", "content": strings.TrimSpace(parsed.Content),
 	})
+}
+
+func projectIDFromToolRunContext(rc ToolRunContext) int64 {
+	if rc.ProjectID > 0 {
+		return rc.ProjectID
+	}
+	if rc.Workspace != nil {
+		return rc.Workspace.ProjectID
+	}
+	return 0
 }

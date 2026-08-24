@@ -584,9 +584,9 @@ func emitWorkspaceMutation(ctx context.Context, rc ToolRunContext, payload map[s
 		return
 	}
 	eventPayload := map[string]any{
-		"workspace_id": rc.Workspace.ID, "project_id": rc.Workspace.ProjectID, "run_id": rc.RunID, "kind": rc.Workspace.Kind, "repo_root": rc.Workspace.RepositoryRoot,
-		"path": rc.Workspace.WorkspacePath, "branch": rc.Workspace.BranchName, "base_sha": rc.Workspace.BaseSHA, "head_sha": rc.Workspace.HeadSHA,
-		"dirty": rc.Workspace.Dirty, "unpushed": rc.Workspace.Unpushed, "status": "ready", "error": "", "mutation": payload,
+		"workspace_id": rc.Workspace.ID, "project_id": rc.Workspace.ProjectID, "run_id": rc.RunID, "kind": rc.Workspace.Kind, "repository_root": rc.Workspace.RepositoryRoot,
+		"workspace_path": rc.Workspace.WorkspacePath, "branch_name": rc.Workspace.BranchName, "base_sha": rc.Workspace.BaseSHA, "head_sha": rc.Workspace.HeadSHA,
+		"dirty": rc.Workspace.Dirty, "has_unpushed_commits": rc.Workspace.HasUnpushedCommits, "status": "ready", "error_message": "", "mutation": payload,
 	}
 	_ = rc.EmitEvent(ctx, "workspace.status_changed", eventPayload)
 }

@@ -15,9 +15,9 @@ const (
 
 type ChunkIndexDocument struct {
 	OwnerID             int64
-	KBID                int64
+	KnowledgeBaseID     int64
 	DocumentID          int64
-	Generation          string
+	GenerationID        string
 	ChunkID             int64
 	ChunkIndex          int
 	DocumentName        string
@@ -32,7 +32,7 @@ type ChunkIndexDocument struct {
 	EmbeddingMetric     string
 	EmbeddingProfile    string
 	Enabled             bool
-	PageNo              *int
+	PageNumber          *int
 	TokenCount          int
 	Metadata            map[string]any
 	CreatedAt           time.Time
@@ -40,22 +40,22 @@ type ChunkIndexDocument struct {
 }
 
 type RetrievalRequest struct {
-	OwnerID           int64
-	KBIDs             []int64
-	Generation        string
-	ActiveGenerations map[int64]string
-	EmbeddingProfile  string
-	Query             string
-	Conversation      []QueryTurn
-	RewriteProviderID int64
-	RewriteModel      string
-	TopK              int
-	CandidateK        int
-	Mode              Mode
-	QueryVector       []float32
-	HybridWeight      float64
-	Filters           map[string]any
-	EnableHighlight   bool
+	OwnerID             int64
+	KnowledgeBaseIDs    []int64
+	GenerationID        string
+	ActiveGenerationIDs map[int64]string
+	EmbeddingProfile    string
+	Query               string
+	Conversation        []QueryTurn
+	RewriteProviderID   int64
+	RewriteModel        string
+	TopK                int
+	CandidateK          int
+	Mode                Mode
+	QueryVector         []float32
+	VectorWeight        float64
+	Filters             map[string]any
+	EnableHighlight     bool
 }
 
 type QueryTurn struct {
@@ -93,19 +93,19 @@ type Clarification struct {
 }
 
 type RetrievalResult struct {
-	ChunkID      int64          `json:"chunk_id"`
-	DocumentID   int64          `json:"document_id"`
-	Generation   string         `json:"generation,omitempty"`
-	KBID         int64          `json:"kb_id"`
-	Score        float64        `json:"score"`
-	KeywordScore float64        `json:"keyword_score"`
-	VectorScore  float64        `json:"vector_score"`
-	FinalScore   float64        `json:"final_score"` // after Rerank
-	Content      string         `json:"content"`
-	Highlight    string         `json:"highlight"`
-	DocumentName string         `json:"document_name"`
-	PageNo       *int           `json:"page_no"`
-	Metadata     map[string]any `json:"metadata"`
+	ChunkID         int64          `json:"chunk_id"`
+	DocumentID      int64          `json:"document_id"`
+	GenerationID    string         `json:"generation_id,omitempty"`
+	KnowledgeBaseID int64          `json:"knowledge_base_id"`
+	Score           float64        `json:"score"`
+	KeywordScore    float64        `json:"keyword_score"`
+	VectorScore     float64        `json:"vector_score"`
+	FinalScore      float64        `json:"final_score"` // after Rerank
+	Content         string         `json:"content"`
+	Highlight       string         `json:"highlight"`
+	DocumentName    string         `json:"document_name"`
+	PageNumber      *int           `json:"page_number"`
+	Metadata        map[string]any `json:"metadata"`
 }
 
 type RetrievalResponse struct {

@@ -21,6 +21,36 @@ type fakeToolClient struct {
 	requests  []llm.ToolChatRequest
 }
 
+type compactionFallbackClient struct {
+	providers []llm.ChatProviderConfig
+	models    []string
+}
+
+type compactionInvalidAuxClient struct {
+	providers []llm.ChatProviderConfig
+	models    []string
+	calls     int
+}
+
+func (c *compactionInvalidAuxClient) ChatWithTools(_ context.Context, provider llm.ChatProviderConfig, request llm.ToolChatRequest) (*llm.ToolChatResponse, error) {
+	c.calls++
+	c.providers = append(c.providers, provider)
+	c.models = append(c.models, request.Model)
+	if c.calls < 3 {
+		return &llm.ToolChatResponse{Message: llm.ChatMessage{Role: conversation.RoleAssistant, Content: "invalid summary"}, Usage: llm.Usage{TotalTokens: 1}}, nil
+	}
+	return &llm.ToolChatResponse{Message: llm.ChatMessage{Role: conversation.RoleAssistant, Content: validCompactionSummary("main fallback")}, Usage: llm.Usage{TotalTokens: 2}}, nil
+}
+
+func (c *compactionFallbackClient) ChatWithTools(_ context.Context, provider llm.ChatProviderConfig, request llm.ToolChatRequest) (*llm.ToolChatResponse, error) {
+	c.providers = append(c.providers, provider)
+	c.models = append(c.models, request.Model)
+	if len(c.models) == 1 {
+		return nil, errors.New("auxiliary context too small")
+	}
+	return &llm.ToolChatResponse{Message: llm.ChatMessage{Role: conversation.RoleAssistant, Content: validCompactionSummary("fallback")}}, nil
+}
+
 func (c *fakeToolClient) ChatWithTools(ctx context.Context, cfg llm.ChatProviderConfig, req llm.ToolChatRequest) (*llm.ToolChatResponse, error) {
 	c.requests = append(c.requests, req)
 	if len(c.responses) == 0 {
@@ -155,7 +185,7 @@ func TestRunnerPassesImmutableWorkspaceContextToTools(t *testing.T) {
 	}
 	runner := &Runner{LLM: client, ProviderID: 1, ModelName: "gpt-4"}
 	if _, err := runner.Run(context.Background(), RunRequest{
-		OwnerID: 1, AgentID: 2, AgentReleaseID: 3, RunID: 7, Model: "gpt-4", Task: "read",
+		OwnerID: 1, AgentID: 2, AgentReleaseID: 3, RunID: 7, ProjectID: 42, Model: "gpt-4", Task: "read",
 		MaxIterations: 3, MaxToolCalls: 1, Tools: []toolruntime.RuntimeTool{tool}, Workspace: workspace,
 	}); err != nil {
 		t.Fatal(err)
@@ -163,7 +193,7 @@ func TestRunnerPassesImmutableWorkspaceContextToTools(t *testing.T) {
 	if tool.runContext.Workspace != workspace {
 		t.Fatalf("runner did not preserve resolved workspace context: got %#v want %#v", tool.runContext.Workspace, workspace)
 	}
-	if tool.runContext.RunID != 7 || tool.runContext.Workspace.WorkspacePath != workspace.WorkspacePath || tool.runContext.Workspace.BranchName != workspace.BranchName {
+	if tool.runContext.RunID != 7 || tool.runContext.ProjectID != 42 || tool.runContext.Task != "read" || tool.runContext.Workspace.WorkspacePath != workspace.WorkspacePath || tool.runContext.Workspace.BranchName != workspace.BranchName {
 		t.Fatalf("tool received incomplete workspace context: %#v", tool.runContext)
 	}
 }
@@ -302,11 +332,11 @@ func TestRunnerResumeIgnoresNewContextOverflowAndUsesCheckpointContext(t *testin
 
 func TestRuntimeCompactionDoesNotRecompactSummaryWithoutNewOldExchanges(t *testing.T) {
 	client := &fakeToolClient{responses: []llm.ToolChatResponse{
-		{Message: llm.ChatMessage{Role: conversation.RoleAssistant, Content: "first runtime summary"}},
-		{Message: llm.ChatMessage{Role: conversation.RoleAssistant, Content: "rolled runtime summary"}},
+		{Message: llm.ChatMessage{Role: conversation.RoleAssistant, Content: validCompactionSummary("first")}},
+		{Message: llm.ChatMessage{Role: conversation.RoleAssistant, Content: validCompactionSummary("rolled")}},
 	}}
 	runner := NewRunner(client)
-	req := RunRequest{Model: "m", Task: "task", ModelAutoCompactTokenLimit: 1}
+	req := RunRequest{Provider: llm.ChatProviderConfig{ProviderType: "openai_compatible"}, Model: "gpt-4o", Task: "task", ModelAutoCompactTokenLimit: 1}
 	transcript := make([]llm.ChatMessage, 0, 5)
 	for index := 0; index < 5; index++ {
 		transcript = append(transcript, llm.ChatMessage{Role: conversation.RoleAssistant, Content: "exchange"})
@@ -325,6 +355,59 @@ func TestRuntimeCompactionDoesNotRecompactSummaryWithoutNewOldExchanges(t *testi
 	_, _, rolled := runner.compactRuntimeTranscript(context.Background(), req, nil, withNewExchanges, nil)
 	if rolled == nil || len(client.requests) != 2 {
 		t.Fatalf("new old exchanges must roll the summary forward: calls=%d trace=%+v", len(client.requests), rolled)
+	}
+}
+
+func TestRuntimeCompactionFallsBackFromAuxiliaryToMainModel(t *testing.T) {
+	client := &compactionFallbackClient{}
+	runner := NewRunner(client)
+	req := RunRequest{Provider: llm.ChatProviderConfig{ProviderType: "main", BaseURL: "main"}, Model: "main-model",
+		CompactionProvider: llm.ChatProviderConfig{ProviderType: "aux", BaseURL: "aux"}, CompactionModel: "aux-model", ModelAutoCompactTokenLimit: 1000}
+	summary, _, err := runner.summarizeContext(context.Background(), req, []llm.ChatMessage{{Role: conversation.RoleTool, Content: "result"}})
+	if err != nil || summary == "" || len(client.models) != 2 || client.models[0] != "aux-model" || client.models[1] != "main-model" || client.providers[1].ProviderType != "main" {
+		t.Fatalf("auxiliary fallback failed: summary=%q providers=%+v models=%+v err=%v", summary, client.providers, client.models, err)
+	}
+}
+
+func TestRuntimeCompactionStopsAfterAuxiliaryValidationRetry(t *testing.T) {
+	client := &compactionInvalidAuxClient{}
+	runner := NewRunner(client)
+	req := RunRequest{Provider: llm.ChatProviderConfig{ProviderType: "main", BaseURL: "main"}, Model: "main-model",
+		CompactionProvider: llm.ChatProviderConfig{ProviderType: "aux", BaseURL: "aux"}, CompactionModel: "aux-model", ModelAutoCompactTokenLimit: 1000}
+	summary, usage, err := runner.summarizeContext(context.Background(), req, []llm.ChatMessage{{Role: conversation.RoleTool, Content: "result"}})
+	if err == nil || summary != "" || client.calls != 2 || usage.TotalTokens != 2 || client.models[0] != "aux-model" || client.models[1] != "aux-model" {
+		t.Fatalf("invalid auxiliary summary must stop after one repair: summary=%q usage=%+v calls=%d models=%v err=%v", summary, usage, client.calls, client.models, err)
+	}
+}
+
+func validCompactionSummary(value string) string {
+	return "Goal: " + value + "\nConstraints and preferences: none\nConfirmed decisions: none\nCompleted work: none\nCurrent progress: ongoing\nOpen issues and next actions: continue\nEvidence and artifacts: none"
+}
+
+func TestRuntimeSummaryTokenLimitUsesBoundedTenthWindow(t *testing.T) {
+	if got := runtimeSummaryTokenLimit(RunRequest{ContextWindowTokens: 10000, ReservedOutputTokens: 1000, ContextSafetyMarginTokens: 100}); got != 890 {
+		t.Fatalf("unexpected summary budget: %d", got)
+	}
+	if got := runtimeSummaryTokenLimit(RunRequest{ContextWindowTokens: 1000000, ReservedOutputTokens: 1, ContextSafetyMarginTokens: 1}); got != maxCompactSummaryTokens {
+		t.Fatalf("summary budget must be capped: %d", got)
+	}
+}
+
+func TestRunnerDoesNotCompactInitialHistory(t *testing.T) {
+	client := &fakeToolClient{}
+	blocks := make([]ContextBlock, 5)
+	for index := range blocks {
+		blocks[index] = ContextBlock{Name: "conversation", Role: conversation.RoleUser, Content: "history"}
+	}
+	result, err := NewRunner(client).Run(context.Background(), RunRequest{
+		Provider: llm.ChatProviderConfig{ProviderType: "openai_compatible"}, Model: "gpt-4o", Task: "task",
+		ContextBlocks: blocks, ModelAutoCompactTokenLimit: 1, MaxIterations: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(client.requests) != 1 || len(result.Context.Compactions) != 0 {
+		t.Fatalf("initial history must be prepared only by conversation coordinator: calls=%d compactions=%+v", len(client.requests), result.Context.Compactions)
 	}
 }
 
@@ -474,6 +557,21 @@ func TestCompactTranscriptForZeroBudgetDropsTranscript(t *testing.T) {
 	compacted, saved := compactTranscriptForBudget(messages, 0)
 	if len(compacted) != 0 || saved == 0 {
 		t.Fatalf("expected transcript removal under zero budget, got saved=%d messages=%+v", saved, compacted)
+	}
+}
+
+func TestClipToolResultsForCompactionPreservesPairAndHeadTail(t *testing.T) {
+	messages := []llm.ChatMessage{
+		{Role: conversation.RoleAssistant, ToolCalls: []llm.ToolCall{{ID: "call-1", Name: "read", Arguments: json.RawMessage(`{"path":"/tmp/project/file.go","version":"v2"}`)}}},
+		{Role: conversation.RoleTool, ToolCallID: "call-1", Content: "status=failed error=E42 path=/tmp/project/file.go\n" + strings.Repeat("a", 4096) + strings.Repeat("b", 4096) + strings.Repeat("c", 2048) + "\nresource_id=res-99"},
+	}
+	clipped := clipToolResultsForCompaction(messages)
+	if clipped[0].ToolCalls[0].Name != "read" || string(clipped[0].ToolCalls[0].Arguments) != string(messages[0].ToolCalls[0].Arguments) || clipped[1].ToolCallID != "call-1" ||
+		!strings.HasPrefix(clipped[1].Content, "status=failed error=E42 path=/tmp/project/file.go") || !strings.HasSuffix(clipped[1].Content, "resource_id=res-99") {
+		t.Fatalf("tool result pair or head/tail was not preserved: %+v", clipped[1])
+	}
+	if len([]rune(clipped[1].Content)) >= len([]rune(messages[1].Content)) {
+		t.Fatalf("tool result was not clipped: before=%d after=%d", len([]rune(messages[1].Content)), len([]rune(clipped[1].Content)))
 	}
 }
 

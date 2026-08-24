@@ -3,17 +3,18 @@ package agentruntime
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
-	"agentcanvas/internal/domain/conversation"
 	"agentcanvas/internal/domain/reflection"
 	"agentcanvas/internal/domain/retrieval"
+	"agentcanvas/internal/observability"
 	runtimeagent "agentcanvas/internal/runtime/agent"
+	"agentcanvas/internal/runtime/conversationcontext"
 	runtimeevent "agentcanvas/internal/runtime/event"
 	"agentcanvas/internal/runtime/harness/rules"
 	"agentcanvas/internal/runtime/toolruntime"
@@ -107,15 +108,59 @@ func (n runtimeCore) runAgent(
 	}
 	systemPrompt := cfg.SystemPrompt
 	mode := agentMode(cfg.Mode)
+	compactionProvider := loaded
+	if cfg.CompactionProviderID > 0 || strings.TrimSpace(cfg.CompactionModel) != "" {
+		providerID := cfg.CompactionProviderID
+		if providerID <= 0 {
+			providerID = loaded.ProviderID
+		}
+		if candidate, loadErr := n.Providers.LoadChatProviderConfig(ctx, rc.OwnerID, providerID, cfg.CompactionModel); loadErr == nil {
+			compactionProvider = candidate
+		} else {
+			slog.WarnContext(ctx, "load auxiliary compaction model failed; using main model", "provider_id", providerID, "model", cfg.CompactionModel, "error", loadErr)
+		}
+	}
 	// Conversation blocks provide context; they do not track plan progress.
 	conversationBlocks := []runtimeagent.ContextBlock(nil)
-	if resume == nil {
-		conversationBlocks = buildConversationContext(ctx, n, rc, recallTask, cfg.MaxInputChars, cfg.RetrievalPolicy)
-		tools = n.semanticShortlistTools(ctx, semanticProvider, recallTask, tools)
-	}
 	skillBlocks := []runtimeagent.ContextBlock(nil)
+	var workspaceBlock, memoryBlock *runtimeagent.ContextBlock
+	historyPrepared := false
+	var historyTrace conversationcontext.Trace
 	if resume == nil {
+		tools = n.semanticShortlistTools(ctx, semanticProvider, recallTask, tools)
 		skillBlocks = n.buildSkillContextBlocks(ctx, rc.OwnerID, cfg, semanticProvider, recallTask)
+		workspaceBlock = n.workspaceCodingContext(ctx, rc)
+		memoryBlock = n.buildAutomaticMemoryBlock(ctx, rc, cfg, semanticProvider, recallTask)
+		budgetBlocks := append([]runtimeagent.ContextBlock(nil), skillBlocks...)
+		budgetBlocks = append(budgetBlocks, cfg.AdditionalContextBlocks...)
+		if workspaceBlock != nil {
+			budgetBlocks = append(budgetBlocks, *workspaceBlock)
+		}
+		if memoryBlock != nil {
+			budgetBlocks = append(budgetBlocks, *memoryBlock)
+		}
+		conversationBlocks, historyTrace, historyPrepared, err = buildPreparedConversationContext(ctx, n, rc, recallTask, cfg, loaded.Config, loaded.ProviderID, loaded.Model, compactionProvider.Config, compactionProvider.ProviderID, compactionProvider.Model, systemPrompt, runtimeToolDefinitions(tools), budgetBlocks)
+		if err != nil {
+			if historyPrepared || historyTrace.BeforeTokens > 0 {
+				observability.ContextSystemMetrics.RecordConversationSnapshot(historyTrace.Reused, historyTrace.BeforeTokens, historyTrace.AfterTokens, historyTrace.ModelCalls, historyTrace.LatencyMS)
+			}
+			observability.ContextSystemMetrics.RecordCompaction("failed")
+			if errors.Is(err, conversationcontext.ErrOverflow) {
+				observability.ContextSystemMetrics.RecordContextOverflow()
+			}
+			return nil, err
+		}
+		if historyPrepared {
+			observability.ContextSystemMetrics.RecordConversationSnapshot(historyTrace.Reused, historyTrace.BeforeTokens, historyTrace.AfterTokens, historyTrace.ModelCalls, historyTrace.LatencyMS)
+			if historyTrace.FallbackReason != "" {
+				slog.WarnContext(ctx, "conversation compaction used main-model fallback", "reason", historyTrace.FallbackReason, "provider_id", historyTrace.ProviderID, "model", historyTrace.Model, "model_calls", historyTrace.ModelCalls)
+			}
+			if historyTrace.Created {
+				observability.ContextSystemMetrics.RecordCompaction("completed")
+			} else if historyTrace.Failure != "" {
+				observability.ContextSystemMetrics.RecordCompaction("fallback")
+			}
+		}
 	}
 	var ruleErr error
 	cfg.Rules, ruleErr = rules.RuntimeRules(cfg.Rules, len(cfg.Rules) == 0)
@@ -134,13 +179,11 @@ func (n runtimeCore) runAgent(
 	contextBlocks = append(contextBlocks, cfg.AdditionalContextBlocks...)
 	// // ***
 	contextBlocks = append(contextBlocks, conversationBlocks...)
-	if workspaceBlock := n.workspaceCodingContext(ctx, rc); workspaceBlock != nil {
+	if workspaceBlock != nil {
 		contextBlocks = append(contextBlocks, *workspaceBlock)
 	}
-	if resume == nil {
-		if memoryBlock := n.buildAutomaticMemoryBlock(ctx, rc, cfg, semanticProvider, recallTask); memoryBlock != nil {
-			contextBlocks = append(contextBlocks, *memoryBlock)
-		}
+	if memoryBlock != nil {
+		contextBlocks = append(contextBlocks, *memoryBlock)
 	}
 	reflectionPolicy, policyErr := effectiveReflectionPolicy(cfg)
 	if policyErr != nil {
@@ -170,9 +213,8 @@ func (n runtimeCore) runAgent(
 			})
 		}
 	}
-	// Redis Working Memory remains a compatibility/runtime cache only. The
-	// transcript compaction is the sole conversation continuity summary and is
-	// therefore the only such summary injected into the LLM context.
+	// Redis Working Memory configuration remains parse-compatible but is no
+	// longer wired into Agent Runtime. Durable snapshots own cross-run continuity.
 	var plan *runtimeagent.Plan
 	// Generate an initial plan only for a new plan-and-execute run.
 	if resume == nil && mode == "plan_execute" && task != "" {
@@ -226,15 +268,18 @@ func (n runtimeCore) runAgent(
 		},
 	}
 	runRequest := runtimeagent.RunRequest{
-		OwnerID:         rc.OwnerID,
-		AgentID:         rc.AgentID,
-		AgentReleaseID:  rc.AgentReleaseID,
-		RunID:           rc.RunID,
-		DelegationDepth: rc.DelegationDepth,
-		ConversationID:  rc.ConversationID,
-		Provider:        loaded.Config,
-		Model:           loaded.Model,
-		Mode:            mode,
+		OwnerID:            rc.OwnerID,
+		AgentID:            rc.AgentID,
+		AgentReleaseID:     rc.AgentReleaseID,
+		RunID:              rc.RunID,
+		DelegationDepth:    rc.DelegationDepth,
+		ConversationID:     rc.ConversationID,
+		ProjectID:          projectIDFromRunContext(rc),
+		Provider:           loaded.Config,
+		Model:              loaded.Model,
+		CompactionProvider: compactionProvider.Config,
+		CompactionModel:    compactionProvider.Model,
+		Mode:               mode,
 		// Runner records the plan and injects it into execution context.
 		Plan:                       plan,
 		SystemPrompt:               systemPrompt,
@@ -293,7 +338,6 @@ func (n runtimeCore) runAgent(
 		runRequest = *resumeRequest
 	}
 	result, err := runner.Run(ctx, runRequest)
-	n.persistAgentCompactions(ctx, rc, loaded, result)
 	if err != nil {
 		n.finalizeReflection(ctx, rc, cfg, loaded, task, result, reflectionPolicy)
 		emitAgentResultEvent(ctx, rc, result, err)
@@ -421,26 +465,4 @@ func emitAgentResultEvent(ctx context.Context, rc *RunContext, result *runtimeag
 		payload["error"] = runErr.Error()
 	}
 	emitRuntimeEvent(ctx, rc, runtimeevent.Event{Type: eventType, RunID: rc.RunID, Payload: payload})
-}
-
-func (n runtimeCore) persistAgentCompactions(ctx context.Context, rc *RunContext, loaded *LoadedProvider, result *runtimeagent.RunResult) {
-	if n.Compactions == nil || result == nil || loaded == nil || rc.ConversationID == nil || *rc.ConversationID <= 0 || len(result.Context.Compactions) == 0 {
-		return
-	}
-	firstMessageID, lastMessageID := int64(0), int64(0)
-	if n.MessageHistory != nil {
-		if history, err := n.MessageHistory.ListByConversation(ctx, rc.OwnerID, *rc.ConversationID); err == nil && len(history) > 8 {
-			older := history[:len(history)-8]
-			firstMessageID, lastMessageID = older[0].ID, older[len(older)-1].ID
-		}
-	}
-	for index := range result.Context.Compactions {
-		trace := result.Context.Compactions[index]
-		fingerprint := sha256.Sum256([]byte(fmt.Sprintf("%d\x1f%d\x1f%d\x1f%d\x1f%d\x1f%s", rc.OwnerID, *rc.ConversationID, rc.RunID, index, trace.BeforeTokens, trace.Summary)))
-		item := &conversation.Compaction{OwnerID: rc.OwnerID, ConversationID: *rc.ConversationID, FirstMessageID: firstMessageID, LastMessageID: lastMessageID,
-			SourceFingerprint: hex.EncodeToString(fingerprint[:]), TriggerType: conversation.CompactionTriggerAuto, Status: trace.Status,
-			Summary: trace.Summary, PromptVersion: "codex-compatible-v1", ProviderID: loaded.ProviderID, Model: loaded.Model,
-			BeforeTokens: trace.BeforeTokens, AfterTokens: trace.AfterTokens, ErrorMessage: trace.Error}
-		_ = n.Compactions.Create(ctx, item)
-	}
 }

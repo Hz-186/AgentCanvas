@@ -49,9 +49,9 @@ func (s *Store) IndexChunks(ctx context.Context, docs []retrieval.ChunkIndexDocu
 		hasVector := len(doc.EmbeddingVector) > 0
 		metadata := map[string]any{
 			"owner_id":              doc.OwnerID,
-			"kb_id":                 doc.KBID,
+			"knowledge_base_id":     doc.KnowledgeBaseID,
 			"document_id":           doc.DocumentID,
-			"generation":            doc.Generation,
+			"generation_id":         doc.GenerationID,
 			"chunk_id":              doc.ChunkID,
 			"chunk_index":           doc.ChunkIndex,
 			"document_name":         doc.DocumentName,
@@ -65,7 +65,7 @@ func (s *Store) IndexChunks(ctx context.Context, docs []retrieval.ChunkIndexDocu
 			"embedding_provider_id": doc.EmbeddingProviderID,
 			"embedding_metric":      doc.EmbeddingMetric,
 			"embedding_profile":     doc.EmbeddingProfile,
-			"page_no":               doc.PageNo,
+			"page_number":           doc.PageNumber,
 			"token_count":           doc.TokenCount,
 			"has_vector":            hasVector,
 			"source_metadata":       doc.Metadata,
@@ -95,7 +95,7 @@ func (s *Store) DeleteByDocument(ctx context.Context, ownerID, documentID int64)
 }
 
 func (s *Store) DeleteByKnowledgeBase(ctx context.Context, ownerID, kbID int64) error {
-	return s.deleteByFilter(ctx, map[string]any{"owner_id": ownerID, "kb_id": kbID})
+	return s.deleteByFilter(ctx, map[string]any{"owner_id": ownerID, "knowledge_base_id": kbID})
 }
 
 func (s *Store) DeleteInactiveGenerations(ctx context.Context, ownerID, documentID int64, activeGeneration string) error {
@@ -108,7 +108,7 @@ func (s *Store) DeleteInactiveGenerations(ctx context.Context, ownerID, document
 	if !ok {
 		return fmt.Errorf("milvus store does not support generation cleanup")
 	}
-	return cleaner.DeleteByFilterExcept(ctx, s.collection, map[string]any{"owner_id": ownerID, "document_id": documentID}, "generation", activeGeneration)
+	return cleaner.DeleteByFilterExcept(ctx, s.collection, map[string]any{"owner_id": ownerID, "document_id": documentID}, "generation_id", activeGeneration)
 }
 
 func (s *Store) SetDocumentEnabled(ctx context.Context, ownerID, documentID int64, enabled bool) error {
@@ -138,21 +138,21 @@ func (s *Store) Search(ctx context.Context, req retrieval.RetrievalRequest) (*re
 		req.CandidateK = max(req.TopK*4, 20)
 	}
 	filter := map[string]any{"owner_id": req.OwnerID}
-	if len(req.KBIDs) == 1 {
-		filter["kb_id"] = req.KBIDs[0]
-	} else if len(req.KBIDs) > 1 {
-		filter["kb_id"] = append([]int64(nil), req.KBIDs...)
+	if len(req.KnowledgeBaseIDs) == 1 {
+		filter["knowledge_base_id"] = req.KnowledgeBaseIDs[0]
+	} else if len(req.KnowledgeBaseIDs) > 1 {
+		filter["knowledge_base_id"] = append([]int64(nil), req.KnowledgeBaseIDs...)
 	}
-	if strings.TrimSpace(req.Generation) != "" {
-		filter["generation"] = req.Generation
+	if strings.TrimSpace(req.GenerationID) != "" {
+		filter["generation_id"] = req.GenerationID
 	}
 	if strings.TrimSpace(req.EmbeddingProfile) != "" {
 		filter["embedding_profile"] = req.EmbeddingProfile
 	}
-	activeGenerations := make([]map[string]any, 0, len(req.ActiveGenerations))
-	for documentID, generation := range req.ActiveGenerations {
-		if generation = strings.TrimSpace(generation); generation != "" {
-			activeGenerations = append(activeGenerations, map[string]any{"document_id": documentID, "generation": generation})
+	activeGenerations := make([]map[string]any, 0, len(req.ActiveGenerationIDs))
+	for documentID, generationID := range req.ActiveGenerationIDs {
+		if generationID = strings.TrimSpace(generationID); generationID != "" {
+			activeGenerations = append(activeGenerations, map[string]any{"document_id": documentID, "generation_id": generationID})
 		}
 	}
 	filter["enabled"] = true
@@ -216,7 +216,7 @@ func (s *Store) Search(ctx context.Context, req retrieval.RetrievalRequest) (*re
 			err = vectorErr
 			break
 		}
-		results = fusion.WeightedRetrievalResults(keywordResults, vectorResults, req.HybridWeight, req.TopK)
+		results = fusion.WeightedRetrievalResults(keywordResults, vectorResults, req.VectorWeight, req.TopK)
 	default:
 		err = fmt.Errorf("unsupported retrieval mode: %s", req.Mode)
 	}
@@ -256,13 +256,13 @@ func resultFromMetadata(item vectorstore.SearchResult) retrieval.RetrievalResult
 		result.ChunkID, _ = strconv.ParseInt(item.ID, 10, 64)
 	}
 	result.DocumentID = int64Value(item.Metadata["document_id"])
-	result.KBID = int64Value(item.Metadata["kb_id"])
-	result.Generation = stringValue(item.Metadata["generation"])
+	result.KnowledgeBaseID = int64Value(item.Metadata["knowledge_base_id"])
+	result.GenerationID = stringValue(item.Metadata["generation_id"])
 	result.Content = stringValue(item.Metadata["content"])
 	result.DocumentName = stringValue(item.Metadata["document_name"])
-	if pageNo := int64Value(item.Metadata["page_no"]); pageNo > 0 {
-		page := int(pageNo)
-		result.PageNo = &page
+	if pageNumber := int64Value(item.Metadata["page_number"]); pageNumber > 0 {
+		page := int(pageNumber)
+		result.PageNumber = &page
 	}
 	return result
 }

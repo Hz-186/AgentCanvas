@@ -18,20 +18,19 @@ type KnowledgeBaseRepository = BaseRepository
 
 type DocumentRepository interface {
 	Create(ctx context.Context, doc *Document) error
-	ListByKnowledgeBase(ctx context.Context, ownerID, kbID int64) ([]Document, error)
+	ListByKnowledgeBase(ctx context.Context, ownerID, knowledgeBaseID int64) ([]Document, error)
 	FindByID(ctx context.Context, ownerID, id int64) (*Document, error)
 	Update(ctx context.Context, doc *Document) error
 	SetEnabled(ctx context.Context, ownerID, id int64, enabled bool) error
 	SoftDelete(ctx context.Context, ownerID, id int64) error
-	SoftDeleteByKnowledgeBase(ctx context.Context, ownerID, kbID int64) error
+	SoftDeleteByKnowledgeBase(ctx context.Context, ownerID, knowledgeBaseID int64) error
 }
 
 type ChunkRepository interface {
 	CreateBatch(ctx context.Context, chunks []DocumentChunk) error
 	ListByDocument(ctx context.Context, ownerID, documentID int64) ([]DocumentChunk, error)
-	UpdateIndexRefs(ctx context.Context, chunks []DocumentChunk) error
 	DeleteByDocument(ctx context.Context, ownerID, documentID int64) error
-	DeleteByKnowledgeBase(ctx context.Context, ownerID, kbID int64) error
+	DeleteByKnowledgeBase(ctx context.Context, ownerID, knowledgeBaseID int64) error
 }
 
 type IngestionJobRepository interface {

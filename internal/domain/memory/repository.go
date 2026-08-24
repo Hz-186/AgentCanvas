@@ -3,19 +3,24 @@ package memory
 import "context"
 
 type CandidateRequest struct {
-	OwnerID        int64
-	AgentID        int64
-	ConversationID int64
-	RunID          int64
-	SourceID       string
-	MemoryID       int64
-	MemoryType     string
-	Title          string
-	Content        string
-	Action         string
-	Importance     float64
-	Evidence       []string
-	Source         string
+	OwnerID              int64
+	AgentID              int64
+	ConversationID       int64
+	ProjectID            int64
+	SourceConversationID int64
+	SourceProjectID      int64
+	RunID                int64
+	SourceID             string
+	MemoryID             int64
+	MemoryType           string
+	Title                string
+	Content              string
+	Action               string
+	Importance           float64
+	Evidence             []string
+	Source               string
+	ScopeType            string
+	ScopeID              int64
 }
 
 type CandidateWriter interface {
@@ -37,13 +42,20 @@ type Repository interface {
 	ListForRead(ctx context.Context, ownerID int64, memoryTypes []string, conversationID *int64, limit int) ([]Memory, error)
 	ListByLevel(ctx context.Context, ownerID int64, level string, memoryTypes []string, limit int) ([]Memory, error)
 	ListActiveOwnerIDs(ctx context.Context, limit int) ([]int64, error)
-	IncrementAccessCount(ctx context.Context, ownerID int64, id int64) error
-	IncrementConsolidationCount(ctx context.Context, ownerID int64, id int64) error
+	IncrementRecallCount(ctx context.Context, ownerID int64, id int64) error
+	IncrementPromotionCount(ctx context.Context, ownerID int64, id int64) error
 	SoftDelete(ctx context.Context, ownerID, id int64) error
 	MarkUsed(ctx context.Context, ownerID int64, ids []int64) error
 	MarkExpired(ctx context.Context, ownerID int64, maxAgeDays int) (int64, error)
 	UpdateDecayedImportance(ctx context.Context, ownerID int64, decayRate float64) (int64, error)
-	SetEmbedding(ctx context.Context, ownerID, id int64, embedding []byte) error
+}
+
+// ScopedReader is an optional read path for callers that know both the
+// conversation and project. It keeps the legacy Repository contract intact
+// while preventing project memories from being hidden behind a conversation
+// filter or leaking across projects.
+type ScopedReader interface {
+	ListForReadScoped(ctx context.Context, ownerID, agentID int64, memoryTypes []string, conversationID, projectID *int64, limit int) ([]Memory, error)
 }
 
 // AtomicReplacementRepository is implemented by persistent repositories that
@@ -54,14 +66,15 @@ type AtomicReplacementRepository interface {
 }
 
 type ListFilter struct {
-	MemoryTypes    []string
-	ConversationID *int64
-	Statuses       []string
-	ScopeTypes     []string
-	ScopeID        *int64
-	Sources        []string
-	Limit          int
-	Offset         int
+	MemoryTypes          []string
+	SourceConversationID *int64
+	SourceProjectID      *int64
+	Statuses             []string
+	ScopeTypes           []string
+	ScopeID              *int64
+	Sources              []string
+	Limit                int
+	Offset               int
 }
 
 type FilteredRepository interface {

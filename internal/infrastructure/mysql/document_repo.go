@@ -46,7 +46,7 @@ func (c *GenerationCommitter) Activate(ctx context.Context, doc *knowledge.Docum
 			return gorm.ErrRecordNotFound
 		}
 		result = tx.Model(&knowledge.KnowledgeBase{}).
-			Where("id = ? AND owner_id = ? AND deleted_at IS NULL", doc.KBID, doc.OwnerID).
+			Where("id = ? AND owner_id = ? AND deleted_at IS NULL", doc.KnowledgeBaseID, doc.OwnerID).
 			UpdateColumn("chunk_count", gorm.Expr("GREATEST(chunk_count + ?, 0)", chunkDelta))
 		if result.Error != nil {
 			return result.Error
@@ -69,10 +69,10 @@ func (r *DocumentRepository) Create(ctx context.Context, doc *knowledge.Document
 	return r.db.WithContext(ctx).Create(doc).Error
 }
 
-func (r *DocumentRepository) ListByKnowledgeBase(ctx context.Context, ownerID, kbID int64) ([]knowledge.Document, error) {
+func (r *DocumentRepository) ListByKnowledgeBase(ctx context.Context, ownerID, knowledgeBaseID int64) ([]knowledge.Document, error) {
 	var docs []knowledge.Document
 	err := r.db.WithContext(ctx).
-		Where("owner_id = ? AND kb_id = ? AND deleted_at IS NULL", ownerID, kbID).
+		Where("owner_id = ? AND knowledge_base_id = ? AND deleted_at IS NULL", ownerID, knowledgeBaseID).
 		Order("id DESC").
 		Find(&docs).Error
 	return docs, err
@@ -107,9 +107,9 @@ func (r *DocumentRepository) SoftDelete(ctx context.Context, ownerID, id int64) 
 		Updates(map[string]any{"deleted_at": now, "updated_at": now}).Error
 }
 
-func (r *DocumentRepository) SoftDeleteByKnowledgeBase(ctx context.Context, ownerID, kbID int64) error {
+func (r *DocumentRepository) SoftDeleteByKnowledgeBase(ctx context.Context, ownerID, knowledgeBaseID int64) error {
 	now := time.Now().UTC()
 	return r.db.WithContext(ctx).Model(&knowledge.Document{}).
-		Where("owner_id = ? AND kb_id = ? AND deleted_at IS NULL", ownerID, kbID).
+		Where("owner_id = ? AND knowledge_base_id = ? AND deleted_at IS NULL", ownerID, knowledgeBaseID).
 		Updates(map[string]any{"deleted_at": now, "updated_at": now}).Error
 }

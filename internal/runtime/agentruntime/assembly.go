@@ -2,13 +2,18 @@ package agentruntime
 
 import (
 	"context"
+	"encoding/json"
 	"strconv"
 	"strings"
+	"time"
 
 	"agentcanvas/internal/domain/contextresource"
 	"agentcanvas/internal/domain/conversation"
 	"agentcanvas/internal/domain/retrieval"
+	"agentcanvas/internal/infrastructure/llm"
+	"agentcanvas/internal/pkg/tokencounter"
 	runtimeagent "agentcanvas/internal/runtime/agent"
+	"agentcanvas/internal/runtime/conversationcontext"
 	"agentcanvas/internal/runtime/harness/rules"
 	"agentcanvas/internal/runtime/toolruntime"
 )
@@ -74,6 +79,102 @@ func buildConversationContext(ctx context.Context, n runtimeCore, rc *RunContext
 		})
 	}
 	return blocks
+}
+
+// buildPreparedConversationContext uses the durable snapshot coordinator as
+// the single source of truth for cross-run history. The legacy builder remains
+// the small compatibility fallback when snapshot persistence is unavailable.
+func buildPreparedConversationContext(
+	ctx context.Context,
+	n runtimeCore,
+	rc *RunContext,
+	task string,
+	cfg agentRuntimeConfig,
+	provider llm.ChatProviderConfig,
+	providerID int64,
+	model string,
+	compactionProvider llm.ChatProviderConfig,
+	compactionProviderID int64,
+	compactionModel string,
+	systemPrompt string,
+	tools []llm.ToolDefinition,
+	budgetBlocks []runtimeagent.ContextBlock,
+) ([]runtimeagent.ContextBlock, conversationcontext.Trace, bool, error) {
+	if n.Coordinator == nil || rc == nil || rc.ConversationID == nil || *rc.ConversationID <= 0 {
+		return buildConversationContext(ctx, n, rc, task, cfg.MaxInputChars, cfg.RetrievalPolicy), conversationcontext.Trace{}, false, nil
+	}
+	extraTokens := coordinatorExtraTokens(provider.ProviderType, model, systemPrompt, task, cfg.MaxRuleTokens, tools, budgetBlocks)
+	started := time.Now()
+	prepared, err := n.Coordinator.Prepare(ctx, conversationcontext.Request{
+		OwnerID:              rc.OwnerID,
+		ConversationID:       *rc.ConversationID,
+		ProviderID:           providerID,
+		Provider:             provider,
+		Model:                model,
+		CompactionProviderID: compactionProviderID,
+		CompactionProvider:   compactionProvider,
+		CompactionModel:      compactionModel,
+		WindowTokens:         cfg.ContextWindowTokens,
+		ReservedOutput:       cfg.ReservedOutputTokens,
+		SafetyMargin:         cfg.ContextSafetyMarginTokens,
+		AutoLimit:            cfg.ModelAutoCompactTokenLimit,
+		Trigger:              conversation.CompactionTriggerAuto,
+		CompactPrompt:        cfg.CompactPrompt,
+		Render: func(window conversationcontext.Window) ([]llm.ChatMessage, int, error) {
+			messages := make([]llm.ChatMessage, 0, len(window.Messages)+1)
+			if window.Snapshot != nil && strings.TrimSpace(window.Snapshot.Summary) != "" {
+				messages = append(messages, llm.ChatMessage{Role: conversation.RoleSystem, Content: "EARLIER CONVERSATION SNAPSHOT:\n" + strings.TrimSpace(window.Snapshot.Summary)})
+			}
+			for _, item := range window.Messages {
+				messages = append(messages, llm.ChatMessage{Role: item.Role, Content: item.Content})
+			}
+			return messages, extraTokens, nil
+		},
+	})
+	if err != nil {
+		return nil, prepared.Trace, true, err
+	}
+	prepared.Trace.LatencyMS = time.Since(started).Milliseconds()
+	blocks := make([]runtimeagent.ContextBlock, 0, len(prepared.Messages))
+	for _, message := range prepared.Messages {
+		name := "conversation"
+		if message.Role == conversation.RoleSystem && strings.HasPrefix(message.Content, "EARLIER CONVERSATION SNAPSHOT:") {
+			name = "history_snapshot"
+		}
+		blocks = append(blocks, runtimeagent.ContextBlock{Name: name, Role: message.Role, Content: message.Content})
+	}
+	return blocks, prepared.Trace, true, nil
+}
+
+func runtimeToolDefinitions(tools []toolruntime.RuntimeTool) []llm.ToolDefinition {
+	definitions := make([]llm.ToolDefinition, 0, len(tools))
+	for _, item := range tools {
+		name := strings.TrimSpace(item.Name())
+		if name == "" {
+			continue
+		}
+		definitions = append(definitions, llm.ToolDefinition{Type: "function", Function: llm.ToolFunctionDefinition{
+			Name: name, Description: item.Description(), Parameters: item.Parameters(), Strict: true,
+		}})
+	}
+	return definitions
+}
+
+func coordinatorExtraTokens(providerType, model, systemPrompt, task string, maxRuleTokens int, tools []llm.ToolDefinition, blocks []runtimeagent.ContextBlock) int {
+	total := tokencounter.Count(providerType, model, systemPrompt).Tokens
+	total += tokencounter.Count(providerType, model, task).Tokens
+	total += maxRuleTokens
+	for _, block := range blocks {
+		total += tokencounter.Count(providerType, model, block.Content).Tokens
+	}
+	if len(tools) == 0 {
+		return total
+	}
+	data, err := json.Marshal(tools)
+	if err != nil {
+		return total
+	}
+	return total + tokencounter.Count(providerType, model, string(data)).Tokens
 }
 
 func queryTurnsFromConversation(ctx context.Context, history MessageHistoryReader, rc *RunContext) []retrieval.QueryTurn {
@@ -170,7 +271,7 @@ func riskWeight(risk string) int {
 
 func inferRuleTags(task, mode string, cfg agentRuntimeConfig, tools []toolruntime.RuntimeTool, conversation []runtimeagent.ContextBlock) []string {
 	tags := make([]string, 0, 16)
-	if len(cfg.KnowledgeIDs) > 0 {
+	if len(cfg.KnowledgeBaseIDs) > 0 {
 		tags = append(tags, "retrieval", "knowledge", "rag")
 	}
 	if cfg.MemoryEnabled {

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	workspaceusecase "agentcanvas/internal/application/workspace_usecase"
+	"agentcanvas/internal/domain"
 	agentdomain "agentcanvas/internal/domain/agent"
 	"agentcanvas/internal/domain/conversation"
 	workspacedomain "agentcanvas/internal/domain/workspace"
@@ -70,13 +71,17 @@ func (w turnWorker) execute(ctx context.Context, turn *agentdomain.Turn) {
 	emitter := s.newRunEventEmitter(turn.OwnerID, run.ID, &turn.ConversationID)
 	var runtimeWorkspace *toolruntime.WorkspaceContext
 	var preparedWorkspace *workspacedomain.Workspace
-	if s.workspace != nil && run.ConversationID != nil {
+	projectID := int64(0)
+	if s.conversations != nil && run.ConversationID != nil {
 		conv, convErr := s.conversations.FindByID(ctx, turn.OwnerID, *run.ConversationID)
 		if convErr != nil {
 			s.failTurn(ctx, turn, run, convErr)
 			return
 		}
 		if conv.ProjectID != nil {
+			projectID = *conv.ProjectID
+		}
+		if conv.ProjectID != nil && s.workspace != nil && s.workspace.Enabled() {
 			project, projectErr := s.workspace.GetProject(ctx, turn.OwnerID, *conv.ProjectID)
 			if projectErr != nil {
 				_ = emitter.Emit(ctx, runtimeevent.Event{Type: runtimeevent.WorkspaceFailed, RunID: run.ID, Payload: workspaceEventPayload(&workspacedomain.Workspace{ProjectID: *conv.ProjectID, RunID: run.ID}, projectErr)})
@@ -87,7 +92,7 @@ func (w turnWorker) execute(ctx context.Context, turn *agentdomain.Turn) {
 			if wsErr != nil {
 				failedWorkspace := ws
 				if failedWorkspace == nil {
-					failedWorkspace = &workspacedomain.Workspace{ProjectID: project.ID, RunID: run.ID, RepositoryRoot: project.PrimaryPath}
+					failedWorkspace = &workspacedomain.Workspace{ProjectID: project.ID, RunID: run.ID, RepositoryRoot: project.RepositoryRoot}
 				} else {
 					run.WorkspaceID = &failedWorkspace.ID
 				}
@@ -121,7 +126,7 @@ func (w turnWorker) execute(ctx context.Context, turn *agentdomain.Turn) {
 	result, execErr := s.runtime.Execute(ctx,
 		agentruntime.RunRequest{
 			RunIdentity:         agentruntime.RunIdentity{OwnerID: turn.OwnerID, AgentID: turn.AgentID, AgentReleaseID: turn.AgentReleaseID, RunID: run.ID},
-			ConversationContext: agentruntime.ConversationContext{ConversationID: &turn.ConversationID},
+			ConversationContext: agentruntime.ConversationContext{ConversationID: &turn.ConversationID, ProjectID: projectID},
 			ExecutionTask:       agentruntime.ExecutionTask{Task: task},
 			RuntimeResources:    agentruntime.RuntimeResources{Definition: definition},
 			RuntimePolicy:       agentruntime.RuntimePolicy{RuleHash: run.RuleHash},
@@ -573,13 +578,12 @@ func (s *Service) completeTurn(ctx context.Context, turn *agentdomain.Turn, run 
 	content, _ := result.Output["final_answer"].(string)
 	totalTokens, _ := result.Output["total_tokens"].(int)
 	assistant := &conversation.Message{
-		OwnerID:        turn.OwnerID,
+		ImmutableModel: domain.ImmutableModel{OwnerID: turn.OwnerID},
 		ConversationID: turn.ConversationID,
 		Role:           conversation.RoleAssistant,
 		Content:        content,
-		ContentType:    conversation.ContentTypeText,
 		RunID:          &run.ID,
-		TokenCount:     totalTokens, MetadataJSON: "{}",
+		TokenCount:     totalTokens,
 	}
 	now := time.Now().UTC()
 	output, _ := json.Marshal(result.Output)
@@ -653,7 +657,7 @@ func checkpointArtifacts(run *agentdomain.Run, output agentruntime.RunOutput, st
 	if hasApproval {
 		raw, _ := json.Marshal(approval)
 		approvalItem = &agentdomain.ApprovalRequest{
-			OwnerID:       run.OwnerID,
+			BaseModel:     domain.BaseModel{OwnerID: run.OwnerID},
 			RunID:         run.ID,
 			ToolCallID:    approval.ToolCallID,
 			InteractionID: interactionID,
@@ -666,27 +670,9 @@ func checkpointArtifacts(run *agentdomain.Run, output agentruntime.RunOutput, st
 	}
 	if hasCheckpoint {
 		runtimeCheckpoint, _ := json.Marshal(checkpoint)
-		messages, _ := json.Marshal(checkpoint.Messages)
-		pending, _ := json.Marshal(checkpoint.PendingToolCall)
-		contextJSON, _ := json.Marshal(checkpoint.Context)
-		stepsJSON, _ := json.Marshal(checkpoint.Steps)
-		toolRegistryHash, _ := checkpoint.Metadata["tool_registry_hash"].(string)
-		toolPolicyHash, _ := checkpoint.Metadata["tool_policy_hash"].(string)
 		return approvalItem,
 			&agentdomain.RunCheckpoint{
-				OwnerID:               run.OwnerID,
-				RunID:                 run.ID,
-				Status:                status,
-				SnapshotVersion:       checkpoint.SnapshotVersion,
-				InteractionID:         interactionID,
-				RuntimeCheckpointJSON: runtimeCheckpoint,
-				MessagesJSON:          messages,
-				MessagesSummary:       checkpoint.MessagesSummary,
-				StepsJSON:             stepsJSON,
-				PendingToolCallJSON:   pending,
-				ContextJSON:           contextJSON,
-				ToolRegistryHash:      toolRegistryHash,
-				ToolPolicyHash:        toolPolicyHash,
+				ImmutableModel: domain.ImmutableModel{OwnerID: run.OwnerID}, RunID: run.ID, CheckpointJSON: runtimeCheckpoint,
 			}, nil
 	}
 	return approvalItem, nil, nil

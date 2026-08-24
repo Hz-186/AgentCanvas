@@ -172,7 +172,7 @@ func (q *RedisStreamQueue) Claim(ctx context.Context, opts ClaimOptions) ([]Job,
 		if !job.AvailableAt.IsZero() && job.AvailableAt.After(now) {
 			continue
 		}
-		job.Attempts++
+		job.AttemptCount++
 		jobs = append(jobs, job)
 		q.mu.Lock()
 		q.inflight[job.ID] = job
@@ -208,7 +208,7 @@ func (q *RedisStreamQueue) Nack(ctx context.Context, jobID string, retryAt time.
 		return q.Publish(ctx, Job{ID: jobID, Type: "retry", AvailableAt: retryAt, Payload: map[string]any{"retry_of": jobID}})
 	}
 	job.AvailableAt = retryAt
-	if job.MaxAttempts > 0 && job.Attempts >= job.MaxAttempts {
+	if job.MaxAttempts > 0 && job.AttemptCount >= job.MaxAttempts {
 		return nil
 	}
 	return q.Publish(ctx, job)
@@ -230,12 +230,12 @@ func redisValuesFromJob(job Job) (map[string]any, error) {
 		return nil, err
 	}
 	values := map[string]any{
-		"job_id":       job.ID,
-		"type":         job.Type,
-		"payload":      string(payload),
-		"attempts":     strconv.Itoa(job.Attempts),
-		"max_attempts": strconv.Itoa(job.MaxAttempts),
-		"available_at": job.AvailableAt.Format(time.RFC3339Nano),
+		"job_id":        job.ID,
+		"type":          job.Type,
+		"payload":       string(payload),
+		"attempt_count": strconv.Itoa(job.AttemptCount),
+		"max_attempts":  strconv.Itoa(job.MaxAttempts),
+		"available_at":  job.AvailableAt.Format(time.RFC3339Nano),
 	}
 	return values, nil
 }
@@ -248,8 +248,8 @@ func jobFromRedisValues(messageID string, values map[string]any) (Job, error) {
 		}
 		job.Payload["job_id"] = rawID
 	}
-	if attempts, err := strconv.Atoi(fmt.Sprint(values["attempts"])); err == nil {
-		job.Attempts = attempts
+	if attemptCount, err := strconv.Atoi(fmt.Sprint(values["attempt_count"])); err == nil {
+		job.AttemptCount = attemptCount
 	}
 	if maxAttempts, err := strconv.Atoi(fmt.Sprint(values["max_attempts"])); err == nil {
 		job.MaxAttempts = maxAttempts

@@ -1,6 +1,7 @@
 package workspace_usecase
 
 import (
+	"agentcanvas/internal/domain"
 	"context"
 	"errors"
 	"fmt"
@@ -60,8 +61,8 @@ func (r *memoryProjectRepository) CreateWithPrimaryFolder(ctx context.Context, i
 	}
 	folder.OwnerID = item.OwnerID
 	folder.ProjectID = item.ID
-	folder.Path = item.PrimaryPath
-	folder.IsPrimary = true
+	folder.Path = item.RepositoryRoot
+	folder.IsRepositoryRoot = true
 	return r.AddFolder(ctx, folder)
 }
 func (r *memoryProjectRepository) ListByOwner(_ context.Context, ownerID int64, includeArchived bool) ([]projectdomain.Project, error) {
@@ -123,12 +124,12 @@ func (r *memoryProjectRepository) AddPrimaryFolder(ctx context.Context, item *pr
 	}
 	for id, folder := range r.folders {
 		if folder.OwnerID == item.OwnerID && folder.ProjectID == item.ProjectID {
-			folder.IsPrimary = id == item.ID
+			folder.IsRepositoryRoot = id == item.ID
 			r.folders[id] = folder
 		}
 	}
 	projectItem := r.items[item.ProjectID]
-	projectItem.PrimaryPath = item.Path
+	projectItem.RepositoryRoot = item.Path
 	r.items[item.ProjectID] = projectItem
 	return nil
 }
@@ -260,7 +261,7 @@ func testWorkspaceService(t *testing.T) (*Service, *memoryWorkspaceRepository, *
 		t.Fatal(err)
 	}
 	projects := &memoryProjectRepository{items: map[int64]projectdomain.Project{
-		1: {ID: 1, OwnerID: 7, Slug: "demo", Name: "Demo", PrimaryPath: root},
+		1: {BaseModel: domain.BaseModel{ID: 1, OwnerID: 7}, Slug: "demo", Name: "Demo", RepositoryRoot: root},
 	}}
 	workspaces := newMemoryWorkspaceRepository()
 	service := NewService(projects, workspaces, gitService, Config{
@@ -510,7 +511,7 @@ func TestCleanupReportsWorkspaceStatePersistenceFailures(t *testing.T) {
 		t.Fatal(err)
 	}
 	projects := &memoryProjectRepository{items: map[int64]projectdomain.Project{
-		1: {ID: 1, OwnerID: 7, Slug: "demo", Name: "Demo", PrimaryPath: root},
+		1: {BaseModel: domain.BaseModel{ID: 1, OwnerID: 7}, Slug: "demo", Name: "Demo", RepositoryRoot: root},
 	}}
 	repository := &updateFailWorkspaceRepository{memoryWorkspaceRepository: newMemoryWorkspaceRepository(), err: errors.New("persist failed")}
 	service := NewService(projects, repository, gitService, Config{
@@ -535,7 +536,7 @@ func TestPrepareWorktreeUnlocksCheckoutWhenReadyStateCannotPersist(t *testing.T)
 		t.Fatal(err)
 	}
 	projects := &memoryProjectRepository{items: map[int64]projectdomain.Project{
-		1: {ID: 1, OwnerID: 7, Slug: "demo", Name: "Demo", PrimaryPath: root},
+		1: {BaseModel: domain.BaseModel{ID: 1, OwnerID: 7}, Slug: "demo", Name: "Demo", RepositoryRoot: root},
 	}}
 	persistErr := errors.New("ready state unavailable")
 	repository := &updateFailWorkspaceRepository{memoryWorkspaceRepository: newMemoryWorkspaceRepository(), failAt: 1, err: persistErr}
@@ -650,7 +651,7 @@ func TestProjectPathsAndOwnerIsolation(t *testing.T) {
 	if err := os.MkdirAll(nested, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	folder, err := service.AddFolder(ctx, 7, 1, AddFolderRequest{Path: nested, Label: "App", IsPrimary: true})
+	folder, err := service.AddFolder(ctx, 7, 1, AddFolderRequest{Path: nested, Label: "App", IsRepositoryRoot: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -727,7 +728,7 @@ func TestRefreshGitStatusFailurePersistsFailSafeSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !stored.Dirty || !stored.Unpushed || stored.LastCheckedAt == nil || stored.ErrorMessage == "" {
+	if !stored.Dirty || !stored.HasUnpushedCommits || stored.LastCheckedAt == nil || stored.ErrorMessage == "" {
 		t.Fatalf("status failure was not persisted as fail-safe state: %#v", stored)
 	}
 }
@@ -788,7 +789,7 @@ func TestCreateProjectRejectsNonexistentSymlinkEscape(t *testing.T) {
 	service := NewService(projects, workspaces, gitService, Config{Enabled: true, AllowedRoots: []string{allowed}, AutoInitRepository: true})
 	target := filepath.Join(allowed, "escape", "new-repository")
 	initialize := true
-	if _, err := service.CreateProject(ctx, 7, CreateProjectRequest{Name: "Escape", PrimaryPath: target, InitializeGit: &initialize}); !errors.Is(err, agenterrors.ErrForbidden) {
+	if _, err := service.CreateProject(ctx, 7, CreateProjectRequest{Name: "Escape", RepositoryRoot: target, InitializeGit: &initialize}); !errors.Is(err, agenterrors.ErrForbidden) {
 		t.Fatalf("symlink escape returned %v, want forbidden", err)
 	}
 	if _, err := os.Stat(filepath.Join(outside, "new-repository")); !errors.Is(err, os.ErrNotExist) {
@@ -801,7 +802,7 @@ func TestPrepareRunWorkspaceRejectsTamperedProjectBeforeGitInit(t *testing.T) {
 	allowed := t.TempDir()
 	outside := t.TempDir()
 	projects := &memoryProjectRepository{items: map[int64]projectdomain.Project{
-		1: {ID: 1, OwnerID: 7, Slug: "tampered", Name: "Tampered", PrimaryPath: outside},
+		1: {BaseModel: domain.BaseModel{ID: 1, OwnerID: 7}, Slug: "tampered", Name: "Tampered", RepositoryRoot: outside},
 	}}
 	repository := newMemoryWorkspaceRepository()
 	service := NewService(projects, repository, gitinfra.NewService(gitinfra.Config{}), Config{
@@ -821,8 +822,7 @@ func TestResolveExistingWorkspaceRejectsPersistedPathEscape(t *testing.T) {
 	ctx := context.Background()
 	service, _, _, root := testWorkspaceService(t)
 	outside := t.TempDir()
-	item := &workspacedomain.Workspace{
-		ID: 99, OwnerID: 7, ProjectID: 1, RunID: 43, Kind: workspacedomain.KindShared,
+	item := &workspacedomain.Workspace{BaseModel: domain.BaseModel{ID: 99, OwnerID: 7}, ProjectID: 1, RunID: 43, Kind: workspacedomain.KindShared,
 		RepositoryRoot: root, WorkspacePath: outside, BranchName: "main", Status: workspacedomain.StatusReady,
 	}
 
@@ -843,15 +843,14 @@ func TestResolveExistingWorkspaceRejectsDifferentAllowedProjectRepository(t *tes
 		}
 	}
 	projects := &memoryProjectRepository{items: map[int64]projectdomain.Project{
-		1: {ID: 1, OwnerID: 7, Slug: "project", Name: "Project", PrimaryPath: projectRoot},
+		1: {BaseModel: domain.BaseModel{ID: 1, OwnerID: 7}, Slug: "project", Name: "Project", RepositoryRoot: projectRoot},
 	}}
 	service := NewService(projects, newMemoryWorkspaceRepository(), gitService, Config{Enabled: true, AllowedRoots: []string{allowed}, AutoInitRepository: true})
 	status, err := gitService.Status(ctx, otherRoot)
 	if err != nil {
 		t.Fatal(err)
 	}
-	item := &workspacedomain.Workspace{
-		ID: 100, OwnerID: 7, ProjectID: 1, RunID: 44, Kind: workspacedomain.KindShared,
+	item := &workspacedomain.Workspace{BaseModel: domain.BaseModel{ID: 100, OwnerID: 7}, ProjectID: 1, RunID: 44, Kind: workspacedomain.KindShared,
 		RepositoryRoot: otherRoot, WorkspacePath: otherRoot, BranchName: status.Branch, Status: workspacedomain.StatusReady,
 	}
 
@@ -898,7 +897,7 @@ func TestPrepareRunWorkspacePersistsPreflightFailure(t *testing.T) {
 	ctx := context.Background()
 	allowed := t.TempDir()
 	missing := filepath.Join(allowed, "missing")
-	projects := &memoryProjectRepository{items: map[int64]projectdomain.Project{1: {ID: 1, OwnerID: 7, Slug: "demo", Name: "Demo", PrimaryPath: missing}}}
+	projects := &memoryProjectRepository{items: map[int64]projectdomain.Project{1: {BaseModel: domain.BaseModel{ID: 1, OwnerID: 7}, Slug: "demo", Name: "Demo", RepositoryRoot: missing}}}
 	repository := newMemoryWorkspaceRepository()
 	service := NewService(projects, repository, gitinfra.NewService(gitinfra.Config{}), Config{Enabled: true, AllowedRoots: []string{allowed}, AutoInitRepository: false})
 	item, err := service.PrepareRunWorkspace(ctx, 7, 1, 41, workspacedomain.KindWorktree, "demo", "failure", nil)
@@ -954,7 +953,7 @@ func TestConcurrentWorkspaceReservationConflictUsesUniqueFallback(t *testing.T) 
 		t.Fatal(err)
 	}
 	projects := &memoryProjectRepository{items: map[int64]projectdomain.Project{
-		1: {ID: 1, OwnerID: 7, Slug: "demo", Name: "Demo", PrimaryPath: root},
+		1: {BaseModel: domain.BaseModel{ID: 1, OwnerID: 7}, Slug: "demo", Name: "Demo", RepositoryRoot: root},
 	}}
 	repository := &conflictOnceWorkspaceRepository{memoryWorkspaceRepository: newMemoryWorkspaceRepository()}
 	service := NewService(projects, repository, gitService, Config{Enabled: true, AllowedRoots: []string{root}, WorktreeDirName: ".worktrees", MaxWorkspacesPerProject: 32})
@@ -987,8 +986,7 @@ func TestRecoverAfterRestartCompletesCreatingWorktree(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	item := &workspacedomain.Workspace{
-		OwnerID: 7, ProjectID: 1, RunID: 303, Kind: workspacedomain.KindWorktree,
+	item := &workspacedomain.Workspace{BaseModel: domain.BaseModel{OwnerID: 7}, ProjectID: 1, RunID: 303, Kind: workspacedomain.KindWorktree,
 		RepositoryRoot: root, WorkspacePath: filepath.Join(root, ".worktrees", "303-recover"),
 		BranchName: "demo/303-recover", BaseRef: "HEAD", BaseSHA: baseSHA, Status: workspacedomain.StatusCreating,
 	}
@@ -1018,16 +1016,13 @@ func TestRecoverAfterRestartIsUnboundedAndAggregatesErrors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	valid := &workspacedomain.Workspace{
-		OwnerID: 7, ProjectID: 1, RunID: 304, Kind: workspacedomain.KindShared,
+	valid := &workspacedomain.Workspace{BaseModel: domain.BaseModel{OwnerID: 7}, ProjectID: 1, RunID: 304, Kind: workspacedomain.KindShared,
 		RepositoryRoot: root, WorkspacePath: root, BranchName: status.Branch, Status: workspacedomain.StatusReady,
 	}
-	invalidOne := &workspacedomain.Workspace{
-		OwnerID: 7, ProjectID: 1, RunID: 305, Kind: workspacedomain.KindShared,
+	invalidOne := &workspacedomain.Workspace{BaseModel: domain.BaseModel{OwnerID: 7}, ProjectID: 1, RunID: 305, Kind: workspacedomain.KindShared,
 		RepositoryRoot: root, WorkspacePath: filepath.Join(root, "missing-one"), BranchName: status.Branch, Status: workspacedomain.StatusReady,
 	}
-	invalidTwo := &workspacedomain.Workspace{
-		OwnerID: 7, ProjectID: 1, RunID: 306, Kind: workspacedomain.KindShared,
+	invalidTwo := &workspacedomain.Workspace{BaseModel: domain.BaseModel{OwnerID: 7}, ProjectID: 1, RunID: 306, Kind: workspacedomain.KindShared,
 		RepositoryRoot: root, WorkspacePath: filepath.Join(root, "missing-two"), BranchName: status.Branch, Status: workspacedomain.StatusCreating,
 	}
 	for _, item := range []*workspacedomain.Workspace{valid, invalidOne, invalidTwo} {
@@ -1052,12 +1047,10 @@ func TestRecoverAfterRestartIsUnboundedAndAggregatesErrors(t *testing.T) {
 func TestPruneStaleWorkspacesContinuesAndAggregatesErrors(t *testing.T) {
 	ctx := context.Background()
 	service, repository, _, root := testWorkspaceService(t)
-	failing := &workspacedomain.Workspace{
-		OwnerID: 7, ProjectID: 1, RunID: 401, Kind: workspacedomain.KindShared,
+	failing := &workspacedomain.Workspace{BaseModel: domain.BaseModel{OwnerID: 7}, ProjectID: 1, RunID: 401, Kind: workspacedomain.KindShared,
 		RepositoryRoot: root, WorkspacePath: root, Status: workspacedomain.StatusReady,
 	}
-	successful := &workspacedomain.Workspace{
-		OwnerID: 7, ProjectID: 1, RunID: 402, Kind: workspacedomain.KindShared,
+	successful := &workspacedomain.Workspace{BaseModel: domain.BaseModel{OwnerID: 7}, ProjectID: 1, RunID: 402, Kind: workspacedomain.KindShared,
 		RepositoryRoot: root, WorkspacePath: root, Status: workspacedomain.StatusReady,
 	}
 	for _, item := range []*workspacedomain.Workspace{failing, successful} {

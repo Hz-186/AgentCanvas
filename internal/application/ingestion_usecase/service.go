@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"agentcanvas/internal/domain"
 	"agentcanvas/internal/domain/knowledge"
 	providerdomain "agentcanvas/internal/domain/provider"
 	"agentcanvas/internal/domain/retrieval"
@@ -187,7 +188,7 @@ func (s *Service) processJob(ctx context.Context, job *knowledge.IngestionJob, m
 	if err != nil {
 		return err
 	}
-	kb, err := s.kbs.FindByID(ctx, job.OwnerID, job.KBID)
+	kb, err := s.kbs.FindByID(ctx, job.OwnerID, job.KnowledgeBaseID)
 	if err != nil {
 		return err
 	}
@@ -196,13 +197,13 @@ func (s *Service) processJob(ctx context.Context, job *knowledge.IngestionJob, m
 		return fmt.Errorf("retrieval indexer for backend %q is not configured", kb.RetrievalBackend)
 	}
 
-	doc.ParserStatus = knowledge.DocumentStatusParsing
-	doc.ParserError = ""
+	doc.IngestionStatus = knowledge.DocumentStatusParsing
+	doc.IngestionError = ""
 	if err := s.documents.Update(ctx, doc); err != nil {
 		return err
 	}
 
-	reader, err := s.storage.Get(ctx, doc.ObjectKey)
+	reader, err := s.storage.Get(ctx, doc.StorageObjectKey)
 	if err != nil {
 		return err
 	}
@@ -213,7 +214,7 @@ func (s *Service) processJob(ctx context.Context, job *knowledge.IngestionJob, m
 		return err
 	}
 
-	doc.ParserStatus = knowledge.DocumentStatusChunking
+	doc.IngestionStatus = knowledge.DocumentStatusChunking
 	if err := s.documents.Update(ctx, doc); err != nil {
 		return err
 	}
@@ -230,10 +231,10 @@ func (s *Service) processJob(ctx context.Context, job *knowledge.IngestionJob, m
 	if err != nil {
 		return err
 	}
-	// Documents backfilled with active_generation use an append-and-switch
+	// Documents backfilled with active_generation_id use an append-and-switch
 	// pipeline. Test and pre-migration repositories retain the legacy path until
 	// the additive migration has been applied.
-	safeGeneration := doc.ActiveGeneration != ""
+	safeGeneration := doc.ActiveGenerationID != ""
 	if !safeGeneration {
 		if err := s.chunks.DeleteByDocument(ctx, job.OwnerID, job.DocumentID); err != nil {
 			return err
@@ -242,7 +243,7 @@ func (s *Service) processJob(ctx context.Context, job *knowledge.IngestionJob, m
 			return err
 		}
 	}
-	generation := doc.ActiveGeneration
+	generation := doc.ActiveGenerationID
 	if safeGeneration {
 		generation = fmt.Sprintf("gen-%d", time.Now().UTC().UnixNano())
 	}
@@ -253,25 +254,25 @@ func (s *Service) processJob(ctx context.Context, job *knowledge.IngestionJob, m
 		totalTokens += part.TokenCount
 		hash := sha256.Sum256([]byte(part.Content))
 		chunks = append(chunks, knowledge.DocumentChunk{
-			OwnerID:      job.OwnerID,
-			KBID:         job.KBID,
-			DocumentID:   job.DocumentID,
-			Generation:   generation,
-			ChunkIndex:   part.Index,
-			Content:      part.Content,
-			ContentHash:  hex.EncodeToString(hash[:]),
-			TokenCount:   part.TokenCount,
-			CharCount:    part.CharCount,
-			PageNo:       part.PageNo,
-			SectionTitle: part.SectionTitle,
-			MetadataJSON: chunkMetadataJSON(part.Metadata),
+			ImmutableModel:  domain.ImmutableModel{OwnerID: job.OwnerID},
+			KnowledgeBaseID: job.KnowledgeBaseID,
+			DocumentID:      job.DocumentID,
+			GenerationID:    generation,
+			ChunkIndex:      part.Index,
+			Content:         part.Content,
+			ContentHash:     hex.EncodeToString(hash[:]),
+			TokenCount:      part.TokenCount,
+			CharCount:       part.CharCount,
+			PageNumber:      part.PageNumber,
+			SectionTitle:    part.SectionTitle,
+			MetadataJSON:    chunkMetadataJSON(part.Metadata),
 		})
 	}
 	if err := s.chunks.CreateBatch(ctx, chunks); err != nil {
 		return err
 	}
 
-	doc.ParserStatus = knowledge.DocumentStatusIndexing
+	doc.IngestionStatus = knowledge.DocumentStatusIndexing
 	if err := s.documents.Update(ctx, doc); err != nil {
 		return err
 	}
@@ -305,15 +306,13 @@ func (s *Service) processJob(ctx context.Context, job *knowledge.IngestionJob, m
 	indexDocs := make([]retrieval.ChunkIndexDocument, 0, len(chunks))
 	now := time.Now().UTC()
 	for i := range chunks {
-		chunks[i].ESIndex = s.indexName
-		chunks[i].ESDocID = strconv.FormatInt(chunks[i].ID, 10)
 		metadata := map[string]any{"source": "upload"}
-		_ = json.Unmarshal([]byte(chunks[i].MetadataJSON), &metadata)
+		_ = json.Unmarshal(chunks[i].MetadataJSON, &metadata)
 		indexDocs = append(indexDocs, retrieval.ChunkIndexDocument{
 			OwnerID:             chunks[i].OwnerID,
-			KBID:                chunks[i].KBID,
+			KnowledgeBaseID:     chunks[i].KnowledgeBaseID,
 			DocumentID:          chunks[i].DocumentID,
-			Generation:          chunks[i].Generation,
+			GenerationID:        chunks[i].GenerationID,
 			ChunkID:             chunks[i].ID,
 			ChunkIndex:          chunks[i].ChunkIndex,
 			DocumentName:        doc.Name,
@@ -327,7 +326,7 @@ func (s *Service) processJob(ctx context.Context, job *knowledge.IngestionJob, m
 			EmbeddingProviderID: int64PtrValue(kb.EmbeddingProviderID),
 			EmbeddingMetric:     knowledge.NormalizeEmbeddingMetric(kb.EmbeddingMetric),
 			EmbeddingProfile:    embeddingProfile,
-			PageNo:              chunks[i].PageNo,
+			PageNumber:          chunks[i].PageNumber,
 			TokenCount:          chunks[i].TokenCount,
 			Metadata:            metadata,
 			CreatedAt:           chunks[i].CreatedAt,
@@ -340,27 +339,24 @@ func (s *Service) processJob(ctx context.Context, job *knowledge.IngestionJob, m
 	if err := indexer.IndexChunks(ctx, indexDocs); err != nil {
 		return err
 	}
-	if err := s.chunks.UpdateIndexRefs(ctx, chunks); err != nil {
-		return err
-	}
 
 	indexedAt := time.Now().UTC()
 	oldChunkCount := len(existing)
 	if safeGeneration {
 		oldChunkCount = 0
 		for _, oldChunk := range existing {
-			if oldChunk.Generation == doc.ActiveGeneration {
+			if oldChunk.GenerationID == doc.ActiveGenerationID {
 				oldChunkCount++
 			}
 		}
 	}
-	doc.ParserStatus = knowledge.DocumentStatusCompleted
-	doc.ParserError = ""
+	doc.IngestionStatus = knowledge.DocumentStatusCompleted
+	doc.IngestionError = ""
 	doc.ChunkCount = len(chunks)
 	doc.TokenCount = totalTokens
 	doc.IndexedAt = &indexedAt
 	if safeGeneration {
-		doc.ActiveGeneration = generation
+		doc.ActiveGenerationID = generation
 	}
 	chunkDelta := len(chunks) - oldChunkCount
 	if safeGeneration {
@@ -368,7 +364,7 @@ func (s *Service) processJob(ctx context.Context, job *knowledge.IngestionJob, m
 			return fmt.Errorf("generation committer is not configured")
 		}
 		cleanup := &knowledge.IngestionJob{
-			OwnerID: job.OwnerID, KBID: job.KBID, DocumentID: job.DocumentID,
+			BaseModel: domain.BaseModel{OwnerID: job.OwnerID}, KnowledgeBaseID: job.KnowledgeBaseID, DocumentID: job.DocumentID,
 			JobType: knowledge.IngestionJobTypeGenerationCleanup, Status: knowledge.IngestionJobStatusPending,
 			Priority: -10, MaxAttempts: 5,
 		}
@@ -379,7 +375,7 @@ func (s *Service) processJob(ctx context.Context, job *knowledge.IngestionJob, m
 		if err := s.documents.Update(ctx, doc); err != nil {
 			return err
 		}
-		if err := s.kbs.AdjustCounts(ctx, job.OwnerID, job.KBID, 0, chunkDelta); err != nil {
+		if err := s.kbs.AdjustCounts(ctx, job.OwnerID, job.KnowledgeBaseID, 0, chunkDelta); err != nil {
 			return err
 		}
 	}
@@ -400,16 +396,16 @@ func (s *Service) ingestionJobFromQueue(ctx context.Context, job queue.Job, work
 		return item, true, claimed, err
 	}
 	item := &knowledge.IngestionJob{
-		OwnerID:    ownerID,
-		KBID:       queuePayloadInt64(job.Payload, "kb_id"),
-		DocumentID: queuePayloadInt64(job.Payload, "document_id"),
-		JobType:    job.Type,
+		BaseModel:       domain.BaseModel{OwnerID: ownerID},
+		KnowledgeBaseID: queuePayloadInt64(job.Payload, "knowledge_base_id"),
+		DocumentID:      queuePayloadInt64(job.Payload, "document_id"),
+		JobType:         job.Type,
 	}
 	if item.JobType == "" {
 		item.JobType = knowledge.IngestionJobTypeDocument
 	}
-	if item.OwnerID == 0 || item.KBID == 0 || item.DocumentID == 0 {
-		return nil, false, false, fmt.Errorf("queue job payload must include owner_id, kb_id and document_id")
+	if item.OwnerID == 0 || item.KnowledgeBaseID == 0 || item.DocumentID == 0 {
+		return nil, false, false, fmt.Errorf("queue job payload must include owner_id, knowledge_base_id and document_id")
 	}
 	return item, false, true, nil
 }
@@ -419,11 +415,11 @@ func (s *Service) processGenerationCleanup(ctx context.Context, job *knowledge.I
 	if err != nil {
 		return err
 	}
-	activeGeneration := strings.TrimSpace(doc.ActiveGeneration)
+	activeGeneration := strings.TrimSpace(doc.ActiveGenerationID)
 	if activeGeneration == "" {
 		return fmt.Errorf("document %d has no active generation", doc.ID)
 	}
-	kb, err := s.kbs.FindByID(ctx, job.OwnerID, job.KBID)
+	kb, err := s.kbs.FindByID(ctx, job.OwnerID, job.KnowledgeBaseID)
 	if err != nil {
 		return err
 	}
@@ -498,15 +494,15 @@ func queuePayloadInt64(payload map[string]any, key string) int64 {
 	}
 }
 
-func chunkMetadataJSON(metadata map[string]any) string {
+func chunkMetadataJSON(metadata map[string]any) json.RawMessage {
 	if metadata == nil {
-		return "{}"
+		return json.RawMessage(`{}`)
 	}
 	data, err := json.Marshal(metadata)
 	if err != nil {
-		return "{}"
+		return json.RawMessage(`{}`)
 	}
-	return string(data)
+	return data
 }
 
 func (s *Service) embedChunks(ctx context.Context, kb *knowledge.KnowledgeBase, chunks []knowledge.DocumentChunk) ([][]float32, string, int, error) {
@@ -521,7 +517,7 @@ func (s *Service) embedChunks(ctx context.Context, kb *knowledge.KnowledgeBase, 
 	if err != nil {
 		return nil, "", 0, err
 	}
-	if provider.Status != providerdomain.StatusActive {
+	if !provider.Enabled {
 		return nil, "", 0, fmt.Errorf("embedding provider is disabled")
 	}
 	model := strings.TrimSpace(kb.EmbeddingModel)
@@ -583,11 +579,11 @@ func (s *Service) failJob(ctx context.Context, job *knowledge.IngestionJob, caus
 		return err
 	}
 	if final {
-		doc.ParserStatus = knowledge.DocumentStatusFailed
+		doc.IngestionStatus = knowledge.DocumentStatusFailed
 	} else {
-		doc.ParserStatus = knowledge.DocumentStatusPending
+		doc.IngestionStatus = knowledge.DocumentStatusPending
 	}
-	doc.ParserError = cause.Error()
+	doc.IngestionError = cause.Error()
 	return s.documents.Update(ctx, doc)
 }
 

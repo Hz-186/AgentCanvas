@@ -95,43 +95,6 @@ func (r *ToolInvocationRepository) ListByRun(ctx context.Context, ownerID, runID
 	return items, err
 }
 
-type ToolPolicyRepository struct{ db *gorm.DB }
-
-func NewToolPolicyRepository(db *gorm.DB) *ToolPolicyRepository {
-	return &ToolPolicyRepository{db: db}
-}
-
-func (r *ToolPolicyRepository) Create(ctx context.Context, item *tool.ToolPolicy) error {
-	now := time.Now().UTC()
-	item.CreatedAt = now
-	item.UpdatedAt = now
-	return r.db.WithContext(ctx).Create(item).Error
-}
-
-func (r *ToolPolicyRepository) FindByID(ctx context.Context, ownerID, id int64) (*tool.ToolPolicy, error) {
-	var item tool.ToolPolicy
-	err := r.db.WithContext(ctx).Where("owner_id = ? AND id = ?", ownerID, id).First(&item).Error
-	if err != nil {
-		return nil, err
-	}
-	return &item, nil
-}
-
-func (r *ToolPolicyRepository) List(ctx context.Context, ownerID int64) ([]tool.ToolPolicy, error) {
-	var items []tool.ToolPolicy
-	err := r.db.WithContext(ctx).Where("owner_id = ?", ownerID).Order("updated_at DESC, id DESC").Find(&items).Error
-	return items, err
-}
-
-func (r *ToolPolicyRepository) Update(ctx context.Context, item *tool.ToolPolicy) error {
-	item.UpdatedAt = time.Now().UTC()
-	return r.db.WithContext(ctx).Save(item).Error
-}
-
-func (r *ToolPolicyRepository) Delete(ctx context.Context, ownerID, id int64) error {
-	return r.db.WithContext(ctx).Where("owner_id = ? AND id = ?", ownerID, id).Delete(&tool.ToolPolicy{}).Error
-}
-
 type ToolPackRepository struct{ db *gorm.DB }
 
 func NewToolPackRepository(db *gorm.DB) *ToolPackRepository {
@@ -175,12 +138,12 @@ func (r *ToolPackRepository) AddItem(ctx context.Context, item *tool.ToolPackIte
 }
 
 func (r *ToolPackRepository) RemoveItem(ctx context.Context, ownerID, packID, toolID int64) error {
-	return r.db.WithContext(ctx).Where("owner_id = ? AND pack_id = ? AND tool_id = ?", ownerID, packID, toolID).Delete(&tool.ToolPackItem{}).Error
+	return r.db.WithContext(ctx).Where("owner_id = ? AND tool_pack_id = ? AND tool_id = ?", ownerID, packID, toolID).Delete(&tool.ToolPackItem{}).Error
 }
 
 func (r *ToolPackRepository) ListItems(ctx context.Context, ownerID, packID int64) ([]tool.ToolPackItem, error) {
 	var items []tool.ToolPackItem
-	err := r.db.WithContext(ctx).Where("owner_id = ? AND pack_id = ?", ownerID, packID).Order("id ASC").Find(&items).Error
+	err := r.db.WithContext(ctx).Where("owner_id = ? AND tool_pack_id = ?", ownerID, packID).Order("id ASC").Find(&items).Error
 	return items, err
 }
 
@@ -206,8 +169,8 @@ func (r *MCPRepository) CreateServer(ctx context.Context, item *tool.MCPServer) 
 	now := time.Now().UTC()
 	item.CreatedAt = now
 	item.UpdatedAt = now
-	if item.Status == 0 {
-		item.Status = tool.MCPStatusActive
+	if !item.Enabled {
+		item.Enabled = tool.MCPEnabled
 	}
 	return r.db.WithContext(ctx).Create(item).Error
 }
@@ -239,9 +202,9 @@ func (r *MCPRepository) DeleteServer(ctx context.Context, ownerID, id int64) err
 		Updates(map[string]any{"deleted_at": now, "updated_at": now}).Error
 }
 
-func (r *MCPRepository) ReplaceToolCache(ctx context.Context, ownerID, serverID int64, tools []tool.MCPToolCache) error {
+func (r *MCPRepository) ReplaceToolCache(ctx context.Context, ownerID, serverID int64, tools []tool.MCPToolCacheEntry) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Where("owner_id = ? AND server_id = ?", ownerID, serverID).Delete(&tool.MCPToolCache{}).Error; err != nil {
+		if err := tx.Where("owner_id = ? AND mcp_server_id = ?", ownerID, serverID).Delete(&tool.MCPToolCacheEntry{}).Error; err != nil {
 			return err
 		}
 		if len(tools) == 0 {
@@ -250,17 +213,15 @@ func (r *MCPRepository) ReplaceToolCache(ctx context.Context, ownerID, serverID 
 		now := time.Now().UTC()
 		for i := range tools {
 			tools[i].OwnerID = ownerID
-			tools[i].ServerID = serverID
-			tools[i].CachedAt = now
+			tools[i].MCPServerID = serverID
 			tools[i].CreatedAt = now
-			tools[i].UpdatedAt = now
 		}
 		return tx.Create(&tools).Error
 	})
 }
 
-func (r *MCPRepository) ListToolCache(ctx context.Context, ownerID, serverID int64) ([]tool.MCPToolCache, error) {
-	var items []tool.MCPToolCache
-	err := r.db.WithContext(ctx).Where("owner_id = ? AND server_id = ?", ownerID, serverID).Order("tool_name ASC").Find(&items).Error
+func (r *MCPRepository) ListToolCache(ctx context.Context, ownerID, serverID int64) ([]tool.MCPToolCacheEntry, error) {
+	var items []tool.MCPToolCacheEntry
+	err := r.db.WithContext(ctx).Where("owner_id = ? AND mcp_server_id = ?", ownerID, serverID).Order("tool_name ASC").Find(&items).Error
 	return items, err
 }

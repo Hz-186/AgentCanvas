@@ -100,7 +100,7 @@ func TestRecursiveChunkerPreservesPDFPageMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ChunkDocument() error = %v", err)
 	}
-	if len(got) != 1 || got[0].PageNo == nil || *got[0].PageNo != 3 {
+	if len(got) != 1 || got[0].PageNumber == nil || *got[0].PageNumber != 3 {
 		t.Fatalf("expected page number on chunk, got %+v", got)
 	}
 	if got[0].Metadata["page_no"] != 3 || got[0].Metadata["parser_version"] != "pdf_text_v1" {

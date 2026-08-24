@@ -1,13 +1,16 @@
 package agent_usecase
 
 import (
+	"agentcanvas/internal/domain"
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
 	"agentcanvas/internal/domain/agent"
 	"agentcanvas/internal/domain/conversation"
+	"agentcanvas/internal/domain/memory"
 	runtimeagent "agentcanvas/internal/runtime/agent"
 	"agentcanvas/internal/runtime/agentruntime"
 )
@@ -23,8 +26,8 @@ func TestImprovementProposalSecurityRejectsInjectionAndSecrets(t *testing.T) {
 
 func TestNormalizeImprovementProposalsPreservesEvidenceAndAuditHash(t *testing.T) {
 	service := &ImprovementService{}
-	review := &agent.ImprovementReview{ID: 2, OwnerID: 3, AgentID: 4, TurnID: 5, RunID: 6}
-	items := service.normalizeProposals(review, []proposedChange{{Kind: agent.ProposalKindMemory, Title: "Preferred language", Content: "The user prefers Chinese.", Payload: json.RawMessage(`{"memory_type":"profile_memory"}`), Evidence: []string{"User explicitly requested Chinese"}, Confidence: 0.95, Diff: json.RawMessage(`{"add":true}`)}})
+	review := &agent.ImprovementReview{BaseModel: domain.BaseModel{ID: 2, OwnerID: 3}, AgentID: 4, TurnID: 5, RunID: 6}
+	items := service.normalizeProposals(review, []proposedChange{{Kind: agent.ProposalKindMemory, Title: "Preferred language", Content: "The user prefers Chinese.", Payload: json.RawMessage(`{"memory_type":"profile"}`), Evidence: []string{"User explicitly requested Chinese"}, Confidence: 0.95, Diff: json.RawMessage(`{"add":true}`)}})
 	if len(items) != 1 || items[0].Status != agent.ProposalStatusPending || items[0].Checksum == "" {
 		t.Fatalf("unexpected normalized proposal: %+v", items)
 	}
@@ -35,13 +38,44 @@ func TestNormalizeImprovementProposalsPreservesEvidenceAndAuditHash(t *testing.T
 
 func TestNormalizeImprovementProposalsDropsMemoryWhenDisabled(t *testing.T) {
 	service := &ImprovementService{}
-	review := &agent.ImprovementReview{ID: 2, OwnerID: 3, AgentID: 4, TurnID: 5, RunID: 6}
+	review := &agent.ImprovementReview{BaseModel: domain.BaseModel{ID: 2, OwnerID: 3}, AgentID: 4, TurnID: 5, RunID: 6}
 	items := service.normalizeProposalsWithMemory(review, []proposedChange{
 		{Kind: agent.ProposalKindMemory, Title: "Preference", Content: "User prefers Chinese.", Confidence: .9, Evidence: []string{"direct evidence"}},
 		{Kind: agent.ProposalKindReflection, Title: "Lesson", Content: "Validate before applying.", Confidence: .9, Evidence: []string{"direct evidence"}},
 	}, false)
 	if len(items) != 1 || items[0].Kind != agent.ProposalKindReflection {
 		t.Fatalf("memory_enabled=false must suppress only memory candidates: %+v", items)
+	}
+}
+
+func TestImprovementReviewSpecOmitsMemoryWhenDedicatedExtractionIsActive(t *testing.T) {
+	schema, guidance := improvementReviewSpec(false)
+	if strings.Contains(string(schema), `"memory"`) || !strings.Contains(guidance, "Do not produce memory proposals") {
+		t.Fatalf("memory-disabled reviewer still asks for duplicate memory proposals: schema=%s guidance=%q", schema, guidance)
+	}
+	schema, _ = improvementReviewSpec(true)
+	if !strings.Contains(string(schema), `"memory"`) {
+		t.Fatalf("memory-enabled reviewer lost memory proposal kind: %s", schema)
+	}
+}
+
+func TestMemoryReviewAutoMapsToSuggestWithoutAutoApply(t *testing.T) {
+	service := NewImprovementService(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, MemoryReviewAuto)
+	if service.memoryMode != MemoryReviewSuggest {
+		t.Fatalf("auto compatibility mode = %q, want suggest", service.memoryMode)
+	}
+}
+
+func TestDefaultProjectMemoryPayloadScopesTaskFactsToProject(t *testing.T) {
+	items := defaultProjectMemoryPayload([]proposedChange{
+		{Kind: agent.ProposalKindMemory, Payload: json.RawMessage(`{"memory_type":"task"}`)},
+		{Kind: agent.ProposalKindMemory, Payload: json.RawMessage(`{"memory_type":"archival","scope_type":"project","scope_id":99,"source_project_id":99}`)},
+	}, 42)
+	var payload map[string]any
+	var explicit map[string]any
+	if len(items) != 2 || json.Unmarshal(items[0].Payload, &payload) != nil || json.Unmarshal(items[1].Payload, &explicit) != nil ||
+		payload["scope_type"] != memory.ScopeProject || payload["source_project_id"] != float64(42) || explicit["scope_id"] != float64(42) || explicit["source_project_id"] != float64(42) {
+		t.Fatalf("project memory payload = %+v", items)
 	}
 }
 
@@ -153,10 +187,10 @@ func (r *workerApprovalRepo) SavePausedRun(_ context.Context, _ *agent.Turn, _ *
 func TestRecoverExpiredRequeuesOnlyBeforeToolSideEffects(t *testing.T) {
 	run1, run2 := int64(10), int64(20)
 	turns := &workerTurnRepo{expired: []agent.Turn{
-		{ID: 1, OwnerID: 1, RunID: &run1, Status: agent.TurnStatusRunning, LeaseToken: "one", AttemptCount: 1, MaxAttempts: 3},
-		{ID: 2, OwnerID: 1, RunID: &run2, Status: agent.TurnStatusRunning, LeaseToken: "two", AttemptCount: 1, MaxAttempts: 3},
+		{BaseModel: domain.BaseModel{ID: 1, OwnerID: 1}, RunID: &run1, Status: agent.TurnStatusRunning, LeaseToken: "one", AttemptCount: 1, MaxAttempts: 3},
+		{BaseModel: domain.BaseModel{ID: 2, OwnerID: 1}, RunID: &run2, Status: agent.TurnStatusRunning, LeaseToken: "two", AttemptCount: 1, MaxAttempts: 3},
 	}}
-	runs := &workerRunRepo{items: map[int64]*agent.Run{run1: {ID: run1, Status: agent.RunStatusRunning}, run2: {ID: run2, Status: agent.RunStatusRunning}}}
+	runs := &workerRunRepo{items: map[int64]*agent.Run{run1: {BaseModel: domain.BaseModel{ID: run1}, Status: agent.RunStatusRunning}, run2: {BaseModel: domain.BaseModel{ID: run2}, Status: agent.RunStatusRunning}}}
 	steps := &workerStepRepo{byRun: map[int64][]agent.RunStep{run2: {{StepType: "tool_call"}}}}
 	service := &Service{turns: turns, runs: runs, steps: steps}
 	if err := service.recoverExpired(context.Background()); err != nil {
@@ -171,8 +205,8 @@ func TestRecoverExpiredRequeuesOnlyBeforeToolSideEffects(t *testing.T) {
 }
 
 func TestFailTurnDoesNotOverwriteRunAfterLeaseLoss(t *testing.T) {
-	run := &agent.Run{ID: 10, OwnerID: 1, Status: agent.RunStatusRunning, StartedAt: time.Now().UTC()}
-	turn := &agent.Turn{ID: 20, OwnerID: 1, RunID: &run.ID, Status: agent.TurnStatusRunning, LeaseToken: "stale"}
+	run := &agent.Run{BaseModel: domain.BaseModel{ID: 10, OwnerID: 1}, Status: agent.RunStatusRunning, StartedAt: time.Now().UTC()}
+	turn := &agent.Turn{BaseModel: domain.BaseModel{ID: 20, OwnerID: 1}, RunID: &run.ID, Status: agent.TurnStatusRunning, LeaseToken: "stale"}
 	turns := &workerTurnRepo{updateErr: agent.ErrLeaseLost}
 	runs := &workerRunRepo{items: map[int64]*agent.Run{run.ID: run}}
 
@@ -196,8 +230,8 @@ func TestRetryTurnOnlyRequeuesSafeAttempts(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			runID := int64(10)
-			run := &agent.Run{ID: runID, OwnerID: 1, Status: agent.RunStatusRunning, StartedAt: time.Now().UTC()}
-			turn := &agent.Turn{ID: 20, OwnerID: 1, RunID: &runID, Status: agent.TurnStatusRunning, LeaseToken: "owned", AttemptCount: tc.attempt, MaxAttempts: 3}
+			run := &agent.Run{BaseModel: domain.BaseModel{ID: runID, OwnerID: 1}, Status: agent.RunStatusRunning, StartedAt: time.Now().UTC()}
+			turn := &agent.Turn{BaseModel: domain.BaseModel{ID: 20, OwnerID: 1}, RunID: &runID, Status: agent.TurnStatusRunning, LeaseToken: "owned", AttemptCount: tc.attempt, MaxAttempts: 3}
 			turns := &workerTurnRepo{}
 			runs := &workerRunRepo{items: map[int64]*agent.Run{runID: run}}
 			service := &Service{turns: turns, runs: runs, steps: &workerStepRepo{byRun: map[int64][]agent.RunStep{runID: tc.steps}}}
@@ -219,8 +253,8 @@ func TestRetryTurnOnlyRequeuesSafeAttempts(t *testing.T) {
 }
 
 func TestCompleteTurnPersistsPauseInSingleRepositoryCall(t *testing.T) {
-	run := &agent.Run{ID: 10, OwnerID: 1, Status: agent.RunStatusRunning, StartedAt: time.Now().UTC()}
-	turn := &agent.Turn{ID: 20, OwnerID: 1, RunID: &run.ID, Status: agent.TurnStatusRunning, LeaseToken: "owned"}
+	run := &agent.Run{BaseModel: domain.BaseModel{ID: 10, OwnerID: 1}, Status: agent.RunStatusRunning, StartedAt: time.Now().UTC()}
+	turn := &agent.Turn{BaseModel: domain.BaseModel{ID: 20, OwnerID: 1}, RunID: &run.ID, Status: agent.TurnStatusRunning, LeaseToken: "owned"}
 	turns := &workerTurnRepo{}
 	runs := &workerRunRepo{items: map[int64]*agent.Run{run.ID: run}}
 	approvals := &workerApprovalRepo{}
@@ -240,7 +274,7 @@ func TestCompleteTurnPersistsPauseInSingleRepositoryCall(t *testing.T) {
 }
 
 func TestGetLatestTurnRestoresConversationExecutionState(t *testing.T) {
-	expected := &agent.Turn{ID: 7, OwnerID: 2, AgentID: 3, ConversationID: 4, Status: agent.TurnStatusWaitingHuman}
+	expected := &agent.Turn{BaseModel: domain.BaseModel{ID: 7, OwnerID: 2}, AgentID: 3, ConversationID: 4, Status: agent.TurnStatusWaitingHuman}
 	service := &Service{turns: &workerTurnRepo{latest: expected}}
 
 	actual, err := service.GetLatestTurn(context.Background(), 2, 3, 4)

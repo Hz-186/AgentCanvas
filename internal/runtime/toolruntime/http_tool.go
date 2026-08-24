@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"agentcanvas/internal/domain"
 	"agentcanvas/internal/domain/tool"
 
 	agenterrors "agentcanvas/internal/pkg/errors"
@@ -76,17 +77,17 @@ func (t HTTPRuntimeTool) Execute(
 	outputJSON, _ := json.Marshal(output)
 	if t.invocations != nil {
 		_ = t.invocations.Create(ctx, &tool.Invocation{
-			OwnerID:      rc.OwnerID,
-			RunID:        rc.RunID,
-			AgentID:      rc.AgentID,
-			ToolID:       t.def.ID,
-			ToolName:     t.Name(),
-			ToolType:     t.def.ToolType,
-			InputJSON:    input,
-			OutputJSON:   outputJSON,
-			Status:       status,
-			ErrorMessage: errMessage,
-			LatencyMS:    int(time.Since(started).Milliseconds()),
+			ImmutableModel: domain.ImmutableModel{OwnerID: rc.OwnerID},
+			RunID:          rc.RunID,
+			AgentID:        rc.AgentID,
+			ToolID:         t.def.ID,
+			ToolName:       t.Name(),
+			ToolType:       t.def.ToolType,
+			InputJSON:      input,
+			OutputJSON:     outputJSON,
+			Status:         status,
+			ErrorMessage:   errMessage,
+			LatencyMS:      int(time.Since(started).Milliseconds()),
 		})
 	}
 	if callErr != nil {

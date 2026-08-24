@@ -1,6 +1,10 @@
 package knowledge
 
-import "time"
+import (
+	"time"
+
+	"agentcanvas/internal/domain"
+)
 
 const (
 	DocumentStatusPending   = "pending"
@@ -12,26 +16,22 @@ const (
 )
 
 type Document struct {
-	ID               int64      `json:"id" gorm:"primaryKey;column:id"`
-	OwnerID          int64      `json:"owner_id" gorm:"column:owner_id"`
-	KBID             int64      `json:"kb_id" gorm:"column:kb_id"`
-	Name             string     `json:"name" gorm:"column:name"`
-	OriginalFilename string     `json:"original_filename" gorm:"column:original_filename"`
-	FileType         string     `json:"file_type" gorm:"column:file_type"`
-	MimeType         string     `json:"mime_type" gorm:"column:mime_type"`
-	FileSize         int64      `json:"file_size" gorm:"column:file_size"`
-	ObjectKey        string     `json:"object_key" gorm:"column:object_key"`
-	ContentHash      string     `json:"content_hash" gorm:"column:content_hash"`
-	ActiveGeneration string     `json:"active_generation,omitempty" gorm:"column:active_generation"`
-	ParserStatus     string     `json:"parser_status" gorm:"column:parser_status"`
-	ParserError      string     `json:"parser_error,omitempty" gorm:"column:parser_error"`
-	Enabled          bool       `json:"enabled" gorm:"column:enabled"`
-	ChunkCount       int        `json:"chunk_count" gorm:"column:chunk_count"`
-	TokenCount       int        `json:"token_count" gorm:"column:token_count"`
-	IndexedAt        *time.Time `json:"indexed_at" gorm:"column:indexed_at"`
-	CreatedAt        time.Time  `json:"created_at" gorm:"column:created_at"`
-	UpdatedAt        time.Time  `json:"updated_at" gorm:"column:updated_at"`
-	DeletedAt        *time.Time `json:"-" gorm:"column:deleted_at"`
+	domain.SoftDeleteModel
+	KnowledgeBaseID    int64      `json:"knowledge_base_id" gorm:"column:knowledge_base_id"`
+	Name               string     `json:"name" gorm:"column:name"`
+	OriginalFilename   string     `json:"original_filename" gorm:"column:original_filename"`
+	FileType           string     `json:"file_type" gorm:"column:file_type"`
+	MIMEType           string     `json:"mime_type" gorm:"column:mime_type"`
+	FileSizeBytes      int64      `json:"file_size_bytes" gorm:"column:file_size_bytes"`
+	StorageObjectKey   string     `json:"storage_object_key" gorm:"column:storage_object_key"`
+	ContentHash        string     `json:"content_hash" gorm:"column:content_hash"`
+	ActiveGenerationID string     `json:"active_generation_id,omitempty" gorm:"column:active_generation_id"`
+	IngestionStatus    string     `json:"ingestion_status" gorm:"column:ingestion_status"`
+	IngestionError     string     `json:"ingestion_error,omitempty" gorm:"column:ingestion_error"`
+	Enabled            bool       `json:"enabled" gorm:"column:enabled"`
+	ChunkCount         int        `json:"chunk_count" gorm:"column:chunk_count"`
+	TokenCount         int        `json:"token_count" gorm:"column:token_count"`
+	IndexedAt          *time.Time `json:"indexed_at" gorm:"column:indexed_at"`
 }
 
 func (Document) TableName() string { return "documents" }

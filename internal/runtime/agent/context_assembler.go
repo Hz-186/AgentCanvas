@@ -290,31 +290,6 @@ func dedupeContextBlocks(blocks []ContextBlock) ([]ContextBlock, []ContextBlockT
 	return result, trace
 }
 
-func dedupeRetrievalBlocks(blocks []ContextBlock) ([]ContextBlock, []ContextBlockTrace) {
-	seen := map[string]bool{}
-	result := make([]ContextBlock, 0, len(blocks))
-	trace := make([]ContextBlockTrace, 0)
-	for _, block := range blocks {
-		content := strings.TrimSpace(block.Content)
-		if tokenAuditCategory(block.Name) != "retrieval" || content == "" {
-			result = append(result, block)
-			continue
-		}
-		key := strings.ToLower(strings.Join(strings.Fields(content), " "))
-		if seen[key] {
-			name := block.Name
-			if name == "" {
-				name = block.Role
-			}
-			trace = append(trace, ContextBlockTrace{Name: name, Role: block.Role, OriginalChars: len(content), SavedTokens: estimateContextTokens(content), Status: "omitted"})
-			continue
-		}
-		seen[key] = true
-		result = append(result, block)
-	}
-	return result, trace
-}
-
 func (a *TokenAudit) add(name string, tokens int) {
 	if tokens <= 0 {
 		return

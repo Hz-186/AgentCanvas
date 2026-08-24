@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"testing"
+
+	"agentcanvas/internal/domain"
 	"time"
 )
 
@@ -53,7 +55,7 @@ func (f *workerIndexFake) Search(context.Context, SearchRequest) ([]SearchResult
 
 func TestWorkerCompletesIndexedVersionWithResolvedProfile(t *testing.T) {
 	content := "durable memory"
-	repo := &workerRepoFake{items: []OutboxItem{{ID: 9, Operation: OperationUpsert, ContentHash: HashContent(content)}}, document: &Document{Content: content, ContentHash: HashContent(content)}}
+	repo := &workerRepoFake{items: []OutboxItem{{BaseModel: domain.BaseModel{ID: 9}, Operation: OperationUpsert, ContentHash: HashContent(content)}}, document: &Document{Content: content, ContentHash: HashContent(content)}}
 	index := &workerIndexFake{profile: EmbeddingProfile{ProviderID: 3, Model: "embed", Dimensions: 1536}.Normalized()}
 	worker := &Worker{Repository: repo, Index: index, WorkerID: "worker"}
 	processed, err := worker.ProcessBatch(context.Background())
@@ -63,7 +65,7 @@ func TestWorkerCompletesIndexedVersionWithResolvedProfile(t *testing.T) {
 }
 
 func TestWorkerCompletesStaleVersionWithoutOverwritingNewerVector(t *testing.T) {
-	repo := &workerRepoFake{items: []OutboxItem{{ID: 10, Operation: OperationUpsert, ContentHash: HashContent("old")}}, document: &Document{Content: "new", ContentHash: HashContent("new")}}
+	repo := &workerRepoFake{items: []OutboxItem{{BaseModel: domain.BaseModel{ID: 10}, Operation: OperationUpsert, ContentHash: HashContent("old")}}, document: &Document{Content: "new", ContentHash: HashContent("new")}}
 	index := &workerIndexFake{}
 	worker := &Worker{Repository: repo, Index: index, WorkerID: "worker"}
 	if _, err := worker.ProcessBatch(context.Background()); err != nil {
@@ -77,7 +79,7 @@ func TestWorkerCompletesStaleVersionWithoutOverwritingNewerVector(t *testing.T) 
 func TestWorkerRetriesIndexFailure(t *testing.T) {
 	indexErr := errors.New("milvus unavailable")
 	content := "resource"
-	repo := &workerRepoFake{items: []OutboxItem{{ID: 11, Operation: OperationUpsert, ContentHash: HashContent(content)}}, document: &Document{Content: content, ContentHash: HashContent(content)}}
+	repo := &workerRepoFake{items: []OutboxItem{{BaseModel: domain.BaseModel{ID: 11}, Operation: OperationUpsert, ContentHash: HashContent(content)}}, document: &Document{Content: content, ContentHash: HashContent(content)}}
 	index := &workerIndexFake{err: indexErr}
 	worker := &Worker{Repository: repo, Index: index, WorkerID: "worker"}
 	if _, err := worker.ProcessBatch(context.Background()); !errors.Is(err, indexErr) {

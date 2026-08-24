@@ -2,7 +2,6 @@ package tool
 
 import (
 	"encoding/json"
-	"time"
 
 	"agentcanvas/internal/domain"
 )
@@ -12,8 +11,8 @@ const (
 )
 
 const (
-	StatusDisabled = domain.StatusDisabled
-	StatusActive   = domain.StatusActive
+	Disabled = false
+	Enabled  = true
 )
 
 const ( // result
@@ -22,8 +21,7 @@ const ( // result
 )
 
 type Definition struct {
-	ID          int64           `json:"id" gorm:"primaryKey;column:id"`
-	OwnerID     int64           `json:"owner_id" gorm:"column:owner_id"`
+	domain.SoftDeleteModel
 	Name        string          `json:"name" gorm:"column:name"`
 	ToolType    string          `json:"tool_type" gorm:"column:tool_type"`
 	Description string          `json:"description" gorm:"column:description"`
@@ -33,17 +31,13 @@ type Definition struct {
 	// input JSON Schema
 	OutputSchemaJSON json.RawMessage `json:"output_schema_json" gorm:"column:output_schema_json"`
 	// output JSON Schema
-	Status    int        `json:"status" gorm:"column:status"`
-	CreatedAt time.Time  `json:"created_at" gorm:"column:created_at"`
-	UpdatedAt time.Time  `json:"updated_at" gorm:"column:updated_at"`
-	DeletedAt *time.Time `json:"-" gorm:"column:deleted_at"`
+	Enabled bool `json:"enabled" gorm:"column:enabled"`
 }
 
 func (Definition) TableName() string { return "tool_definitions" }
 
 type Invocation struct { // log of using tool
-	ID           int64           `json:"id" gorm:"primaryKey;column:id"`
-	OwnerID      int64           `json:"owner_id" gorm:"column:owner_id"`
+	domain.ImmutableModel
 	RunID        int64           `json:"run_id" gorm:"column:run_id"`
 	AgentID      int64           `json:"agent_id" gorm:"column:agent_id"`
 	ToolID       int64           `json:"tool_id" gorm:"column:tool_id"`
@@ -54,7 +48,6 @@ type Invocation struct { // log of using tool
 	Status       string          `json:"status" gorm:"column:status"`
 	ErrorMessage string          `json:"error_message" gorm:"column:error_message"`
 	LatencyMS    int             `json:"latency_ms" gorm:"column:latency_ms"`
-	CreatedAt    time.Time       `json:"created_at" gorm:"column:created_at"`
 }
 
 func (Invocation) TableName() string { return "tool_invocations" }

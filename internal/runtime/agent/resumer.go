@@ -89,7 +89,7 @@ func BuildResumeRequest(req ResumeRequest) (*RunRequest, error) {
 	}
 	return &RunRequest{
 		OwnerID: req.OwnerID, AgentID: req.AgentID, AgentReleaseID: req.AgentReleaseID, RunID: req.RunID,
-		DelegationDepth: req.DelegationDepth, ConversationID: req.ConversationID,
+		DelegationDepth: req.DelegationDepth, ConversationID: req.ConversationID, ProjectID: req.ProjectID,
 		Provider: req.Provider, Model: req.Model, Mode: req.Mode, Plan: plan, SystemPrompt: req.SystemPrompt, Task: req.Task,
 		ReflectionEnabled: req.ReflectionEnabled, ReflectionPolicy: reflectionPolicy, RecalledReflectionIDs: recalledReflectionIDs,
 		Temperature: req.Temperature, MaxIterations: req.MaxIterations, MaxToolCalls: req.MaxToolCalls,

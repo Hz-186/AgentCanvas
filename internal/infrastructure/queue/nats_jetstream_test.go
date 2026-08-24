@@ -28,7 +28,7 @@ func TestNATSJetStreamQueuePublishesClaimsAndAcks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Claim() error = %v", err)
 	}
-	if len(claimed) != 1 || claimed[0].ID != "job-1" || claimed[0].Attempts != 1 {
+	if len(claimed) != 1 || claimed[0].ID != "job-1" || claimed[0].AttemptCount != 1 {
 		t.Fatalf("claimed = %+v", claimed)
 	}
 	if err := q.Ack(context.Background(), "job-1"); err != nil {
@@ -103,13 +103,13 @@ func TestNATSJetStreamQueueNackUsesDelay(t *testing.T) {
 }
 
 func TestNATSJetStreamQueueHonorsJobMaxAttempts(t *testing.T) {
-	data, _ := json.Marshal(Job{ID: "retry", Type: "ingestion", Attempts: 1, MaxAttempts: 2})
+	data, _ := json.Marshal(Job{ID: "retry", Type: "ingestion", AttemptCount: 1, MaxAttempts: 2})
 	msg := &fakeNATSMessage{data: data}
 	client := &fakeNATSJetStream{messages: []NATSMessage{msg}}
 	q := NewNATSJetStreamQueue(client, "jobs", "jobs.ingestion", "workers", "workers", time.Minute)
 
 	claimed, err := q.Claim(context.Background(), ClaimOptions{Limit: 1})
-	if err != nil || len(claimed) != 1 || claimed[0].Attempts != 2 {
+	if err != nil || len(claimed) != 1 || claimed[0].AttemptCount != 2 {
 		t.Fatalf("Claim() = %+v, %v", claimed, err)
 	}
 	if err := q.Nack(context.Background(), "retry", time.Now()); err != nil {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"time"
 
+	"agentcanvas/internal/domain"
 	agentdomain "agentcanvas/internal/domain/agent"
 	"agentcanvas/internal/domain/reflection"
 )
@@ -40,8 +41,8 @@ func (s *ReflectionEventSink) PublishReflectionEvent(ctx context.Context, event 
 	if createdAt.IsZero() {
 		createdAt = time.Now().UTC()
 	}
-	return s.events.Create(ctx, &agentdomain.RunEvent{OwnerID: event.OwnerID, RunID: event.RunID,
-		EventType: event.Type, PayloadJSON: payloadJSON, CreatedAt: createdAt})
+	return s.events.Create(ctx, &agentdomain.RunEvent{ImmutableModel: domain.ImmutableModel{OwnerID: event.OwnerID, CreatedAt: createdAt}, RunID: event.RunID,
+		EventType: event.Type, PayloadJSON: payloadJSON})
 }
 
 var _ reflection.EventSink = (*ReflectionEventSink)(nil)

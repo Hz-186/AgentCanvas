@@ -1,6 +1,7 @@
 package queue
 
 import (
+	"agentcanvas/internal/domain"
 	"context"
 	"errors"
 	"testing"
@@ -14,7 +15,7 @@ import (
 func TestMySQLIngestionQueuePublishesClaimsAndAcks(t *testing.T) {
 	repo := &fakeIngestionJobRepo{}
 	q := NewMySQLIngestionQueue(repo)
-	if err := q.Publish(context.Background(), Job{ID: "10", Type: knowledge.IngestionJobTypeDocument, Payload: map[string]any{"owner_id": int64(1), "kb_id": int64(2), "document_id": int64(3)}}); err != nil {
+	if err := q.Publish(context.Background(), Job{ID: "10", Type: knowledge.IngestionJobTypeDocument, Payload: map[string]any{"owner_id": int64(1), "knowledge_base_id": int64(2), "document_id": int64(3)}}); err != nil {
 		t.Fatalf("Publish() error = %v", err)
 	}
 	jobs, err := q.Claim(context.Background(), ClaimOptions{WorkerID: "worker-1", Limit: 1})
@@ -33,7 +34,7 @@ func TestMySQLIngestionQueuePublishesClaimsAndAcks(t *testing.T) {
 }
 
 func TestMySQLIngestionQueueNackMarksFailed(t *testing.T) {
-	repo := &fakeIngestionJobRepo{items: []*knowledge.IngestionJob{{ID: 11, OwnerID: 1, KBID: 2, DocumentID: 3, JobType: knowledge.IngestionJobTypeDocument}}}
+	repo := &fakeIngestionJobRepo{items: []*knowledge.IngestionJob{{BaseModel: domain.BaseModel{ID: 11, OwnerID: 1}, KnowledgeBaseID: 2, DocumentID: 3, JobType: knowledge.IngestionJobTypeDocument}}}
 	q := NewMySQLIngestionQueue(repo)
 	jobs, err := q.Claim(context.Background(), ClaimOptions{WorkerID: "worker-1", Limit: 1})
 	if err != nil || len(jobs) != 1 {

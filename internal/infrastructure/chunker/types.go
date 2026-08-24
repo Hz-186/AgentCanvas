@@ -14,7 +14,7 @@ type Chunk struct {
 	TokenCount   int
 	CharCount    int
 	SectionTitle string
-	PageNo       *int
+	PageNumber   *int
 	Metadata     map[string]any
 }
 

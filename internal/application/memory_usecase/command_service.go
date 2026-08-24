@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"agentcanvas/internal/domain"
 	"agentcanvas/internal/domain/memory"
 )
 
@@ -26,7 +27,7 @@ func writeLifecycleLog(ctx context.Context, logs memory.WriteLogRepository, owne
 	if err != nil {
 		return err
 	}
-	return logs.Create(ctx, &memory.WriteLog{OwnerID: ownerID, MemoryID: memoryID, Action: action, BeforeJSON: beforeJSON, AfterJSON: afterJSON, Reason: reason})
+	return logs.Create(ctx, &memory.WriteLog{ImmutableModel: domain.ImmutableModel{OwnerID: ownerID}, MemoryID: memoryID, Action: action, BeforeJSON: beforeJSON, AfterJSON: afterJSON, Reason: reason})
 }
 
 func NewMemoryCommandService(memories memory.Repository, logs memory.WriteLogRepository) *MemoryCommandService {
@@ -37,18 +38,8 @@ func (s *MemoryCommandService) Execute(ctx context.Context, request memory.Write
 	if s == nil {
 		return memory.WriteResult{}, fmt.Errorf("memory command service is not configured")
 	}
-	if request.MemoryID == 0 && request.MemoryType == memory.TypeSummary {
-		return memory.WriteResult{}, fmt.Errorf("summary_memory is read-only compatibility data; use conversation compaction")
-	}
 	request.ScopeType = strings.TrimSpace(request.ScopeType)
-	if request.ScopeType == "" {
-		if request.ConversationID != nil && *request.ConversationID > 0 {
-			request.ScopeType, request.ScopeID = memory.ScopeConversation, *request.ConversationID
-		} else {
-			request.ScopeType, request.ScopeID = memory.ScopeUser, request.OwnerID
-		}
-	}
-	if !validMemoryScope(request.ScopeType, request.ScopeID, request.OwnerID) {
+	if request.ScopeType != "" && !validMemoryScope(request.ScopeType, request.ScopeID, request.OwnerID) {
 		return memory.WriteResult{}, fmt.Errorf("invalid memory scope")
 	}
 	if request.Status == "" {
@@ -62,6 +53,8 @@ func validMemoryScope(scopeType string, scopeID, ownerID int64) bool {
 	case memory.ScopeUser:
 		return scopeID == 0 || scopeID == ownerID
 	case memory.ScopeAgent, memory.ScopeConversation:
+		return scopeID > 0
+	case memory.ScopeProject:
 		return scopeID > 0
 	default:
 		return false

@@ -62,6 +62,16 @@ func (s *Service) resumeRun(ctx context.Context, run *agentdomain.Run, stored *a
 	if mode, modeErr := normalizeAgentMode(fmt.Sprint(input["mode"])); modeErr == nil {
 		definition.Mode = mode
 	}
+	projectID := int64(0)
+	if s.conversations != nil && run.ConversationID != nil {
+		conv, findErr := s.conversations.FindByID(ctx, run.OwnerID, *run.ConversationID)
+		if findErr != nil {
+			return nil, mapNotFound(findErr)
+		}
+		if conv.ProjectID != nil {
+			projectID = *conv.ProjectID
+		}
+	}
 	if err := run.TransitionStatus(agentdomain.RunStatusResuming); err != nil {
 		return nil, err
 	}
@@ -121,6 +131,9 @@ func (s *Service) resumeRun(ctx context.Context, run *agentdomain.Run, stored *a
 			return failResumePreparation(fmt.Errorf("run workspace is not ready"))
 		}
 		runtimeWorkspace.RunID = run.ID
+		if projectID == 0 {
+			projectID = runtimeWorkspace.ProjectID
+		}
 		resolvedWorkspace = resolved
 	}
 	execCtx, cancel := context.WithCancel(ctx)
@@ -134,7 +147,7 @@ func (s *Service) resumeRun(ctx context.Context, run *agentdomain.Run, stored *a
 		agentruntime.ResumeRequest{
 			RunRequest: agentruntime.RunRequest{
 				RunIdentity:         agentruntime.RunIdentity{OwnerID: run.OwnerID, AgentID: run.AgentID, AgentReleaseID: releaseID, RunID: run.ID, ParentRunID: run.ParentRunID},
-				ConversationContext: agentruntime.ConversationContext{ConversationID: run.ConversationID},
+				ConversationContext: agentruntime.ConversationContext{ConversationID: run.ConversationID, ProjectID: projectID},
 				ExecutionTask:       agentruntime.ExecutionTask{Task: task},
 				RuntimeResources:    agentruntime.RuntimeResources{Definition: definition},
 				RuntimePolicy:       agentruntime.RuntimePolicy{DelegationDepth: run.DelegationDepth, RuleHash: run.RuleHash},
@@ -222,40 +235,15 @@ func (s *Service) completeSubagentRun(ctx context.Context, run *agentdomain.Run,
 }
 
 func decodeCheckpoint(stored *agentdomain.RunCheckpoint) (*runtimeagent.Checkpoint, error) {
-	if len(stored.RuntimeCheckpointJSON) > 0 && string(stored.RuntimeCheckpointJSON) != "null" {
-		var checkpoint runtimeagent.Checkpoint
-		if err := json.Unmarshal(stored.RuntimeCheckpointJSON, &checkpoint); err != nil {
-			return nil, fmt.Errorf("decode runtime checkpoint: %w", err)
-		}
-		if checkpoint.Metadata == nil {
-			checkpoint.Metadata = map[string]any{}
-		}
-		checkpoint.Metadata["checkpoint_id"] = stored.ID
-		checkpoint.Metadata["tool_registry_hash"] = stored.ToolRegistryHash
-		checkpoint.Metadata["tool_policy_hash"] = stored.ToolPolicyHash
-		return &checkpoint, nil
+	var checkpoint runtimeagent.Checkpoint
+	if err := json.Unmarshal(stored.CheckpointJSON, &checkpoint); err != nil {
+		return nil, fmt.Errorf("decode runtime checkpoint: %w", err)
 	}
-	var messages []llm.ChatMessage
-	if err := json.Unmarshal(stored.MessagesJSON, &messages); err != nil {
-		return nil, fmt.Errorf("decode checkpoint messages: %w", err)
+	if checkpoint.Metadata == nil {
+		checkpoint.Metadata = map[string]any{}
 	}
-	var pending *llm.ToolCall
-	if len(stored.PendingToolCallJSON) > 0 && string(stored.PendingToolCallJSON) != "null" {
-		var value llm.ToolCall
-		if err := json.Unmarshal(stored.PendingToolCallJSON, &value); err != nil {
-			return nil, err
-		}
-		pending = &value
-	}
-	var trace runtimeagent.ContextTrace
-	if len(stored.ContextJSON) > 0 && string(stored.ContextJSON) != "null" {
-		if err := json.Unmarshal(stored.ContextJSON, &trace); err != nil {
-			return nil, fmt.Errorf("decode checkpoint context: %w", err)
-		}
-	}
-	return &runtimeagent.Checkpoint{Messages: messages, MessagesSummary: stored.MessagesSummary, PendingToolCall: pending,
-		Context: trace, Metadata: map[string]any{"checkpoint_id": stored.ID,
-			"tool_registry_hash": stored.ToolRegistryHash, "tool_policy_hash": stored.ToolPolicyHash}}, nil
+	checkpoint.Metadata["checkpoint_id"] = stored.ID
+	return &checkpoint, nil
 }
 
 func (s *Service) registerCancel(runID int64, cancel context.CancelFunc) {

@@ -81,16 +81,13 @@ func (r *AgentRepository) CreateRelease(ctx context.Context, item *agentdomain.R
 	if err := encodeReleaseDefinition(item); err != nil {
 		return err
 	}
-	if len(item.ResourceVersions) == 0 {
-		item.ResourceVersions = json.RawMessage(`{}`)
-	}
 	return r.db.WithContext(ctx).Create(item).Error
 }
 
 func (r *AgentRepository) ListReleases(ctx context.Context, ownerID, agentID int64) ([]agentdomain.Release, error) {
 	var items []agentdomain.Release
 	err := r.db.WithContext(ctx).Where("owner_id = ? AND agent_id = ?", ownerID, agentID).
-		Order("version_no DESC").Find(&items).Error
+		Order("version_number DESC").Find(&items).Error
 	if err != nil {
 		return nil, err
 	}
@@ -117,7 +114,7 @@ func (r *AgentRepository) NextReleaseVersion(ctx context.Context, ownerID, agent
 	var maxVersion int
 	err := r.db.WithContext(ctx).Model(&agentdomain.Release{}).
 		Where("owner_id = ? AND agent_id = ?", ownerID, agentID).
-		Select("COALESCE(MAX(version_no), 0)").Scan(&maxVersion).Error
+		Select("COALESCE(MAX(version_number), 0)").Scan(&maxVersion).Error
 	return maxVersion + 1, err
 }
 
@@ -184,11 +181,10 @@ func (r *AgentTurnRepository) CreateWithArtifacts(ctx context.Context, item *age
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		now := time.Now().UTC()
 		userMessage.CreatedAt = now
-		normalizeMessage(userMessage)
 		if err := tx.Create(userMessage).Error; err != nil {
 			return err
 		}
-		if err := syncConversationMessageJSON(ctx, tx, userMessage.OwnerID, userMessage.ConversationID, now); err != nil {
+		if err := touchConversationLastMessage(ctx, tx, userMessage.OwnerID, userMessage.ConversationID, now); err != nil {
 			return err
 		}
 		run.CreatedAt, run.UpdatedAt = now, now
@@ -216,11 +212,10 @@ func (r *AgentTurnRepository) CreateWithArtifacts(ctx context.Context, item *age
 func (r *AgentTurnRepository) CompleteWithMessage(ctx context.Context, item *agentdomain.Turn, assistantMessage *conversation.Message, run *agentdomain.Run) error {
 	return r.completeOwned(ctx, item, run, func(tx *gorm.DB, now time.Time) error {
 		assistantMessage.CreatedAt = now
-		normalizeMessage(assistantMessage)
 		if err := tx.Create(assistantMessage).Error; err != nil {
 			return err
 		}
-		if err := syncConversationMessageJSON(ctx, tx, assistantMessage.OwnerID, assistantMessage.ConversationID, now); err != nil {
+		if err := touchConversationLastMessage(ctx, tx, assistantMessage.OwnerID, assistantMessage.ConversationID, now); err != nil {
 			return err
 		}
 		item.AssistantMessageID = &assistantMessage.ID

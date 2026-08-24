@@ -1,10 +1,9 @@
 package mysql
 
 import (
+	"agentcanvas/internal/domain/knowledge"
 	"context"
 	"time"
-
-	"agentcanvas/internal/domain/knowledge"
 
 	"gorm.io/gorm"
 )
@@ -21,10 +20,10 @@ func (r *ChunkRepository) CreateBatch(ctx context.Context, chunks []knowledge.Do
 	if len(chunks) == 0 {
 		return nil
 	}
-	now := time.Now().UTC()
 	for i := range chunks {
-		chunks[i].CreatedAt = now
-		chunks[i].UpdatedAt = now
+		if chunks[i].CreatedAt.IsZero() {
+			chunks[i].CreatedAt = time.Now().UTC()
+		}
 	}
 	return r.db.WithContext(ctx).CreateInBatches(&chunks, 100).Error
 }
@@ -38,38 +37,20 @@ func (r *ChunkRepository) ListByDocument(ctx context.Context, ownerID, documentI
 	return chunks, err
 }
 
-func (r *ChunkRepository) UpdateIndexRefs(ctx context.Context, chunks []knowledge.DocumentChunk) error {
-	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		now := time.Now().UTC()
-		for _, chunk := range chunks {
-			if err := tx.Model(&knowledge.DocumentChunk{}).
-				Where("id = ? AND owner_id = ?", chunk.ID, chunk.OwnerID).
-				Updates(map[string]any{
-					"es_index":   chunk.ESIndex,
-					"es_doc_id":  chunk.ESDocID,
-					"updated_at": now,
-				}).Error; err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-}
-
 func (r *ChunkRepository) DeleteByDocument(ctx context.Context, ownerID, documentID int64) error {
 	return r.db.WithContext(ctx).
 		Where("owner_id = ? AND document_id = ?", ownerID, documentID).
 		Delete(&knowledge.DocumentChunk{}).Error
 }
 
-func (r *ChunkRepository) DeleteByKnowledgeBase(ctx context.Context, ownerID, kbID int64) error {
+func (r *ChunkRepository) DeleteByKnowledgeBase(ctx context.Context, ownerID, knowledgeBaseID int64) error {
 	return r.db.WithContext(ctx).
-		Where("owner_id = ? AND kb_id = ?", ownerID, kbID).
+		Where("owner_id = ? AND knowledge_base_id = ?", ownerID, knowledgeBaseID).
 		Delete(&knowledge.DocumentChunk{}).Error
 }
 
 func (r *ChunkRepository) DeleteInactiveGenerations(ctx context.Context, ownerID, documentID int64, activeGeneration string) error {
 	return r.db.WithContext(ctx).
-		Where("owner_id = ? AND document_id = ? AND (generation <> ? OR generation IS NULL)", ownerID, documentID, activeGeneration).
+		Where("owner_id = ? AND document_id = ? AND (generation_id <> ? OR generation_id IS NULL)", ownerID, documentID, activeGeneration).
 		Delete(&knowledge.DocumentChunk{}).Error
 }

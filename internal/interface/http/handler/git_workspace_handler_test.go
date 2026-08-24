@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"agentcanvas/internal/domain"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -41,8 +42,8 @@ func (r *handlerProjectRepository) CreateWithPrimaryFolder(ctx context.Context, 
 	}
 	folder.OwnerID = item.OwnerID
 	folder.ProjectID = item.ID
-	folder.Path = item.PrimaryPath
-	folder.IsPrimary = true
+	folder.Path = item.RepositoryRoot
+	folder.IsRepositoryRoot = true
 	return r.AddFolder(ctx, folder)
 }
 func (r *handlerProjectRepository) ListByOwner(_ context.Context, ownerID int64, includeArchived bool) ([]projectdomain.Project, error) {
@@ -111,9 +112,9 @@ func (r *handlerProjectRepository) SetPrimaryFolder(_ context.Context, ownerID, 
 		return agenterrors.ErrNotFound
 	}
 	for index := range r.item.Folders {
-		r.item.Folders[index].IsPrimary = r.item.Folders[index].ID == folderID
-		if r.item.Folders[index].IsPrimary {
-			r.item.PrimaryPath = r.item.Folders[index].Path
+		r.item.Folders[index].IsRepositoryRoot = r.item.Folders[index].ID == folderID
+		if r.item.Folders[index].IsRepositoryRoot {
+			r.item.RepositoryRoot = r.item.Folders[index].Path
 		}
 	}
 	return nil
@@ -271,15 +272,14 @@ func handlerContext(method, path string, ownerID int64, params gin.Params, body 
 func handlerWorkspaceServices(t *testing.T, kind string) (*ProjectHandler, *AgentHandler, *handlerProjectRepository, *handlerWorkspaceRepository, string) {
 	t.Helper()
 	root, head := handlerGitRepository(t)
-	projectRepo := &handlerProjectRepository{item: projectdomain.Project{ID: 11, OwnerID: 7, Slug: "agent-canvas", Name: "AgentCanvas", PrimaryPath: root}}
+	projectRepo := &handlerProjectRepository{item: projectdomain.Project{BaseModel: domain.BaseModel{ID: 11, OwnerID: 7}, Slug: "agent-canvas", Name: "AgentCanvas", RepositoryRoot: root}}
 	workspaceID := int64(70)
-	workspaceRepo := &handlerWorkspaceRepository{item: &workspacedomain.Workspace{
-		ID: workspaceID, OwnerID: 7, ProjectID: 11, RunID: 20, Kind: kind,
+	workspaceRepo := &handlerWorkspaceRepository{item: &workspacedomain.Workspace{BaseModel: domain.BaseModel{ID: workspaceID, OwnerID: 7}, ProjectID: 11, RunID: 20, Kind: kind,
 		RepositoryRoot: root, WorkspacePath: root, BranchName: "main", BaseRef: "HEAD", BaseSHA: head, HeadSHA: head, Status: workspacedomain.StatusReady,
 	}}
 	gitService := gitinfra.NewService(gitinfra.Config{GitUserName: "AgentCanvas Test", GitUserEmail: "test@example.com"})
 	workspaceService := workspaceusecase.NewService(projectRepo, workspaceRepo, gitService, workspaceusecase.Config{Enabled: true, AllowedRoots: []string{root}})
-	runRepo := &handlerRunRepository{items: map[int64]agentdomain.Run{20: {ID: 20, OwnerID: 7, AgentID: 3, WorkspaceID: &workspaceID, Status: agentdomain.RunStatusSucceeded}}}
+	runRepo := &handlerRunRepository{items: map[int64]agentdomain.Run{20: {BaseModel: domain.BaseModel{ID: 20, OwnerID: 7}, AgentID: 3, WorkspaceID: &workspaceID, Status: agentdomain.RunStatusSucceeded}}}
 	agentService := agentusecase.NewService(nil, nil, nil, nil, runRepo, nil, nil, nil, nil)
 	agentService.ConfigureWorkspace(workspaceService)
 	agentHandler := NewAgentHandler(agentService)
@@ -373,7 +373,7 @@ func TestRunGitStatusFailureEmitsFailSafeEvent(t *testing.T) {
 	events := &handlerRunEventRepository{}
 	workspaceID := workspaceRepo.item.ID
 	runs := &handlerRunRepository{items: map[int64]agentdomain.Run{
-		20: {ID: 20, OwnerID: 7, AgentID: 3, WorkspaceID: &workspaceID, Status: agentdomain.RunStatusSucceeded},
+		20: {BaseModel: domain.BaseModel{ID: 20, OwnerID: 7}, AgentID: 3, WorkspaceID: &workspaceID, Status: agentdomain.RunStatusSucceeded},
 	}}
 	service := agentusecase.NewService(nil, nil, nil, nil, runs, events, nil, nil, nil)
 	service.ConfigureWorkspace(baseHandler.workspace)
@@ -395,18 +395,18 @@ func TestRunGitStatusFailureEmitsFailSafeEvent(t *testing.T) {
 	if err := json.Unmarshal(events.items[0].PayloadJSON, &payload); err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{"workspace_id", "project_id", "run_id", "kind", "repo_root", "path", "branch", "base_sha", "head_sha", "dirty", "unpushed", "status", "error"} {
+	for _, key := range []string{"workspace_id", "project_id", "run_id", "kind", "repository_root", "workspace_path", "branch_name", "base_sha", "head_sha", "dirty", "has_unpushed_commits", "status", "error_message"} {
 		if _, ok := payload[key]; !ok {
 			t.Fatalf("Git status failure payload is missing %q: %#v", key, payload)
 		}
 	}
-	if payload["dirty"] != true || payload["unpushed"] != true || payload["error"] == "" {
+	if payload["dirty"] != true || payload["has_unpushed_commits"] != true || payload["error_message"] == "" {
 		t.Fatalf("Git status failure was not fail-safe: %#v", payload)
 	}
 }
 
 func TestWorkspaceEventPayloadUsesCanonicalHeadSHAField(t *testing.T) {
-	payload := workspaceEventPayload(&workspacedomain.Workspace{ID: 70, ProjectID: 11, RunID: 20, HeadSHA: "abc123"})
+	payload := workspaceEventPayload(&workspacedomain.Workspace{BaseModel: domain.BaseModel{ID: 70}, ProjectID: 11, RunID: 20, HeadSHA: "abc123"})
 	if payload["head_sha"] != "abc123" {
 		t.Fatalf("workspace event head_sha = %#v", payload["head_sha"])
 	}
