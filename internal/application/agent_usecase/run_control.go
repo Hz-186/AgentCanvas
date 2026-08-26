@@ -63,6 +63,7 @@ func (s *Service) resumeRun(ctx context.Context, run *agentdomain.Run, stored *a
 		definition.Mode = mode
 	}
 	projectID := int64(0)
+	repositoryRoot := ""
 	if s.conversations != nil && run.ConversationID != nil {
 		conv, findErr := s.conversations.FindByID(ctx, run.OwnerID, *run.ConversationID)
 		if findErr != nil {
@@ -70,6 +71,11 @@ func (s *Service) resumeRun(ctx context.Context, run *agentdomain.Run, stored *a
 		}
 		if conv.ProjectID != nil {
 			projectID = *conv.ProjectID
+			if s.workspace != nil && s.workspace.Enabled() {
+				if project, projectErr := s.workspace.GetProject(ctx, run.OwnerID, *conv.ProjectID); projectErr == nil {
+					repositoryRoot = project.RepositoryRoot
+				}
+			}
 		}
 	}
 	if err := run.TransitionStatus(agentdomain.RunStatusResuming); err != nil {
@@ -101,10 +107,6 @@ func (s *Service) resumeRun(ctx context.Context, run *agentdomain.Run, stored *a
 		s.publishRunSnapshot(run, nil, nil, llm.Usage{})
 		return run, cause
 	}
-	releaseID := int64(0)
-	if run.AgentReleaseID != nil {
-		releaseID = *run.AgentReleaseID
-	}
 	var runtimeWorkspace *toolruntime.WorkspaceContext
 	var resolvedWorkspace *workspacedomain.Workspace
 	if s.workspace != nil && run.WorkspaceID != nil {
@@ -135,24 +137,28 @@ func (s *Service) resumeRun(ctx context.Context, run *agentdomain.Run, stored *a
 			projectID = runtimeWorkspace.ProjectID
 		}
 		resolvedWorkspace = resolved
+	} else if repositoryRoot != "" {
+		runtimeWorkspace = &toolruntime.WorkspaceContext{ProjectID: projectID, RunID: run.ID, Kind: workspacedomain.KindShared,
+			RepositoryRoot: repositoryRoot, WorkspacePath: repositoryRoot, FileWriteEnabled: true, GitEnabled: true, ExecEnabled: true}
 	}
 	execCtx, cancel := context.WithCancel(ctx)
 	s.registerCancel(run.ID, cancel)
 	defer func() { cancel(); s.unregisterCancel(run.ID) }()
 	emitter := s.newRunEventEmitter(run.OwnerID, run.ID, run.ConversationID)
-	if runtimeWorkspace != nil {
+	if resolvedWorkspace != nil {
 		_ = emitter.Emit(ctx, runtimeevent.Event{Type: runtimeevent.WorkspaceReady, RunID: run.ID, Payload: workspaceEventPayload(resolvedWorkspace, nil)})
 	}
 	result, execErr := s.runtime.Resume(execCtx,
 		agentruntime.ResumeRequest{
 			RunRequest: agentruntime.RunRequest{
-				RunIdentity:         agentruntime.RunIdentity{OwnerID: run.OwnerID, AgentID: run.AgentID, AgentReleaseID: releaseID, RunID: run.ID, ParentRunID: run.ParentRunID},
+				RunIdentity:         agentruntime.RunIdentity{OwnerID: run.OwnerID, AgentID: run.AgentID, RunID: run.ID, ParentRunID: run.ParentRunID},
 				ConversationContext: agentruntime.ConversationContext{ConversationID: run.ConversationID, ProjectID: projectID},
 				ExecutionTask:       agentruntime.ExecutionTask{Task: task},
 				RuntimeResources:    agentruntime.RuntimeResources{Definition: definition},
 				RuntimePolicy:       agentruntime.RuntimePolicy{DelegationDepth: run.DelegationDepth, RuleHash: run.RuleHash},
 				WorkspaceContext:    agentruntime.WorkspaceContext{Workspace: runtimeWorkspace},
 				PersistenceHooks:    agentruntime.PersistenceHooks{StepRecorder: &runStepRecorder{repo: s.steps}},
+				Steering:            func() []string { return s.consumeSteering(run.ID) },
 			},
 			Checkpoint:    checkpoint,
 			Approved:      approved,
@@ -315,15 +321,6 @@ func (s *Service) CancelRun(ctx context.Context, ownerID, runID int64) error {
 	return cancelErr
 }
 
-func (s *Service) ExecuteAcceptedTurn(ctx context.Context, ownerID, turnID int64) error {
-	turn, err := s.turns.FindByID(ctx, ownerID, turnID)
-	if err != nil {
-		return mapNotFound(err)
-	}
-	s.executeTurnOwned(ctx, turn)
-	return nil
-}
-
 func (s *Service) GetTurn(ctx context.Context, ownerID, turnID int64) (*agentdomain.Turn, error) {
 	item, err := s.turns.FindByID(ctx, ownerID, turnID)
 	return item, mapNotFound(err)
@@ -378,6 +375,14 @@ func (s *Service) ListApprovalRequests(ctx context.Context, ownerID int64, statu
 }
 
 func (s *Service) DecideApprovalRequest(ctx context.Context, ownerID, requestID int64, approved bool, note string) (*agentdomain.Run, error) {
+	return s.decideApprovalRequest(ctx, ownerID, requestID, approved, note, nil)
+}
+
+func (s *Service) DecideApprovalRequestWithAnswers(ctx context.Context, ownerID, requestID int64, approved bool, note string, answers map[string]string) (*agentdomain.Run, error) {
+	return s.decideApprovalRequest(ctx, ownerID, requestID, approved, note, answers)
+}
+
+func (s *Service) decideApprovalRequest(ctx context.Context, ownerID, requestID int64, approved bool, note string, answers map[string]string) (*agentdomain.Run, error) {
 	if ownerID <= 0 || requestID <= 0 || s.approvals == nil {
 		return nil, agenterrors.ErrInvalidInput
 	}
@@ -388,18 +393,27 @@ func (s *Service) DecideApprovalRequest(ctx context.Context, ownerID, requestID 
 	if request.Status != agentdomain.ApprovalStatusPending {
 		return nil, agenterrors.ErrConflict
 	}
+	if approved && len(request.Questions) > 0 {
+		if err := runtimeagent.ValidateUserInputAnswers(request.Questions, answers); err != nil {
+			return nil, agenterrors.ErrInvalidInput
+		}
+	}
 	run, err := s.GetRun(ctx, ownerID, request.RunID)
 	if err != nil {
 		return nil, err
 	}
 	decidedAt := time.Now().UTC()
 	request.DecidedAt, request.DecisionNote = &decidedAt, strings.TrimSpace(note)
+	if len(answers) > 0 {
+		encoded, _ := json.Marshal(answers)
+		request.DecisionNote = "answers:" + string(encoded)
+	}
 	if approved {
 		request.Status = agentdomain.ApprovalStatusApproved
 	} else {
 		request.Status = agentdomain.ApprovalStatusRejected
 	}
-	resumeInput, err := s.resumeTurnInput(ctx, run, approved, request.DecisionNote)
+	resumeInput, err := s.resumeTurnInputWithAnswers(ctx, run, approved, request.DecisionNote, answers)
 	if err != nil {
 		return nil, err
 	}
@@ -443,6 +457,10 @@ func (s *Service) ResumeByID(ctx context.Context, ownerID, runID int64) (*agentd
 }
 
 func (s *Service) resumeTurnInput(ctx context.Context, run *agentdomain.Run, approved bool, note string) ([]byte, error) {
+	return s.resumeTurnInputWithAnswers(ctx, run, approved, note, nil)
+}
+
+func (s *Service) resumeTurnInputWithAnswers(ctx context.Context, run *agentdomain.Run, approved bool, note string, answers map[string]string) ([]byte, error) {
 	if run == nil || run.ID <= 0 {
 		return nil, agenterrors.ErrInvalidInput
 	}
@@ -463,6 +481,9 @@ func (s *Service) resumeTurnInput(ctx context.Context, run *agentdomain.Run, app
 	}
 	input["resume_approved"] = approved
 	input["resume_note"] = strings.TrimSpace(note)
+	if len(answers) > 0 {
+		input["resume_answers"] = answers
+	}
 	encoded, err := json.Marshal(input)
 	if err != nil {
 		return nil, fmt.Errorf("encode resume input: %w", err)

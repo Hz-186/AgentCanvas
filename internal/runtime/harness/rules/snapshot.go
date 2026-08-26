@@ -29,7 +29,7 @@ type BoundPolicyBinding struct {
 	Params    json.RawMessage `json:"params,omitempty"`
 }
 
-// Snapshot is an immutable copy of the rules embedded in an Agent release.
+// Snapshot is an immutable copy of the rules embedded in a Run.
 type Snapshot struct {
 	Hash  string `json:"hash"`
 	Rules []Rule `json:"rules"`

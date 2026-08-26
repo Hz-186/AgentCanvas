@@ -27,13 +27,11 @@ type AgentHandler struct {
 	workspace   *workspaceusecase.Service
 }
 
-// runDTO is the public execution view. Immutable release definitions remain
-// server-side snapshots and are never exposed through run endpoints.
+// runDTO is the public execution view. Definition snapshots remain server-side.
 type runDTO struct {
 	ID              int64                      `json:"id"`
 	OwnerID         int64                      `json:"owner_id"`
 	AgentID         int64                      `json:"agent_id"`
-	AgentReleaseID  *int64                     `json:"agent_release_id,omitempty"`
 	ConversationID  *int64                     `json:"conversation_id,omitempty"`
 	WorkspaceID     *int64                     `json:"workspace_id,omitempty"`
 	Workspace       *workspacedomain.Workspace `json:"workspace,omitempty"`
@@ -74,7 +72,7 @@ func publicRun(item *agentdomain.Run) *runDTO {
 	if item == nil {
 		return nil
 	}
-	return &runDTO{ID: item.ID, OwnerID: item.OwnerID, AgentID: item.AgentID, AgentReleaseID: item.AgentReleaseID,
+	return &runDTO{ID: item.ID, OwnerID: item.OwnerID, AgentID: item.AgentID,
 		ConversationID: item.ConversationID, WorkspaceID: item.WorkspaceID, ParentRunID: item.ParentRunID, RunType: item.RunType,
 		DelegationDepth: item.DelegationDepth, DefinitionHash: item.DefinitionHash, RuleHash: item.RuleHash,
 		Status: item.Status, InputJSON: item.InputJSON, OutputJSON: item.OutputJSON, ErrorMessage: item.ErrorMessage,
@@ -224,58 +222,6 @@ func (h *AgentHandler) Validate(c *gin.Context) {
 	response.OK(c, result)
 }
 
-func (h *AgentHandler) Publish(c *gin.Context) {
-	ownerID, id, ok := ownerAndID(c, "id")
-	if !ok {
-		return
-	}
-	item, err := h.service.Publish(c.Request.Context(), ownerID, id)
-	if err != nil {
-		writeAppError(c, err)
-		return
-	}
-	response.OK(c, item)
-}
-
-func (h *AgentHandler) ListReleases(c *gin.Context) {
-	ownerID, id, ok := ownerAndID(c, "id")
-	if !ok {
-		return
-	}
-	items, err := h.service.ListReleases(c.Request.Context(), ownerID, id)
-	if err != nil {
-		writeAppError(c, err)
-		return
-	}
-	response.OK(c, items)
-}
-
-func (h *AgentHandler) GetRelease(c *gin.Context) {
-	ownerID, id, ok := ownerAndID(c, "id")
-	if !ok {
-		return
-	}
-	item, err := h.service.GetRelease(c.Request.Context(), ownerID, id)
-	if err != nil {
-		writeAppError(c, err)
-		return
-	}
-	response.OK(c, item)
-}
-
-func (h *AgentHandler) Capabilities(c *gin.Context) {
-	ownerID, id, ok := ownerAndID(c, "id")
-	if !ok {
-		return
-	}
-	item, err := h.service.Capabilities(c.Request.Context(), ownerID, id)
-	if err != nil {
-		writeAppError(c, err)
-		return
-	}
-	response.OK(c, item)
-}
-
 func (h *AgentHandler) CreateConversation(c *gin.Context) {
 	ownerID, agentID, ok := ownerAndID(c, "id")
 	if !ok {
@@ -352,14 +298,23 @@ func (h *AgentHandler) DeleteConversation(c *gin.Context) {
 	response.OK(c, gin.H{"success": true})
 }
 
-func (h *AgentHandler) ForkConversation(c *gin.Context)    { h.fork(c, false) }
-func (h *AgentHandler) UpgradeConversation(c *gin.Context) { h.fork(c, true) }
-func (h *AgentHandler) fork(c *gin.Context, upgrade bool) {
+func (h *AgentHandler) ForkConversation(c *gin.Context) {
 	ownerID, agentID, conversationID, ok := agentConversationIDs(c)
 	if !ok {
 		return
 	}
-	item, err := h.service.ForkConversation(c.Request.Context(), ownerID, agentID, conversationID, upgrade)
+	deferGoalContinuation, _ := strconv.ParseBool(strings.TrimSpace(c.Query("defer_goal_continuation")))
+	if c.Request.Body != nil && c.Request.ContentLength > 0 {
+		var body struct {
+			DeferGoalContinuation bool `json:"defer_goal_continuation"`
+		}
+		if err := bindStrictAgentJSON(c, &body); err != nil {
+			writeAppError(c, agenterrors.ErrInvalidInput)
+			return
+		}
+		deferGoalContinuation = deferGoalContinuation || body.DeferGoalContinuation
+	}
+	item, err := h.service.ForkConversationWithOptions(c.Request.Context(), ownerID, agentID, conversationID, deferGoalContinuation)
 	if err != nil {
 		writeAppError(c, err)
 		return
@@ -378,6 +333,27 @@ func (h *AgentHandler) StartTurn(c *gin.Context) {
 		return
 	}
 	accepted, err := h.service.StartTurn(c.Request.Context(), ownerID, agentID, conversationID, c.GetHeader("Idempotency-Key"), req)
+	if err != nil {
+		writeAppError(c, err)
+		return
+	}
+	c.JSON(http.StatusAccepted, response.Body{
+		Code:    0,
+		Message: http.StatusText(http.StatusAccepted),
+		Data: turnAcceptedDTO{
+			Turn:        accepted.Turn,
+			Run:         h.publicRun(c, accepted.Run),
+			UserMessage: accepted.UserMessage,
+		},
+	})
+}
+
+func (h *AgentHandler) CompactConversation(c *gin.Context) {
+	ownerID, agentID, conversationID, ok := agentConversationIDs(c)
+	if !ok {
+		return
+	}
+	accepted, err := h.service.StartTurn(c.Request.Context(), ownerID, agentID, conversationID, c.GetHeader("Idempotency-Key"), agentusecase.CreateTurnRequest{Content: "/compact", ManualCompaction: true})
 	if err != nil {
 		writeAppError(c, err)
 		return
@@ -912,6 +888,104 @@ func (h *AgentHandler) ListApprovalRequests(c *gin.Context) {
 	response.OK(c, items)
 }
 
+func (h *AgentHandler) GetGoal(c *gin.Context) {
+	ownerID, agentID, conversationID, ok := agentConversationIDs(c)
+	if !ok {
+		return
+	}
+	if _, err := h.service.GetConversation(c.Request.Context(), ownerID, agentID, conversationID); err != nil {
+		writeAppError(c, err)
+		return
+	}
+	item, err := h.service.GetGoal(c.Request.Context(), ownerID, conversationID)
+	if err != nil {
+		writeAppError(c, err)
+		return
+	}
+	response.OK(c, item)
+}
+
+func (h *AgentHandler) SetGoal(c *gin.Context) {
+	ownerID, agentID, conversationID, ok := agentConversationIDs(c)
+	if !ok {
+		return
+	}
+	if _, err := h.service.GetConversation(c.Request.Context(), ownerID, agentID, conversationID); err != nil {
+		writeAppError(c, err)
+		return
+	}
+	var request agentusecase.GoalUpdateRequest
+	if err := bindStrictAgentJSON(c, &request); err != nil {
+		writeAppError(c, agenterrors.ErrInvalidInput)
+		return
+	}
+	item, err := h.service.SetGoal(c.Request.Context(), ownerID, conversationID, request)
+	if err != nil {
+		writeAppError(c, err)
+		return
+	}
+	response.OK(c, item)
+}
+
+func (h *AgentHandler) ClearGoal(c *gin.Context) {
+	ownerID, agentID, conversationID, ok := agentConversationIDs(c)
+	if !ok {
+		return
+	}
+	if _, err := h.service.GetConversation(c.Request.Context(), ownerID, agentID, conversationID); err != nil {
+		writeAppError(c, err)
+		return
+	}
+	if err := h.service.ClearGoal(c.Request.Context(), ownerID, conversationID); err != nil {
+		writeAppError(c, err)
+		return
+	}
+	response.OK(c, gin.H{"cleared": true})
+}
+
+func (h *AgentHandler) StreamGoalEvents(c *gin.Context) {
+	ownerID, agentID, conversationID, ok := agentConversationIDs(c)
+	if !ok {
+		return
+	}
+	if _, err := h.service.GetConversation(c.Request.Context(), ownerID, agentID, conversationID); err != nil {
+		writeAppError(c, err)
+		return
+	}
+	afterSeq, _ := strconv.ParseUint(strings.TrimSpace(c.Query("after_seq")), 10, 64)
+	if headerSeq, err := strconv.ParseUint(strings.TrimSpace(c.GetHeader("Last-Event-ID")), 10, 64); err == nil && headerSeq > afterSeq {
+		afterSeq = headerSeq
+	}
+	item, replay, live, cancel, err := h.service.SubscribeGoalStream(c.Request.Context(), ownerID, conversationID, afterSeq)
+	if err != nil {
+		writeAppError(c, err)
+		return
+	}
+	defer cancel()
+	writer := sse.NewWriter(c)
+	if err := writer.Event("goal.snapshot", gin.H{"conversation_id": conversationID, "goal": item}); err != nil {
+		return
+	}
+	for _, event := range replay {
+		if err := writer.EventWithID(int64(event.Seq), event.Kind, event); err != nil {
+			return
+		}
+	}
+	for {
+		select {
+		case <-c.Request.Context().Done():
+			return
+		case event, open := <-live:
+			if !open {
+				return
+			}
+			if err := writer.EventWithID(int64(event.Seq), event.Kind, event); err != nil {
+				return
+			}
+		}
+	}
+}
+
 func (h *AgentHandler) ApproveRequest(c *gin.Context) { h.decideApproval(c, true) }
 func (h *AgentHandler) RejectRequest(c *gin.Context)  { h.decideApproval(c, false) }
 
@@ -921,7 +995,8 @@ func (h *AgentHandler) decideApproval(c *gin.Context, approved bool) {
 		return
 	}
 	var body struct {
-		Note string `json:"note"`
+		Note    string            `json:"note"`
+		Answers map[string]string `json:"answers"`
 	}
 	if c.Request.Body != nil {
 		if err := c.ShouldBindJSON(&body); err != nil && err != io.EOF {
@@ -929,7 +1004,7 @@ func (h *AgentHandler) decideApproval(c *gin.Context, approved bool) {
 			return
 		}
 	}
-	run, err := h.service.DecideApprovalRequest(c.Request.Context(), ownerID, requestID, approved, body.Note)
+	run, err := h.service.DecideApprovalRequestWithAnswers(c.Request.Context(), ownerID, requestID, approved, body.Note, body.Answers)
 	if err != nil {
 		writeAppError(c, err)
 		return

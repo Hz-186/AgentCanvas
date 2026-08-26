@@ -10,9 +10,9 @@ func TestFallbackToolRulesLoadOnlyAfterToolUse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	before, _ := SelectOptionalRules(items, LoadContext{Mode: "plan_execute", TokenBudget: 1000})
-	after, _ := SelectOptionalRules(items, LoadContext{Mode: "plan_execute", Tags: []string{"tool_used"}, ToolNames: []string{"bash"}, TokenBudget: 1000})
-	if containsRule(before, "tool.plan_execute.checkpoints") || !containsRule(after, "tool.plan_execute.checkpoints") {
+	before, _ := SelectOptionalRules(items, LoadContext{Mode: "plan", TokenBudget: 1000})
+	after, _ := SelectOptionalRules(items, LoadContext{Mode: "plan", Tags: []string{"tool_used"}, ToolNames: []string{"bash"}, TokenBudget: 1000})
+	if containsRule(before, "tool.plan.checkpoints") || !containsRule(after, "tool.plan.checkpoints") {
 		t.Fatalf("tool rule activation mismatch: before=%+v after=%+v", before, after)
 	}
 }

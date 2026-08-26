@@ -26,6 +26,7 @@ type runEventEmitter struct {
 	hub            runStreamHub
 	ownerID, runID int64
 	conversationID *int64
+	onUsage        func(context.Context, int64, llm.Usage)
 
 	// mu is the per-run publication lane. It keeps sequence reservation, the
 	// durable audit append, and live publication in the same order while also
@@ -33,6 +34,7 @@ type runEventEmitter struct {
 	mu               sync.Mutex
 	assistantSegment string
 	reasoningSegment string
+	planSegment      string
 }
 
 func (s *Service) ConfigureEventHub(hub runStreamHub) {
@@ -40,7 +42,10 @@ func (s *Service) ConfigureEventHub(hub runStreamHub) {
 }
 
 func (s *Service) newRunEventEmitter(ownerID, runID int64, conversationID *int64) *runEventEmitter {
-	return &runEventEmitter{repo: s.events, hub: s.streamHub, ownerID: ownerID, runID: runID, conversationID: conversationID}
+	return &runEventEmitter{repo: s.events, hub: s.streamHub, ownerID: ownerID, runID: runID, conversationID: conversationID,
+		onUsage: func(ctx context.Context, runID int64, usage llm.Usage) {
+			s.accountGoalUsageEvent(ctx, ownerID, runID, usage)
+		}}
 }
 
 var ErrRunStreamUnavailable = errors.New("run event stream is not configured")
@@ -81,7 +86,10 @@ func (e *runEventEmitter) Emit(ctx context.Context, event runtimeevent.Event) er
 // EmitModelEvent is live-only by design. In particular, reasoning never
 // enters the RunEvent repository and therefore cannot leak through history or
 // terminal snapshots.
-func (e *runEventEmitter) EmitModelEvent(_ context.Context, modelEvent llm.ModelStreamEvent) error {
+func (e *runEventEmitter) EmitModelEvent(ctx context.Context, modelEvent llm.ModelStreamEvent) error {
+	if modelEvent.Kind == llm.ModelUsage && e.onUsage != nil {
+		e.onUsage(ctx, e.runID, modelEvent.Usage)
+	}
 	if e.hub == nil {
 		return nil
 	}
@@ -111,6 +119,19 @@ func (e *runEventEmitter) EmitModelEvent(_ context.Context, modelEvent llm.Model
 		if e.reasoningSegment != "" {
 			e.publishData("reasoning.end", map[string]any{"segment_id": e.reasoningSegment})
 			e.reasoningSegment = ""
+		}
+	case llm.ModelProposedPlanStart:
+		if e.planSegment == "" {
+			e.planSegment = e.publishSegmentStart(runtimeevent.PlanStart, "plan")
+		}
+	case llm.ModelProposedPlanDelta:
+		if e.planSegment == "" {
+			e.planSegment = e.publishSegmentStart(runtimeevent.PlanStart, "plan")
+		}
+		e.publishData(runtimeevent.PlanDelta, map[string]any{"segment_id": e.planSegment, "text": modelEvent.Text})
+	case llm.ModelProposedPlanEnd:
+		if e.planSegment != "" {
+			e.publishData(runtimeevent.PlanEnd, map[string]any{"segment_id": e.planSegment})
 		}
 	case llm.ModelUsage:
 		e.publishData("usage.update", modelEvent.Usage)
@@ -170,6 +191,10 @@ func projectRuntimeEvent(event runtimeevent.Event, conversationID *int64) []even
 		return stream("status.update", map[string]any{"message": "Agent runtime failed", "level": "error"})
 	case runtimeevent.AgentFinished:
 		return stream("status.update", map[string]any{"message": "Agent runtime finished; finalizing", "level": "info"})
+	case runtimeevent.TodoUpdated:
+		return stream("todo.updated", event.Payload)
+	case runtimeevent.GoalUpdated:
+		return stream(runtimeevent.GoalUpdated, event.Payload)
 	case runtimeevent.AgentStep:
 		stepType, _ := event.Payload["type"].(string)
 		callID, _ := event.Payload["tool_call_id"].(string)
@@ -201,7 +226,6 @@ type streamRunSnapshot struct {
 	ID              int64                      `json:"id"`
 	OwnerID         int64                      `json:"owner_id"`
 	AgentID         int64                      `json:"agent_id"`
-	AgentReleaseID  *int64                     `json:"agent_release_id,omitempty"`
 	ConversationID  *int64                     `json:"conversation_id,omitempty"`
 	WorkspaceID     *int64                     `json:"workspace_id,omitempty"`
 	Workspace       *workspacedomain.Workspace `json:"workspace,omitempty"`
@@ -235,7 +259,7 @@ func publicStreamRun(run *agentdomain.Run, workspace *workspacedomain.Workspace)
 		view.RunID = run.ID
 		workspace = &view
 	}
-	return streamRunSnapshot{ID: run.ID, OwnerID: run.OwnerID, AgentID: run.AgentID, AgentReleaseID: run.AgentReleaseID,
+	return streamRunSnapshot{ID: run.ID, OwnerID: run.OwnerID, AgentID: run.AgentID,
 		ConversationID: run.ConversationID, WorkspaceID: run.WorkspaceID, Workspace: workspace, ParentRunID: run.ParentRunID, RunType: run.RunType, DelegationDepth: run.DelegationDepth,
 		DefinitionHash: run.DefinitionHash, RuleHash: run.RuleHash, Status: run.Status, InputJSON: run.InputJSON, OutputJSON: run.OutputJSON,
 		ErrorMessage: run.ErrorMessage, TotalTokens: run.TotalTokens, LatencyMS: run.LatencyMS, StartedAt: run.StartedAt,
@@ -279,7 +303,7 @@ func (s *Service) publishApprovalRequired(run *agentdomain.Run, approval *agentd
 	var runtimeApproval runtimeagent.Approval
 	_ = json.Unmarshal(approval.RequestJSON, &runtimeApproval)
 	data, _ := json.Marshal(map[string]any{"request_id": approval.ID, "call_id": approval.ToolCallID, "tool_name": approval.ToolName,
-		"reason": approval.Reason, "options": runtimeApproval.Options})
+		"reason": approval.Reason, "is_blocking": runtimeApproval.IsBlocking, "options": runtimeApproval.Options, "questions": runtimeApproval.Questions})
 	event := s.streamHub.Prepare(run.ID, eventhub.StreamEvent{RunID: run.ID, ConversationID: run.ConversationID, Kind: "approval.required", Data: data})
 	s.streamHub.PublishPrepared(event)
 }

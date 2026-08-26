@@ -60,7 +60,7 @@ func TestImprovementReviewSpecOmitsMemoryWhenDedicatedExtractionIsActive(t *test
 }
 
 func TestMemoryReviewAutoMapsToSuggestWithoutAutoApply(t *testing.T) {
-	service := NewImprovementService(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, MemoryReviewAuto)
+	service := NewImprovementService(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, MemoryReviewAuto)
 	if service.memoryMode != MemoryReviewSuggest {
 		t.Fatalf("auto compatibility mode = %q, want suggest", service.memoryMode)
 	}
@@ -178,6 +178,13 @@ type workerApprovalRepo struct {
 	checkpoint *agent.RunCheckpoint
 }
 
+type workerReviewEnqueuer struct{ calls int }
+
+func (r *workerReviewEnqueuer) EnqueueTurnReview(context.Context, *agent.Turn, agentruntime.Definition) error {
+	r.calls++
+	return nil
+}
+
 func (r *workerApprovalRepo) SavePausedRun(_ context.Context, _ *agent.Turn, _ *agent.Run, _ *agent.ApprovalRequest, checkpoint *agent.RunCheckpoint) error {
 	r.saves++
 	r.checkpoint = checkpoint
@@ -270,6 +277,28 @@ func TestCompleteTurnPersistsPauseInSingleRepositoryCall(t *testing.T) {
 	}
 	if turns.updates != 0 || runs.updateCalls != 0 || turn.Status != agent.TurnStatusPaused || run.Status != agent.RunStatusPaused {
 		t.Fatalf("pause used split writes: turn_updates=%d run_updates=%d turn=%s run=%s", turns.updates, runs.updateCalls, turn.Status, run.Status)
+	}
+}
+
+func TestCompleteTurnSkipsImprovementReviewInPlanMode(t *testing.T) {
+	for _, tc := range []struct {
+		mode      string
+		wantCalls int
+	}{{mode: "plan"}, {mode: "goal", wantCalls: 1}} {
+		t.Run(tc.mode, func(t *testing.T) {
+			runID := int64(10)
+			input, _ := json.Marshal(map[string]any{"mode": tc.mode})
+			run := &agent.Run{BaseModel: domain.BaseModel{ID: runID, OwnerID: 1}, RunType: agent.RunTypeTurn, Status: agent.RunStatusRunning, StartedAt: time.Now().UTC(), InputJSON: input, DefinitionJSON: json.RawMessage(`{"provider_id":1,"model":"test"}`)}
+			turn := &agent.Turn{BaseModel: domain.BaseModel{ID: 20, OwnerID: 1}, AgentID: 2, ConversationID: 4, RunID: &runID, Status: agent.TurnStatusRunning}
+			reviewer := &workerReviewEnqueuer{}
+			service := &Service{turns: &workerTurnRepo{}, runs: &workerRunRepo{items: map[int64]*agent.Run{runID: run}}, improvement: reviewer}
+
+			service.completeTurn(context.Background(), turn, run, &agentruntime.RunResult{Output: agentruntime.RunOutput{"final_answer": "done"}})
+
+			if reviewer.calls != tc.wantCalls {
+				t.Fatalf("review calls = %d, want %d", reviewer.calls, tc.wantCalls)
+			}
+		})
 	}
 }
 

@@ -32,10 +32,10 @@ func TestManagedDefinitionOwnsInternalDefaults(t *testing.T) {
 	temperature := 0.4
 	definition := ManagedDefinition(AgentEditableSettings{
 		ProviderID: 8, Model: "  gpt-test  ", SystemPrompt: "  be useful  ",
-		KnowledgeBaseIDs: []int64{4, 4, 2}, PythonToolNames: []string{" python_text_stats ", "python_text_stats"}, Temperature: &temperature,
+		KnowledgeBaseIDs: []int64{4, 4, 2}, Temperature: &temperature,
 	})
 
-	if definition.Mode != "react" || !definition.MemoryEnabled || !definition.ReflectionEnabled || !definition.AllowSubagents {
+	if definition.Mode != "default" || !definition.MemoryEnabled || !definition.ReflectionEnabled || !definition.AllowSubagents {
 		t.Fatalf("managed runtime defaults are incomplete: %+v", definition)
 	}
 	if definition.MaxIterations != 8 || definition.MaxToolCalls != 16 || definition.MaxExecutionTimeMS != 120000 ||
@@ -44,12 +44,12 @@ func TestManagedDefinitionOwnsInternalDefaults(t *testing.T) {
 		t.Fatalf("unexpected managed limits: %+v", definition)
 	}
 	if definition.Model != "gpt-test" || definition.SystemPrompt != "be useful" || len(definition.KnowledgeBaseIDs) != 2 ||
-		definition.KnowledgeBaseIDs[0] != 4 || definition.KnowledgeBaseIDs[1] != 2 || len(definition.PythonToolNames) != 1 || definition.PythonToolNames[0] != "python_text_stats" {
+		definition.KnowledgeBaseIDs[0] != 4 || definition.KnowledgeBaseIDs[1] != 2 {
 		t.Fatalf("editable settings were not normalized: %+v", definition)
 	}
 }
 
-func TestCreateAgentValidatesResourcesAndPublishesFirstRelease(t *testing.T) {
+func TestCreateAgentValidatesResourcesAndActivatesAgent(t *testing.T) {
 	agents := newSettingsAgentRepo()
 	service := NewService(agents, nil, nil, nil, nil, nil, nil, nil, nil)
 	service.ConfigureEditableResources(
@@ -63,11 +63,11 @@ func TestCreateAgentValidatesResourcesAndPublishesFirstRelease(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateAgent returned error: %v", err)
 	}
-	if view.Name != "Planner" || view.Status != agentdomain.StatusActive || view.CurrentReleaseID == nil || *view.CurrentReleaseID != 100 {
-		t.Fatalf("agent was not created and published atomically from the caller perspective: %+v", view)
+	if view.Name != "Planner" || view.Status != agentdomain.StatusActive {
+		t.Fatalf("agent was not created as active: %+v", view)
 	}
-	if len(agents.releases) != 1 || agents.releases[0].Definition.Mode != "react" || agents.releases[0].Definition.SystemPrompt != defaultAgentSystemPrompt {
-		t.Fatalf("unexpected first release: %+v", agents.releases)
+	if agents.items[view.ID].DraftDefinition.Mode != "default" || agents.items[view.ID].DraftDefinition.SystemPrompt != defaultAgentSystemPrompt {
+		t.Fatalf("unexpected Agent definition: %+v", agents.items[view.ID].DraftDefinition)
 	}
 
 	_, err = service.CreateAgent(context.Background(), 4, CreateAgentRequest{
@@ -79,23 +79,23 @@ func TestCreateAgentValidatesResourcesAndPublishesFirstRelease(t *testing.T) {
 }
 
 func TestConversationModeLifecycleAndForkInheritance(t *testing.T) {
-	agentID, releaseID := int64(10), int64(100)
+	agentID := int64(10)
 	agents := newSettingsAgentRepo()
-	agents.items[agentID] = &agentdomain.Agent{SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: agentID, OwnerID: 3}}, Status: agentdomain.StatusActive, CurrentReleaseID: &releaseID}
+	agents.items[agentID] = &agentdomain.Agent{SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: agentID, OwnerID: 3}}, Status: agentdomain.StatusActive}
 	conversations := &settingsConversationRepo{items: map[int64]*conversation.Conversation{}, nextID: 20}
 	turns := &settingsTurnRepo{latestErr: agentdomain.ErrNoTurnAvailable}
 	messages := &settingsMessageRepo{byConversation: map[int64][]conversation.Message{}}
 	service := NewService(agents, turns, conversations, messages, nil, nil, nil, nil, nil)
 
 	created, err := service.CreateConversation(context.Background(), 3, agentID, CreateConversationRequest{})
-	if err != nil || created.AgentMode != "react" {
-		t.Fatalf("new conversation must default to react: item=%+v err=%v", created, err)
+	if err != nil || created.AgentMode != "default" {
+		t.Fatalf("new conversation must default to default mode: item=%+v err=%v", created, err)
 	}
 	if _, err = service.UpdateConversationMode(context.Background(), 3, agentID, created.ID, UpdateConversationModeRequest{Mode: "invalid"}); !errors.Is(err, agenterrors.ErrInvalidInput) {
 		t.Fatalf("invalid mode must be rejected, got %v", err)
 	}
 	updated, err := service.UpdateConversationMode(context.Background(), 3, agentID, created.ID, UpdateConversationModeRequest{Mode: "plan_execute"})
-	if err != nil || updated.AgentMode != "plan_execute" {
+	if err != nil || updated.AgentMode != "plan" {
 		t.Fatalf("mode was not persisted: item=%+v err=%v", updated, err)
 	}
 
@@ -106,8 +106,8 @@ func TestConversationModeLifecycleAndForkInheritance(t *testing.T) {
 	}
 	turns.latest = nil
 	turns.latestErr = agentdomain.ErrNoTurnAvailable
-	forked, err := service.ForkConversation(context.Background(), 3, agentID, created.ID, false)
-	if err != nil || forked.AgentMode != "plan_execute" || forked.ParentConversationID == nil || *forked.ParentConversationID != created.ID {
+	forked, err := service.ForkConversation(context.Background(), 3, agentID, created.ID)
+	if err != nil || forked.AgentMode != "plan" || forked.ParentConversationID == nil || *forked.ParentConversationID != created.ID {
 		t.Fatalf("fork did not inherit mode: item=%+v err=%v", forked, err)
 	}
 
@@ -118,9 +118,9 @@ func TestConversationModeLifecycleAndForkInheritance(t *testing.T) {
 }
 
 func TestCreateConversationRejectsArchivedProject(t *testing.T) {
-	agentID, releaseID, projectID := int64(10), int64(100), int64(11)
+	agentID, projectID := int64(10), int64(11)
 	agents := newSettingsAgentRepo()
-	agents.items[agentID] = &agentdomain.Agent{SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: agentID, OwnerID: 3}}, Status: agentdomain.StatusActive, CurrentReleaseID: &releaseID}
+	agents.items[agentID] = &agentdomain.Agent{SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: agentID, OwnerID: 3}}, Status: agentdomain.StatusActive}
 	conversations := &settingsConversationRepo{items: map[int64]*conversation.Conversation{}, nextID: 20}
 	service := NewService(agents, nil, conversations, nil, nil, nil, nil, nil, nil)
 	service.ConfigureWorkspace(workspaceusecase.NewService(
@@ -140,8 +140,8 @@ func TestCreateConversationRejectsArchivedProject(t *testing.T) {
 }
 
 func TestStartTurnSnapshotsModeAndReturnsPersistentUserMessage(t *testing.T) {
-	agentID, releaseID := int64(10), int64(100)
-	conv := &conversation.Conversation{SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 20, OwnerID: 3}}, AgentID: &agentID, AgentReleaseID: &releaseID, AgentMode: "plan_execute"}
+	agentID := int64(10)
+	conv := &conversation.Conversation{SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 20, OwnerID: 3}}, AgentID: &agentID, AgentMode: "plan_execute"}
 	conversations := &settingsConversationRepo{items: map[int64]*conversation.Conversation{20: conv}}
 	turns := &settingsTurnRepo{latestErr: agentdomain.ErrNoTurnAvailable}
 	definition := agentdomain.Definition{ModelConfig: agentdomain.ModelConfig{ProviderID: 1, Model: "test-model"}, PromptConfig: agentdomain.PromptConfig{SystemPrompt: "test"}, ExecutionLimits: agentdomain.ExecutionLimits{Mode: "react"}}
@@ -149,7 +149,8 @@ func TestStartTurnSnapshotsModeAndReturnsPersistentUserMessage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	agents := &settingsAgentRepo{releases: []agentdomain.Release{{ImmutableModel: domain.ImmutableModel{ID: releaseID, OwnerID: 3}, AgentID: agentID, DefinitionJSON: definitionJSON, Checksum: checksum, RuleHash: "rules"}}}
+	agents := newSettingsAgentRepo()
+	agents.items[agentID] = &agentdomain.Agent{SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: agentID, OwnerID: 3}}, Status: agentdomain.StatusActive, DraftDefinition: definition}
 	service := NewService(agents, turns, conversations, nil, nil, nil, nil, nil, nil)
 
 	accepted, err := service.StartTurn(context.Background(), 3, agentID, 20, "request-1", CreateTurnRequest{Content: " investigate "})
@@ -166,8 +167,22 @@ func TestStartTurnSnapshotsModeAndReturnsPersistentUserMessage(t *testing.T) {
 	if err = json.Unmarshal(accepted.Run.InputJSON, &runInput); err != nil {
 		t.Fatal(err)
 	}
-	if turnInput["mode"] != "plan_execute" || runInput["mode"] != "plan_execute" || turnInput["query"] != "investigate" {
+	if turnInput["mode"] != "plan" || runInput["mode"] != "plan" || turnInput["query"] != "investigate" {
 		t.Fatalf("turn mode was not snapshotted: turn=%v run=%v", turnInput, runInput)
+	}
+	if string(accepted.Run.DefinitionJSON) != string(definitionJSON) || accepted.Run.DefinitionHash != checksum {
+		t.Fatalf("Agent definition was not snapshotted on the run: %+v", accepted.Run)
+	}
+	manual, err := service.StartTurn(context.Background(), 3, agentID, 20, "request-compact", CreateTurnRequest{Content: "/compact", ManualCompaction: true})
+	if err != nil {
+		t.Fatalf("manual StartTurn returned error: %v", err)
+	}
+	var manualInput map[string]any
+	if err := json.Unmarshal(manual.Turn.InputJSON, &manualInput); err != nil {
+		t.Fatal(err)
+	}
+	if manualInput["query"] != "/compact" || manualInput["manual_compaction"] != true {
+		t.Fatalf("manual compaction input was not snapshotted: %v", manualInput)
 	}
 }
 
@@ -190,6 +205,24 @@ func TestExecuteTurnAcceptsEmptyHistoricalInputAndFailsNilRuntimeResult(t *testi
 
 	if runtime.executeReq.RunID != runID || turn.Status != agentdomain.TurnStatusFailed || run.Status != agentdomain.RunStatusFailed || !strings.Contains(run.ErrorMessage, "returned no result") {
 		t.Fatalf("empty input or nil result handling mismatch: request=%+v turn=%+v run=%+v", runtime.executeReq, turn, run)
+	}
+}
+
+func TestExecuteTurnPassesManualCompaction(t *testing.T) {
+	definitionJSON, _, err := (agentdomain.Definition{
+		ModelConfig:  agentdomain.ModelConfig{ProviderID: 1, Model: "test-model"},
+		PromptConfig: agentdomain.PromptConfig{SystemPrompt: "test"},
+	}).Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	runID := int64(402)
+	run := &agentdomain.Run{BaseModel: domain.BaseModel{ID: runID, OwnerID: 3}, AgentID: 10, Status: agentdomain.RunStatusQueued, DefinitionJSON: definitionJSON, StartedAt: time.Now().UTC()}
+	turn := &agentdomain.Turn{BaseModel: domain.BaseModel{ID: 202, OwnerID: 3}, AgentID: 10, RunID: &runID, UserMessageID: 301, Status: agentdomain.TurnStatusRunning, InputJSON: json.RawMessage(`{"query":"/compact","manual_compaction":true}`)}
+	runtime := &settingsAgentRuntime{}
+	NewService(nil, &settingsTurnRepo{}, nil, nil, &settingsRunRepo{items: map[int64]*agentdomain.Run{runID: run}}, nil, nil, nil, runtime).executeTurnOwned(context.Background(), turn)
+	if !runtime.executeReq.ManualCompaction || runtime.executeReq.Task != "/compact" || runtime.executeReq.UserMessageID != 301 {
+		t.Fatalf("manual compaction was not passed to runtime: %+v", runtime.executeReq)
 	}
 }
 
@@ -216,6 +249,47 @@ func TestProjectTurnPassesProjectIDWithoutWorkspace(t *testing.T) {
 
 	if runtime.executeReq.ProjectID != projectID || runtime.executeReq.Workspace != nil {
 		t.Fatalf("project context depends on workspace: %+v", runtime.executeReq)
+	}
+}
+
+func TestPlanRootRunUsesNormalWorkspaceCapabilities(t *testing.T) {
+	ctx := context.Background()
+	definitionJSON, _, err := (agentdomain.Definition{
+		ModelConfig:  agentdomain.ModelConfig{ProviderID: 1, Model: "test-model"},
+		PromptConfig: agentdomain.PromptConfig{SystemPrompt: "test"},
+	}).Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	gitService := gitinfra.NewService(gitinfra.Config{})
+	if _, err := gitService.EnsureRepository(ctx, root, true); err != nil {
+		t.Fatal(err)
+	}
+	conversationID, projectID, runID, agentID := int64(20), int64(11), int64(401), int64(10)
+	input := json.RawMessage(`{"query":"inspect repository","mode":"plan"}`)
+	run := &agentdomain.Run{BaseModel: domain.BaseModel{ID: runID, OwnerID: 3}, AgentID: agentID, ConversationID: &conversationID, Status: agentdomain.RunStatusQueued, DefinitionJSON: definitionJSON, InputJSON: input, StartedAt: time.Now().UTC()}
+	turn := &agentdomain.Turn{BaseModel: domain.BaseModel{ID: 201, OwnerID: 3}, AgentID: agentID, ConversationID: conversationID, RunID: &runID, InputJSON: input, Status: agentdomain.TurnStatusQueued}
+	runs := &settingsRunRepo{items: map[int64]*agentdomain.Run{runID: run}}
+	conversations := &settingsConversationRepo{items: map[int64]*conversation.Conversation{
+		conversationID: {SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: conversationID, OwnerID: 3}}, AgentID: &agentID, ProjectID: &projectID, WorkspaceMode: workspacedomain.KindShared},
+	}}
+	workspaceRepository := &lifecycleWorkspaceRepository{items: make(map[int64]workspacedomain.Workspace)}
+	runtime := &settingsAgentRuntime{executeResult: &agentruntime.RunResult{Output: agentruntime.RunOutput{"final_answer": "plan"}}}
+	service := NewService(nil, &settingsTurnRepo{}, conversations, nil, runs, &workspaceLifecycleEventRepo{}, nil, nil, runtime)
+	service.ConfigureWorkspace(workspaceusecase.NewService(
+		&staticLifecycleProjectRepo{item: projectdomain.Project{BaseModel: domain.BaseModel{ID: projectID, OwnerID: 3}, Slug: "demo", RepositoryRoot: root}},
+		workspaceRepository, gitService, workspaceusecase.Config{Enabled: true, AllowedRoots: []string{root}, WorktreeDirName: ".worktrees"},
+	))
+
+	service.executeTurnOwned(ctx, turn)
+
+	workspace := runtime.executeReq.Workspace
+	if workspace == nil || !workspace.FileWriteEnabled || !workspace.ExecEnabled || !workspace.GitEnabled {
+		t.Fatalf("Plan workspace capabilities differ from Default: %+v", workspace)
+	}
+	if run.WorkspaceID == nil || len(workspaceRepository.items) != 1 {
+		t.Fatalf("Plan run did not persist its normal workspace: run=%+v workspaces=%+v", run, workspaceRepository.items)
 	}
 }
 
@@ -388,6 +462,49 @@ func TestSubagentDoesNotExecuteWhenWorkspaceLinkPersistenceFails(t *testing.T) {
 	}
 	if childWorkspace.Locked || childWorkspace.LockReason != "" {
 		t.Fatalf("failed child Run left its sibling worktree locked: %#v", childWorkspace)
+	}
+}
+
+func TestPlanSubagentUsesNormalChildWorkspaceCapabilities(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	gitService := gitinfra.NewService(gitinfra.Config{})
+	if _, err := gitService.EnsureRepository(ctx, root, true); err != nil {
+		t.Fatal(err)
+	}
+	head, err := gitService.Head(ctx, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projectID, parentRunID, parentWorkspaceID := int64(11), int64(41), int64(70)
+	parentWorkspacePath := root
+	workspaceRepository := &lifecycleWorkspaceRepository{items: map[int64]workspacedomain.Workspace{
+		parentWorkspaceID: {BaseModel: domain.BaseModel{ID: parentWorkspaceID, OwnerID: 3}, ProjectID: projectID, RunID: parentRunID, Kind: workspacedomain.KindShared, Status: workspacedomain.StatusReady, RepositoryRoot: root, WorkspacePath: parentWorkspacePath, BranchName: "master", BaseSHA: head, HeadSHA: head},
+	}}
+	workspaceService := workspaceusecase.NewService(
+		&staticLifecycleProjectRepo{item: projectdomain.Project{BaseModel: domain.BaseModel{ID: projectID, OwnerID: 3}, Slug: "demo", RepositoryRoot: root}},
+		workspaceRepository, gitService, workspaceusecase.Config{Enabled: true, AllowedRoots: []string{root}},
+	)
+	parent := &agentdomain.Run{BaseModel: domain.BaseModel{ID: parentRunID, OwnerID: 3}, AgentID: 10, RunType: agentdomain.RunTypeTurn, Status: agentdomain.RunStatusRunning, WorkspaceID: &parentWorkspaceID}
+	runs := &settingsRunRepo{items: map[int64]*agentdomain.Run{parentRunID: parent}, nextID: parentRunID + 1}
+	runtime := &settingsAgentRuntime{executeResult: &agentruntime.RunResult{Output: agentruntime.RunOutput{"final_answer": "plan"}}}
+	service := NewService(nil, nil, nil, nil, runs, &workspaceLifecycleEventRepo{}, nil, nil, runtime)
+	service.ConfigureWorkspace(workspaceService)
+
+	result, err := service.RunSubagent(ctx, toolruntime.SubagentRequest{
+		OwnerID: 3, ParentRunID: parentRunID, AgentID: parent.AgentID, MaxDepth: 2,
+		Definition: toolruntime.SubagentDefinition{Task: "inspect child task", Mode: "plan", WorkspaceMode: workspacedomain.KindShared},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspace := runtime.executeReq.Workspace
+	child := runs.items[result.RunID]
+	if workspace == nil || workspace.WorkspacePath != parentWorkspacePath || !workspace.FileWriteEnabled || !workspace.ExecEnabled || !workspace.GitEnabled {
+		t.Fatalf("Plan subagent capabilities differ from Default: %+v", workspace)
+	}
+	if child == nil || child.WorkspaceID == nil || *child.WorkspaceID != parentWorkspaceID || len(workspaceRepository.items) != 1 {
+		t.Fatalf("Plan subagent did not follow normal shared-workspace semantics: child=%+v workspaces=%+v", child, workspaceRepository.items)
 	}
 }
 
@@ -771,6 +888,54 @@ func TestResumeRunEmitsFinalWorkspaceStatusAfterRuntimeMutation(t *testing.T) {
 	}
 }
 
+func TestResumePlanRunUsesPersistedWorkspaceCapabilities(t *testing.T) {
+	ctx := context.Background()
+	_, definitionJSON, err := subagentRuntimeDefinition(toolruntime.SubagentDefinition{Task: "continue", Mode: "plan"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	gitService := gitinfra.NewService(gitinfra.Config{})
+	if _, err := gitService.EnsureRepository(ctx, root, true); err != nil {
+		t.Fatal(err)
+	}
+	head, err := gitService.Head(ctx, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conversationID, projectID, runID, workspaceID := int64(20), int64(11), int64(43), int64(70)
+	input := json.RawMessage(`{"query":"continue","mode":"plan"}`)
+	run := &agentdomain.Run{BaseModel: domain.BaseModel{ID: runID, OwnerID: 3}, AgentID: 10, RunType: agentdomain.RunTypeSubagent,
+		Status: agentdomain.RunStatusWaitingHuman, DefinitionJSON: definitionJSON, DefinitionHash: jsonutil.Hash(definitionJSON), ConversationID: &conversationID,
+		InputJSON: input, WorkspaceID: &workspaceID, StartedAt: time.Now().UTC()}
+	runs := &settingsRunRepo{items: map[int64]*agentdomain.Run{runID: run}}
+	conversations := &settingsConversationRepo{items: map[int64]*conversation.Conversation{
+		conversationID: {SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: conversationID, OwnerID: 3}}, ProjectID: &projectID},
+	}}
+	workspaceRepository := &lifecycleWorkspaceRepository{items: map[int64]workspacedomain.Workspace{
+		workspaceID: {BaseModel: domain.BaseModel{ID: workspaceID, OwnerID: 3}, ProjectID: projectID, RunID: runID, Kind: workspacedomain.KindShared, Status: workspacedomain.StatusReady, RepositoryRoot: root, WorkspacePath: root, BranchName: "master", BaseSHA: head, HeadSHA: head},
+	}}
+	workspaceService := workspaceusecase.NewService(
+		&staticLifecycleProjectRepo{item: projectdomain.Project{BaseModel: domain.BaseModel{ID: projectID, OwnerID: 3}, Slug: "demo", RepositoryRoot: root}},
+		workspaceRepository, gitService, workspaceusecase.Config{Enabled: true, AllowedRoots: []string{root}},
+	)
+	runtime := &settingsAgentRuntime{resumeResult: &agentruntime.RunResult{Output: agentruntime.RunOutput{"final_answer": "plan"}}}
+	service := NewService(nil, nil, conversations, nil, runs, &workspaceLifecycleEventRepo{}, nil, nil, runtime)
+	service.ConfigureWorkspace(workspaceService)
+	checkpoint := &agentdomain.RunCheckpoint{ImmutableModel: domain.ImmutableModel{ID: 8, OwnerID: 3}, RunID: runID, CheckpointJSON: json.RawMessage(`{}`)}
+
+	if _, err := service.ResumeRun(ctx, run, checkpoint, &agentdomain.ApprovalRequest{Status: agentdomain.ApprovalStatusApproved}); err != nil {
+		t.Fatal(err)
+	}
+	workspace := runtime.resumeReq.Workspace
+	if workspace == nil || workspace.WorkspacePath != root || !workspace.FileWriteEnabled || !workspace.ExecEnabled || !workspace.GitEnabled {
+		t.Fatalf("resumed Plan Run capabilities differ from Default: %+v", workspace)
+	}
+	if stored := workspaceRepository.items[workspaceID]; stored.Locked || stored.WorkspacePath != root {
+		t.Fatalf("resumed Plan Run did not release its workspace: %+v", stored)
+	}
+}
+
 type settingsRunRepo struct {
 	agentdomain.RunRepository
 	item         *agentdomain.Run
@@ -1015,9 +1180,8 @@ func (r *settingsApprovalRepo) ClaimResume(_ context.Context, _, _ int64, input 
 
 type settingsAgentRepo struct {
 	agentdomain.Repository
-	items    map[int64]*agentdomain.Agent
-	releases []agentdomain.Release
-	nextID   int64
+	items  map[int64]*agentdomain.Agent
+	nextID int64
 }
 
 func newSettingsAgentRepo() *settingsAgentRepo {
@@ -1041,35 +1205,6 @@ func (r *settingsAgentRepo) FindByID(_ context.Context, ownerID, id int64) (*age
 
 func (r *settingsAgentRepo) Update(_ context.Context, item *agentdomain.Agent) error {
 	r.items[item.ID] = item
-	return nil
-}
-
-func (r *settingsAgentRepo) NextReleaseVersion(context.Context, int64, int64) (int, error) {
-	return len(r.releases) + 1, nil
-}
-
-func (r *settingsAgentRepo) CreateRelease(_ context.Context, item *agentdomain.Release) error {
-	item.ID = int64(100 + len(r.releases))
-	r.releases = append(r.releases, *item)
-	return nil
-}
-
-func (r *settingsAgentRepo) FindReleaseByID(_ context.Context, ownerID, id int64) (*agentdomain.Release, error) {
-	for index := range r.releases {
-		if r.releases[index].ID == id && r.releases[index].OwnerID == ownerID {
-			return &r.releases[index], nil
-		}
-	}
-	return nil, agenterrors.ErrNotFound
-}
-
-func (r *settingsAgentRepo) SetCurrentRelease(_ context.Context, ownerID, agentID, releaseID int64) error {
-	item, err := r.FindByID(context.Background(), ownerID, agentID)
-	if err != nil {
-		return err
-	}
-	item.CurrentReleaseID = &releaseID
-	item.Status = agentdomain.StatusActive
 	return nil
 }
 

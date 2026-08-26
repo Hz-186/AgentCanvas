@@ -14,6 +14,9 @@ const (
 	ReasoningStart   = "reasoning.start"
 	ReasoningDelta   = "reasoning.delta"
 	ReasoningEnd     = "reasoning.end"
+	PlanStart        = "plan.start"
+	PlanDelta        = "plan.delta"
+	PlanEnd          = "plan.end"
 	StatusUpdate     = "status.update"
 	ToolStart        = "tool.start"
 	ToolProgress     = "tool.progress"
@@ -48,6 +51,8 @@ type TextPayload struct {
 	SegmentID string `json:"segment_id"`
 	Text      string `json:"text,omitempty"`
 }
+
+type PlanPayload = TextPayload
 
 type StatusPayload struct {
 	Message  string `json:"message"`

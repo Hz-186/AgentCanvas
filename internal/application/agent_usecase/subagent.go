@@ -72,7 +72,7 @@ func (s *Service) RunSubagent(ctx context.Context, req toolruntime.SubagentReque
 		return nil, err
 	}
 	now := time.Now().UTC()
-	inputJSON, _ := json.Marshal(map[string]any{"query": strings.TrimSpace(req.Definition.Task)})
+	inputJSON, _ := json.Marshal(map[string]any{"query": strings.TrimSpace(req.Definition.Task), "mode": definition.Mode})
 	run := &agentdomain.Run{
 		BaseModel:       domain.BaseModel{OwnerID: req.OwnerID},
 		RunType:         agentdomain.RunTypeSubagent,
@@ -225,7 +225,11 @@ func subagentRuntimeDefinition(source toolruntime.SubagentDefinition) (agentrunt
 		return agentruntime.Definition{}, nil, err
 	}
 	definition, err := agentruntime.DecodeDefinition(raw)
-	return definition, raw, err
+	if err != nil {
+		return agentruntime.Definition{}, nil, err
+	}
+	canonical, err := json.Marshal(definition)
+	return definition, canonical, err
 }
 
 var _ toolruntime.SubagentDispatcher = (*Service)(nil)

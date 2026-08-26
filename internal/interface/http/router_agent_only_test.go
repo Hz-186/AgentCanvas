@@ -41,6 +41,16 @@ func TestCurrentAgentPagesAreNotLegacy(t *testing.T) {
 	}
 }
 
+func TestManualConversationCompactionRouteIsRegistered(t *testing.T) {
+	router := NewRouter(RouterDeps{Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), AgentHandler: handler.NewAgentHandler(nil)})
+	for _, route := range router.Routes() {
+		if route.Method == http.MethodPost && route.Path == "/api/v1/agents/:id/conversations/:conversation_id/compact" {
+			return
+		}
+	}
+	t.Fatal("manual conversation compaction route is not registered")
+}
+
 const (
 	streamTestOwnerID = int64(71)
 	streamTestRunID   = int64(91)

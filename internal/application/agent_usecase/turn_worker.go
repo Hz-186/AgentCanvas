@@ -8,12 +8,14 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	workspaceusecase "agentcanvas/internal/application/workspace_usecase"
 	"agentcanvas/internal/domain"
 	agentdomain "agentcanvas/internal/domain/agent"
 	"agentcanvas/internal/domain/conversation"
+	"agentcanvas/internal/domain/goal"
 	workspacedomain "agentcanvas/internal/domain/workspace"
 	"agentcanvas/internal/infrastructure/llm"
 	agenterrors "agentcanvas/internal/pkg/errors"
@@ -49,7 +51,9 @@ func (w turnWorker) execute(ctx context.Context, turn *agentdomain.Turn) {
 	run.ErrorMessage = ""
 	execCtx, cancel := context.WithCancel(ctx)
 	s.registerCancel(run.ID, cancel)
+
 	defer func() { cancel(); s.unregisterCancel(run.ID) }()
+
 	if turn.LeaseToken != "" {
 		go s.heartbeatLease(execCtx, turn.ID, turn.LeaseToken, cancel)
 	}
@@ -65,12 +69,15 @@ func (w turnWorker) execute(ctx context.Context, turn *agentdomain.Turn) {
 		return
 	}
 	task, _ := input["query"].(string)
+	manualCompaction, _ := input["manual_compaction"].(bool)
 	if mode, modeErr := normalizeAgentMode(fmt.Sprint(input["mode"])); modeErr == nil {
 		definition.Mode = mode
 	}
 	emitter := s.newRunEventEmitter(turn.OwnerID, run.ID, &turn.ConversationID)
+
 	var runtimeWorkspace *toolruntime.WorkspaceContext
 	var preparedWorkspace *workspacedomain.Workspace
+
 	projectID := int64(0)
 	if s.conversations != nil && run.ConversationID != nil {
 		conv, convErr := s.conversations.FindByID(ctx, turn.OwnerID, *run.ConversationID)
@@ -112,7 +119,7 @@ func (w turnWorker) execute(ctx context.Context, turn *agentdomain.Turn) {
 			_ = emitter.Emit(ctx, runtimeevent.Event{Type: runtimeevent.WorkspaceCreated, RunID: run.ID, Payload: workspaceEventPayload(ws, nil)})
 		}
 	}
-	if runtimeWorkspace != nil {
+	if preparedWorkspace != nil {
 		_ = emitter.Emit(ctx, runtimeevent.Event{Type: runtimeevent.WorkspaceReady, RunID: run.ID, Payload: workspaceEventPayload(preparedWorkspace, nil)})
 	}
 	if err := run.TransitionStatus(agentdomain.RunStatusRunning); err != nil {
@@ -125,13 +132,14 @@ func (w turnWorker) execute(ctx context.Context, turn *agentdomain.Turn) {
 	}
 	result, execErr := s.runtime.Execute(ctx,
 		agentruntime.RunRequest{
-			RunIdentity:         agentruntime.RunIdentity{OwnerID: turn.OwnerID, AgentID: turn.AgentID, AgentReleaseID: turn.AgentReleaseID, RunID: run.ID},
+			RunIdentity:         agentruntime.RunIdentity{OwnerID: turn.OwnerID, AgentID: turn.AgentID, RunID: run.ID, UserMessageID: turn.UserMessageID},
 			ConversationContext: agentruntime.ConversationContext{ConversationID: &turn.ConversationID, ProjectID: projectID},
-			ExecutionTask:       agentruntime.ExecutionTask{Task: task},
+			ExecutionTask:       agentruntime.ExecutionTask{Task: task, ManualCompaction: manualCompaction},
 			RuntimeResources:    agentruntime.RuntimeResources{Definition: definition},
 			RuntimePolicy:       agentruntime.RuntimePolicy{RuleHash: run.RuleHash},
 			WorkspaceContext:    agentruntime.WorkspaceContext{Workspace: runtimeWorkspace},
 			PersistenceHooks:    agentruntime.PersistenceHooks{StepRecorder: &runStepRecorder{repo: s.steps}},
+			Steering:            func() []string { return s.consumeSteering(run.ID) },
 		}, emitter)
 	if preparedWorkspace != nil {
 		if refreshed := s.refreshWorkspaceSnapshot(context.WithoutCancel(ctx), turn.OwnerID, preparedWorkspace.ID); refreshed != nil {
@@ -167,6 +175,10 @@ func (w turnWorker) resume(ctx context.Context, turn *agentdomain.Turn, run *age
 		}
 		if note, ok := input["resume_note"].(string); ok {
 			decision.DecisionNote = note
+		}
+		if answers, ok := input["resume_answers"].(map[string]any); ok {
+			encoded, _ := json.Marshal(answers)
+			decision.DecisionNote = "answers:" + string(encoded)
 		}
 	}
 	execCtx, cancel := context.WithCancel(ctx)
@@ -204,6 +216,10 @@ func (s *Service) executeResumeTurnOwned(ctx context.Context, turn *agentdomain.
 		}
 		if note, ok := input["resume_note"].(string); ok {
 			decision.DecisionNote = note
+		}
+		if answers, ok := input["resume_answers"].(map[string]any); ok {
+			encoded, _ := json.Marshal(answers)
+			decision.DecisionNote = "answers:" + string(encoded)
 		}
 	}
 	execCtx, cancel := context.WithCancel(ctx)
@@ -501,7 +517,36 @@ func (s *Service) failTurn(ctx context.Context, turn *agentdomain.Turn, run *age
 		return
 	}
 	*turn, *run = failedTurn, failedRun
+	// Flush wall-clock and any usage events already received before dropping the
+	// run accounting marker; error/abort paths are billable just like success.
+	s.accountGoalRun(ctx, run, &agentruntime.RunResult{Output: agentruntime.RunOutput{}})
+	s.clearSteering(run.ID)
+	if errors.Is(cause, llm.ErrRateLimited) {
+		s.markGoalStatus(ctx, run, goal.StatusUsageLimited)
+	} else {
+		s.markGoalBlocked(ctx, run)
+	}
+	s.clearGoalUsage(run.ID)
 	s.publishRunSnapshot(run, turn, nil, llm.Usage{})
+}
+
+func (s *Service) markGoalBlocked(ctx context.Context, run *agentdomain.Run) {
+	s.markGoalStatus(ctx, run, goal.StatusBlocked)
+}
+
+func (s *Service) markGoalStatus(ctx context.Context, run *agentdomain.Run, status string) {
+	if s.goals == nil || run == nil || run.ConversationID == nil {
+		return
+	}
+	item, err := s.goals.Get(ctx, run.OwnerID, *run.ConversationID)
+	if err != nil || item == nil || item.Status != goal.StatusActive {
+		return
+	}
+	item.Status = status
+	if err := s.goals.Update(ctx, item, item.GoalID); err != nil {
+		return
+	}
+	s.emitGoalUpdated(ctx, run.OwnerID, *run.ConversationID, item)
 }
 
 func (s *Service) completeTurn(ctx context.Context, turn *agentdomain.Turn, run *agentdomain.Run, result *agentruntime.RunResult) {
@@ -509,6 +554,9 @@ func (s *Service) completeTurn(ctx context.Context, turn *agentdomain.Turn, run 
 		s.failTurn(ctx, turn, run, fmt.Errorf("agent runtime returned no result"))
 		return
 	}
+	s.accountGoalRun(ctx, run, result)
+	s.clearGoalUsage(run.ID)
+	s.clearSteering(run.ID)
 	if current, err := s.runs.FindByID(ctx, turn.OwnerID, run.ID); err == nil && current.Status == agentdomain.RunStatusCancelled {
 		now := time.Now().UTC()
 		turn.Status, turn.FinishedAt = agentdomain.TurnStatusCancelled, &now
@@ -518,6 +566,14 @@ func (s *Service) completeTurn(ctx context.Context, turn *agentdomain.Turn, run 
 		return
 	}
 	stopReason, _ := result.Output["stop_reason"].(string)
+	if stopReason == runtimeagent.StopReasonLLMError {
+		message, _ := result.Output["error"].(string)
+		if strings.TrimSpace(message) == "" {
+			message = "agent runtime returned an LLM error"
+		}
+		s.failTurn(ctx, turn, run, errors.New(message))
+		return
+	}
 	if stopReason == runtimeagent.StopReasonWaitingHuman || stopReason == runtimeagent.StopReasonPaused {
 		if stopReason == runtimeagent.StopReasonWaitingHuman {
 			turn.Status = agentdomain.TurnStatusWaitingHuman
@@ -604,15 +660,69 @@ func (s *Service) completeTurn(ctx context.Context, turn *agentdomain.Turn, run 
 		s.failTurn(ctx, turn, run, err)
 		return
 	}
-	if s.improvement != nil {
-		if release, err := s.agents.FindReleaseByID(ctx, turn.OwnerID, turn.AgentReleaseID); err == nil {
-			_ = s.improvement.EnqueueTurnReview(ctx, turn, release)
+	input, _ := decodeInputJSON(run.InputJSON)
+	mode, _ := normalizeAgentMode(fmt.Sprint(input["mode"]))
+	if s.improvement != nil && mode != "plan" {
+		if definition, err := agentruntime.DecodeDefinition(run.DefinitionJSON); err == nil {
+			_ = s.improvement.EnqueueTurnReview(ctx, turn, definition)
 		}
 	}
 	if s.sessionSearch != nil {
 		_ = s.sessionSearch.IndexMessage(ctx, turn.OwnerID, turn.AgentID, assistant)
 	}
+	s.maybeContinueGoal(ctx, run)
 	s.publishRunSnapshot(run, turn, assistant, usageFromOutput(result.Output))
+}
+
+func (s *Service) accountGoalRun(ctx context.Context, run *agentdomain.Run, result *agentruntime.RunResult) {
+	if s.goals == nil || run == nil || result == nil || run.ConversationID == nil {
+		return
+	}
+	input, _ := decodeInputJSON(run.InputJSON)
+	mode, _ := normalizeAgentMode(fmt.Sprint(input["mode"]))
+	if mode == "plan" {
+		return
+	}
+	usage := usageFromOutput(result.Output)
+	tokens := goalTokenDelta(usage)
+	seconds := int64(0)
+	latencyMS, _ := result.Output["latency_ms"].(int)
+	if latencyMS > 0 {
+		seconds = int64(latencyMS / 1000)
+	} else if !run.StartedAt.IsZero() {
+		seconds = int64(time.Since(run.StartedAt).Seconds())
+	}
+	if seconds < 0 {
+		seconds = 0
+	}
+	modeForAccounting := "active_only"
+	if current, getErr := s.goals.Get(ctx, run.OwnerID, *run.ConversationID); getErr == nil && current != nil {
+		switch current.Status {
+		case goal.StatusComplete:
+			modeForAccounting = "active_or_complete"
+		case goal.StatusBlocked:
+			modeForAccounting = "active_or_stopped"
+		}
+	}
+	s.goalUsageMu.Lock()
+	state := s.goalUsageByRun[run.ID]
+	residualTokens := int64(tokens) - state.TokensAccounted
+	if residualTokens < 0 {
+		residualTokens = 0
+	}
+	residualSeconds := seconds - state.SecondsAccounted
+	if residualSeconds < 0 {
+		residualSeconds = 0
+	}
+	expectedGoalID := state.GoalID
+	s.goalUsageMu.Unlock()
+	updated, err := s.accountGoal(ctx, run.OwnerID, *run.ConversationID, residualSeconds, residualTokens, modeForAccounting, expectedGoalID)
+	if err != nil && !errors.Is(err, goal.ErrNotFound) {
+		slog.Default().Warn("account goal usage failed", "run_id", run.ID, "error", err)
+	}
+	if err == nil && updated != nil && updated.Status == goal.StatusBudgetLimited {
+		s.emitGoalUpdated(ctx, run.OwnerID, *run.ConversationID, updated)
+	}
 }
 
 func (s *Service) persistCheckpoint(ctx context.Context, run *agentdomain.Run, output agentruntime.RunOutput, status string) error {
@@ -664,7 +774,9 @@ func checkpointArtifacts(run *agentdomain.Run, output agentruntime.RunOutput, st
 			ToolName:      approval.ToolName,
 			RiskLevel:     approval.RiskLevel,
 			Reason:        approval.Reason,
+			IsBlocking:    approval.IsBlocking,
 			RequestJSON:   raw,
+			Questions:     approval.Questions,
 			Status:        agentdomain.ApprovalStatusPending,
 		}
 	}

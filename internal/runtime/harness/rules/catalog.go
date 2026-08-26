@@ -20,7 +20,7 @@ func DefaultPlatformMandatoryRules() []Rule {
 	}
 }
 
-// DefaultFallbackOptionalRules are used only when an Agent release has no custom rules.
+// DefaultFallbackOptionalRules are used only when an Agent has no custom rules.
 func DefaultFallbackOptionalRules() []Rule {
 	return []Rule{
 		{
@@ -71,13 +71,13 @@ func DefaultFallbackOptionalRules() []Rule {
 			},
 		},
 		{
-			ID:       "tool.plan_execute.checkpoints",
-			Name:     "Plan Execute Checkpoints",
+			ID:       "tool.plan.checkpoints",
+			Name:     "Plan Checkpoints",
 			Strength: RuleOptional,
 			Priority: 65,
-			Content:  "In plan-execute mode, keep steps explicit, revise the plan after failures, and avoid drifting into hidden execution state.",
+			Content:  "In Plan Mode, keep analysis explicit, revise the plan after failures, and never perform hidden side effects.",
 			Activation: Activation{
-				ModeAny: []string{"plan_execute"},
+				ModeAny: []string{"plan"},
 				TagAll:  []string{"tool_used"},
 			},
 		},

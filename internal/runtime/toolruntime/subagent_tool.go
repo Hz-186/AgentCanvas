@@ -88,7 +88,7 @@ func (SubagentTool) Description() string {
 }
 
 func (SubagentTool) Parameters() json.RawMessage {
-	return json.RawMessage(`{"type":"object","properties":{"name":{"type":"string","description":"Optional label chosen by the parent model."},"description":{"type":"string"},"system_prompt":{"type":"string","description":"Optional role instructions chosen for this task."},"task":{"type":"string"},"mode":{"type":"string","enum":["react","plan_execute"]},"workspace_mode":{"type":"string","enum":["inherit","shared","worktree"]},"model":{"type":"string"},"tool_ids":{"type":"array","items":{"type":"number"}},"skill_ids":{"type":"array","items":{"type":"number"}},"knowledge_base_ids":{"type":"array","items":{"type":"number"}},"mcp_server_ids":{"type":"array","items":{"type":"number"}},"max_iterations":{"type":"number"},"max_tool_calls":{"type":"number"},"max_execution_time_ms":{"type":"number"}},"required":["task"],"additionalProperties":false}`)
+	return json.RawMessage(`{"type":"object","properties":{"name":{"type":"string","description":"Optional label chosen by the parent model."},"description":{"type":"string"},"system_prompt":{"type":"string","description":"Optional role instructions chosen for this task."},"task":{"type":"string"},"mode":{"type":"string","enum":["default","plan"]},"workspace_mode":{"type":"string","enum":["inherit","shared","worktree"]},"model":{"type":"string"},"tool_ids":{"type":"array","items":{"type":"number"}},"skill_ids":{"type":"array","items":{"type":"number"}},"knowledge_base_ids":{"type":"array","items":{"type":"number"}},"mcp_server_ids":{"type":"array","items":{"type":"number"}},"max_iterations":{"type":"number"},"max_tool_calls":{"type":"number"},"max_execution_time_ms":{"type":"number"}},"required":["task"],"additionalProperties":false}`)
 }
 
 func (SubagentTool) Metadata() ToolMetadata {
@@ -109,8 +109,8 @@ func (t SubagentTool) Execute(ctx context.Context, rc ToolRunContext, input json
 	if definition.Task == "" {
 		return &ToolResult{ContentText: "task is required", IsError: true}, fmt.Errorf("task is required")
 	}
-	if definition.Mode != "" && definition.Mode != "react" && definition.Mode != "plan_execute" {
-		return &ToolResult{ContentText: "mode must be react or plan_execute", IsError: true}, fmt.Errorf("mode must be react or plan_execute")
+	if definition.Mode != "" && definition.Mode != "plan" && definition.Mode != "default" {
+		return &ToolResult{ContentText: "mode must be default or plan", IsError: true}, fmt.Errorf("mode must be default or plan")
 	}
 	if definition.Name == "" {
 		definition.Name = "subagent"
