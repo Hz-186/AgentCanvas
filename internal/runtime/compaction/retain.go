@@ -6,16 +6,22 @@ import (
 	"agentcanvas/internal/domain/conversation"
 )
 
-// RetainUserEntries keeps, from the tail backwards, user-text entries whose
-// content does not carry the summary prefix, within budget tokens. The first
-// overflowing entry is truncated to the remaining budget and kept; earlier
-// entries are dropped. Order is preserved.
+// RetainUserEntries keeps user-text entries within budget tokens; see
+// RetainEntriesByRole.
 func RetainUserEntries(req Request, entries []Entry) []Entry {
+	return RetainEntriesByRole(req, entries, conversation.RoleUser)
+}
+
+// RetainEntriesByRole keeps, from the tail backwards, text entries of the
+// given role whose content does not carry the summary prefix, within budget
+// tokens. The first overflowing entry is truncated to the remaining budget
+// and kept; earlier entries are dropped. Order is preserved.
+func RetainEntriesByRole(req Request, entries []Entry, role string) []Entry {
 	remaining := req.userBudget()
 	kept := make([]Entry, 0)
 	for i := len(entries) - 1; i >= 0; i-- {
 		entry := entries[i]
-		if entry.Role != conversation.RoleUser || entry.ContentType != conversation.ContentTypeText {
+		if entry.Role != role || entry.ContentType != conversation.ContentTypeText {
 			continue
 		}
 		if strings.HasPrefix(strings.TrimSpace(entry.Content), SummaryPrefix) {

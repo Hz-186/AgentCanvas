@@ -72,6 +72,32 @@ func TestRetainSkipsSummaryPrefixedMessages(t *testing.T) {
 	}
 }
 
+func TestRetainEntriesByRoleKeepsOnlyRequestedRole(t *testing.T) {
+	developer := Entry{Role: conversation.RoleDeveloper, ContentType: conversation.ContentTypeText, Content: "goal: finish the plan"}
+	messages := []Entry{
+		developer,
+		userEntry("question one"),
+		{Role: conversation.RoleAssistant, ContentType: conversation.ContentTypeText, Content: "answer"},
+		userEntry("question two"),
+	}
+	req := defaultReq
+	req.UserBudget = 9_000
+	kept := RetainEntriesByRole(req, messages, conversation.RoleDeveloper)
+	if len(kept) != 1 || kept[0].Content != developer.Content {
+		t.Fatalf("developer retention leaked other roles: %+v", kept)
+	}
+}
+
+func TestRetainEntriesByRoleTruncatesOverflowingDeveloperMessage(t *testing.T) {
+	large := Entry{Role: conversation.RoleDeveloper, ContentType: conversation.ContentTypeText, Content: "an extremely long developer instruction that alone would blow the entire budget many times over"}
+	req := defaultReq
+	req.UserBudget = 4
+	kept := RetainEntriesByRole(req, []Entry{large}, conversation.RoleDeveloper)
+	if len(kept) != 1 || kept[0].Content == large.Content || len(kept[0].Content) == 0 {
+		t.Fatalf("expected partially truncated developer entry, got %+v", kept)
+	}
+}
+
 func TestFromChatSplitsAssistantToolCalls(t *testing.T) {
 	messages := []llm.ChatMessage{
 		{Role: conversation.RoleUser, Content: "do it"},

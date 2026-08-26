@@ -135,30 +135,15 @@ func runtimeCompactionHistory(req RunRequest, transcript []llm.ChatMessage) []ll
 	return history
 }
 
+// retainMessagesByRole delegates selection and truncation to the shared
+// compaction core and converts the retained entries back to chat messages.
 func retainMessagesByRole(req RunRequest, history []llm.ChatMessage, role string, budget int) []llm.ChatMessage {
-	kept := make([]llm.ChatMessage, 0, len(history))
-	remaining := budget
-	for i := len(history) - 1; i >= 0; i-- {
-		message := history[i]
-		if message.Role != role || strings.HasPrefix(strings.TrimSpace(message.Content), compaction.SummaryPrefix) {
-			continue
-		}
-		tokens := modelTextTokens(req, message.Content)
-		if tokens <= remaining {
-			kept = append(kept, message)
-			remaining -= tokens
-			continue
-		}
-		if remaining > 0 {
-			message.Content = compaction.TruncateToTokens(compaction.Request{Provider: req.Provider, Model: req.Model}, message.Content, remaining)
-			if strings.TrimSpace(message.Content) != "" {
-				kept = append(kept, message)
-			}
-		}
-		break
-	}
-	for i, j := 0, len(kept)-1; i < j; i, j = i+1, j-1 {
-		kept[i], kept[j] = kept[j], kept[i]
+	entries := compaction.RetainEntriesByRole(compaction.Request{
+		Provider: req.Provider, Model: req.Model, UserBudget: budget,
+	}, compaction.FromChat(history), role)
+	kept := make([]llm.ChatMessage, 0, len(entries))
+	for _, entry := range entries {
+		kept = append(kept, llm.ChatMessage{Role: entry.Role, Content: entry.Content})
 	}
 	return kept
 }

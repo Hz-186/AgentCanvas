@@ -289,14 +289,14 @@ func (c Coordinator) compact(ctx context.Context, req Request, current Window, b
 			retained = retainRoleMessages(req, all, conversation.RoleDeveloper, compaction.UserMessageBudgetTokens)
 		}
 	} else {
-		summaryResult, err = c.summarize(ctx, req, current.Snapshot, all)
+		summaryResult, err = c.compactHistory(ctx, req, current.Snapshot, all)
 		if err != nil {
 			return fail(err)
 		}
 		if strings.TrimSpace(summaryResult.Summary) == "" {
 			summaryResult.Summary = compaction.FallbackSummary
 		}
-		retained = retainUserMessages(req, all, compaction.UserMessageBudgetTokens)
+		retained = retainRoleMessages(req, all, conversation.RoleUser, compaction.UserMessageBudgetTokens)
 	}
 	firstID, lastID := int64(0), int64(0)
 	if len(retained) > 0 {
@@ -342,9 +342,9 @@ func (c Coordinator) compact(ctx context.Context, req Request, current Window, b
 	return prepared, nil
 }
 
-// summarize delegates to the shared compaction core so cross-turn and mid-run
-// triggers run the exact same algorithm.
-func (c Coordinator) summarize(ctx context.Context, req Request, parent *conversation.Compaction, messages []conversation.Message) (summaryResult, error) {
+// compactHistory delegates to the shared compaction core so cross-turn and
+// mid-run triggers run the exact same algorithm.
+func (c Coordinator) compactHistory(ctx context.Context, req Request, parent *conversation.Compaction, messages []conversation.Message) (summaryResult, error) {
 	provider, providerID, model := req.CompactionProvider, req.CompactionProviderID, strings.TrimSpace(req.CompactionModel)
 	if strings.TrimSpace(provider.ProviderType) == "" || model == "" {
 		provider, providerID, model = req.Provider, req.ProviderID, req.Model
@@ -368,50 +368,29 @@ func (c Coordinator) summarize(ctx context.Context, req Request, parent *convers
 	return summary, nil
 }
 
-func retainUserMessages(req Request, messages []conversation.Message, budget int) []conversation.Message {
-	return retainRoleMessages(req, messages, conversation.RoleUser, budget)
-}
-
+// retainRoleMessages delegates selection and truncation to the shared
+// compaction core and maps the retained entries back to their source rows.
 func retainRoleMessages(req Request, messages []conversation.Message, role string, budget int) []conversation.Message {
-	kept := make([]conversation.Message, 0, len(messages))
-	remaining := budget
-	for i := len(messages) - 1; i >= 0; i-- {
-		message := messages[i]
-		if message.Role != role || strings.HasPrefix(strings.TrimSpace(message.Content), conversation.CompactionSummaryPrefix) {
-			continue
-		}
-		tokens := tokencounter.Count(req.Provider.ProviderType, req.Model, message.Content).Tokens
-		if tokens <= remaining {
-			kept = append(kept, message)
-			remaining -= tokens
-			continue
-		}
-		if remaining > 0 {
-			message.Content = truncateTokens(req.Provider.ProviderType, req.Model, message.Content, remaining)
-			if message.Content != "" {
-				kept = append(kept, message)
-			}
-		}
-		break
+	entries := compaction.RetainEntriesByRole(compaction.Request{
+		Provider: req.Provider, Model: req.Model, UserBudget: budget,
+	}, compaction.FromMessages(messages), role)
+	if len(entries) == 0 {
+		return nil
 	}
-	for i, j := 0, len(kept)-1; i < j; i, j = i+1, j-1 {
-		kept[i], kept[j] = kept[j], kept[i]
+	byID := make(map[int64]conversation.Message, len(messages))
+	for _, message := range messages {
+		byID[message.ID] = message
+	}
+	kept := make([]conversation.Message, 0, len(entries))
+	for _, entry := range entries {
+		message, ok := byID[entry.MessageID]
+		if !ok {
+			continue
+		}
+		message.Content = entry.Content
+		kept = append(kept, message)
 	}
 	return kept
-}
-
-func truncateTokens(provider, model, text string, limit int) string {
-	runes := []rune(text)
-	lo, hi := 0, len(runes)
-	for lo < hi {
-		mid := (lo + hi + 1) / 2
-		if tokencounter.Count(provider, model, string(runes[:mid])).Tokens <= limit {
-			lo = mid
-		} else {
-			hi = mid - 1
-		}
-	}
-	return string(runes[:lo])
 }
 
 func composeWindow(all []conversation.Message, snapshot *conversation.Compaction) []conversation.Message {
