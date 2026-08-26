@@ -58,10 +58,8 @@ class ServerTest(unittest.TestCase):
         self.assertIn("python:recursive", capabilities.chunk_methods)
         self.assertIn("python:langchain_recursive", capabilities.chunk_methods)
         self.assertIn("python:langchain_pdf", capabilities.parser_methods)
-        tools = self.stub.ListTools(bridge_pb2.ListToolsRequest(), metadata=self.metadata("list-tools"))
-        self.assertEqual(len(tools.tools), 2)
 
-    def test_chunk_and_tool_execution(self):
+    def test_chunk_document(self):
         request = bridge_pb2.ChunkDocumentRequest(
             request_id="chunk-request",
             method="python:recursive",
@@ -90,19 +88,6 @@ class ServerTest(unittest.TestCase):
         self.assertTrue(response.chunks)
         self.assertEqual(response.chunks[0].section_title, "Guide")
         self.assertEqual(json.loads(response.chunks[0].metadata_json)["bbox"]["x"], 1)
-
-        tool_response = self.stub.ExecuteTool(
-            bridge_pb2.ExecuteToolRequest(
-                request_id="tool-request",
-                tool_name="python_text_stats",
-                arguments_json='{"text":"hello"}',
-            ),
-            metadata=self.metadata("tool-request"),
-        )
-        self.assertEqual(
-            tool_response.content_json,
-            '{"chars":5,"lines":1,"words":1,"sha256":"2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"}',
-        )
 
     def test_parse_document_requires_ocr_for_empty_input(self):
         response = self.stub.ParseDocument(
@@ -154,7 +139,7 @@ class ServerTest(unittest.TestCase):
                 self.stub.ChunkDocument(request, metadata=self.metadata("chunk-request"))
             self.assertEqual(raised.exception.code(), grpc.StatusCode.INVALID_ARGUMENT)
 
-    def test_limits_and_unknown_tool_are_structured_errors(self):
+    def test_limits_are_structured_errors(self):
         metadata = self.metadata()
         with self.assertRaises(grpc.RpcError) as oversized:
             self.stub.ChunkDocument(
@@ -193,21 +178,6 @@ class ServerTest(unittest.TestCase):
                 metadata=metadata,
             )
         self.assertEqual(malformed_metadata.exception.code(), grpc.StatusCode.INVALID_ARGUMENT)
-
-        with self.assertRaises(grpc.RpcError) as missing:
-            self.stub.ExecuteTool(
-                bridge_pb2.ExecuteToolRequest(request_id="test-request", tool_name="python_missing", arguments_json="{}"),
-                metadata=metadata,
-            )
-        self.assertEqual(missing.exception.code(), grpc.StatusCode.NOT_FOUND)
-
-        with self.assertRaises(grpc.RpcError) as invalid:
-            self.stub.ExecuteTool(
-                bridge_pb2.ExecuteToolRequest(request_id="test-request", tool_name="python_json_transform", arguments_json="{}"),
-                metadata=metadata,
-            )
-        self.assertEqual(invalid.exception.code(), grpc.StatusCode.INVALID_ARGUMENT)
-
 
 if __name__ == "__main__":
     unittest.main()

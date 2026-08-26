@@ -65,7 +65,7 @@ func (r *AgentRepository) Update(ctx context.Context, item *agentdomain.Agent) e
 		Updates(map[string]any{
 			"name": item.Name, "description": item.Description, "avatar_url": item.AvatarURL,
 			"status": item.Status, "draft_definition_json": item.DraftDefinitionJSON,
-			"current_release_id": item.CurrentReleaseID, "updated_at": item.UpdatedAt,
+			"updated_at": item.UpdatedAt,
 		}).Error
 }
 
@@ -74,54 +74,6 @@ func (r *AgentRepository) SoftDelete(ctx context.Context, ownerID, id int64) err
 	return r.db.WithContext(ctx).Model(&agentdomain.Agent{}).
 		Where("id = ? AND owner_id = ? AND deleted_at IS NULL", id, ownerID).
 		Updates(map[string]any{"deleted_at": now, "updated_at": now, "status": agentdomain.StatusArchived}).Error
-}
-
-func (r *AgentRepository) CreateRelease(ctx context.Context, item *agentdomain.Release) error {
-	item.CreatedAt = time.Now().UTC()
-	if err := encodeReleaseDefinition(item); err != nil {
-		return err
-	}
-	return r.db.WithContext(ctx).Create(item).Error
-}
-
-func (r *AgentRepository) ListReleases(ctx context.Context, ownerID, agentID int64) ([]agentdomain.Release, error) {
-	var items []agentdomain.Release
-	err := r.db.WithContext(ctx).Where("owner_id = ? AND agent_id = ?", ownerID, agentID).
-		Order("version_number DESC").Find(&items).Error
-	if err != nil {
-		return nil, err
-	}
-	for i := range items {
-		if err := decodeReleaseDefinition(&items[i]); err != nil {
-			return nil, err
-		}
-	}
-	return items, nil
-}
-
-func (r *AgentRepository) FindReleaseByID(ctx context.Context, ownerID, id int64) (*agentdomain.Release, error) {
-	var item agentdomain.Release
-	if err := r.db.WithContext(ctx).Where("owner_id = ? AND id = ?", ownerID, id).First(&item).Error; err != nil {
-		return nil, err
-	}
-	if err := decodeReleaseDefinition(&item); err != nil {
-		return nil, err
-	}
-	return &item, nil
-}
-
-func (r *AgentRepository) NextReleaseVersion(ctx context.Context, ownerID, agentID int64) (int, error) {
-	var maxVersion int
-	err := r.db.WithContext(ctx).Model(&agentdomain.Release{}).
-		Where("owner_id = ? AND agent_id = ?", ownerID, agentID).
-		Select("COALESCE(MAX(version_number), 0)").Scan(&maxVersion).Error
-	return maxVersion + 1, err
-}
-
-func (r *AgentRepository) SetCurrentRelease(ctx context.Context, ownerID, agentID, releaseID int64) error {
-	return r.db.WithContext(ctx).Model(&agentdomain.Agent{}).
-		Where("owner_id = ? AND id = ? AND deleted_at IS NULL", ownerID, agentID).
-		Updates(map[string]any{"current_release_id": releaseID, "status": agentdomain.StatusActive, "updated_at": time.Now().UTC()}).Error
 }
 
 func encodeAgentDefinition(item *agentdomain.Agent) error {
@@ -140,22 +92,6 @@ func decodeAgentDefinition(item *agentdomain.Agent) error {
 		return nil
 	}
 	return json.Unmarshal(item.DraftDefinitionJSON, &item.DraftDefinition)
-}
-
-func encodeReleaseDefinition(item *agentdomain.Release) error {
-	raw, checksum, err := item.Definition.Snapshot()
-	if err != nil {
-		return err
-	}
-	item.DefinitionJSON, item.Checksum = raw, checksum
-	return nil
-}
-
-func decodeReleaseDefinition(item *agentdomain.Release) error {
-	if len(item.DefinitionJSON) == 0 {
-		return errors.New("agent release definition is missing")
-	}
-	return json.Unmarshal(item.DefinitionJSON, &item.Definition)
 }
 
 type AgentTurnRepository struct{ db *gorm.DB }

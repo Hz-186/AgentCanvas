@@ -2,31 +2,24 @@ package pythonbridge
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net"
 	"os"
 	"testing"
 	"time"
 
-	tooldomain "agentcanvas/internal/domain/tool"
 	"agentcanvas/internal/infrastructure/chunker"
 	"agentcanvas/internal/infrastructure/parser"
 	bridgegen "agentcanvas/internal/infrastructure/pythonbridge/gen"
-	"agentcanvas/internal/runtime/toolruntime"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/proto"
 )
 
 type fakeBridgeClient struct {
-	chunkResponse  *bridgegen.ChunkDocumentResponse
-	parseResponse  *bridgegen.ParseDocumentResponse
-	parseRequest   *bridgegen.ParseDocumentRequest
-	executeRequest *bridgegen.ExecuteToolRequest
-	executeContext context.Context
+	chunkResponse *bridgegen.ChunkDocumentResponse
+	parseResponse *bridgegen.ParseDocumentResponse
+	parseRequest  *bridgegen.ParseDocumentRequest
 }
 
 type testBridgeServer struct {
@@ -35,19 +28,6 @@ type testBridgeServer struct {
 
 type slowBridgeServer struct {
 	bridgegen.UnimplementedPythonBridgeServer
-}
-
-type fakeInvocationRepository struct {
-	items []tooldomain.Invocation
-}
-
-func (r *fakeInvocationRepository) Create(_ context.Context, item *tooldomain.Invocation) error {
-	r.items = append(r.items, *item)
-	return nil
-}
-
-func (r *fakeInvocationRepository) ListByRun(context.Context, int64, int64) ([]tooldomain.Invocation, error) {
-	return append([]tooldomain.Invocation(nil), r.items...), nil
 }
 
 func (testBridgeServer) Health(context.Context, *bridgegen.HealthRequest) (*bridgegen.HealthResponse, error) {
@@ -78,12 +58,8 @@ func TestLivePythonBridge(t *testing.T) {
 		t.Fatalf("unexpected health response: response=%+v error=%v", health, err)
 	}
 	capabilities, err := client.GetCapabilities(context.Background())
-	if err != nil || len(capabilities.ChunkMethods) == 0 || len(capabilities.Tools) == 0 {
+	if err != nil || len(capabilities.ChunkMethods) == 0 {
 		t.Fatalf("unexpected capabilities: response=%+v error=%v", capabilities, err)
-	}
-	tools, err := client.ListTools(context.Background())
-	if err != nil || len(tools) != len(capabilities.Tools) {
-		t.Fatalf("unexpected ListTools response: tools=%+v error=%v", tools, err)
 	}
 	chunks, err := client.ChunkDocument(context.Background(), "python:recursive", parser.ParsedDocument{
 		Text: "# 标题\n\n第一段。第二段。",
@@ -94,10 +70,6 @@ func TestLivePythonBridge(t *testing.T) {
 	}, chunker.Policy{ChunkSize: 8, Overlap: 1})
 	if err != nil || len(chunks) == 0 || chunks[0].SectionTitle != "标题" {
 		t.Fatalf("unexpected chunks: chunks=%+v error=%v", chunks, err)
-	}
-	response, err := client.ExecuteTool(context.Background(), "python_text_stats", json.RawMessage(`{"text":"hello"}`), toolruntime.ToolRunContext{OwnerID: 1, AgentID: 2, RunID: 3})
-	if err != nil || response.GetIsError() || !json.Valid([]byte(response.GetContentJson())) {
-		t.Fatalf("unexpected tool response: response=%+v error=%v", response, err)
 	}
 }
 
@@ -238,16 +210,6 @@ func (f *fakeBridgeClient) ParseDocument(_ context.Context, request *bridgegen.P
 	return f.parseResponse, nil
 }
 
-func (f *fakeBridgeClient) ListTools(context.Context, *bridgegen.ListToolsRequest, ...grpc.CallOption) (*bridgegen.ListToolsResponse, error) {
-	return nil, errors.New("not used")
-}
-
-func (f *fakeBridgeClient) ExecuteTool(ctx context.Context, request *bridgegen.ExecuteToolRequest, _ ...grpc.CallOption) (*bridgegen.ExecuteToolResponse, error) {
-	f.executeRequest = request
-	f.executeContext = ctx
-	return &bridgegen.ExecuteToolResponse{ContentJson: `{"ok":true}`, ContentText: "ok"}, nil
-}
-
 func TestCapabilitiesRejectsUnknownProtocol(t *testing.T) {
 	if _, err := capabilitiesFromProto(&bridgegen.CapabilitiesResponse{ProtocolVersion: "v2"}); err == nil {
 		t.Fatal("capabilitiesFromProto must reject an unknown protocol version")
@@ -301,60 +263,5 @@ func TestParseDocumentConvertsBlocksAndRequiresOCR(t *testing.T) {
 	}
 	if _, _, _, err := client.ParseDocument(context.Background(), "python:langchain_pdf", "broken.pdf", []byte("pdf")); err == nil {
 		t.Fatal("ParseDocument accepted text without parsed blocks")
-	}
-}
-
-func TestExecuteToolPropagatesConversationAndAuthMetadata(t *testing.T) {
-	fake := &fakeBridgeClient{}
-	client := &Client{stub: fake, config: Config{AuthToken: "token", RequestTimeout: time.Second}}
-	conversationID := int64(42)
-	_, err := client.ExecuteTool(context.Background(), "python_text_stats", []byte(`{"text":"hello"}`), toolruntime.ToolRunContext{OwnerID: 1, AgentID: 2, RunID: 3, ConversationID: &conversationID})
-	if err != nil {
-		t.Fatalf("ExecuteTool() error = %v", err)
-	}
-	if fake.executeRequest.Context.GetConversationId() != conversationID {
-		t.Fatalf("conversation id = %d, want %d", fake.executeRequest.Context.GetConversationId(), conversationID)
-	}
-	values, ok := metadata.FromOutgoingContext(fake.executeContext)
-	if !ok || len(values.Get("x-agentcanvas-bridge-token")) != 1 || values.Get("x-agentcanvas-bridge-token")[0] != "token" {
-		t.Fatalf("bridge auth metadata missing: %v", values)
-	}
-	if values.Get("x-agentcanvas-request-id")[0] != fake.executeRequest.RequestId || values.Get("x-agentcanvas-trace-id")[0] == "" {
-		t.Fatalf("bridge correlation metadata missing: values=%v request=%s", values, fake.executeRequest.RequestId)
-	}
-}
-
-func TestRuntimeToolPersistsInvocationAudit(t *testing.T) {
-	repository := &fakeInvocationRepository{}
-	runtimeTool := RuntimeTool{
-		Client:      &Client{stub: &fakeBridgeClient{}, config: Config{AuthToken: "token", RequestTimeout: time.Second}},
-		Capability:  ToolCapability{Name: "python_text_stats", RiskLevel: "low", SideEffect: "none"},
-		Invocations: repository,
-	}
-	result, err := runtimeTool.Execute(context.Background(), toolruntime.ToolRunContext{OwnerID: 1, AgentID: 2, RunID: 3}, json.RawMessage(`{"text":"hello"}`))
-	if err != nil || result.ContentText != "ok" {
-		t.Fatalf("Execute() result=%+v error=%v", result, err)
-	}
-	if len(repository.items) != 1 || repository.items[0].ToolType != "python_bridge" || repository.items[0].Status != tooldomain.InvocationStatusSucceeded {
-		t.Fatalf("unexpected invocation audit: %+v", repository.items)
-	}
-}
-
-func TestToolCapabilitiesFailClosedOnUnsafeMetadata(t *testing.T) {
-	base := &bridgegen.ToolCapability{
-		Name: "python_test", ParametersJson: `{"type":"object"}`, RiskLevel: "low", SideEffect: "none", Version: "1",
-	}
-	for _, mutate := range []func(*bridgegen.ToolCapability){
-		func(item *bridgegen.ToolCapability) { item.Name = "workspace_exec" },
-		func(item *bridgegen.ToolCapability) { item.RiskLevel = "unknown" },
-		func(item *bridgegen.ToolCapability) { item.SideEffect = "unknown" },
-		func(item *bridgegen.ToolCapability) { item.Version = "" },
-		func(item *bridgegen.ToolCapability) { item.ParametersJson = "[]" },
-	} {
-		item := proto.Clone(base).(*bridgegen.ToolCapability)
-		mutate(item)
-		if _, err := toolCapabilitiesFromProto([]*bridgegen.ToolCapability{item}); err == nil {
-			t.Fatalf("toolCapabilitiesFromProto accepted unsafe capability: name=%s risk=%s side_effect=%s", item.Name, item.RiskLevel, item.SideEffect)
-		}
 	}
 }

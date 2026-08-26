@@ -23,8 +23,6 @@ const (
 	PythonBridge_GetCapabilities_FullMethodName = "/agentcanvas.pythonbridge.v1.PythonBridge/GetCapabilities"
 	PythonBridge_ParseDocument_FullMethodName   = "/agentcanvas.pythonbridge.v1.PythonBridge/ParseDocument"
 	PythonBridge_ChunkDocument_FullMethodName   = "/agentcanvas.pythonbridge.v1.PythonBridge/ChunkDocument"
-	PythonBridge_ListTools_FullMethodName       = "/agentcanvas.pythonbridge.v1.PythonBridge/ListTools"
-	PythonBridge_ExecuteTool_FullMethodName     = "/agentcanvas.pythonbridge.v1.PythonBridge/ExecuteTool"
 )
 
 // PythonBridgeClient is the client API for PythonBridge service.
@@ -35,8 +33,6 @@ type PythonBridgeClient interface {
 	GetCapabilities(ctx context.Context, in *CapabilitiesRequest, opts ...grpc.CallOption) (*CapabilitiesResponse, error)
 	ParseDocument(ctx context.Context, in *ParseDocumentRequest, opts ...grpc.CallOption) (*ParseDocumentResponse, error)
 	ChunkDocument(ctx context.Context, in *ChunkDocumentRequest, opts ...grpc.CallOption) (*ChunkDocumentResponse, error)
-	ListTools(ctx context.Context, in *ListToolsRequest, opts ...grpc.CallOption) (*ListToolsResponse, error)
-	ExecuteTool(ctx context.Context, in *ExecuteToolRequest, opts ...grpc.CallOption) (*ExecuteToolResponse, error)
 }
 
 type pythonBridgeClient struct {
@@ -87,26 +83,6 @@ func (c *pythonBridgeClient) ChunkDocument(ctx context.Context, in *ChunkDocumen
 	return out, nil
 }
 
-func (c *pythonBridgeClient) ListTools(ctx context.Context, in *ListToolsRequest, opts ...grpc.CallOption) (*ListToolsResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(ListToolsResponse)
-	err := c.cc.Invoke(ctx, PythonBridge_ListTools_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *pythonBridgeClient) ExecuteTool(ctx context.Context, in *ExecuteToolRequest, opts ...grpc.CallOption) (*ExecuteToolResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(ExecuteToolResponse)
-	err := c.cc.Invoke(ctx, PythonBridge_ExecuteTool_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
 // PythonBridgeServer is the server API for PythonBridge service.
 // All implementations must embed UnimplementedPythonBridgeServer
 // for forward compatibility
@@ -115,8 +91,6 @@ type PythonBridgeServer interface {
 	GetCapabilities(context.Context, *CapabilitiesRequest) (*CapabilitiesResponse, error)
 	ParseDocument(context.Context, *ParseDocumentRequest) (*ParseDocumentResponse, error)
 	ChunkDocument(context.Context, *ChunkDocumentRequest) (*ChunkDocumentResponse, error)
-	ListTools(context.Context, *ListToolsRequest) (*ListToolsResponse, error)
-	ExecuteTool(context.Context, *ExecuteToolRequest) (*ExecuteToolResponse, error)
 	mustEmbedUnimplementedPythonBridgeServer()
 }
 
@@ -135,12 +109,6 @@ func (UnimplementedPythonBridgeServer) ParseDocument(context.Context, *ParseDocu
 }
 func (UnimplementedPythonBridgeServer) ChunkDocument(context.Context, *ChunkDocumentRequest) (*ChunkDocumentResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ChunkDocument not implemented")
-}
-func (UnimplementedPythonBridgeServer) ListTools(context.Context, *ListToolsRequest) (*ListToolsResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method ListTools not implemented")
-}
-func (UnimplementedPythonBridgeServer) ExecuteTool(context.Context, *ExecuteToolRequest) (*ExecuteToolResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method ExecuteTool not implemented")
 }
 func (UnimplementedPythonBridgeServer) mustEmbedUnimplementedPythonBridgeServer() {}
 
@@ -227,42 +195,6 @@ func _PythonBridge_ChunkDocument_Handler(srv interface{}, ctx context.Context, d
 	return interceptor(ctx, in, info, handler)
 }
 
-func _PythonBridge_ListTools_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(ListToolsRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(PythonBridgeServer).ListTools(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: PythonBridge_ListTools_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(PythonBridgeServer).ListTools(ctx, req.(*ListToolsRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _PythonBridge_ExecuteTool_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(ExecuteToolRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(PythonBridgeServer).ExecuteTool(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: PythonBridge_ExecuteTool_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(PythonBridgeServer).ExecuteTool(ctx, req.(*ExecuteToolRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
 // PythonBridge_ServiceDesc is the grpc.ServiceDesc for PythonBridge service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -285,14 +217,6 @@ var PythonBridge_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ChunkDocument",
 			Handler:    _PythonBridge_ChunkDocument_Handler,
-		},
-		{
-			MethodName: "ListTools",
-			Handler:    _PythonBridge_ListTools_Handler,
-		},
-		{
-			MethodName: "ExecuteTool",
-			Handler:    _PythonBridge_ExecuteTool_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
