@@ -15,7 +15,6 @@ import grpc
 from agentcanvas.pythonbridge.v1 import bridge_pb2, bridge_pb2_grpc
 from agentcanvas_bridge.chunking import Block, chunk_document
 from agentcanvas_bridge.document_parsing import PARSER_METHOD, PARSER_VERSION, parse_document
-from agentcanvas_bridge.tools import TOOL_DEFINITIONS
 
 logger = logging.getLogger(__name__)
 PROTOCOL_VERSION = "v1"
@@ -82,7 +81,6 @@ class PythonBridge(bridge_pb2_grpc.PythonBridgeServicer):
             service_version=SERVICE_VERSION,
             chunk_methods=["python:fixed_token", "python:recursive", "python:langchain_recursive"],
             parser_methods=[PARSER_METHOD],
-            tools=[self._tool_capability(name, item) for name, item in TOOL_DEFINITIONS.items()],
             max_concurrency=self._limits.max_concurrency,
             max_input_bytes=self._limits.max_input_bytes,
             max_output_bytes=self._limits.max_output_bytes,
@@ -161,51 +159,6 @@ class PythonBridge(bridge_pb2_grpc.PythonBridgeServicer):
             context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(exc))
         except RuntimeError as exc:
             context.abort(grpc.StatusCode.FAILED_PRECONDITION, str(exc))
-
-    def ListTools(self, request, context):  # noqa: N802
-        self._require_auth(context)
-        return bridge_pb2.ListToolsResponse(
-            tools=[self._tool_capability(name, item) for name, item in TOOL_DEFINITIONS.items()]
-        )
-
-    def ExecuteTool(self, request, context):  # noqa: N802
-        request_id = self._require_auth(context)
-        if not request.request_id or request.request_id != request_id:
-            context.abort(grpc.StatusCode.INVALID_ARGUMENT, "request_id does not match bridge metadata")
-        definition = TOOL_DEFINITIONS.get(request.tool_name)
-        if definition is None:
-            context.abort(grpc.StatusCode.NOT_FOUND, f"unknown Python tool: {request.tool_name}")
-        if len(request.arguments_json.encode("utf-8")) > self._limits.max_input_bytes:
-            context.abort(grpc.StatusCode.RESOURCE_EXHAUSTED, "tool arguments exceed bridge input limit")
-        try:
-            arguments = _parse_json_object(request.arguments_json, "arguments_json")
-            value = definition["handler"](arguments)
-            content_json = _metadata_json(value)
-            if len(content_json.encode("utf-8")) > self._limits.max_output_bytes:
-                context.abort(grpc.StatusCode.RESOURCE_EXHAUSTED, "tool output exceeds bridge output limit")
-            return bridge_pb2.ExecuteToolResponse(
-                content_json=content_json,
-                content_text=content_json,
-                is_error=False,
-            )
-        except ValueError as exc:
-            context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(exc))
-        except grpc.RpcError:
-            raise
-        except Exception as exc:  # pragma: no cover - defensive process boundary
-            logger.exception("Python tool failed", extra={"tool": request.tool_name})
-            context.abort(grpc.StatusCode.INTERNAL, "Python tool execution failed")
-
-    @staticmethod
-    def _tool_capability(name: str, definition: dict[str, Any]):
-        return bridge_pb2.ToolCapability(
-            name=name,
-            description=definition["description"],
-            parameters_json=_metadata_json(definition["parameters"]),
-            risk_level=definition["risk_level"],
-            side_effect=definition["side_effect"],
-            version=definition["version"],
-        )
 
     @staticmethod
     def _block_from_proto(block):

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"slices"
 	"strings"
 	"time"
 
@@ -36,7 +35,6 @@ import (
 	"agentcanvas/internal/infrastructure/llm"
 	mysqlinfra "agentcanvas/internal/infrastructure/mysql"
 	oauthinfra "agentcanvas/internal/infrastructure/oauth"
-	pythonbridgeinfra "agentcanvas/internal/infrastructure/pythonbridge"
 	redisinfra "agentcanvas/internal/infrastructure/redis"
 	contextretrieval "agentcanvas/internal/infrastructure/retrieval"
 	esretrieval "agentcanvas/internal/infrastructure/retrieval/elasticsearch"
@@ -145,6 +143,7 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 	reflectionEventSink := mysqlinfra.NewReflectionEventSink(runEventRepo)
 	runStepRepo := mysqlinfra.NewRunStepRepository(db)
 	approvalRepo := mysqlinfra.NewApprovalRepository(db)
+	goalRepo := mysqlinfra.NewGoalRepository(db)
 	projectRepo := mysqlinfra.NewProjectRepository(db)
 	workspaceRepo := mysqlinfra.NewWorkspaceRepository(db)
 	gitService := gitinfra.NewService(gitinfra.Config{
@@ -311,49 +310,16 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 	}
 	providerLoader := agentruntime.ProviderLoader{Providers: providerRepo, Secrets: secretBox}
 	toolRegistry := toolruntime.BasicRegistry{Tools: toolDefinitionRepo, Invocations: toolInvocationRepo}
-	var pythonBridge *pythonbridgeinfra.Client
-	if cfg.PythonBridge.Enabled {
-		pythonBridge, err = pythonbridgeinfra.NewClient(pythonbridgeinfra.Config{
-			Enabled:         true,
-			Target:          cfg.PythonBridge.Target,
-			AuthToken:       os.Getenv(cfg.PythonBridge.AuthTokenEnv),
-			ConnectTimeout:  time.Duration(cfg.PythonBridge.ConnectTimeoutSeconds) * time.Second,
-			RequestTimeout:  time.Duration(cfg.PythonBridge.RequestTimeoutSeconds) * time.Second,
-			MaxSendBytes:    cfg.PythonBridge.MaxSendBytes,
-			MaxReceiveBytes: cfg.PythonBridge.MaxReceiveBytes,
-			MaxConcurrency:  cfg.PythonBridge.MaxConcurrency,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("init Python bridge: %w", err)
-		}
-		capabilities, capabilityErr := pythonBridge.GetCapabilities(ctx)
-		if capabilityErr != nil {
-			_ = pythonBridge.Close()
-			return nil, fmt.Errorf("handshake with Python bridge: %w", capabilityErr)
-		}
-		if cfg.PythonBridge.AllowExperimentalChunking || cfg.PythonBridge.ShadowEnabled {
-			for _, method := range cfg.PythonBridge.AllowedChunkMethods {
-				if !slices.Contains(capabilities.ChunkMethods, method) {
-					_ = pythonBridge.Close()
-					return nil, fmt.Errorf("Python bridge does not advertise configured chunk method %q", method)
-				}
-			}
-		}
-		go func() {
-			<-ctx.Done()
-			_ = pythonBridge.Close()
-		}()
-	}
 	agentRuntime, err := agentruntime.New(agentruntime.Deps{
 		Repositories: agentruntime.Repositories{
 			Retriever: retrievalService, Providers: providerLoader, MessageHistory: messageRepo, Compactions: compactionRepo,
 			SessionSearch: sessionSearch, Memories: memoryRepo, MemoryReader: memoryService, MemoryWriteLogs: memoryWriteLogRepo,
 			MemoryRecallLogs: memoryRecallLogRepo, MemoryCandidates: memoryCandidateService, MemoryRetriever: memoryRetrievalStore,
 			ToolPacks: toolPackRepo, Skills: skillRepo, MCPServers: mcpRepo,
-			ToolInvocations: toolInvocationRepo, ContextIndex: contextIndex,
+			ContextIndex: contextIndex,
 		},
 		RuntimeClients: agentruntime.RuntimeClients{
-			LLM: chatClient, ToolCalling: toolCallingClient, Embedder: embeddingClient, PythonBridge: pythonBridge,
+			LLM: chatClient, ToolCalling: toolCallingClient, Embedder: embeddingClient,
 			Archival: agentruntime.ArchivalIndexFactoryFunc(func(provider agentruntime.LoadedProvider) memory.ArchivalIndex {
 				if archivalVecStore == nil || strings.TrimSpace(provider.EmbeddingModel) == "" {
 					return nil
@@ -361,7 +327,9 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 				return contextretrieval.ArchivalMemoryIndex{Store: archivalVecStore, Embedder: embeddingClient, Provider: provider.EmbeddingConfig, ProviderID: provider.ProviderID, Model: provider.EmbeddingModel}
 			}),
 		},
-		Tooling:       agentruntime.Tooling{ToolRegistry: toolRegistry, PythonToolAllowlist: cfg.PythonBridge.AllowedTools},
+		Tooling: agentruntime.Tooling{ToolRegistry: toolRegistry, Goals: goalRepo, GoalTokenBudgetCeiling: cfg.Goals.MaxTokenBudget,
+			DefaultModeRequestUserInput: cfg.Tools.RequestUserInput.Enabled != nil && *cfg.Tools.RequestUserInput.Enabled,
+			DisableUpdatePlan:           cfg.Tools.UpdatePlan.Enabled != nil && !*cfg.Tools.UpdatePlan.Enabled},
 		Workspace:     agentruntime.Workspace{Sandbox: sandbox.NewDockerRunner(), Git: gitService},
 		Observability: agentruntime.Observability{Audits: auditRepo, Reflections: reflectionService},
 		Policies: agentruntime.Policies{
@@ -384,6 +352,8 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 	agentService.ConfigureEditableResources(providerRepo, knowledgeRepo)
 	agentService.ConfigureSessionSearch(sessionSearch)
 	agentService.ConfigureWorkspace(workspaceService)
+	agentService.ConfigureGoalRepository(goalRepo)
+	agentService.ConfigureGoalTokenBudgetCeiling(cfg.Goals.MaxTokenBudget)
 	agentRuntime.ConfigureSubagentDispatcher(agentService)
 	agentRuntime.ConfigureMemoryReader(memoryService)
 	agentRuntime.ConfigureMemoryCandidates(memoryCandidateService)
@@ -393,7 +363,7 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 		memoryReviewMode = independentagentusecase.MemoryReviewOff
 		log.Warn("Dream memory extraction is enabled; duplicate self-improvement memory proposals are disabled")
 	}
-	improvementService := independentagentusecase.NewImprovementService(agentImprovementRepo, agentRepo, agentTurnRepo, conversationRepo, messageRepo,
+	improvementService := independentagentusecase.NewImprovementService(agentImprovementRepo, agentRepo, agentTurnRepo, runRepo, conversationRepo, messageRepo,
 		runStepRepo, memoryRepo, reflectionRepo, skillRepo, providerLoader, toolCallingClient, memoryReviewMode)
 	improvementService.ConfigureMemoryCommands(memoryCommandService)
 	improvementService.ConfigureReviewModel(cfg.AgentRuntime.ReviewProviderID, cfg.AgentRuntime.ReviewModel)

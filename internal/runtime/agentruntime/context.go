@@ -44,10 +44,10 @@ type AgentStepRecorder interface {
 type RunContext struct {
 	OwnerID         int64                         `json:"owner_id" tag:"multi-tenant user ID"`
 	AgentID         int64                         `json:"agent_id,omitempty" tag:"Agent ID"`
-	AgentReleaseID  int64                         `json:"agent_release_id,omitempty" tag:"pinned Agent release ID"`
-	RuleHash        string                        `json:"rule_hash,omitempty" tag:"pinned Agent release rule hash"`
+	RuleHash        string                        `json:"rule_hash,omitempty" tag:"pinned Agent rule hash"`
 	Rules           []rules.Rule                  `json:"-" tag:"verified immutable rules"`
 	RunID           int64                         `json:"run_id" tag:"unique run ID"`
+	UserMessageID   int64                         `json:"user_message_id,omitempty" tag:"initial user message ID"`
 	ParentRunID     *int64                        `json:"parent_run_id" tag:"optional parent run ID"`
 	DelegationDepth int                           `json:"delegation_depth" tag:"nested subagent depth"`
 	ConversationID  *int64                        `json:"conversation_id" tag:"optional conversation ID"`
@@ -56,6 +56,7 @@ type RunContext struct {
 	Events          EventEmitter                  `json:"events" tag:"event emitter"`
 	AgentSteps      AgentStepRecorder             `json:"agent_steps" tag:"agent step recorder"`
 	Workspace       *toolruntime.WorkspaceContext `json:"workspace,omitempty" tag:"resolved filesystem workspace"`
+	Steering        func() []string               `json:"-" tag:"pending developer steering"`
 }
 
 type RunInput map[string]any

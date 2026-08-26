@@ -61,6 +61,14 @@ func (r *MessageRepository) ListActiveAfter(ctx context.Context, ownerID, conver
 	return messages, err
 }
 
+func (r *MessageRepository) ListActiveBetween(ctx context.Context, ownerID, conversationID, firstMessageID, lastMessageID int64) ([]conversation.Message, error) {
+	var messages []conversation.Message
+	err := r.db.WithContext(ctx).
+		Where("owner_id = ? AND conversation_id = ? AND archived_at IS NULL AND id >= ? AND id <= ?", ownerID, conversationID, firstMessageID, lastMessageID).
+		Order("id ASC").Find(&messages).Error
+	return messages, err
+}
+
 func (r *MessageRepository) ListActiveThrough(ctx context.Context, ownerID, conversationID, throughMessageID int64) ([]conversation.Message, error) {
 	var messages []conversation.Message
 	err := r.db.WithContext(ctx).

@@ -110,6 +110,24 @@ func TestBuildResumeRequestRejected(t *testing.T) {
 	}
 }
 
+func TestBuildResumeRequestValidatesUserInputAnswers(t *testing.T) {
+	cp := &Checkpoint{
+		Messages:        []llm.ChatMessage{{Role: conversation.RoleAssistant}},
+		PendingToolCall: &llm.ToolCall{ID: "ask", Name: "request_user_input"},
+		Interaction: &Interaction{Kind: "request_user_input", Questions: []toolruntime.UserInputQuestion{{
+			ID: "scope", Options: []toolruntime.UserInputOption{{Label: "all", Description: "everything"}},
+		}}},
+		Metadata: map[string]any{},
+	}
+	if _, err := BuildResumeRequest(ResumeRequest{RunRequest: RunRequest{Model: "m", Task: "continue"}, Checkpoint: cp, Approved: true, RejectionNote: `answers:{"scope":"unknown"}`}); err == nil {
+		t.Fatal("unknown answer option must be rejected")
+	}
+	resumed, err := BuildResumeRequest(ResumeRequest{RunRequest: RunRequest{Model: "m", Task: "continue"}, Checkpoint: cp, Approved: true, RejectionNote: `answers:{"scope":"all"}`})
+	if err != nil || len(resumed.ResumeMessages) != 2 || resumed.ResumeMessages[1].Content != `{"answers":{"scope":"all"}}` {
+		t.Fatalf("valid answers were not appended: resumed=%+v err=%v", resumed, err)
+	}
+}
+
 func TestBuildResumeRequestUsesCheckpointRuleSnapshot(t *testing.T) {
 	checkpoint := &Checkpoint{
 		Messages: []llm.ChatMessage{{Role: conversation.RoleSystem, Content: "system"}},
@@ -125,7 +143,7 @@ func TestBuildResumeRequestUsesCheckpointRuleSnapshot(t *testing.T) {
 	}
 }
 
-func TestBuildResumeRequestUsesCheckpointReflectionAndPlanSnapshot(t *testing.T) {
+func TestBuildResumeRequestUsesCheckpointReflectionSnapshot(t *testing.T) {
 	checkpointPolicy := reflection.DefaultPolicy()
 	checkpointPolicy.RuntimeMode = reflection.RuntimeShadow
 	checkpoint := &Checkpoint{
@@ -133,15 +151,10 @@ func TestBuildResumeRequestUsesCheckpointReflectionAndPlanSnapshot(t *testing.T)
 		Metadata:              map[string]any{},
 		ReflectionPolicy:      checkpointPolicy,
 		RecalledReflectionIDs: []int64{7, 8},
-		Plan: &Plan{Version: 3, Steps: []PlanStep{
-			{Number: 1, Description: "completed side effect", Status: "completed"},
-			{Number: 2, Description: "continue safely", Status: "pending"},
-		}},
 	}
 	currentPolicy := reflection.DefaultPolicy()
 	resumed, err := BuildResumeRequest(ResumeRequest{RunRequest: RunRequest{
 		ReflectionPolicy: currentPolicy, RecalledReflectionIDs: []int64{99},
-		Plan: &Plan{Version: 1, Steps: []PlanStep{{Number: 1, Description: "new plan", Status: "pending"}}},
 	}, Checkpoint: checkpoint})
 	if err != nil {
 		t.Fatal(err)
@@ -149,17 +162,13 @@ func TestBuildResumeRequestUsesCheckpointReflectionAndPlanSnapshot(t *testing.T)
 	if resumed.ReflectionPolicy.RuntimeMode != reflection.RuntimeShadow || len(resumed.RecalledReflectionIDs) != 2 || resumed.RecalledReflectionIDs[0] != 7 {
 		t.Fatalf("reflection snapshot drifted during resume: %+v", resumed)
 	}
-	if resumed.Plan == nil || resumed.Plan.Version != 3 || resumed.Plan.Steps[0].Status != "completed" {
-		t.Fatalf("plan snapshot drifted during resume: %+v", resumed.Plan)
-	}
 }
 
-func TestCheckpointCapturesReflectionAndPlanState(t *testing.T) {
+func TestCheckpointCapturesReflectionState(t *testing.T) {
 	policy := reflection.DefaultPolicy()
-	plan := &Plan{Version: 2, Steps: []PlanStep{{Number: 1, Description: "done", Status: "completed"}}}
 	checkpoint := checkpointFromMessages(RunRequest{ReflectionPolicy: policy, RecalledReflectionIDs: []int64{4, 5}}, nil,
-		ContextTrace{}, nil, nil, StopReasonPaused, 1, 0, plan)
-	if checkpoint.ReflectionPolicy.RuntimeMode != reflection.RuntimeActive || len(checkpoint.RecalledReflectionIDs) != 2 || checkpoint.Plan == nil || checkpoint.Plan.Version != 2 {
+		ContextTrace{}, nil, nil, StopReasonPaused, 1, 0)
+	if checkpoint.ReflectionPolicy.RuntimeMode != reflection.RuntimeActive || len(checkpoint.RecalledReflectionIDs) != 2 {
 		t.Fatalf("checkpoint did not capture reflection state: %+v", checkpoint)
 	}
 }
@@ -251,5 +260,27 @@ func TestRunnerResumeExecutesPendingTool(t *testing.T) {
 	}
 	if result.ToolCalls < 1 {
 		t.Fatalf("expected at least 1 tool call after resume, got %d", result.ToolCalls)
+	}
+}
+
+func TestRunnerResumePlanModeUsesNormalToolRegistration(t *testing.T) {
+	client := &fakeToolClient{responses: []llm.ToolChatResponse{
+		{Message: llm.ChatMessage{Role: conversation.RoleAssistant, Content: "safe plan"}},
+	}}
+	tool := &fakeRuntimeTool{name: "write_file", metadata: toolruntime.ToolMetadata{SideEffect: toolruntime.SideEffectWrite}}
+	messages := []llm.ChatMessage{
+		{Role: conversation.RoleSystem, Content: "agent"},
+		{Role: conversation.RoleUser, Content: "task"},
+		{Role: conversation.RoleAssistant, ToolCalls: []llm.ToolCall{{ID: "write", Name: "write_file", Arguments: json.RawMessage(`{}`)}}},
+	}
+	result, err := NewRunner(client).Run(context.Background(), RunRequest{
+		Model: "m", Mode: "plan", Task: "task", MaxIterations: 3, MaxToolCalls: 3,
+		Tools: []toolruntime.RuntimeTool{tool}, ResumeMessages: messages, ResumeIteration: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tool.input == nil {
+		t.Fatalf("resumed Plan Run did not use normal tool registration: input=%s result=%+v", tool.input, result)
 	}
 }

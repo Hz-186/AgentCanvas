@@ -105,6 +105,11 @@ func (r *ConversationCompactionRepository) CompleteSnapshot(ctx context.Context,
 		if item.CreatedAt.IsZero() {
 			item.CreatedAt = time.Now().UTC()
 		}
+		var maxWindow int
+		if err := tx.Model(&conversation.Compaction{}).Where("owner_id = ? AND conversation_id = ?", item.OwnerID, item.ConversationID).Select("COALESCE(MAX(window_number), 0)").Scan(&maxWindow).Error; err != nil {
+			return err
+		}
+		item.WindowNumber = maxWindow + 1
 		if err := tx.Create(item).Error; err != nil {
 			return err
 		}

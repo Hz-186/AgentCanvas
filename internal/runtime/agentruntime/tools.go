@@ -51,11 +51,11 @@ func mergeInt64IDs(values ...[]int64) []int64 {
 }
 
 func agentMode(mode string) string {
-	mode = strings.TrimSpace(mode)
-	if mode == "plan_execute" {
-		return mode
+	normalized, err := conversation.NormalizeMode(mode)
+	if err != nil {
+		return conversation.ModeDefault
 	}
-	return "react"
+	return normalized
 }
 
 func (n runtimeCore) workspaceCodingContext(ctx context.Context, rc *RunContext) *runtimeagent.ContextBlock {
@@ -111,8 +111,17 @@ func agentStepRecord(step runtimeagent.RunStep) AgentStepRecord {
 }
 
 func (n runtimeCore) loadTools(ctx context.Context, ownerID int64, cfg agentRuntimeConfig, provider *LoadedProvider, workspace ...*toolruntime.WorkspaceContext) ([]toolruntime.RuntimeTool, error) {
-	tools := make([]toolruntime.RuntimeTool, 0, len(cfg.ToolIDs)+2)
+	tools := make([]toolruntime.RuntimeTool, 0, len(cfg.ToolIDs)+4)
 	tools = append(tools, toolruntime.HumanApprovalTool{})
+	if cfg.RequestUserInputEnabled {
+		tools = append(tools, toolruntime.RequestUserInputTool{})
+	}
+	if cfg.GoalToolsEnabled && n.Goals != nil {
+		tools = append(tools, toolruntime.GetGoalTool{}, toolruntime.CreateGoalTool{}, toolruntime.UpdateGoalTool{})
+	}
+	if !n.DisableUpdatePlan {
+		tools = append(tools, toolruntime.UpdatePlanTool{})
+	}
 	var workspaceContext *toolruntime.WorkspaceContext
 	if len(workspace) > 0 {
 		workspaceContext = workspace[0]
@@ -209,24 +218,6 @@ func (n runtimeCore) loadTools(ctx context.Context, ownerID int64, cfg agentRunt
 		}
 		tools = append(tools, toolruntime.PythonSandboxTool{Runner: n.Sandbox})
 	}
-	if len(cfg.PythonToolNames) > 0 {
-		if n.PythonBridge == nil {
-			return nil, fmt.Errorf("agent runtime Python bridge is not configured")
-		}
-		requested := uniqueNames(cfg.PythonToolNames)
-		allowed := intersectNames(requested, n.PythonToolAllowlist)
-		if len(allowed) != len(requested) {
-			return nil, fmt.Errorf("agent runtime requested a Python tool outside the global allowlist")
-		}
-		loaded, err := n.PythonBridge.LoadRuntimeTools(ctx, allowed, n.ToolInvocations)
-		if err != nil {
-			return nil, fmt.Errorf("load Python bridge tools: %w", err)
-		}
-		if len(loaded) != len(uniqueNames(allowed)) {
-			return nil, fmt.Errorf("Python bridge did not provide all requested tools")
-		}
-		tools = append(tools, loaded...)
-	}
 	if cfg.MemoryEnabled {
 		if n.ContextIndex == nil {
 			return nil, fmt.Errorf("agent runtime unified context index is not configured")
@@ -250,53 +241,17 @@ func (n runtimeCore) loadTools(ctx context.Context, ownerID int64, cfg agentRunt
 			tools = append(tools, toolruntime.SessionSearchTool{Index: n.SessionSearch})
 		}
 	}
-	if len(cfg.ToolIDs) == 0 {
-		return tools, nil
-	}
-	if n.Tools == nil {
-		return nil, fmt.Errorf("agent runtime tool registry is not configured")
-	}
-	loaded, err := n.Tools.LoadForAgent(ctx, ownerID, cfg.ToolIDs)
-	if err != nil {
-		return nil, err
-	}
-	return append(tools, loaded...), nil
-}
-
-func intersectNames(requested, globalAllowlist []string) []string {
-	requested = uniqueNames(requested)
-	globalAllowlist = uniqueNames(globalAllowlist)
-	if len(globalAllowlist) == 0 {
-		return nil
-	}
-	allowed := make(map[string]struct{}, len(globalAllowlist))
-	for _, name := range globalAllowlist {
-		allowed[name] = struct{}{}
-	}
-	result := make([]string, 0, len(requested))
-	for _, name := range requested {
-		if _, ok := allowed[name]; ok {
-			result = append(result, name)
+	if len(cfg.ToolIDs) > 0 {
+		if n.Tools == nil {
+			return nil, fmt.Errorf("agent runtime tool registry is not configured")
 		}
-	}
-	return result
-}
-
-func uniqueNames(values []string) []string {
-	seen := make(map[string]struct{}, len(values))
-	result := make([]string, 0, len(values))
-	for _, value := range values {
-		value = strings.TrimSpace(value)
-		if value == "" {
-			continue
+		loaded, err := n.Tools.LoadForAgent(ctx, ownerID, cfg.ToolIDs)
+		if err != nil {
+			return nil, err
 		}
-		if _, ok := seen[value]; ok {
-			continue
-		}
-		seen[value] = struct{}{}
-		result = append(result, value)
+		tools = append(tools, loaded...)
 	}
-	return result
+	return tools, nil
 }
 
 func (n runtimeCore) loadSkillDefinitions(ctx context.Context, ownerID int64, ids []int64) ([]skill.Skill, error) {

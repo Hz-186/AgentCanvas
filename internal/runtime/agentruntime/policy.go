@@ -23,6 +23,8 @@ type contextPolicy struct {
 	ModelAutoCompactTokenLimitScope string            `json:"model_auto_compact_token_limit_scope"`
 	CompactionProviderID            int64             `json:"compaction_provider_id"`
 	CompactionModel                 string            `json:"compaction_model"`
+	CompactionMode                  string            `json:"compaction_mode"`
+	RetainClientDeveloperMessages   bool              `json:"retain_client_developer_messages"`
 	CompactPrompt                   string            `json:"compact_prompt"`
 	Retrieval                       retrievalPolicy   `json:"retrieval"`
 	DeprecatedRules                 []json.RawMessage `json:"rules"`
@@ -101,6 +103,10 @@ func applyContextPolicy(cfg *agentRuntimeConfig, policy contextPolicy) {
 	if strings.TrimSpace(policy.CompactionModel) != "" {
 		cfg.CompactionModel = strings.TrimSpace(policy.CompactionModel)
 	}
+	if strings.TrimSpace(policy.CompactionMode) != "" {
+		cfg.CompactionMode = strings.TrimSpace(policy.CompactionMode)
+	}
+	cfg.RetainClientDeveloperMessages = policy.RetainClientDeveloperMessages
 	if strings.TrimSpace(policy.CompactPrompt) != "" {
 		cfg.CompactPrompt = strings.TrimSpace(policy.CompactPrompt)
 	}
@@ -255,6 +261,9 @@ func validateAgentContextPolicyJSON(raw json.RawMessage) error {
 	}
 	if scope := strings.TrimSpace(policy.ModelAutoCompactTokenLimitScope); scope != "" && scope != "total" && scope != "body_after_prefix" {
 		return fmt.Errorf("%w: agent runtime model_auto_compact_token_limit_scope must be total or body_after_prefix", agenterrors.ErrInvalidInput)
+	}
+	if mode := strings.TrimSpace(policy.CompactionMode); mode != "" && mode != "summary" && mode != "token_budget" {
+		return fmt.Errorf("%w: agent runtime compaction_mode must be summary or token_budget", agenterrors.ErrInvalidInput)
 	}
 	if len(policy.DeprecatedRules) > 0 {
 		return fmt.Errorf("%w: agent runtime context_policy_json.rules is not supported; use Agent definition rules", agenterrors.ErrInvalidInput)

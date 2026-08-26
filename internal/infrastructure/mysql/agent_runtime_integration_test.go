@@ -14,6 +14,7 @@ import (
 	"time"
 
 	agentdomain "agentcanvas/internal/domain/agent"
+	conversationdomain "agentcanvas/internal/domain/conversation"
 	projectdomain "agentcanvas/internal/domain/project"
 	workspacedomain "agentcanvas/internal/domain/workspace"
 	agenterrors "agentcanvas/internal/pkg/errors"
@@ -44,7 +45,7 @@ func TestAgentRuntimeRunPersistenceIntegration(t *testing.T) {
 	cleanup()
 	t.Cleanup(cleanup)
 	expectedColumns := map[string][]string{
-		"agent_runs":              {"id", "owner_id", "agent_id", "agent_release_id", "conversation_id", "workspace_id", "parent_run_id", "run_type", "delegation_depth", "definition_json", "definition_hash", "rule_hash", "status", "input_json", "output_json", "error_message", "total_tokens", "latency_ms", "started_at", "finished_at", "created_at", "updated_at"},
+		"agent_runs":              {"id", "owner_id", "agent_id", "conversation_id", "workspace_id", "parent_run_id", "run_type", "delegation_depth", "definition_json", "definition_hash", "rule_hash", "status", "input_json", "output_json", "error_message", "total_tokens", "latency_ms", "started_at", "finished_at", "created_at", "updated_at"},
 		"agent_run_events":        {"id", "owner_id", "run_id", "event_type", "payload_json", "created_at"},
 		"agent_run_steps":         {"id", "owner_id", "run_id", "step_index", "step_type", "role", "content", "tool_call_id", "tool_name", "arguments_json", "output_json", "compressed", "error_message", "token_count", "latency_ms", "provider_id", "model", "created_at"},
 		"agent_run_checkpoints":   {"id", "owner_id", "run_id", "status", "snapshot_version", "interaction_id", "runtime_checkpoint_json", "messages_json", "messages_summary", "steps_json", "pending_tool_call_json", "context_json", "tool_registry_hash", "tool_policy_hash", "created_at", "updated_at"},
@@ -120,13 +121,12 @@ func TestAgentTurnClaimLeaseRecoveryIntegration(t *testing.T) {
 	runRepo := NewRunRepository(db)
 	turnRepo := NewAgentTurnRepository(db)
 	now := time.Now().UTC()
-	releaseID := int64(1)
-	run := &agentdomain.Run{BaseModel: domain.BaseModel{OwnerID: ownerID}, AgentID: 1, AgentReleaseID: &releaseID, RunType: agentdomain.RunTypeTurn,
+	run := &agentdomain.Run{BaseModel: domain.BaseModel{OwnerID: ownerID}, AgentID: 1, RunType: agentdomain.RunTypeTurn,
 		Status: agentdomain.RunStatusQueued, DefinitionJSON: []byte(`{}`), InputJSON: []byte(`{}`), StartedAt: now}
 	if err := runRepo.Create(ctx, run); err != nil {
 		t.Fatal(err)
 	}
-	turn := &agentdomain.Turn{BaseModel: domain.BaseModel{OwnerID: ownerID}, AgentID: 1, AgentReleaseID: 1, ConversationID: ownerID,
+	turn := &agentdomain.Turn{BaseModel: domain.BaseModel{OwnerID: ownerID}, AgentID: 1, ConversationID: ownerID,
 		RunID: &run.ID, UserMessageID: 1, IdempotencyKey: "claim-once", Status: agentdomain.TurnStatusQueued, InputJSON: []byte(`{}`)}
 	if err := turnRepo.Create(ctx, turn); err != nil {
 		t.Fatal(err)
@@ -356,6 +356,19 @@ func TestGitWorkspaceMigrationRoundTripIntegration(t *testing.T) {
 	}
 	applyIntegrationMigration(t, testDB, filepath.Join(migrationRoot, "000008_model_schema_cleanup.up.sql"))
 	assertModelCleanupMigrationState(t, testDB, true)
+	applyIntegrationMigration(t, testDB, filepath.Join(migrationRoot, "000009_remove_agent_releases.up.sql"))
+	assertReleaseRemovalMigrationState(t, testDB, true)
+	applyIntegrationMigration(t, testDB, filepath.Join(migrationRoot, "000010_conversation_compaction_alignment.up.sql"))
+	assertCompactionAlignmentMigrationState(t, testDB, true)
+	assertCompactionWindowNumbers(t, testDB)
+	applyIntegrationMigration(t, testDB, filepath.Join(migrationRoot, "000010_conversation_compaction_alignment.down.sql"))
+	assertCompactionAlignmentMigrationState(t, testDB, false)
+	applyIntegrationMigration(t, testDB, filepath.Join(migrationRoot, "000010_conversation_compaction_alignment.up.sql"))
+	assertCompactionAlignmentMigrationState(t, testDB, true)
+	applyIntegrationMigration(t, testDB, filepath.Join(migrationRoot, "000010_conversation_compaction_alignment.down.sql"))
+	assertCompactionAlignmentMigrationState(t, testDB, false)
+	applyIntegrationMigration(t, testDB, filepath.Join(migrationRoot, "000009_remove_agent_releases.down.sql"))
+	assertReleaseRemovalMigrationState(t, testDB, false)
 	var memoryType, retentionTier string
 	if err := testDB.QueryRow("SELECT memory_type, retention_tier FROM memories WHERE owner_id = 1 LIMIT 1").Scan(&memoryType, &retentionTier); err != nil {
 		t.Fatal(err)
@@ -391,6 +404,10 @@ func TestGitWorkspaceMigrationRoundTripIntegration(t *testing.T) {
 	assertGitWorkspaceMigrationState(t, testDB, false)
 	applyIntegrationMigration(t, testDB, filepath.Join(migrationRoot, "000002_git_workspace.up.sql"))
 	assertGitWorkspaceMigrationState(t, testDB, true)
+	applyIntegrationMigration(t, testDB, filepath.Join(migrationRoot, "000009_remove_agent_releases.up.sql"))
+	assertReleaseRemovalMigrationState(t, testDB, true)
+	applyIntegrationMigration(t, testDB, filepath.Join(migrationRoot, "000010_conversation_compaction_alignment.up.sql"))
+	assertCompactionAlignmentMigrationState(t, testDB, true)
 }
 
 func applyIntegrationMigration(t *testing.T, db *sql.DB, path string) {
@@ -690,5 +707,99 @@ func assertModelCleanupMigrationState(t *testing.T, db *sql.DB, expected bool) {
 		if column == "memory_level" && strings.Contains(columnType, "enum('working','short_term','long_term')") != wantNew {
 			t.Fatalf("memories.memory_level type = %q, want old=%v", columnType, wantNew)
 		}
+	}
+}
+
+func assertReleaseRemovalMigrationState(t *testing.T, db *sql.DB, removed bool) {
+	t.Helper()
+	var releaseTableCount int
+	if err := db.QueryRow("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'agent_releases'").Scan(&releaseTableCount); err != nil {
+		t.Fatal(err)
+	}
+	if (releaseTableCount == 0) != removed {
+		t.Fatalf("agent_releases removal = %v, want %v", releaseTableCount == 0, removed)
+	}
+	for table, column := range map[string]string{
+		"agent_improvement_reviews": "agent_release_id",
+		"agent_turns":               "agent_release_id",
+		"agents":                    "current_release_id",
+		"agent_runs":                "agent_release_id",
+		"conversations":             "agent_release_id",
+	} {
+		var count int
+		if err := db.QueryRow("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?", table, column).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if (count == 0) != removed {
+			t.Fatalf("column %s.%s removal = %v, want %v", table, column, count == 0, removed)
+		}
+	}
+}
+
+func assertCompactionAlignmentMigrationState(t *testing.T, db *sql.DB, applied bool) {
+	t.Helper()
+	for column, expected := range map[string]bool{
+		"window_number":         applied,
+		"context_window_tokens": applied,
+		"first_message_content": applied,
+		"summary_token_limit":   !applied,
+	} {
+		var count int
+		if err := db.QueryRow("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'conversation_compactions' AND column_name = ?", column).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if (count == 1) != expected {
+			t.Fatalf("conversation_compactions.%s existence = %v, want %v", column, count == 1, expected)
+		}
+	}
+	var columnType string
+	if err := db.QueryRow("SELECT column_type FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'conversation_compactions' AND column_name = 'trigger_type'").Scan(&columnType); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(columnType, "'runtime'") != applied {
+		t.Fatalf("conversation_compactions.trigger_type = %q, runtime expected=%v", columnType, applied)
+	}
+}
+
+func assertCompactionWindowNumbers(t *testing.T, db *sql.DB) {
+	t.Helper()
+	gormDB, err := gorm.Open(gormmysql.New(gormmysql.Config{Conn: db}), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := NewConversationCompactionRepository(gormDB)
+	ctx := context.Background()
+	ownerID, conversationID := time.Now().UnixNano(), int64(77)
+	defer func() {
+		_ = gormDB.Where("owner_id = ? AND conversation_id = ?", ownerID, conversationID).Delete(&conversationSnapshotClaim{}).Error
+		_ = gormDB.Where("owner_id = ? AND conversation_id = ?", ownerID, conversationID).Delete(&conversationdomain.Compaction{}).Error
+	}()
+	first := &conversationdomain.Compaction{
+		ImmutableModel: domain.ImmutableModel{OwnerID: ownerID}, ConversationID: conversationID,
+		SnapshotVersion: 1, SourceFingerprint: strings.Repeat("a", 64), TriggerType: conversationdomain.CompactionTriggerRuntime,
+		Status: conversationdomain.CompactionCompleted, Summary: "first", WindowNumber: 99,
+	}
+	claimed, err := repo.ClaimSnapshot(ctx, ownerID, conversationID, nil, 0, "window-one", time.Now().Add(time.Minute))
+	if err != nil || !claimed {
+		t.Fatalf("claim first compaction: claimed=%v err=%v", claimed, err)
+	}
+	if err := repo.CompleteSnapshot(ctx, first, nil, 0, "window-one"); err != nil {
+		t.Fatal(err)
+	}
+	parentID := first.ID
+	second := &conversationdomain.Compaction{
+		ImmutableModel: domain.ImmutableModel{OwnerID: ownerID}, ConversationID: conversationID,
+		ParentSnapshotID: &parentID, SnapshotVersion: 2, SourceFingerprint: strings.Repeat("b", 64), TriggerType: conversationdomain.CompactionTriggerAuto,
+		Status: conversationdomain.CompactionCompleted, Summary: "second", WindowNumber: 99,
+	}
+	claimed, err = repo.ClaimSnapshot(ctx, ownerID, conversationID, &parentID, 1, "window-two", time.Now().Add(time.Minute))
+	if err != nil || !claimed {
+		t.Fatalf("claim second compaction: claimed=%v err=%v", claimed, err)
+	}
+	if err := repo.CompleteSnapshot(ctx, second, &parentID, 1, "window-two"); err != nil {
+		t.Fatal(err)
+	}
+	if first.WindowNumber != 1 || second.WindowNumber != 2 {
+		t.Fatalf("transactional window numbers = (%d, %d), want (1, 2)", first.WindowNumber, second.WindowNumber)
 	}
 }

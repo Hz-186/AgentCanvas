@@ -22,6 +22,8 @@ type Config struct {
 	NATS            NATSConfig            `yaml:"nats"`
 	ReflectionQueue ReflectionQueueConfig `yaml:"reflection_queue"`
 	AgentRuntime    AgentRuntimeConfig    `yaml:"agent_runtime"`
+	Tools           ToolsConfig           `yaml:"tools"`
+	Goals           GoalsConfig           `yaml:"goals"`
 	MinIO           MinIOConfig           `yaml:"minio"`
 	Retrieval       RetrievalConfig       `yaml:"retrieval"`
 	Elasticsearch   ElasticsearchConfig   `yaml:"elasticsearch"`
@@ -61,6 +63,19 @@ type AgentRuntimeConfig struct {
 	ReviewWorkerConcurrency int    `yaml:"review_worker_concurrency"`
 	ReviewProviderID        int64  `yaml:"review_provider_id"`
 	ReviewModel             string `yaml:"review_model"`
+}
+
+type ToolsConfig struct {
+	UpdatePlan       ToolToggleConfig `yaml:"update_plan"`
+	RequestUserInput ToolToggleConfig `yaml:"request_user_input"`
+}
+
+type GoalsConfig struct {
+	MaxTokenBudget *int64 `yaml:"max_goal_token_budget"`
+}
+
+type ToolToggleConfig struct {
+	Enabled *bool `yaml:"enabled"`
 }
 
 type AppConfig struct {
@@ -224,7 +239,6 @@ type PythonBridgeConfig struct {
 	AllowedChunkMethods       []string `yaml:"allowed_chunk_methods"`
 	AllowedParserMethods      []string `yaml:"allowed_parser_methods"`
 	MaxDocumentBytes          int      `yaml:"max_document_bytes"`
-	AllowedTools              []string `yaml:"allowed_tools"`
 }
 
 type SecurityConfig struct {
@@ -640,14 +654,6 @@ func (c *Config) Validate() error {
 		for _, method := range c.PythonBridge.AllowedParserMethods {
 			if method != "python:langchain_pdf" {
 				return fmt.Errorf("python_bridge.allowed_parser_methods contains unsupported parser %q", method)
-			}
-		}
-		for _, name := range c.PythonBridge.AllowedTools {
-			if strings.TrimSpace(name) == "" {
-				return fmt.Errorf("python_bridge.allowed_tools must not contain empty names")
-			}
-			if !strings.HasPrefix(strings.TrimSpace(name), "python_") {
-				return fmt.Errorf("python_bridge.allowed_tools must use the python_ namespace")
 			}
 		}
 	} else if c.PythonBridge.ShadowEnabled || c.PythonBridge.AllowExperimentalChunking || c.PythonBridge.ShadowDocumentParser || c.PythonBridge.AllowExperimentalParsing || c.PythonBridge.DocumentParser != "go" {

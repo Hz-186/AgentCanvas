@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"time"
 
+	goalDomain "agentcanvas/internal/domain/goal"
 	"agentcanvas/internal/domain/reflection"
 	"agentcanvas/internal/infrastructure/llm"
 	"agentcanvas/internal/runtime/harness/hooks"
@@ -22,7 +23,6 @@ const (
 	StopReasonWaitingHuman     = "waiting_human"
 	StopReasonLLMError         = "llm_error"
 	StopReasonToolNameNotFound = "tool_name_not_found"
-	StopReasonPlanCompleted    = "plan_completed"
 	StopReasonReflectionFailed = "reflection_failed"
 	StopReasonContextOverflow  = "context_overflow"
 	StopReasonClarification    = "clarification_required"
@@ -30,73 +30,80 @@ const (
 
 const (
 	StepTypeLLMResponse      = "llm_response"
-	StepTypePlan             = "plan"
+	StepTypeProposedPlan     = "proposed_plan"
 	StepTypeToolCall         = "tool_call"
 	StepTypeToolResult       = "tool_result"
 	StepTypeApproval         = "approval_required"
 	StepTypeReflectionRecall = "reflection_recall"
 	StepTypeReflection       = "reflection"
-	StepTypePlanRevision     = "plan_revision"
 	StepTypeFinalAnswer      = "final_answer"
 	StepTypeError            = "error"
 )
 
 type RunRequest struct {
-	OwnerID            int64
-	AgentID            int64
-	AgentReleaseID     int64
-	RunID              int64
-	DelegationDepth    int
-	ConversationID     *int64
-	ProjectID          int64
-	Provider           llm.ChatProviderConfig
-	Model              string
-	CompactionProvider llm.ChatProviderConfig
-	CompactionModel    string
-	Mode               string
-	Plan               *Plan
-	SystemPrompt       string
-	Task               string
+	OwnerID              int64
+	AgentID              int64
+	RunID                int64
+	DelegationDepth      int
+	ConversationID       *int64
+	ProjectID            int64
+	Provider             llm.ChatProviderConfig
+	Model                string
+	CompactionProvider   llm.ChatProviderConfig
+	CompactionModel      string
+	CompactionProviderID int64
+	InitialUserMessageID int64
+	Mode                 string
+	SystemPrompt         string
+	Task                 string
 	// EnforceContextPrecedence adds the runtime guardrail that treats the
 	// latest user request/transcript as authoritative over advisory memory.
 	// It is enabled by the Agent Runtime; low-level assembler
 	// callers may leave it disabled for backwards-compatible composition.
-	EnforceContextPrecedence   bool
-	ReflectionEnabled          bool
-	ReflectionPolicy           reflection.Policy
-	RecalledReflectionIDs      []int64
-	Temperature                *float64
-	MaxIterations              int
-	MaxToolCalls               int
-	MaxExecutionTimeMS         int
-	MaxParallelTools           int
-	MaxInputChars              int
-	MaxInputTokens             int
-	ContextWindowTokens        int
-	ReservedOutputTokens       int
-	ContextSafetyMarginTokens  int
-	ModelAutoCompactTokenLimit int
-	CompactPrompt              string
-	MaxRuleTokens              int
-	RuleTags                   []string
-	RuleRiskLevel              string
-	RuleHash                   string
-	Rules                      []rules.Rule
-	RuleTrace                  rules.Trace
-	ContextBlocks              []ContextBlock
-	ToolPolicy                 ToolPolicy
-	ToolHookChain              hooks.ToolHookChain
-	Tools                      []toolruntime.RuntimeTool
-	Workspace                  *toolruntime.WorkspaceContext
-	EmitEvent                  func(context.Context, string, map[string]any) error
-	ResumeMessages             []llm.ChatMessage
-	ResumeBaseMessages         []llm.ChatMessage
-	ResumeTranscript           []llm.ChatMessage
-	ResumeSteps                []RunStep
-	ResumeContext              ContextTrace
-	ResumeIteration            int
-	ResumeToolCalls            int
-	ResumeApprovedToolCallIDs  []string
+	EnforceContextPrecedence        bool
+	ReflectionEnabled               bool
+	ReflectionPolicy                reflection.Policy
+	RecalledReflectionIDs           []int64
+	Temperature                     *float64
+	MaxIterations                   int
+	MaxToolCalls                    int
+	MaxExecutionTimeMS              int
+	MaxParallelTools                int
+	MaxInputChars                   int
+	MaxInputTokens                  int
+	ContextWindowTokens             int
+	ReservedOutputTokens            int
+	ContextSafetyMarginTokens       int
+	ModelAutoCompactTokenLimit      int
+	ModelAutoCompactTokenLimitScope string
+	CompactPrompt                   string
+	ManualCompaction                bool
+	TokenBudgetCompaction           bool
+	RetainClientDeveloperMessages   bool
+	MaxRuleTokens                   int
+	RuleTags                        []string
+	RuleRiskLevel                   string
+	RuleHash                        string
+	Rules                           []rules.Rule
+	RuleTrace                       rules.Trace
+	ContextBlocks                   []ContextBlock
+	ToolPolicy                      ToolPolicy
+	ToolHookChain                   hooks.ToolHookChain
+	Tools                           []toolruntime.RuntimeTool
+	Workspace                       *toolruntime.WorkspaceContext
+	EmitEvent                       func(context.Context, string, map[string]any) error
+	GoalRepository                  goalDomain.Repository
+	GoalTokenBudgetCeiling          *int64
+	DefaultModeRequestUserInput     bool
+	SteeringProvider                func() []string
+	ResumeMessages                  []llm.ChatMessage
+	ResumeBaseMessages              []llm.ChatMessage
+	ResumeTranscript                []llm.ChatMessage
+	ResumeSteps                     []RunStep
+	ResumeContext                   ContextTrace
+	ResumeIteration                 int
+	ResumeToolCalls                 int
+	ResumeApprovedToolCallIDs       []string
 }
 
 type RunResult struct {
@@ -105,7 +112,6 @@ type RunResult struct {
 	Iterations  int             `json:"iterations"`
 	ToolCalls   int             `json:"tool_calls"`
 	Usage       llm.Usage       `json:"usage"`
-	Plan        *Plan           `json:"plan,omitempty"`
 	Steps       []RunStep       `json:"steps,omitempty"`
 	Context     ContextTrace    `json:"context_trace,omitempty"`
 	HookTrace   []HookTrace     `json:"hook_trace,omitempty"`
@@ -162,24 +168,28 @@ type RunStep struct {
 type ToolPolicy = hooks.ToolPolicy
 
 type Approval struct {
-	ToolCallID string                       `json:"tool_call_id"`
-	ToolName   string                       `json:"tool_name"`
-	RiskLevel  string                       `json:"risk_level"`
-	Reason     string                       `json:"reason"`
-	Metadata   toolruntime.ToolMetadata     `json:"metadata"`
-	Kind       string                       `json:"kind,omitempty"`
-	Title      string                       `json:"title,omitempty"`
-	Options    []toolruntime.ApprovalOption `json:"options,omitempty"`
+	ToolCallID string                          `json:"tool_call_id"`
+	ToolName   string                          `json:"tool_name"`
+	RiskLevel  string                          `json:"risk_level"`
+	Reason     string                          `json:"reason"`
+	IsBlocking bool                            `json:"is_blocking,omitempty"`
+	Metadata   toolruntime.ToolMetadata        `json:"metadata"`
+	Kind       string                          `json:"kind,omitempty"`
+	Title      string                          `json:"title,omitempty"`
+	Options    []toolruntime.ApprovalOption    `json:"options,omitempty"`
+	Questions  []toolruntime.UserInputQuestion `json:"questions,omitempty"`
 }
 
 // Interaction is the durable user decision boundary for a paused run.
 type Interaction struct {
-	ID         string                       `json:"id"`
-	Kind       string                       `json:"kind"`
-	Title      string                       `json:"title"`
-	Reason     string                       `json:"reason"`
-	Options    []toolruntime.ApprovalOption `json:"options,omitempty"`
-	ToolCallID string                       `json:"tool_call_id,omitempty"`
+	ID         string                          `json:"id"`
+	Kind       string                          `json:"kind"`
+	Title      string                          `json:"title"`
+	Reason     string                          `json:"reason"`
+	IsBlocking bool                            `json:"is_blocking,omitempty"`
+	Options    []toolruntime.ApprovalOption    `json:"options,omitempty"`
+	ToolCallID string                          `json:"tool_call_id,omitempty"`
+	Questions  []toolruntime.UserInputQuestion `json:"questions,omitempty"`
 }
 
 type Checkpoint struct {
@@ -194,7 +204,6 @@ type Checkpoint struct {
 	ToolPolicy            ToolPolicy        `json:"tool_policy"`
 	ToolNames             []string          `json:"tool_names"`
 	Metadata              map[string]any    `json:"metadata,omitempty"`
-	Plan                  *Plan             `json:"plan,omitempty"`
 	ReflectionPolicy      reflection.Policy `json:"reflection_policy,omitempty"`
 	RecalledReflectionIDs []int64           `json:"recalled_reflection_ids,omitempty"`
 	RuleHash              string            `json:"rule_hash,omitempty"`

@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"agentcanvas/internal/domain/audit"
+	goalDomain "agentcanvas/internal/domain/goal"
 )
 
 type WorkspaceContext struct {
@@ -32,16 +33,19 @@ type WorkspaceContext struct {
 type ToolRunContext struct {
 	OwnerID         int64
 	AgentID         int64
-	AgentReleaseID  int64
 	RunID           int64
+	Mode            string
 	DelegationDepth int
 	ConversationID  *int64
 	ProjectID       int64
 	// Task is the current run objective. Tools use it as a semantic query
 	// when the model omits an explicit query (for example memory recall).
-	Task      string
-	Workspace *WorkspaceContext
-	EmitEvent func(context.Context, string, map[string]any) error
+	Task                        string
+	Workspace                   *WorkspaceContext
+	EmitEvent                   func(context.Context, string, map[string]any) error
+	GoalRepository              goalDomain.Repository
+	GoalTokenBudgetCeiling      *int64
+	DefaultModeRequestUserInput bool
 }
 
 type ToolResult struct {
@@ -57,10 +61,25 @@ type ToolResult struct {
 // requests can expose mutually exclusive choices (for example resolving a
 // conflicting memory as keep-existing, replace, or keep-both).
 type ToolApproval struct {
-	Kind    string           `json:"kind"`
-	Title   string           `json:"title"`
-	Reason  string           `json:"reason"`
-	Options []ApprovalOption `json:"options,omitempty"`
+	Kind       string              `json:"kind"`
+	Title      string              `json:"title"`
+	Reason     string              `json:"reason"`
+	IsBlocking bool                `json:"is_blocking,omitempty"`
+	Options    []ApprovalOption    `json:"options,omitempty"`
+	Questions  []UserInputQuestion `json:"questions,omitempty"`
+}
+
+type UserInputQuestion struct {
+	ID       string            `json:"id"`
+	Header   string            `json:"header"`
+	Question string            `json:"question"`
+	Options  []UserInputOption `json:"options"`
+	IsOther  bool              `json:"is_other,omitempty"`
+}
+
+type UserInputOption struct {
+	Label       string `json:"label"`
+	Description string `json:"description"`
 }
 
 type ApprovalOption struct {

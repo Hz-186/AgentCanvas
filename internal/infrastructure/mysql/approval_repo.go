@@ -9,6 +9,7 @@ import (
 
 	"agentcanvas/internal/domain"
 	agentdomain "agentcanvas/internal/domain/agent"
+	"agentcanvas/internal/runtime/toolruntime"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -34,6 +35,7 @@ func (r *ApprovalRepository) FindApprovalRequestByID(ctx context.Context, ownerI
 	if err != nil {
 		return nil, err
 	}
+	hydrateApproval(&item)
 	return &item, nil
 }
 
@@ -46,6 +48,7 @@ func (r *ApprovalRepository) FindPendingApprovalByRun(ctx context.Context, owner
 	if err != nil {
 		return nil, err
 	}
+	hydrateApproval(&item)
 	return &item, nil
 }
 
@@ -56,7 +59,23 @@ func (r *ApprovalRepository) ListApprovalRequests(ctx context.Context, ownerID i
 	}
 	var items []agentdomain.ApprovalRequest
 	err := query.Order("id DESC").Find(&items).Error
+	for i := range items {
+		hydrateApproval(&items[i])
+	}
 	return items, err
+}
+
+func hydrateApproval(item *agentdomain.ApprovalRequest) {
+	if item == nil || len(item.RequestJSON) == 0 {
+		return
+	}
+	var approval struct {
+		Options   []toolruntime.ApprovalOption    `json:"options"`
+		Questions []toolruntime.UserInputQuestion `json:"questions"`
+	}
+	if json.Unmarshal(item.RequestJSON, &approval) == nil {
+		item.Questions = approval.Questions
+	}
 }
 
 func (r *ApprovalRepository) DecideApprovalAndClaimResume(ctx context.Context, item *agentdomain.ApprovalRequest, turnInput []byte) error {
@@ -210,15 +229,12 @@ func queueResumeTurn(tx *gorm.DB, run *agentdomain.Run, input []byte, now time.T
 		if run.RunType != agentdomain.RunTypeSubagent {
 			return gorm.ErrInvalidData
 		}
-		releaseID, conversationID := int64(0), int64(0)
-		if run.AgentReleaseID != nil {
-			releaseID = *run.AgentReleaseID
-		}
+		conversationID := int64(0)
 		if run.ConversationID != nil {
 			conversationID = *run.ConversationID
 		}
 		return tx.Create(&agentdomain.Turn{
-			BaseModel: domain.BaseModel{OwnerID: run.OwnerID, CreatedAt: now, UpdatedAt: now}, AgentID: run.AgentID, AgentReleaseID: releaseID, ConversationID: conversationID,
+			BaseModel: domain.BaseModel{OwnerID: run.OwnerID, CreatedAt: now, UpdatedAt: now}, AgentID: run.AgentID, ConversationID: conversationID,
 			RunID: &run.ID, IdempotencyKey: "subagent-resume-" + strconv.FormatInt(run.ID, 10), Status: agentdomain.TurnStatusQueued,
 			InputJSON: input, MaxAttempts: 3,
 		}).Error

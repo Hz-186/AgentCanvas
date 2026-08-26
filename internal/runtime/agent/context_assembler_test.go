@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"agentcanvas/internal/domain/conversation"
 	"agentcanvas/internal/infrastructure/llm"
 	"agentcanvas/internal/pkg/tokencounter"
 	"agentcanvas/internal/runtime/harness/rules"
@@ -142,9 +143,8 @@ func TestContextAssemblerModeInstructions(t *testing.T) {
 		reflectionEnabled bool
 		expectInstruction bool
 	}{
-		{"react", false, false},
-		{"react", true, true},
-		{"plan_execute", false, true},
+		{"default", false, true},
+		{"plan", false, true},
 		{"unsupported", false, false},
 		{"unknown", false, false},
 	}
@@ -157,7 +157,7 @@ func TestContextAssemblerModeInstructions(t *testing.T) {
 		})
 		hasModeInstruction := false
 		for _, m := range messages {
-			if m.Role == "system" && m.Content != "system" {
+			if (m.Role == "system" || m.Role == conversation.RoleDeveloper) && m.Content != "system" {
 				hasModeInstruction = true
 			}
 		}

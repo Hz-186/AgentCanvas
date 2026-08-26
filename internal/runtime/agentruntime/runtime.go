@@ -10,6 +10,7 @@ import (
 	"agentcanvas/internal/domain/audit"
 	"agentcanvas/internal/domain/contextresource"
 	"agentcanvas/internal/domain/conversation"
+	"agentcanvas/internal/domain/goal"
 	"agentcanvas/internal/domain/memory"
 	"agentcanvas/internal/domain/reflection"
 	"agentcanvas/internal/domain/retrieval"
@@ -45,16 +46,18 @@ type coreRepositories struct {
 }
 
 type coreClients struct {
-	LLM          llm.ToolCallingClient
-	Embedder     llm.EmbeddingClient
-	PythonBridge PythonToolLoader
-	Archival     ArchivalIndexFactory
+	LLM      llm.ToolCallingClient
+	Embedder llm.EmbeddingClient
+	Archival ArchivalIndexFactory
 }
 
 type coreTooling struct {
-	Tools               toolruntime.Registry
-	SubagentDispatcher  toolruntime.SubagentDispatcher
-	PythonToolAllowlist []string
+	Tools                       toolruntime.Registry
+	SubagentDispatcher          toolruntime.SubagentDispatcher
+	DisableUpdatePlan           bool
+	DefaultModeRequestUserInput bool
+	Goals                       goal.Repository
+	GoalTokenBudgetCeiling      *int64
 }
 
 type coreWorkspace struct {
@@ -122,7 +125,6 @@ type RuntimeToolConfig struct {
 	MCPServerIDs           []int64         `json:"mcp_server_ids"`
 	MaxSubagentDepth       int             `json:"max_subagent_depth"`
 	CodeExecutionEnabled   bool            `json:"code_execution_enabled"`
-	PythonToolNames        []string        `json:"python_tool_names"`
 	MaxParallelSubAgents   int             `json:"max_parallel_sub_agents"`
 	AllowSubagents         bool            `json:"allow_subagents"`
 	RequireApprovalForRisk []string        `json:"require_approval_for_risk"`
@@ -153,6 +155,7 @@ type RuntimeMemoryPolicy struct {
 }
 
 type RuntimeExecutionLimits struct {
+	ManualCompaction                bool   `json:"-"`
 	MaxIterations                   int    `json:"max_iterations"`
 	MaxToolCalls                    int    `json:"max_tool_calls"`
 	MaxExecutionTimeMS              int    `json:"max_execution_time_ms"`
@@ -165,6 +168,8 @@ type RuntimeExecutionLimits struct {
 	ModelAutoCompactTokenLimitScope string `json:"model_auto_compact_token_limit_scope"`
 	CompactionProviderID            int64  `json:"compaction_provider_id"`
 	CompactionModel                 string `json:"compaction_model"`
+	CompactionMode                  string `json:"compaction_mode"`
+	RetainClientDeveloperMessages   bool   `json:"retain_client_developer_messages"`
 	MaxRuleTokens                   int    `json:"max_rule_tokens"`
 }
 
@@ -181,6 +186,8 @@ type agentRuntimeConfig struct {
 	RuntimeMemoryPolicy
 	RuntimeExecutionLimits
 	RuntimeRules
+	RequestUserInputEnabled bool `json:"-"`
+	GoalToolsEnabled        bool `json:"-"`
 }
 
 func (c *agentRuntimeConfig) UnmarshalJSON(data []byte) error {
@@ -278,16 +285,8 @@ func validateAgentRuntimeConfig(cfg agentRuntimeConfig, requireProvider bool) er
 	if cfg.MaxSubagentDepth < 0 || cfg.MaxSubagentDepth > 5 {
 		return fmt.Errorf("%w: agent runtime max_subagent_depth must be <= 5", agenterrors.ErrInvalidInput)
 	}
-	if len(cfg.PythonToolNames) > 64 {
-		return fmt.Errorf("%w: agent runtime python_tool_names must contain at most 64 tools", agenterrors.ErrInvalidInput)
-	}
-	for _, name := range cfg.PythonToolNames {
-		if strings.TrimSpace(name) == "" {
-			return fmt.Errorf("%w: agent runtime python_tool_names contains an empty name", agenterrors.ErrInvalidInput)
-		}
-	}
-	if cfg.Mode != "" && cfg.Mode != "react" && cfg.Mode != "plan_execute" {
-		return fmt.Errorf("%w: agent runtime mode must be react or plan_execute", agenterrors.ErrInvalidInput)
+	if cfg.Mode != "" && cfg.Mode != conversation.ModePlan && cfg.Mode != conversation.ModeDefault {
+		return fmt.Errorf("%w: agent runtime mode must be default or plan", agenterrors.ErrInvalidInput)
 	}
 	for _, risk := range cfg.RequireApprovalForRisk {
 		normalized := strings.TrimSpace(risk)
@@ -314,6 +313,14 @@ func validateAgentRuntimeConfig(cfg agentRuntimeConfig, requireProvider bool) er
 		return err
 	}
 	return nil
+}
+
+func normalizeRuntimeMode(mode string) (string, error) {
+	normalized, err := conversation.NormalizeMode(mode)
+	if err != nil {
+		return "", fmt.Errorf("%w: agent runtime mode must be default or plan", agenterrors.ErrInvalidInput)
+	}
+	return normalized, nil
 }
 
 // runAgent prepares and executes a single Agent run.

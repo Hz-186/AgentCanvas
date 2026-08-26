@@ -49,7 +49,7 @@ func (n runtimeCore) finalizeReflection(ctx context.Context, rc *RunContext, cfg
 		return
 	}
 	outcome := result.StopReason
-	if result.StopReason == runtimeagent.StopReasonFinalAnswer || result.StopReason == runtimeagent.StopReasonPlanCompleted {
+	if result.StopReason == runtimeagent.StopReasonFinalAnswer {
 		outcome = "succeeded"
 	}
 	n.Reflections.ResolveRun(ctx, rc.OwnerID, rc.RunID, outcome)
@@ -57,7 +57,7 @@ func (n runtimeCore) finalizeReflection(ctx context.Context, rc *RunContext, cfg
 		return
 	}
 	payload, _ := json.Marshal(map[string]any{
-		"task": task, "stop_reason": result.StopReason, "final_answer": result.FinalAnswer, "plan": result.Plan,
+		"task": task, "stop_reason": result.StopReason, "final_answer": result.FinalAnswer,
 		"steps": runtimeagent.CompactSteps(result.Steps, 4096), "reflection_trace": result.Reflection,
 		"reflection_policy": policy,
 	})

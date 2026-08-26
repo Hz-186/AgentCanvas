@@ -33,9 +33,38 @@ type ChatRequest struct {
 }
 
 type Usage struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
-	TotalTokens      int `json:"total_tokens"`
+	PromptTokens      int `json:"prompt_tokens"`
+	CompletionTokens  int `json:"completion_tokens"`
+	TotalTokens       int `json:"total_tokens"`
+	CachedInputTokens int `json:"cached_input_tokens,omitempty"`
+	ReasoningTokens   int `json:"reasoning_tokens,omitempty"`
+}
+
+func (u *Usage) UnmarshalJSON(data []byte) error {
+	var value struct {
+		PromptTokens      int `json:"prompt_tokens"`
+		CompletionTokens  int `json:"completion_tokens"`
+		TotalTokens       int `json:"total_tokens"`
+		CachedInputTokens int `json:"cached_input_tokens"`
+		ReasoningTokens   int `json:"reasoning_tokens"`
+		PromptDetails     struct {
+			CachedTokens int `json:"cached_tokens"`
+		} `json:"prompt_tokens_details"`
+		CompletionDetails struct {
+			ReasoningTokens int `json:"reasoning_tokens"`
+		} `json:"completion_tokens_details"`
+	}
+	if err := json.Unmarshal(data, &value); err != nil {
+		return err
+	}
+	*u = Usage{PromptTokens: value.PromptTokens, CompletionTokens: value.CompletionTokens, TotalTokens: value.TotalTokens, CachedInputTokens: value.CachedInputTokens, ReasoningTokens: value.ReasoningTokens}
+	if u.CachedInputTokens == 0 {
+		u.CachedInputTokens = value.PromptDetails.CachedTokens
+	}
+	if u.ReasoningTokens == 0 {
+		u.ReasoningTokens = value.CompletionDetails.ReasoningTokens
+	}
+	return nil
 }
 
 type ChatResponse struct {
@@ -63,16 +92,18 @@ type ToolCall struct {
 }
 
 type ToolChatRequest struct {
-	Model       string           `json:"model"`
-	Messages    []ChatMessage    `json:"messages"`
-	Tools       []ToolDefinition `json:"tools,omitempty"`
-	ToolChoice  any              `json:"tool_choice,omitempty"`
-	Temperature *float64         `json:"temperature,omitempty"`
+	Model           string           `json:"model"`
+	Messages        []ChatMessage    `json:"messages"`
+	Tools           []ToolDefinition `json:"tools,omitempty"`
+	ToolChoice      any              `json:"tool_choice,omitempty"`
+	Temperature     *float64         `json:"temperature,omitempty"`
+	ReasoningEffort string           `json:"reasoning_effort,omitempty"`
 }
 
 type ToolChatResponse struct {
-	Message ChatMessage `json:"message"`
-	Usage   Usage       `json:"usage"`
+	Message      ChatMessage `json:"message"`
+	Usage        Usage       `json:"usage"`
+	ProposedPlan string      `json:"proposed_plan,omitempty"`
 }
 
 type StreamEvent struct {
@@ -129,11 +160,12 @@ func (c *OpenAICompatibleChatClient) ChatWithTools(ctx context.Context, cfg Chat
 		return nil, err
 	}
 	payload := openAIToolChatRequest{
-		Model:       req.Model,
-		Messages:    toOpenAIToolMessages(req.Messages),
-		Tools:       req.Tools,
-		ToolChoice:  req.ToolChoice,
-		Temperature: req.Temperature,
+		Model:           req.Model,
+		Messages:        toOpenAIToolMessages(req.Messages),
+		Tools:           req.Tools,
+		ToolChoice:      req.ToolChoice,
+		Temperature:     req.Temperature,
+		ReasoningEffort: req.ReasoningEffort,
 	}
 	var resp openAIToolChatResponse
 	if err := c.doJSON(ctx, endpoint, cfg.APIKey, payload, &resp); err != nil {
@@ -178,7 +210,7 @@ func (c *OpenAICompatibleChatClient) StreamChat(ctx context.Context, cfg ChatPro
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return fmt.Errorf("chat stream failed: %s: %s", resp.Status, strings.TrimSpace(string(data)))
+		return classifyHTTPError(resp.StatusCode, resp.Status, data, "chat stream failed")
 	}
 
 	scanner := bufio.NewScanner(resp.Body)
@@ -234,12 +266,13 @@ func (c *OpenAICompatibleChatClient) StreamChatWithTools(ctx context.Context, cf
 		return nil, emitModelStreamError(onEvent, err)
 	}
 	payload := openAIToolChatRequest{
-		Model:       req.Model,
-		Messages:    toOpenAIToolMessages(req.Messages),
-		Tools:       req.Tools,
-		ToolChoice:  req.ToolChoice,
-		Temperature: req.Temperature,
-		Stream:      true,
+		Model:           req.Model,
+		Messages:        toOpenAIToolMessages(req.Messages),
+		Tools:           req.Tools,
+		ToolChoice:      req.ToolChoice,
+		Temperature:     req.Temperature,
+		ReasoningEffort: req.ReasoningEffort,
+		Stream:          true,
 		StreamOptions: map[string]bool{
 			"include_usage": true,
 		},
@@ -263,7 +296,7 @@ func (c *OpenAICompatibleChatClient) StreamChatWithTools(ctx context.Context, cf
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		streamErr := fmt.Errorf("chat tool stream failed: %s: %s", resp.Status, strings.TrimSpace(string(data)))
+		streamErr := classifyHTTPError(resp.StatusCode, resp.Status, data, "chat tool stream failed")
 		if isToolStreamingUnsupportedResponse(resp.StatusCode, data) {
 			return nil, fmt.Errorf("%w: %v", ErrToolStreamingUnsupported, streamErr)
 		}
@@ -350,9 +383,22 @@ func (c *OpenAICompatibleChatClient) doJSON(ctx context.Context, endpoint, apiKe
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return fmt.Errorf("chat failed: %s: %s", resp.Status, strings.TrimSpace(string(data)))
+		return classifyHTTPError(resp.StatusCode, resp.Status, data, "chat failed")
 	}
 	return json.NewDecoder(resp.Body).Decode(out)
+}
+
+func classifyHTTPError(statusCode int, status string, body []byte, prefix string) error {
+	err := fmt.Errorf("%s: %s: %s", prefix, status, strings.TrimSpace(string(body)))
+	message := strings.ToLower(string(body))
+	contextMessage := strings.Contains(message, "context_length_exceeded") || strings.Contains(message, "maximum context length") || strings.Contains(message, "too many tokens")
+	if statusCode == http.StatusRequestEntityTooLarge || statusCode == http.StatusBadRequest && contextMessage {
+		return fmt.Errorf("%w: %v", ErrContextWindowExceeded, err)
+	}
+	if statusCode == http.StatusTooManyRequests {
+		return fmt.Errorf("%w: %v", ErrRateLimited, err)
+	}
+	return err
 }
 
 func (c *OpenAICompatibleChatClient) httpClient() *http.Client {
@@ -428,13 +474,14 @@ type openAIStreamChunk struct {
 }
 
 type openAIToolChatRequest struct {
-	Model         string                  `json:"model"`
-	Messages      []openAIToolChatMessage `json:"messages"`
-	Tools         []ToolDefinition        `json:"tools,omitempty"`
-	ToolChoice    any                     `json:"tool_choice,omitempty"`
-	Temperature   *float64                `json:"temperature,omitempty"`
-	Stream        bool                    `json:"stream,omitempty"`
-	StreamOptions map[string]bool         `json:"stream_options,omitempty"`
+	Model           string                  `json:"model"`
+	Messages        []openAIToolChatMessage `json:"messages"`
+	Tools           []ToolDefinition        `json:"tools,omitempty"`
+	ToolChoice      any                     `json:"tool_choice,omitempty"`
+	Temperature     *float64                `json:"temperature,omitempty"`
+	ReasoningEffort string                  `json:"reasoning_effort,omitempty"`
+	Stream          bool                    `json:"stream,omitempty"`
+	StreamOptions   map[string]bool         `json:"stream_options,omitempty"`
 }
 
 type openAIToolChatResponse struct {

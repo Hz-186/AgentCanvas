@@ -8,6 +8,7 @@ import (
 	"agentcanvas/internal/domain/audit"
 	"agentcanvas/internal/domain/contextresource"
 	"agentcanvas/internal/domain/conversation"
+	"agentcanvas/internal/domain/goal"
 	"agentcanvas/internal/domain/memory"
 	"agentcanvas/internal/domain/reflection"
 	"agentcanvas/internal/domain/retrieval"
@@ -36,10 +37,6 @@ type MessageHistoryReader interface {
 	ListActiveByConversation(ctx context.Context, ownerID, conversationID int64) ([]conversation.Message, error)
 }
 
-type PythonToolLoader interface {
-	LoadRuntimeTools(ctx context.Context, allowed []string, invocations tool.InvocationRepository) ([]toolruntime.RuntimeTool, error)
-}
-
 type ArchivalIndexFactory interface {
 	ForProvider(LoadedProvider) memory.ArchivalIndex
 }
@@ -65,22 +62,23 @@ type Repositories struct {
 	ToolPacks        tool.PackRepository
 	Skills           skill.Repository
 	MCPServers       tool.MCPRepository
-	ToolInvocations  tool.InvocationRepository
 	ContextIndex     contextresource.Index
 }
 
 type RuntimeClients struct {
-	LLM          llm.ChatClient
-	ToolCalling  llm.ToolCallingClient
-	Embedder     llm.EmbeddingClient
-	PythonBridge PythonToolLoader
-	Archival     ArchivalIndexFactory
+	LLM         llm.ChatClient
+	ToolCalling llm.ToolCallingClient
+	Embedder    llm.EmbeddingClient
+	Archival    ArchivalIndexFactory
 }
 
 type Tooling struct {
-	ToolRegistry        toolruntime.Registry
-	SubagentDispatcher  toolruntime.SubagentDispatcher
-	PythonToolAllowlist []string
+	ToolRegistry                toolruntime.Registry
+	SubagentDispatcher          toolruntime.SubagentDispatcher
+	DisableUpdatePlan           bool
+	DefaultModeRequestUserInput bool
+	Goals                       goal.Repository
+	GoalTokenBudgetCeiling      *int64
 }
 
 type Workspace struct {
@@ -117,11 +115,10 @@ func buildRuntimeCore(deps Deps) runtimeCore {
 			Retriever: deps.Retriever, MemoryRetriever: deps.MemoryRetriever, Memories: deps.Memories, MemoryReader: deps.MemoryReader,
 			MemoryLogs: deps.MemoryWriteLogs, MemoryRecallLogs: deps.MemoryRecallLogs, MemoryCandidates: deps.MemoryCandidates,
 			MessageHistory: deps.MessageHistory, Compactions: deps.Compactions, SessionSearch: deps.SessionSearch,
-			ContextIndex: deps.ContextIndex, ToolInvocations: deps.ToolInvocations,
+			ContextIndex: deps.ContextIndex,
 		},
-		coreClients: coreClients{LLM: deps.ToolCalling, Embedder: deps.Embedder, PythonBridge: deps.PythonBridge, Archival: deps.Archival},
-		coreTooling: coreTooling{Tools: deps.ToolRegistry, SubagentDispatcher: deps.SubagentDispatcher,
-			PythonToolAllowlist: append([]string(nil), deps.PythonToolAllowlist...)},
+		coreClients: coreClients{LLM: deps.ToolCalling, Embedder: deps.Embedder, Archival: deps.Archival},
+		coreTooling: coreTooling{Tools: deps.ToolRegistry, SubagentDispatcher: deps.SubagentDispatcher, DisableUpdatePlan: deps.DisableUpdatePlan, DefaultModeRequestUserInput: deps.DefaultModeRequestUserInput, Goals: deps.Goals, GoalTokenBudgetCeiling: deps.GoalTokenBudgetCeiling},
 		coreWorkspace: coreWorkspace{Sandbox: deps.Sandbox, Coordinator: conversationCoordinator(deps), Git: deps.Git,
 			FileReadMaxChars: deps.FileReadMaxChars, MaxOutputBytes: deps.MaxOutputBytes, WorkspaceTimeout: deps.WorkspaceTimeout, SkillRoot: workspaceRoot},
 		coreObservability: coreObservability{Audits: deps.Audits, Reflections: deps.Reflections},

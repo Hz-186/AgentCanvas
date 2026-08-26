@@ -59,6 +59,16 @@ agent_runtime:
   review_provider_id: 0
   review_model: ""
 
+tools:
+  update_plan:
+    enabled: true
+  request_user_input:
+    enabled: false
+
+goals:
+  # Null keeps goal budgets unbounded; set a positive value to cap defaults and requests.
+  max_goal_token_budget: null
+
 git_workspace:
   enabled: true
   # Every project repository must live under one of these absolute paths.
@@ -146,7 +156,6 @@ python_bridge:
     - python:fixed_token
     - python:recursive
     - python:langchain_recursive
-  allowed_tools: []
 
 security:
   jwt_secret: ${AGENTCANVAS_JWT_SECRET}

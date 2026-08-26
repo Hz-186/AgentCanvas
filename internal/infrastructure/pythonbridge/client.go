@@ -11,7 +11,6 @@ import (
 	"agentcanvas/internal/infrastructure/chunker"
 	"agentcanvas/internal/infrastructure/parser"
 	bridgegen "agentcanvas/internal/infrastructure/pythonbridge/gen"
-	"agentcanvas/internal/runtime/toolruntime"
 	"github.com/google/uuid"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -22,10 +21,7 @@ import (
 
 const ProtocolVersion = "v1"
 
-// IsRetryable reports whether a failed bridge call may be retried by its
-// caller. The client intentionally does not retry automatically: ExecuteTool
-// may have side effects in future protocol versions, and callers know whether
-// their operation is idempotent.
+// IsRetryable reports whether a failed bridge call may be retried by its caller.
 func IsRetryable(err error) bool {
 	if err == nil {
 		return false
@@ -49,21 +45,11 @@ type Config struct {
 	MaxConcurrency  int
 }
 
-type ToolCapability struct {
-	Name        string
-	Description string
-	Parameters  json.RawMessage
-	RiskLevel   string
-	SideEffect  string
-	Version     string
-}
-
 type Capabilities struct {
 	ProtocolVersion string
 	ServiceVersion  string
 	ChunkMethods    []string
 	ParserMethods   []string
-	Tools           []ToolCapability
 	MaxConcurrency  uint32
 	MaxInputBytes   uint64
 	MaxOutputBytes  uint64
@@ -326,42 +312,6 @@ func (c *Client) ParseDocument(ctx context.Context, method, filename string, con
 	return doc, false, warnings, nil
 }
 
-func (c *Client) ListTools(ctx context.Context) ([]ToolCapability, error) {
-	if c == nil || c.stub == nil {
-		return nil, fmt.Errorf("python bridge client is not configured")
-	}
-	callCtx, cancel := c.context(ctx)
-	defer cancel()
-	resp, err := c.stub.ListTools(callCtx, &bridgegen.ListToolsRequest{})
-	if err != nil {
-		return nil, err
-	}
-	if resp == nil {
-		return nil, fmt.Errorf("python bridge returned an empty tools response")
-	}
-	return toolCapabilitiesFromProto(resp.Tools)
-}
-
-func (c *Client) ExecuteTool(ctx context.Context, name string, arguments json.RawMessage, runCtx toolruntime.ToolRunContext) (*bridgegen.ExecuteToolResponse, error) {
-	if c == nil || c.stub == nil {
-		return nil, fmt.Errorf("python bridge client is not configured")
-	}
-	requestID := uuid.NewString()
-	callCtx, cancel := c.contextWithRequestID(ctx, requestID)
-	defer cancel()
-	toolContext := &bridgegen.ToolRunContext{
-		OwnerId: runCtx.OwnerID, AgentId: runCtx.AgentID, AgentReleaseId: runCtx.AgentReleaseID,
-		RunId: runCtx.RunID, DelegationDepth: int32(runCtx.DelegationDepth),
-	}
-	if runCtx.ConversationID != nil {
-		toolContext.ConversationId = *runCtx.ConversationID
-	}
-	return c.stub.ExecuteTool(callCtx, &bridgegen.ExecuteToolRequest{
-		RequestId: requestID, ToolName: name, ArgumentsJson: string(arguments),
-		Context: toolContext,
-	})
-}
-
 func capabilitiesFromProto(resp *bridgegen.CapabilitiesResponse) (*Capabilities, error) {
 	if resp == nil {
 		return nil, fmt.Errorf("python bridge returned an empty capabilities response")
@@ -369,53 +319,9 @@ func capabilitiesFromProto(resp *bridgegen.CapabilitiesResponse) (*Capabilities,
 	if strings.TrimSpace(resp.ProtocolVersion) != ProtocolVersion {
 		return nil, fmt.Errorf("unsupported Python bridge protocol version %q", resp.ProtocolVersion)
 	}
-	tools, err := toolCapabilitiesFromProto(resp.Tools)
-	if err != nil {
-		return nil, err
-	}
 	return &Capabilities{
 		ProtocolVersion: resp.ProtocolVersion, ServiceVersion: resp.ServiceVersion,
-		ChunkMethods: append([]string(nil), resp.ChunkMethods...), ParserMethods: append([]string(nil), resp.ParserMethods...), Tools: tools,
+		ChunkMethods: append([]string(nil), resp.ChunkMethods...), ParserMethods: append([]string(nil), resp.ParserMethods...),
 		MaxConcurrency: resp.MaxConcurrency, MaxInputBytes: resp.MaxInputBytes, MaxOutputBytes: resp.MaxOutputBytes,
 	}, nil
-}
-
-func toolCapabilitiesFromProto(items []*bridgegen.ToolCapability) ([]ToolCapability, error) {
-	tools := make([]ToolCapability, 0, len(items))
-	seen := make(map[string]struct{}, len(items))
-	for _, item := range items {
-		if item == nil || strings.TrimSpace(item.Name) == "" {
-			return nil, fmt.Errorf("python bridge returned an invalid tool capability")
-		}
-		if !strings.HasPrefix(item.Name, "python_") {
-			return nil, fmt.Errorf("python bridge tool %q must use the python_ namespace", item.Name)
-		}
-		if _, ok := seen[item.Name]; ok {
-			return nil, fmt.Errorf("python bridge returned duplicate tool capability %q", item.Name)
-		}
-		seen[item.Name] = struct{}{}
-		parameters := json.RawMessage(item.ParametersJson)
-		if !json.Valid(parameters) || strings.TrimSpace(string(parameters)) == "null" {
-			return nil, fmt.Errorf("python bridge returned invalid parameters schema for %s", item.Name)
-		}
-		var schema map[string]any
-		if err := json.Unmarshal(parameters, &schema); err != nil || schema == nil {
-			return nil, fmt.Errorf("python bridge returned non-object parameters schema for %s", item.Name)
-		}
-		switch strings.TrimSpace(item.RiskLevel) {
-		case toolruntime.RiskLow, toolruntime.RiskMedium, toolruntime.RiskHigh:
-		default:
-			return nil, fmt.Errorf("python bridge returned invalid risk level for %s", item.Name)
-		}
-		switch strings.TrimSpace(item.SideEffect) {
-		case toolruntime.SideEffectNone, toolruntime.SideEffectRead, toolruntime.SideEffectWrite, toolruntime.SideEffectExternalAction:
-		default:
-			return nil, fmt.Errorf("python bridge returned invalid side effect for %s", item.Name)
-		}
-		if strings.TrimSpace(item.Version) == "" {
-			return nil, fmt.Errorf("python bridge returned an empty version for %s", item.Name)
-		}
-		tools = append(tools, ToolCapability{Name: item.Name, Description: item.Description, Parameters: parameters, RiskLevel: item.RiskLevel, SideEffect: item.SideEffect, Version: item.Version})
-	}
-	return tools, nil
 }

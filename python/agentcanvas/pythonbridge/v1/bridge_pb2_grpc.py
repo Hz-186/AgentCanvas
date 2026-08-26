@@ -54,16 +54,6 @@ class PythonBridgeStub(object):
                 request_serializer=agentcanvas_dot_pythonbridge_dot_v1_dot_bridge__pb2.ChunkDocumentRequest.SerializeToString,
                 response_deserializer=agentcanvas_dot_pythonbridge_dot_v1_dot_bridge__pb2.ChunkDocumentResponse.FromString,
                 _registered_method=True)
-        self.ListTools = channel.unary_unary(
-                '/agentcanvas.pythonbridge.v1.PythonBridge/ListTools',
-                request_serializer=agentcanvas_dot_pythonbridge_dot_v1_dot_bridge__pb2.ListToolsRequest.SerializeToString,
-                response_deserializer=agentcanvas_dot_pythonbridge_dot_v1_dot_bridge__pb2.ListToolsResponse.FromString,
-                _registered_method=True)
-        self.ExecuteTool = channel.unary_unary(
-                '/agentcanvas.pythonbridge.v1.PythonBridge/ExecuteTool',
-                request_serializer=agentcanvas_dot_pythonbridge_dot_v1_dot_bridge__pb2.ExecuteToolRequest.SerializeToString,
-                response_deserializer=agentcanvas_dot_pythonbridge_dot_v1_dot_bridge__pb2.ExecuteToolResponse.FromString,
-                _registered_method=True)
 
 
 class PythonBridgeServicer(object):
@@ -93,18 +83,6 @@ class PythonBridgeServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
-    def ListTools(self, request, context):
-        """Missing associated documentation comment in .proto file."""
-        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
-        context.set_details('Method not implemented!')
-        raise NotImplementedError('Method not implemented!')
-
-    def ExecuteTool(self, request, context):
-        """Missing associated documentation comment in .proto file."""
-        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
-        context.set_details('Method not implemented!')
-        raise NotImplementedError('Method not implemented!')
-
 
 def add_PythonBridgeServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -127,16 +105,6 @@ def add_PythonBridgeServicer_to_server(servicer, server):
                     servicer.ChunkDocument,
                     request_deserializer=agentcanvas_dot_pythonbridge_dot_v1_dot_bridge__pb2.ChunkDocumentRequest.FromString,
                     response_serializer=agentcanvas_dot_pythonbridge_dot_v1_dot_bridge__pb2.ChunkDocumentResponse.SerializeToString,
-            ),
-            'ListTools': grpc.unary_unary_rpc_method_handler(
-                    servicer.ListTools,
-                    request_deserializer=agentcanvas_dot_pythonbridge_dot_v1_dot_bridge__pb2.ListToolsRequest.FromString,
-                    response_serializer=agentcanvas_dot_pythonbridge_dot_v1_dot_bridge__pb2.ListToolsResponse.SerializeToString,
-            ),
-            'ExecuteTool': grpc.unary_unary_rpc_method_handler(
-                    servicer.ExecuteTool,
-                    request_deserializer=agentcanvas_dot_pythonbridge_dot_v1_dot_bridge__pb2.ExecuteToolRequest.FromString,
-                    response_serializer=agentcanvas_dot_pythonbridge_dot_v1_dot_bridge__pb2.ExecuteToolResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -247,60 +215,6 @@ class PythonBridge(object):
             '/agentcanvas.pythonbridge.v1.PythonBridge/ChunkDocument',
             agentcanvas_dot_pythonbridge_dot_v1_dot_bridge__pb2.ChunkDocumentRequest.SerializeToString,
             agentcanvas_dot_pythonbridge_dot_v1_dot_bridge__pb2.ChunkDocumentResponse.FromString,
-            options,
-            channel_credentials,
-            insecure,
-            call_credentials,
-            compression,
-            wait_for_ready,
-            timeout,
-            metadata,
-            _registered_method=True)
-
-    @staticmethod
-    def ListTools(request,
-            target,
-            options=(),
-            channel_credentials=None,
-            call_credentials=None,
-            insecure=False,
-            compression=None,
-            wait_for_ready=None,
-            timeout=None,
-            metadata=None):
-        return grpc.experimental.unary_unary(
-            request,
-            target,
-            '/agentcanvas.pythonbridge.v1.PythonBridge/ListTools',
-            agentcanvas_dot_pythonbridge_dot_v1_dot_bridge__pb2.ListToolsRequest.SerializeToString,
-            agentcanvas_dot_pythonbridge_dot_v1_dot_bridge__pb2.ListToolsResponse.FromString,
-            options,
-            channel_credentials,
-            insecure,
-            call_credentials,
-            compression,
-            wait_for_ready,
-            timeout,
-            metadata,
-            _registered_method=True)
-
-    @staticmethod
-    def ExecuteTool(request,
-            target,
-            options=(),
-            channel_credentials=None,
-            call_credentials=None,
-            insecure=False,
-            compression=None,
-            wait_for_ready=None,
-            timeout=None,
-            metadata=None):
-        return grpc.experimental.unary_unary(
-            request,
-            target,
-            '/agentcanvas.pythonbridge.v1.PythonBridge/ExecuteTool',
-            agentcanvas_dot_pythonbridge_dot_v1_dot_bridge__pb2.ExecuteToolRequest.SerializeToString,
-            agentcanvas_dot_pythonbridge_dot_v1_dot_bridge__pb2.ExecuteToolResponse.FromString,
             options,
             channel_credentials,
             insecure,

@@ -145,6 +145,27 @@ func TestRunEventEmitterKeepsReasoningLiveOnly(t *testing.T) {
 	}
 }
 
+func TestTodoUpdatedIsPersistedAndReplayableThroughV1Stream(t *testing.T) {
+	hub := eventhub.NewMemoryHub(eventhub.Config{SubscriberBuffer: 4})
+	repo := &publisherEventRepo{}
+	emitter := &runEventEmitter{repo: repo, hub: hub, ownerID: 1, runID: 14}
+	payload := map[string]any{
+		"explanation": "working",
+		"plan":        []map[string]any{{"step": "inspect", "status": "in_progress"}},
+	}
+	if err := emitter.Emit(context.Background(), runtimeevent.Event{Type: runtimeevent.TodoUpdated, Payload: payload}); err != nil {
+		t.Fatal(err)
+	}
+	if len(repo.items) != 1 || repo.items[0].EventType != runtimeevent.TodoUpdated || !strings.Contains(string(repo.items[0].PayloadJSON), `"status":"in_progress"`) {
+		t.Fatalf("Todo event was not durably persisted: %+v", repo.items)
+	}
+	replay, _, cancel := hub.Subscribe(14, 0)
+	defer cancel()
+	if len(replay) != 1 || replay[0].Seq != 1 || replay[0].Kind != "todo.updated" || !strings.Contains(string(replay[0].Data), `"step":"inspect"`) {
+		t.Fatalf("Todo v1 replay mismatch: %+v", replay)
+	}
+}
+
 func TestTerminalSnapshotIsAuthoritativeAndClosesCompletedRun(t *testing.T) {
 	hub := eventhub.NewMemoryHub(eventhub.Config{SubscriberBuffer: 4})
 	_, live, cancel := hub.Subscribe(11, 0)

@@ -3,10 +3,25 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 )
+
+func TestClassifyHTTPErrorDetectsContextWindowExceeded(t *testing.T) {
+	for _, test := range []struct {
+		status int
+		body   string
+	}{{http.StatusRequestEntityTooLarge, "payload too large"}, {http.StatusBadRequest, `{"code":"context_length_exceeded"}`}, {http.StatusBadRequest, "maximum context length reached"}} {
+		if err := classifyHTTPError(test.status, http.StatusText(test.status), []byte(test.body), "chat failed"); !errors.Is(err, ErrContextWindowExceeded) {
+			t.Fatalf("expected context error for %d %q: %v", test.status, test.body, err)
+		}
+	}
+	if err := classifyHTTPError(http.StatusBadRequest, "400 Bad Request", []byte("invalid temperature"), "chat failed"); errors.Is(err, ErrContextWindowExceeded) {
+		t.Fatalf("ordinary 400 must not be classified as context overflow: %v", err)
+	}
+}
 
 func TestOpenAICompatibleChat(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
