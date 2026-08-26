@@ -49,6 +49,7 @@ import type {
   Workspace,
   GitStatus,
   GitWorktree,
+  ThreadGoal,
 } from '../types/api';
 
 export const agentApi = {
@@ -58,13 +59,12 @@ export const agentApi = {
   update: (id: number, body: { name?: string; description?: string; avatar_url?: string }) => api.patch<Agent>(`/agents/${id}`, body),
   updateSettings: (id: number, settings: AgentEditableSettings) => api.patch<Agent>(`/agents/${id}/settings`, settings),
   remove: (id: number) => api.delete<{ success: boolean }>(`/agents/${id}`),
-  createConversation: (id: number, title?: string, mode: Conversation['agent_mode'] = 'react', projectId?: number, workspaceMode: Conversation['workspace_mode'] = 'shared') => api.post<Conversation>(`/agents/${id}/conversations`, { title, mode, project_id: projectId, workspace_mode: workspaceMode }),
+  createConversation: (id: number, title?: string, mode: Conversation['agent_mode'] = 'default', projectId?: number, workspaceMode: Conversation['workspace_mode'] = 'shared') => api.post<Conversation>(`/agents/${id}/conversations`, { title, mode, project_id: projectId, workspace_mode: workspaceMode }),
   listConversations: (id: number) => api.get<Conversation[]>(`/agents/${id}/conversations`),
   listMessages: (id: number, conversationId: number) => api.get<Message[]>(`/agents/${id}/conversations/${conversationId}/messages`),
   updateConversationMode: (id: number, conversationId: number, mode: NonNullable<Conversation['agent_mode']>) => api.patch<Conversation>(`/agents/${id}/conversations/${conversationId}/mode`, { mode }),
   removeConversation: (id: number, conversationId: number) => api.delete<{ success: boolean }>(`/agents/${id}/conversations/${conversationId}`),
-  forkConversation: (id: number, conversationId: number) => api.post<Conversation>(`/agents/${id}/conversations/${conversationId}/fork`),
-  upgradeConversation: (id: number, conversationId: number) => api.post<Conversation>(`/agents/${id}/conversations/${conversationId}/upgrade`),
+  forkConversation: (id: number, conversationId: number, deferGoalContinuation = false) => api.post<Conversation>(`/agents/${id}/conversations/${conversationId}/fork`, deferGoalContinuation ? { defer_goal_continuation: true } : undefined),
   startTurn: (id: number, conversationId: number, content: string, idempotencyKey: string) => api.post<AgentTurnAccepted>(`/agents/${id}/conversations/${conversationId}/turns`, { content }, { headers: { 'Idempotency-Key': idempotencyKey } }),
   getTurn: (id: number) => api.get<AgentTurn>(`/agent-turns/${id}`),
   getLatestTurn: (id: number, conversationId: number) => api.get<AgentTurn>(`/agents/${id}/conversations/${conversationId}/turns/latest`),
@@ -122,8 +122,14 @@ export const runApi = {
     api.post<{ success: boolean }>(`/runs/${runId}/reflections/${reflectionId}/feedback`, { verdict, note }),
   listApprovalRequests: (status?: 'pending' | 'approved' | 'rejected') =>
     api.get<ApprovalRequest[]>('/approval-requests', status ? { status } : undefined),
-  approveRequest: (id: number, note?: string) => api.post<ApprovalRequest>(`/approval-requests/${id}/approve`, { note }),
-  rejectRequest: (id: number, note?: string) => api.post<ApprovalRequest>(`/approval-requests/${id}/reject`, { note }),
+  approveRequest: (id: number, note?: string, answers?: Record<string, string>) => api.post<ApprovalRequest>(`/approval-requests/${id}/approve`, { note, answers }),
+  rejectRequest: (id: number, note?: string, answers?: Record<string, string>) => api.post<ApprovalRequest>(`/approval-requests/${id}/reject`, { note, answers }),
+};
+
+export const goalApi = {
+  get: (agentID: number, conversationID: number) => api.get<ThreadGoal | null>(`/agents/${agentID}/conversations/${conversationID}/goal`),
+  set: (agentID: number, conversationID: number, body: { objective?: string; status?: ThreadGoal['status']; token_budget?: number }) => api.put<ThreadGoal>(`/agents/${agentID}/conversations/${conversationID}/goal`, body),
+  clear: (agentID: number, conversationID: number) => api.delete<{ cleared: boolean }>(`/agents/${agentID}/conversations/${conversationID}/goal`),
 };
 
 export const knowledgeApi = {

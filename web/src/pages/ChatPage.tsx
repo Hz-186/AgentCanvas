@@ -16,7 +16,7 @@ import {
   X,
 } from 'lucide-react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { agentApi, knowledgeApi, projectApi, runApi, settingsApi } from '../api/resources';
+import { agentApi, goalApi, knowledgeApi, projectApi, runApi, settingsApi } from '../api/resources';
 import { Button, EmptyState, Field, IconButton, Modal, Select, StatusBadge, TextArea, TextInput, Toast } from '../components/ui';
 import { EditorialHeader, ResizableRail, paneStyle, storedWidth } from '../components/editorial';
 import { ApprovalQueue } from '../components/ApprovalQueue';
@@ -36,6 +36,8 @@ import type {
   Workspace,
   GitStatus,
   Project,
+  TodoListPayload,
+  ThreadGoal,
 } from '../types/api';
 import { formatDate, friendlyErrorMessage } from '../utils/format';
 
@@ -58,12 +60,20 @@ const emptySettings = (providerID = 0): AgentEditableSettings => ({
   model: '',
   system_prompt: '',
   knowledge_base_ids: [],
-  python_tool_names: [],
 });
 
 function eventPayload(event: RunEvent): Record<string, unknown> {
   if (!event.payload_json) return {};
   try { return JSON.parse(event.payload_json) as Record<string, unknown>; } catch { return {}; }
+}
+
+function latestTodo(events: RunEvent[]): TodoListPayload | null {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    if (events[index].event_type !== 'todo.updated') continue;
+    const payload = eventPayload(events[index]);
+    if (Array.isArray(payload.plan)) return payload as unknown as TodoListPayload;
+  }
+  return null;
 }
 
 function tracePresentation(event: RunEvent): { title: string; summary: string } {
@@ -155,7 +165,9 @@ export function ChatPage() {
   const [childRuns, setChildRuns] = useState<Run[]>([]);
   const [approvals, setApprovals] = useState<ApprovalRequest[]>([]);
   const [question, setQuestion] = useState('');
-  const [mode, setMode] = useState<AgentMode>('react');
+  const [mode, setMode] = useState<AgentMode>('default');
+  const [todo, setTodo] = useState<TodoListPayload | null>(null);
+  const [goal, setGoal] = useState<ThreadGoal | null>(null);
   const [slashOpen, setSlashOpen] = useState(false);
   const [slashIndex, setSlashIndex] = useState(0);
   const [error, setError] = useState('');
@@ -196,8 +208,8 @@ export function ChatPage() {
   const streamPaused = streamIsCurrent && runStreamState.lifecycle === 'paused';
   const turnBlocksNewMessage = turn?.status === 'waiting_human' || turn?.status === 'paused' || streamWaiting || streamPaused;
   const modeOptions: Array<{ value: AgentMode; label: string; description: string }> = [
-    { value: 'react', label: 'ReAct', description: '边分析边行动，按需调用能力' },
-    { value: 'plan_execute', label: 'Plan Guided', description: '先制定计划，再按计划推进' },
+    { value: 'plan', label: '/plan · 📋 计划模式 (Plan)', description: '只分析、调研并生成实施方案' },
+    { value: 'default', label: '/default · ⚡ 默认模式 (Default)', description: '执行任务、使用工具并验证结果' },
   ];
 
   useEffect(() => {
@@ -226,7 +238,7 @@ export function ChatPage() {
 
   useEffect(() => {
     if (!currentAgent) return;
-    setSettings({ ...currentAgent.settings, knowledge_base_ids: [...(currentAgent.settings.knowledge_base_ids ?? [])], python_tool_names: [...(currentAgent.settings.python_tool_names ?? [])] });
+    setSettings({ ...currentAgent.settings, knowledge_base_ids: [...(currentAgent.settings.knowledge_base_ids ?? [])] });
     setSettingsSaved(false);
   }, [currentAgent?.id, currentAgent?.updated_at]);
 
@@ -246,6 +258,8 @@ export function ChatPage() {
     const generation = pageGeneration.current;
     const preservePending = pendingConversation.current === conversationID;
     setTrace([]);
+    setTodo(null);
+    setGoal(null);
     setChildRuns([]);
     setApprovals([]);
     if (!preservePending) {
@@ -261,12 +275,13 @@ export function ChatPage() {
     }
     if (!conversationID || !agentID) {
       if (isNewConversation) setMessages([]);
-      setMode('react');
+      setMode('default');
       return;
     }
     if (!preservePending) setMessages([]);
     let cancelled = false;
-    setMode(currentConversation?.agent_mode ?? 'react');
+    setMode(currentConversation?.agent_mode ?? 'default');
+    goalApi.get(agentID, conversationID).then((item) => { if (!cancelled) setGoal(item); }).catch(() => { if (!cancelled) setGoal(null); });
     agentApi.listMessages(agentID, conversationID).then((items) => {
       if (cancelled) return;
       setMessages((current) => mergeMessages(current.filter((item) => item.conversation_id === conversationID), items));
@@ -280,6 +295,7 @@ export function ChatPage() {
           if (cancelled || pageGeneration.current !== generation) return;
           setRun((current) => reconcileRunRecord(current, latestRun));
           setTrace((current) => mergeByID(current, events));
+          setTodo(latestTodo(events));
           setChildRuns((current) => mergeRuns(current, children));
         }).catch(() => undefined);
         void loadWorkspace(latest.run_id);
@@ -299,7 +315,7 @@ export function ChatPage() {
 
   useEffect(() => {
     if (conversationID && currentConversation) {
-      setMode(currentConversation.agent_mode ?? 'react');
+      setMode(currentConversation.agent_mode ?? 'default');
       setSelectedProjectID(currentConversation.project_id ?? undefined);
       setWorkspaceMode(currentConversation.workspace_mode ?? 'shared');
     }
@@ -314,6 +330,14 @@ export function ChatPage() {
     if (!streamIsCurrent || runStreamState.lastSeq === 0) return;
     setBusy(runStreamState.lifecycle === 'running');
   }, [runStreamState.lastSeq, runStreamState.lifecycle, streamIsCurrent]);
+
+  useEffect(() => {
+    if (streamIsCurrent && runStreamState.todo) setTodo(runStreamState.todo);
+  }, [runStreamState.todo, streamIsCurrent]);
+
+  useEffect(() => {
+    if (streamIsCurrent && runStreamState.goal) setGoal(runStreamState.goal.goal);
+  }, [runStreamState.goal, streamIsCurrent]);
 
   useEffect(() => {
     if (!streamIsCurrent || !runStreamError) return;
@@ -368,6 +392,7 @@ export function ChatPage() {
         }
         if (cancelled) return;
         setTrace((current) => mergeByID(current, events));
+        setTodo(latestTodo(events) ?? runStreamState.todo);
         setChildRuns((current) => mergeRuns(current, children));
         if (persistedTurn) setTurn(persistedTurn);
         if (persistedMessages) setMessages((current) => mergeMessages(current, persistedMessages!));
@@ -445,13 +470,13 @@ export function ChatPage() {
     } catch (cause) { setError(friendlyErrorMessage(cause, '搜索历史会话失败')); }
   }
 
-  async function forkConversation(upgrade: boolean) {
+  async function forkConversation() {
     if (!agentID || !conversationID) return;
     try {
-      const item = upgrade ? await agentApi.upgradeConversation(agentID, conversationID) : await agentApi.forkConversation(agentID, conversationID);
+      const item = await agentApi.forkConversation(agentID, conversationID);
       setConversations((current) => [item, ...current]);
       navigate(`/app/agents/${agentID}/chat/${item.id}`);
-    } catch (cause) { setError(friendlyErrorMessage(cause, upgrade ? '升级会话失败' : '分支会话失败')); }
+    } catch (cause) { setError(friendlyErrorMessage(cause, '分支会话失败')); }
   }
 
   function followRun(nextTurn: AgentTurn, runID: number) {
@@ -554,7 +579,7 @@ export function ChatPage() {
     if (!activeConversationID) return;
     const optimisticID = -Date.now();
     pageGeneration.current += 1;
-    setBusy(true); setError(''); setQuestion(''); setTrace([]); setApprovals([]);
+    setBusy(true); setError(''); setQuestion(''); setTrace([]); setTodo(null); setApprovals([]);
 		setMessages((current) => [...current, { id: optimisticID, owner_id: 0, conversation_id: activeConversationID!, role: 'user', content, token_count: 0, created_at: new Date().toISOString() }]);
     try {
       const accepted = await agentApi.startTurn(agentID, activeConversationID, content, nextIdempotencyKey());
@@ -586,12 +611,12 @@ export function ChatPage() {
     } catch (cause) { setError(friendlyErrorMessage(cause, '停止 Run 失败')); }
   }
 
-  async function decideApproval(item: ApprovalRequest, approved: boolean, optionID?: string) {
+  async function decideApproval(item: ApprovalRequest, approved: boolean, optionID?: string, answers?: Record<string, string>) {
     if (!item.run_id) return;
     setBusy(true); setError('');
     try {
-      if (approved) await runApi.approveRequest(item.id, optionID ? `choice:${optionID}` : undefined);
-      else await runApi.rejectRequest(item.id, 'Rejected from Agent Chat');
+      if (approved) await runApi.approveRequest(item.id, optionID ? `choice:${optionID}` : undefined, answers);
+      else await runApi.rejectRequest(item.id, 'Rejected from Agent Chat', answers);
       setApprovals([]);
       if (!turn) return;
       const nextTurn = await agentApi.getTurn(turn.id); setTurn(nextTurn);
@@ -651,7 +676,7 @@ export function ChatPage() {
         {agents.length === 0 ? <EmptyState icon={<Bot size={24} />} title="还没有 Agent" description="创建后即可开始多轮对话。" action={<Button tone="primary" onClick={() => setCreateOpen(true)}>创建 Agent</Button>} /> :
           <div className="resource-library-list dialog-library-list">{agents.map((item) => <article className="resource-library-item dialog-library-item" key={item.id}>
             <div className="resource-miniature dialog-miniature"><span><Bot size={16} /></span><i /><span className="resource-miniature-end"><MessageSquareText size={16} /></span></div>
-            <div className="resource-library-copy"><div className="card-title"><h3 className="truncate">{item.name}</h3><StatusBadge tone={item.status === 'active' ? 'good' : 'neutral'}>{item.status}</StatusBadge></div><p className="muted clamp-2">{item.description || item.settings.system_prompt || '使用服务端默认提示词'}</p><div className="meta-row"><span>RELEASE {item.current_release_id ?? '—'}</span><span>{formatDate(item.updated_at)}</span></div></div>
+            <div className="resource-library-copy"><div className="card-title"><h3 className="truncate">{item.name}</h3><StatusBadge tone={item.status === 'active' ? 'good' : 'neutral'}>{item.status}</StatusBadge></div><p className="muted clamp-2">{item.description || item.settings.system_prompt || '使用服务端默认提示词'}</p><div className="meta-row"><span>{formatDate(item.updated_at)}</span></div></div>
             <div className="resource-library-actions"><Button tone="primary" onClick={() => navigate(`/app/agents/${item.id}/chat`)}>Open Agent<ArrowUpRight size={16} /></Button><IconButton label="归档 Agent" className="icon-btn-danger" onClick={() => void removeAgent(item.id)}><Trash2 size={16} /></IconButton></div>
           </article>)}</div>}
       </div>
@@ -664,9 +689,10 @@ export function ChatPage() {
     '--dialog-nav-width': `${storedWidth('agentcanvas-agent-navigator-width', 270)}px`,
     '--dialog-inspector-width': `${inspectorWidth}px`,
   });
-  const runDetailsVisible = trace.length > 0
-    || childRuns.length > 0
-    || approvals.length > 0
+	const runDetailsVisible = trace.length > 0
+	    || childRuns.length > 0
+	    || approvals.length > 0
+	    || Boolean(todo)
     || streamSegments.some((segment) => segment.kind !== 'assistant')
     || Boolean(run || (streamIsCurrent && (runStreamState.status || runStreamState.approval)));
 	const effectiveWorkspaceDirty = gitStatus?.dirty ?? workspace?.dirty ?? false;
@@ -691,7 +717,7 @@ export function ChatPage() {
           {searchResults.map((item) => <button type="button" className="chat-conversation-item chat-search-result" key={item.conversation_id} onClick={() => navigate(`/app/agents/${agentID}/chat/${item.conversation_id}`)}><span className="truncate">{item.content}</span><span className="chat-conversation-time">{item.role} · {formatDate(item.created_at)}</span></button>)}
         </> : <>
           {isNewConversation ? <div className="chat-conversation-item active"><span>新会话…</span></div> : null}
-          {conversations.map((item) => <div className={`chat-conversation-item ${item.id === conversationID ? 'active' : ''}`} key={item.id}><button type="button" onClick={() => navigate(`/app/agents/${agentID}/chat/${item.id}`)}><span className="truncate">{item.title || '未命名会话'}</span><span className="chat-conversation-time">{item.agent_mode === 'plan_execute' ? 'Plan Guided' : 'ReAct'} · {formatDate(item.last_message_at ?? item.updated_at)}</span></button><IconButton label="删除会话" className="chat-delete" onClick={() => void removeConversation(item.id)}><Trash2 size={14} /></IconButton></div>)}
+          {conversations.map((item) => <div className={`chat-conversation-item ${item.id === conversationID ? 'active' : ''}`} key={item.id}><button type="button" onClick={() => navigate(`/app/agents/${agentID}/chat/${item.id}`)}><span className="truncate">{item.title || '未命名会话'}</span><span className="chat-conversation-time">{item.agent_mode === 'plan' ? '📋 Plan' : '⚡ Default'} · {formatDate(item.last_message_at ?? item.updated_at)}</span></button><IconButton label="删除会话" className="chat-delete" onClick={() => void removeConversation(item.id)}><Trash2 size={14} /></IconButton></div>)}
         </>}
       </div>
     </aside>
@@ -700,7 +726,7 @@ export function ChatPage() {
       <div className="chat-session-heading">
         <div><span>AGENT CHAT</span><strong>{currentAgent?.name}</strong></div>
         <div className="chat-heading-actions">
-          {conversationID ? <><button className="chat-back" type="button" onClick={() => void forkConversation(false)}><GitBranch size={13} />Fork</button><button className="chat-back" type="button" onClick={() => void forkConversation(true)}>新配置会话</button></> : null}
+          {conversationID ? <button className="chat-back" type="button" onClick={() => void forkConversation()}><GitBranch size={13} />Fork</button> : null}
           <IconButton label={inspectorWidth > 0 ? '收起全局设置' : '打开全局设置'} onClick={() => inspectorWidth > 0 ? setInspector(0) : reopenInspector()}><Settings2 size={16} /></IconButton>
         </div>
       </div>
@@ -709,9 +735,26 @@ export function ChatPage() {
         {visibleMessages.map((item) => <article className={`message ${item.role}`} key={item.id}><span className="message-role">{item.role === 'user' ? '你' : currentAgent?.name ?? 'Agent'}</span><p>{item.content}</p></article>)}
         {streamSegments.map((segment) => segment.kind === 'assistant'
           ? <article className="message assistant pending" data-run-segment={segment.id} key={`stream:${segment.id}`}><span className="message-role">{currentAgent?.name ?? 'Agent'}</span><p>{segment.text || <><i />正在处理…</>}</p></article>
-          : <article className={`chat-trace-row chat-stream-segment ${segment.kind}`} data-run-segment={segment.id} key={`stream:${segment.id}`}><strong>{segment.kind === 'tool' ? segment.toolName || 'Tool' : segment.kind === 'reasoning' ? 'Reasoning' : 'Status'}</strong><p>{segment.text || segment.status || (segment.kind === 'reasoning' ? '正在推理…' : '正在执行…')}</p></article>)}
+          : <article className={`chat-trace-row chat-stream-segment ${segment.kind}`} data-run-segment={segment.id} key={`stream:${segment.id}`}><strong>{segment.kind === 'tool' ? segment.toolName || 'Tool' : segment.kind === 'reasoning' ? 'Reasoning' : segment.kind === 'plan' ? 'Proposed Plan' : 'Status'}</strong><p>{segment.text || segment.status || (segment.kind === 'reasoning' ? '正在推理…' : segment.kind === 'plan' ? '正在生成计划…' : '正在执行…')}</p></article>)}
         {busy && !hasAssistantStreamSegment ? <article className="message assistant pending"><span className="message-role">{currentAgent?.name ?? 'Agent'}</span><p><i />{turn?.status === 'queued' ? '任务已排队…' : '正在处理…'}</p></article> : null}
         {turn?.status === 'failed' ? <article className="message assistant failed"><span className="message-role">运行失败</span><p>{turn.error_message || 'Agent 未能完成本次任务。'}</p></article> : null}
+        {todo ? <details className="chat-run-details todo-panel" open>
+          <summary><span>Updated Plan</span></summary>
+          <div className="chat-run-details-body stack">
+            {todo.explanation ? <p className="muted">{todo.explanation}</p> : null}
+            {todo.plan.map((item, index) => <div className={`todo-item ${item.status}`} key={`${index}:${item.step}`}>
+              <span className="todo-item-status">{item.status === 'completed' ? '✓' : item.status === 'in_progress' ? '…' : '○'}</span>
+              <div><strong>{item.step}</strong></div>
+            </div>)}
+          </div>
+        </details> : null}
+        {goal ? <details className="chat-run-details" open>
+          <summary><span>Thread Goal</span><StatusBadge tone={goal.status === 'complete' ? 'good' : goal.status === 'active' ? 'info' : 'warn'}>{goal.status}</StatusBadge></summary>
+          <div className="chat-run-details-body stack">
+            <strong>{goal.objective}</strong>
+            <div className="meta-row"><span>{goal.tokens_used} tok{goal.token_budget != null ? ` / ${goal.token_budget}` : ''}</span><span>{goal.time_used_seconds}s</span></div>
+          </div>
+        </details> : null}
         {runDetailsVisible ? <details className="chat-run-details">
           <summary><ChevronDown size={14} /><span>执行详情</span>{run ? <StatusBadge tone={run.status === 'succeeded' ? 'good' : run.status === 'failed' ? 'bad' : 'info'}>{run.status}</StatusBadge> : null}</summary>
           <div className="chat-run-details-body stack">
@@ -734,7 +777,7 @@ export function ChatPage() {
       <form className="chat-composer" onSubmit={(event) => void send(event)}>
         <div className="chat-composer-input">
           {slashOpen ? <div className="slash-menu" role="listbox" aria-label="选择 Agent 模式">{modeOptions.map((option, index) => <button type="button" role="option" aria-selected={index === slashIndex} className={index === slashIndex ? 'active' : ''} key={option.value} onMouseEnter={() => setSlashIndex(index)} onClick={() => void selectMode(option.value)}><strong>{option.label}</strong><span>{option.description}</span></button>)}</div> : null}
-          <TextArea value={question} onChange={(event) => { const value = event.target.value; setQuestion(value); setSlashOpen(value === '/' || value.startsWith('/mode')); }} placeholder={turnBlocksNewMessage ? '请先处理当前暂停或审批中的 Run' : '交给 Agent 一个任务…'} disabled={busy || turnBlocksNewMessage} onKeyDown={onComposerKeyDown} />
+          <TextArea value={question} onChange={(event) => { const value = event.target.value; setQuestion(value); setSlashIndex(value.toLowerCase().startsWith('/default') ? 1 : 0); setSlashOpen(value.startsWith('/')); }} placeholder={turnBlocksNewMessage ? '请先处理当前暂停或审批中的 Run' : '交给 Agent 一个任务…'} disabled={busy || turnBlocksNewMessage} onKeyDown={onComposerKeyDown} />
         </div>
         <div className="chat-composer-actions">
           <Select aria-label="项目工作区" value={selectedProjectID ?? ''} onChange={(event) => setSelectedProjectID(event.target.value ? Number(event.target.value) : undefined)} disabled={Boolean(conversationID) || busy || turnBlocksNewMessage}>
@@ -742,7 +785,7 @@ export function ChatPage() {
             {projects.map((project) => <option value={project.id} key={project.id}>{project.name}</option>)}
           </Select>
           {selectedProjectID ? <Select aria-label="工作区模式" value={workspaceMode} onChange={(event) => setWorkspaceMode(event.target.value as 'shared' | 'worktree')} disabled={Boolean(conversationID) || busy || turnBlocksNewMessage}><option value="shared">共享仓库</option><option value="worktree">独立 Git Worktree</option></Select> : null}
-          <button type="button" className="mode-chip" aria-label={`当前模式：${mode === 'plan_execute' ? 'Plan Guided' : 'ReAct'}`} disabled={busy || turnBlocksNewMessage} onClick={() => { setQuestion('/'); setSlashOpen(true); }}><span>{mode === 'plan_execute' ? 'Plan Guided' : 'ReAct'}</span><ChevronDown size={13} /></button>
+          <button type="button" className="mode-chip" aria-label={`当前模式：${mode === 'plan' ? '计划模式 Plan' : '默认模式 Default'}`} disabled={busy || turnBlocksNewMessage} onClick={() => { setQuestion('/'); setSlashOpen(true); }}><span>{mode === 'plan' ? '📋 Plan' : '⚡ Default'}</span><ChevronDown size={13} /></button>
           <div className="chat-send-actions">{busy ? <Button type="button" tone="danger" onClick={() => void stopRun()}><Square size={15} />Stop</Button> : turn?.status === 'paused' || streamPaused ? <Button type="button" tone="primary" onClick={() => void resumePausedRun()}>Resume</Button> : turn?.status === 'waiting_human' || streamWaiting ? <Button type="button" disabled>Awaiting approval</Button> : <Button tone="primary" type="submit" disabled={!question.trim() || slashOpen}><Send size={16} />发送</Button>}</div>
         </div>
       </form>

@@ -457,10 +457,9 @@ export interface Conversation {
   owner_id: number;
   title: string;
   agent_id?: number | null;
-  agent_release_id?: number | null;
   project_id?: number | null;
   workspace_mode?: 'shared' | 'worktree';
-  agent_mode?: 'react' | 'plan_execute';
+  agent_mode?: 'default' | 'plan';
   parent_conversation_id?: number | null;
   last_message_at: string | null;
   created_at: string;
@@ -472,7 +471,6 @@ export interface AgentEditableSettings {
   model: string;
   system_prompt: string;
   knowledge_base_ids: number[];
-  python_tool_names?: string[];
   temperature?: number;
 }
 
@@ -484,7 +482,6 @@ export interface Agent {
   avatar_url: string;
   status: 'draft' | 'active' | 'archived';
   settings: AgentEditableSettings;
-  current_release_id?: number | null;
   created_at: string;
   updated_at: string;
 }
@@ -493,7 +490,6 @@ export interface AgentTurn {
   id: number;
   owner_id: number;
   agent_id: number;
-  agent_release_id: number;
   conversation_id: number;
   run_id?: number | null;
   user_message_id: number;
@@ -519,7 +515,6 @@ export interface ImprovementReview {
   id: number;
   owner_id: number;
   agent_id: number;
-  agent_release_id: number;
   conversation_id: number;
   turn_id: number;
   run_id: number;
@@ -642,11 +637,22 @@ export interface AgentReflection {
 
 export type RunStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'waiting_human' | 'paused' | 'resuming' | 'timeout';
 
+export type TodoStatus = 'pending' | 'in_progress' | 'completed';
+export interface TodoItem {
+  step: string;
+  status: TodoStatus;
+}
+export interface TodoListPayload {
+  explanation?: string;
+  plan: TodoItem[];
+  conversation_id?: number;
+  run_id?: number;
+}
+
 export interface Run {
   id: number;
   owner_id: number;
   agent_id: number;
-  agent_release_id?: number | null;
   conversation_id?: number | null;
   workspace_id?: number | null;
   workspace?: Workspace | null;
@@ -663,6 +669,19 @@ export interface Run {
   latency_ms: number;
   started_at: string;
   finished_at?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export type ThreadGoalStatus = 'active' | 'paused' | 'blocked' | 'usage_limited' | 'budget_limited' | 'complete';
+export interface ThreadGoal {
+  conversation_id: number;
+  goal_id: string;
+  objective: string;
+  status: ThreadGoalStatus;
+  token_budget?: number | null;
+  tokens_used: number;
+  time_used_seconds: number;
   created_at: string;
   updated_at: string;
 }
@@ -685,12 +704,21 @@ export interface ApprovalRequest {
   risk_level: string;
   reason: string;
   request_json?: unknown;
-  options?: ApprovalOption[];
+	options?: ApprovalOption[];
+	questions?: UserInputQuestion[];
   status: "pending" | "approved" | "rejected";
   decision_note: string;
   decided_at?: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface UserInputQuestion {
+	id: string;
+	header: string;
+	question: string;
+	options: Array<{ label: string; description: string }>;
+	is_other?: boolean;
 }
 
 export interface ApprovalOption {

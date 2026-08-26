@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { Agent, AgentTurn, Conversation, Message, MessageSearchResult, Run } from '../types/api';
+import type { Agent, AgentTurn, Conversation, Message, MessageSearchResult, Run, RunEvent } from '../types/api';
 import type { RunStreamEvent } from '../types/events';
 import { ChatPage, deduplicateSearchResults, mergeMessages, visibleChatMessages } from './ChatPage';
 
@@ -31,6 +31,7 @@ const apiMocks = vi.hoisted(() => ({
   gitCommit: vi.fn(),
   refreshWorkspace: vi.fn(),
   cleanupWorkspace: vi.fn(),
+  getGoal: vi.fn(),
 }));
 
 vi.mock('../api/resources', () => ({
@@ -50,6 +51,7 @@ vi.mock('../api/resources', () => ({
   settingsApi: { providers: { list: apiMocks.listProviders } },
   knowledgeApi: { list: apiMocks.listKnowledge },
   projectApi: { list: apiMocks.listProjects },
+  goalApi: { get: apiMocks.getGoal },
   runApi: {
     getRun: apiMocks.getRun,
     listRunEvents: apiMocks.listRunEvents,
@@ -73,7 +75,6 @@ const agent: Agent = {
   avatar_url: '',
   status: 'active',
   settings: { provider_id: 4, model: 'gpt-test', system_prompt: 'Answer carefully', knowledge_base_ids: [], temperature: 0.3 },
-  current_release_id: 9,
   created_at: '2026-07-26T00:00:00Z',
   updated_at: '2026-07-26T00:00:00Z',
 };
@@ -83,8 +84,7 @@ const conversation: Conversation = {
   owner_id: 7,
   title: 'First task',
   agent_id: 1,
-  agent_release_id: 9,
-  agent_mode: 'react',
+	  agent_mode: 'default',
   last_message_at: '2026-07-26T00:00:03Z',
   created_at: '2026-07-26T00:00:00Z',
   updated_at: '2026-07-26T00:00:03Z',
@@ -100,7 +100,6 @@ const activeRun: Run = {
   id: 20,
   owner_id: 7,
   agent_id: 1,
-  agent_release_id: 9,
   conversation_id: 2,
   run_type: 'turn',
   delegation_depth: 0,
@@ -119,7 +118,6 @@ const activeTurn: AgentTurn = {
   id: 30,
   owner_id: 7,
   agent_id: 1,
-  agent_release_id: 9,
   conversation_id: 2,
   run_id: activeRun.id,
   user_message_id: 11,
@@ -205,11 +203,12 @@ beforeEach(() => {
   apiMocks.listConversations.mockResolvedValue([conversation]);
   apiMocks.listMessages.mockResolvedValue(messages);
   apiMocks.latestTurn.mockRejectedValue(new Error('no turn'));
+  apiMocks.getGoal.mockResolvedValue(null);
   apiMocks.getTurn.mockResolvedValue(activeTurn);
   apiMocks.streamRunEvents.mockImplementation(() => new Promise<void>(() => undefined));
   apiMocks.streamRunEventsV1.mockImplementation(() => new Promise<void>(() => undefined));
   apiMocks.searchSessions.mockResolvedValue([]);
-  apiMocks.updateConversationMode.mockResolvedValue({ ...conversation, agent_mode: 'plan_execute' });
+  apiMocks.updateConversationMode.mockImplementation((_agentID: number, _conversationID: number, mode: Conversation['agent_mode']) => Promise.resolve({ ...conversation, agent_mode: mode }));
   apiMocks.getRun.mockResolvedValue(activeRun);
   apiMocks.listRunEvents.mockResolvedValue([]);
   apiMocks.listChildRuns.mockResolvedValue([]);
@@ -268,7 +267,7 @@ describe('Agent chat page', () => {
     fireEvent.change(screen.getByPlaceholderText('交给 Agent 一个任务…'), { target: { value: 'edit README' } });
     fireEvent.click(screen.getByRole('button', { name: '发送' }));
 
-    await waitFor(() => expect(apiMocks.createConversation).toHaveBeenCalledWith(1, undefined, 'react', project.id, 'worktree'));
+    await waitFor(() => expect(apiMocks.createConversation).toHaveBeenCalledWith(1, undefined, 'default', project.id, 'worktree'));
     await waitFor(() => expect(apiMocks.startTurn).toHaveBeenCalledWith(1, 50, 'edit README', expect.any(String)));
   });
 
@@ -306,22 +305,66 @@ describe('Agent chat page', () => {
     await waitFor(() => expect(apiMocks.searchSessions).toHaveBeenCalledWith(1, 'icon', 30));
   });
 
-  it('opens /mode with the keyboard, persists selection, and remembers inspector collapse', async () => {
+  it('opens slash commands with the keyboard, persists selection, and remembers inspector collapse', async () => {
     const { container } = renderChat();
     const composer = await screen.findByPlaceholderText('交给 Agent 一个任务…');
     fireEvent.change(composer, { target: { value: '/' } });
     const menu = screen.getByRole('listbox', { name: '选择 Agent 模式' });
-    expect(within(menu).getByText('ReAct')).toBeInTheDocument();
+    expect(within(menu).getByText(/计划模式/)).toBeInTheDocument();
+    fireEvent.keyDown(composer, { key: 'Enter' });
+    await waitFor(() => expect(apiMocks.updateConversationMode).toHaveBeenCalledWith(1, 2, 'plan'));
+    expect(screen.getByRole('button', { name: '当前模式：计划模式 Plan' })).toBeInTheDocument();
+
+    fireEvent.change(composer, { target: { value: '/default' } });
+    fireEvent.keyDown(composer, { key: 'Enter' });
+    await waitFor(() => expect(apiMocks.updateConversationMode).toHaveBeenCalledWith(1, 2, 'default'));
+    expect(screen.getByRole('button', { name: '当前模式：默认模式 Default' })).toBeInTheDocument();
+
+    fireEvent.change(composer, { target: { value: '/' } });
     fireEvent.keyDown(composer, { key: 'ArrowDown' });
     fireEvent.keyDown(composer, { key: 'Enter' });
-    await waitFor(() => expect(apiMocks.updateConversationMode).toHaveBeenCalledWith(1, 2, 'plan_execute'));
-    expect(screen.getByRole('button', { name: '当前模式：Plan Guided' })).toBeInTheDocument();
+    await waitFor(() => expect(apiMocks.updateConversationMode).toHaveBeenLastCalledWith(1, 2, 'default'));
+
+    fireEvent.change(composer, { target: { value: '/' } });
+    fireEvent.keyDown(composer, { key: 'Escape' });
+    expect(screen.queryByRole('listbox', { name: '选择 Agent 模式' })).not.toBeInTheDocument();
+    expect(composer).toHaveValue('');
 
     fireEvent.click(screen.getByLabelText('收起设置面板'));
     expect(container.querySelector('.chat-shell')).toHaveStyle({ '--dialog-inspector-width': '0px' });
     expect(localStorage.getItem('agentcanvas-agent-inspector-width')).toBe('0');
     fireEvent.click(screen.getByLabelText('打开全局设置'));
     expect(container.querySelector('.chat-shell')).toHaveStyle({ '--dialog-inspector-width': '380px' });
+  });
+
+	  it('restores the persisted Todo snapshot with Codex fields', async () => {
+    apiMocks.latestTurn.mockResolvedValue({ ...activeTurn, status: 'succeeded' });
+    apiMocks.getRun.mockResolvedValue({ ...activeRun, status: 'succeeded' });
+    const todoEvent: RunEvent = {
+      id: 1,
+      owner_id: 7,
+      run_id: activeRun.id,
+      event_type: 'todo.updated',
+	      payload_json: JSON.stringify({
+	        explanation: 'working',
+	        plan: [
+	          { step: 'pending step', status: 'pending' },
+	          { step: 'active step', status: 'in_progress' },
+	          { step: 'done step', status: 'completed' },
+	        ],
+	      }),
+      created_at: '2026-07-26T00:00:04Z',
+    };
+    apiMocks.listRunEvents.mockResolvedValue([todoEvent]);
+
+    const { container } = renderChat();
+
+	    expect(await screen.findByText('Updated Plan')).toBeInTheDocument();
+	    expect(screen.getByText('working')).toBeInTheDocument();
+	    for (const status of ['pending', 'in_progress', 'completed']) {
+	      expect(container.querySelector(`.todo-item.${status}`)).not.toBeNull();
+	    }
+	    expect(screen.queryByRole('progressbar')).not.toBeInTheDocument();
   });
 
   it('renders ordered v1 segments and reconciles the terminal snapshot without duplicating the answer', async () => {

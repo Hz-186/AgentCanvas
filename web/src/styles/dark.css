@@ -1193,6 +1193,31 @@
   border-top: 1px solid var(--border);
 }
 
+:is(html[data-theme='dark'], html[data-theme='light']) .todo-panel summary {
+  justify-content: space-between;
+}
+
+:is(html[data-theme='dark'], html[data-theme='light']) .todo-panel progress {
+  width: 100%;
+  height: 8px;
+  accent-color: var(--accent);
+}
+
+:is(html[data-theme='dark'], html[data-theme='light']) .todo-item {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--separator);
+}
+
+:is(html[data-theme='dark'], html[data-theme='light']) .todo-item:last-child { border-bottom: 0; }
+:is(html[data-theme='dark'], html[data-theme='light']) .todo-item-status { width: 18px; text-align: center; color: var(--text-tertiary); }
+:is(html[data-theme='dark'], html[data-theme='light']) .todo-item.in_progress .todo-item-status { color: var(--accent); animation: runtime-pulse 1.2s ease-in-out infinite; }
+:is(html[data-theme='dark'], html[data-theme='light']) .todo-item.completed .todo-item-status { color: var(--success); }
+:is(html[data-theme='dark'], html[data-theme='light']) .todo-item.failed .todo-item-status { color: var(--danger); }
+:is(html[data-theme='dark'], html[data-theme='light']) .todo-item small { display: block; color: var(--text-tertiary); }
+
 :is(html[data-theme='dark'], html[data-theme='light']) .workspace-run-card {
   min-width: 0;
   margin-top: 10px;
