@@ -26,7 +26,7 @@ Task 8 (回归验证) ◄── 全部
 
 ---
 
-- [ ] Task 1: 新增消息类型迁移与类型化消息实体
+- [x] Task 1: 新增消息类型迁移与类型化消息实体
 
 **文件**：
 - 新建：`migrations/0000XX_message_content_type.up.sql` / `.down.sql`（序号取当前最大+1）
@@ -50,7 +50,7 @@ Task 8 (回归验证) ◄── 全部
 
 ---
 
-- [ ] Task 2: 创建统一压缩核心包
+- [x] Task 2: 创建统一压缩核心包
 
 **文件**：
 - 新建：`internal/runtime/compaction/entry.go`（Entry、FromMessages、FromChat、ToChat）
@@ -80,7 +80,7 @@ Task 8 (回归验证) ◄── 全部
 
 ---
 
-- [ ] Task 3: 跨轮压缩切换到核心包并纳入工具条目
+- [x] Task 3: 跨轮压缩切换到核心包并纳入工具条目
 
 **文件**：
 - 修改：`internal/runtime/conversationcontext/coordinator.go`（compact/summarize/retain 改为调用核心包；删除本地重复实现）
@@ -108,7 +108,7 @@ Task 8 (回归验证) ◄── 全部
 
 ---
 
-- [ ] Task 4: 轮内压缩切换到核心包并删除重复代码
+- [x] Task 4: 轮内压缩切换到核心包并删除重复代码
 
 **文件**：
 - 修改：`internal/runtime/agent/auto_compaction.go`（compactRuntimeTranscript/summarizeContext/retainMessagesByRole/truncateMessageTokens 改为调用核心包）
@@ -131,7 +131,7 @@ Task 8 (回归验证) ◄── 全部
 
 ---
 
-- [ ] Task 5: 实现运行内条目实时写入与恢复幂等
+- [x] Task 5: 实现运行内条目实时写入与恢复幂等
 
 **文件**：
 - 修改：`internal/runtime/agent/types.go`（RunRequest 增加 `MessageSink`；Checkpoint 增加 `PersistedMessageCount`；RunResult 输出增加 assistant_message_id）
@@ -167,7 +167,7 @@ Task 8 (回归验证) ◄── 全部
 
 ---
 
-- [ ] Task 6: 裁决落地：子代理委派对唯一写入方与内部 transcript 抑制
+- [x] Task 6: 裁决落地：子代理委派对唯一写入方与内部 transcript 抑制
 
 **文件**：
 - 修改：`internal/runtime/agentruntime/execution.go`（`DelegationDepth > 0` 不挂 sink，Task 5 已加则本任务仅补子代理场景测试）
@@ -190,7 +190,7 @@ Task 8 (回归验证) ◄── 全部
 
 ---
 
-- [ ] Task 7: 扩展消息 API 与前端类型化渲染
+- [x] Task 7: 扩展消息 API 与前端类型化渲染
 
 **文件**：
 - 修改：消息序列化处（审查修正：`internal/interface/http/handler/agent_handler.go` 的消息路由；`ListMessages` 实际直接返回 `[]conversation.Message`（service.go:554-558）经实体 json tag 序列化，无独立 DTO 结构——扩展 `internal/domain/conversation/message.go` 的 json tag 暴露 content_type，并在 application 层或 handler 侧解析 metadata_json 出 `tool_call_id`/`tool_name`）

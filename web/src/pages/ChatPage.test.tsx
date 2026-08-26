@@ -240,6 +240,17 @@ describe('Agent chat helpers', () => {
     expect(visibleChatMessages(messages).map((item) => item.id)).toEqual([11, 12]);
   });
 
+  it('keeps tool entries visible but hides system echoes and reasoning', () => {
+    const typed: Message[] = [
+      ...messages,
+      { id: 13, owner_id: 7, conversation_id: 2, role: 'assistant', content: '{}', content_type: 'function_call', tool_call_id: 'call_1', tool_name: 'lookup', token_count: 1, created_at: '2026-07-26T00:00:03Z' },
+      { id: 14, owner_id: 7, conversation_id: 2, role: 'tool', content: 'result', content_type: 'function_call_output', tool_call_id: 'call_1', tool_name: 'lookup', token_count: 1, created_at: '2026-07-26T00:00:04Z' },
+      { id: 15, owner_id: 7, conversation_id: 2, role: 'user', content: '/compact', content_type: 'system_echo', token_count: 1, created_at: '2026-07-26T00:00:05Z' },
+      { id: 16, owner_id: 7, conversation_id: 2, role: 'assistant', content: 'thinking', content_type: 'reasoning', token_count: 1, created_at: '2026-07-26T00:00:06Z' },
+    ];
+    expect(visibleChatMessages(typed).map((item) => item.id)).toEqual([11, 12, 13, 14]);
+  });
+
   it('keeps the first relevant result for each conversation', () => {
     const results = [
       { conversation_id: 2, content: 'best' },
