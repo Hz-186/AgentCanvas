@@ -1,6 +1,6 @@
 import { RUN_STREAM_VERSION, type RunStreamEvent } from '../types/events';
 
-const textKinds = new Set(['assistant.start', 'assistant.delta', 'assistant.end', 'reasoning.start', 'reasoning.delta', 'reasoning.end']);
+const textKinds = new Set(['assistant.start', 'assistant.delta', 'assistant.end', 'reasoning.start', 'reasoning.delta', 'reasoning.end', 'plan.start', 'plan.delta', 'plan.end']);
 const toolKinds = new Set(['tool.start', 'tool.progress', 'tool.complete', 'tool.error']);
 const terminalKinds = new Set(['stream.snapshot', 'run.complete', 'run.failed', 'run.paused', 'run.waiting', 'run.cancelled']);
 const eventKinds = new Set([
@@ -11,6 +11,9 @@ const eventKinds = new Set([
   'workspace.update',
   'approval.required',
   'usage.update',
+	'todo.updated',
+	'goal.updated',
+	'goal.cleared',
 ]);
 
 export class RunStreamProtocolError extends Error {
@@ -47,6 +50,25 @@ function validateUsage(data: Record<string, unknown>): void {
   requireNumber(data, 'total_tokens');
 }
 
+function validateTodo(data: Record<string, unknown>): void {
+	if (!Array.isArray(data.plan)) throw new RunStreamProtocolError('data.plan must be an array');
+	for (const item of data.plan) {
+		const value = objectValue(item, 'data.plan[]');
+		requireString(value, 'step');
+		if (!['pending', 'in_progress', 'completed'].includes(String(value.status))) throw new RunStreamProtocolError('data.plan[].status is invalid');
+	}
+	if (data.explanation != null && typeof data.explanation !== 'string') throw new RunStreamProtocolError('data.explanation must be a string');
+}
+
+function validateGoal(data: Record<string, unknown>): void {
+	if (data.goal == null) return;
+	const goal = objectValue(data.goal, 'data.goal');
+	if (typeof goal.status !== 'string' || !['active', 'paused', 'blocked', 'usage_limited', 'budget_limited', 'complete'].includes(goal.status)) {
+		throw new RunStreamProtocolError('data.goal.status is invalid');
+	}
+	if (data.message != null && typeof data.message !== 'string') throw new RunStreamProtocolError('data.message must be a string');
+}
+
 export function parseRunStreamEvent(input: string | unknown): RunStreamEvent {
   let parsed = input;
   if (typeof input === 'string') {
@@ -74,15 +96,21 @@ export function parseRunStreamEvent(input: string | unknown): RunStreamEvent {
   } else if (envelope.kind === 'status.update') {
     requireString(data, 'message');
     if (!['info', 'warning', 'error'].includes(String(data.level))) throw new RunStreamProtocolError('data.level is invalid');
-  } else if (envelope.kind === 'approval.required') {
-    requireNumber(data, 'request_id');
-    for (const key of ['call_id', 'tool_name', 'reason']) requireString(data, key);
+	} else if (envelope.kind === 'approval.required') {
+		requireNumber(data, 'request_id');
+		for (const key of ['call_id', 'tool_name', 'reason']) requireString(data, key);
+		if (data.is_blocking != null && typeof data.is_blocking !== 'boolean') throw new RunStreamProtocolError('data.is_blocking must be a boolean');
+		if (data.questions != null && !Array.isArray(data.questions)) throw new RunStreamProtocolError('data.questions must be an array');
   } else if (envelope.kind === 'usage.update') {
     validateUsage(data);
-  } else if (envelope.kind === 'workspace.update') {
+	} else if (envelope.kind === 'workspace.update') {
 	for (const key of ['workspace_id', 'run_id']) requireNumber(data, key);
 	for (const key of ['repository_root', 'workspace_path', 'branch_name', 'base_sha', 'head_sha']) requireStringValue(data, key);
 	for (const key of ['dirty', 'has_unpushed_commits']) requireBoolean(data, key);
+	} else if (envelope.kind === 'todo.updated') {
+		validateTodo(data);
+	} else if (envelope.kind === 'goal.updated' || envelope.kind === 'goal.cleared') {
+		validateGoal(data);
   } else if (terminalKinds.has(envelope.kind)) {
     objectValue(data.run, 'data.run');
     validateUsage(objectValue(data.usage, 'data.usage'));

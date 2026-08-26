@@ -5,10 +5,12 @@ import type {
 	TerminalSnapshotPayload,
 	UsagePayload,
 	WorkspaceUpdatePayload,
+	GoalUpdatedPayload,
 } from '../types/events';
 import type { RunEvent } from '../types/api';
+import type { TodoListPayload } from '../types/api';
 
-export type RunSegmentKind = 'assistant' | 'reasoning' | 'tool' | 'status';
+export type RunSegmentKind = 'assistant' | 'reasoning' | 'plan' | 'tool' | 'status';
 
 export interface RunSegment {
 	id: string;
@@ -33,6 +35,8 @@ export interface RunState {
 	usage: UsagePayload | null;
 	status: StatusPayload | null;
 	workspace: WorkspaceUpdatePayload | null;
+	todo: TodoListPayload | null;
+	goal: GoalUpdatedPayload | null;
 	terminalSnapshot: TerminalSnapshotPayload | null;
 }
 
@@ -50,6 +54,8 @@ export const emptyRunState = (runId: number | null = null, generation = 0): RunS
 	usage: null,
 	status: null,
 	workspace: null,
+	todo: null,
+	goal: null,
 	terminalSnapshot: null,
 });
 
@@ -158,6 +164,8 @@ function normalizeLegacy(event: RunEvent): RunStreamEvent | null {
 		return { ...base, kind: 'run.complete', data: payload as never };
 	case 'agent_failed':
 		return { ...base, kind: 'run.failed', data: payload as never };
+	case 'todo.updated':
+		return { ...base, kind: 'todo.updated', data: payload as unknown as TodoListPayload };
 	default:
 		return null;
 	}
@@ -198,6 +206,14 @@ export function runReducer(state: RunState, action: RunAction): RunState {
 		next.segments = upsertSegment(next.segments, { id: data.segment_id, kind: 'reasoning', text: data.text ?? '' }, incoming.kind === 'reasoning.delta');
 		break;
 	}
+	case 'plan.start':
+	case 'plan.delta':
+	case 'plan.end': {
+		const data = incoming.data;
+		beginActivity(next);
+		next.segments = upsertSegment(next.segments, { id: data.segment_id, kind: 'plan', text: data.text ?? '' }, incoming.kind === 'plan.delta');
+		break;
+	}
 	case 'tool.start':
 	case 'tool.progress':
 	case 'tool.complete':
@@ -230,6 +246,13 @@ export function runReducer(state: RunState, action: RunAction): RunState {
 		break;
 	case 'usage.update':
 		next.usage = incoming.data;
+		break;
+	case 'todo.updated':
+		next.todo = incoming.data;
+		break;
+	case 'goal.updated':
+	case 'goal.cleared':
+		next.goal = incoming.data;
 		break;
 	case 'stream.snapshot':
 		next.terminalSnapshot = incoming.data;

@@ -44,6 +44,24 @@ describe('runReducer', () => {
     expect(state.segments).toContainEqual(expect.objectContaining({ id: 'workspace:1', kind: 'status' }));
   });
 
+  it('stores Todo snapshots from live and persisted Run events', () => {
+    let state = emptyRunState(7, 1);
+    const liveTodo = { items: [{ number: 1, description: 'inspect', status: 'in_progress' }], completed: 0, total: 1, percentage: 0 };
+    state = runReducer(state, { type: 'event', event: event(7, 1, 'todo.updated', liveTodo) });
+    expect(state.todo).toEqual(liveTodo);
+
+    const persistedTodo = { items: [{ number: 1, description: 'inspect', status: 'completed' }], completed: 1, total: 1, percentage: 100 };
+    state = runReducer(state, { type: 'event', event: {
+      id: 2,
+      owner_id: 1,
+      run_id: 7,
+      event_type: 'todo.updated',
+      payload_json: JSON.stringify(persistedTodo),
+      created_at: new Date(0).toISOString(),
+    } });
+    expect(state.todo).toEqual(persistedTodo);
+  });
+
   it('isolates runs and lets the terminal snapshot replace the temporary view', () => {
     let state = emptyRunState(7, 2);
     state = runReducer(state, { type: 'event', event: event(8, 1, 'assistant.delta', { segment_id: 'other', text: 'leak' }) });

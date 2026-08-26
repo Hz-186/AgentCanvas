@@ -4,6 +4,8 @@ import type {
 	AgentTurn,
 	Message,
 	Run,
+	TodoListPayload,
+	ThreadGoal,
 } from './api';
 
 // Agent Run 流式事件，后端 data 是整个 Event 对象。
@@ -25,6 +27,7 @@ export const RUNTIME_EVENT_TYPES = [
   'agent_step',
   'agent_finished',
   'agent_failed',
+  'todo.updated',
   'retrieval_started',
   'retrieval_finished',
   'llm_started',
@@ -88,13 +91,28 @@ export interface ApprovalPayload {
 	call_id: string;
 	tool_name: string;
 	reason: string;
+	is_blocking?: boolean;
 	options?: ApprovalOptionPayload[];
+	questions?: UserInputQuestionPayload[];
+}
+
+export interface UserInputQuestionPayload {
+	id: string;
+	header: string;
+	question: string;
+	options: Array<{ label: string; description: string }>;
 }
 
 export interface UsagePayload {
 	prompt_tokens: number;
 	completion_tokens: number;
 	total_tokens: number;
+}
+
+export interface GoalUpdatedPayload {
+	conversation_id?: number;
+	goal: ThreadGoal | null;
+	message?: string;
 }
 
 export interface WorkspaceUpdatePayload {
@@ -126,8 +144,12 @@ export interface TerminalSnapshotPayload {
 export type RunStreamEvent =
 	| RunStreamEnvelope<'assistant.start' | 'assistant.delta' | 'assistant.end', TextPayload>
 	| RunStreamEnvelope<'reasoning.start' | 'reasoning.delta' | 'reasoning.end', TextPayload>
+	| RunStreamEnvelope<'plan.start' | 'plan.delta' | 'plan.end', TextPayload>
 	| RunStreamEnvelope<'status.update', StatusPayload>
 	| RunStreamEnvelope<'workspace.update', WorkspaceUpdatePayload>
+	| RunStreamEnvelope<'todo.updated', TodoListPayload>
+	| RunStreamEnvelope<'goal.updated', GoalUpdatedPayload>
+	| RunStreamEnvelope<'goal.cleared', GoalUpdatedPayload>
 	| RunStreamEnvelope<'tool.start' | 'tool.progress' | 'tool.complete' | 'tool.error', ToolPayload>
 	| RunStreamEnvelope<'approval.required', ApprovalPayload>
 	| RunStreamEnvelope<'usage.update', UsagePayload>
