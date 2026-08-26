@@ -703,6 +703,7 @@ export interface ApprovalRequest {
   tool_name: string;
   risk_level: string;
   reason: string;
+  is_blocking?: boolean;
   request_json?: unknown;
 	options?: ApprovalOption[];
 	questions?: UserInputQuestion[];

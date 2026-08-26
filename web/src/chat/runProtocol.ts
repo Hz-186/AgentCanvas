@@ -99,6 +99,7 @@ export function parseRunStreamEvent(input: string | unknown): RunStreamEvent {
 	} else if (envelope.kind === 'approval.required') {
 		requireNumber(data, 'request_id');
 		for (const key of ['call_id', 'tool_name', 'reason']) requireString(data, key);
+		if (data.is_blocking != null && typeof data.is_blocking !== 'boolean') throw new RunStreamProtocolError('data.is_blocking must be a boolean');
 		if (data.questions != null && !Array.isArray(data.questions)) throw new RunStreamProtocolError('data.questions must be an array');
   } else if (envelope.kind === 'usage.update') {
     validateUsage(data);

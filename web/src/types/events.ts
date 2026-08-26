@@ -91,6 +91,7 @@ export interface ApprovalPayload {
 	call_id: string;
 	tool_name: string;
 	reason: string;
+	is_blocking?: boolean;
 	options?: ApprovalOptionPayload[];
 	questions?: UserInputQuestionPayload[];
 }
