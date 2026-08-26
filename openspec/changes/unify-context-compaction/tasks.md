@@ -214,7 +214,7 @@ Task 8 (回归验证) ◄── 全部
 
 ---
 
-- [ ] Task 8: 执行跨路径回归与交付验证
+- [x] Task 8: 执行跨路径回归与交付验证
 
 **文件**：
 - 修改（如需）：`internal/runtime/conversationcontext/coordinator_test.go`、`internal/runtime/agent/runner_test.go`、`internal/runtime/agentruntime/*_test.go`、`internal/infrastructure/mysql/agent_runtime_integration_test.go` 中因接口变化失败的既有断言

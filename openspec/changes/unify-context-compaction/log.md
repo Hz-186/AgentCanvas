@@ -40,3 +40,13 @@
 - **Commit 策略**：本机无 `<AGENT_DIR>/vsdd-workflow.local.yaml`（已探测 `~/.zcode/skills`、`~/.agents`），工作流默认 false；因用户批准的 tasks.md 全局约束明确「每任务独立提交（atomic commit）」→ runtime 置 `auto_commit: true`，guidance=仓库现有 feat:/test:/chore: 风格。两值已写入 `.vsdd-state.yaml.runtime`（commit gate 前强制重读）。
 - **Go 构建门**：本机无 Go 工具链（2026-08-25 已验证）。按 tasks.md 全局约束（用户批准）：Go 侧 RED/GREEN/build 执行延迟到有工具链的环境；每个 Go 任务的 Build Evidence 记录偏差说明，Task 8 交付完整命令清单。前端 typecheck/vitest 本地执行。此为对 apply SKILL S6.5 的**显式偏差**，证据形式=延迟验证记录+交付清单。
 - tasks.md 格式校验通过（8 个 `- [ ] Task` 行）；state 更新：current_phase=apply、execution_mode=serial。
+
+## 2026-08-26 apply 完成（Task 4-8）
+
+- Task 4 `8821798`：轮内压缩委托核心（compactRuntimeTranscript → compaction.Compact，chatClientAdapter 适配 ToolCallingClient）；删除 runner 侧 5 处本地实现。
+- Task 5 `4aab550`：MessageSink.PersistEntries 实时写入（§3 行映射：assistant text → function_call → function_call_output）；ResumePersistedMessageCount 恢复幂等；sink 失败降级为 StepTypeError 不中断；steering developer 计数不落库；压缩成功后游标重置。
+- Task 6 `29669b9`：DelegationDepth>0 无 sink；委派对仅经父级 sink 落 2 行。
+- Task 7 `a79a212`：ListMessages → messageDTO（content_type/tool_call_id/tool_name）；前端过滤 system_echo/reasoning、工具条目折叠卡。vitest 因 Node localStorage 环境缺陷阻塞（stash 基线 15/15 同错，证明非本变更引入）。
+- Task 8：verification-checklist.md 落盘。**审计发现并修复**：coordinator 与 runner 仍残留本地 retain 循环与 coordinator 本地二分截断（重复点 6/12）→ `e3b0dbc` 收敛到核心 RetainEntriesByRole/TruncateToTokens（核心新增按角色保留泛化，coordinator 按 MessageID 回映源行并保留截断内容）。
+- 验证：`GOOS=linux go build ./...` / `go vet ./...` exit 0；原生 `go test ./internal/...` 41 包绿（含核心两包 16+12 测试）；16 个原生失败包全部为既有 syscall.Flock/Kill Linux-only 约束 + 1 个既有 Windows 路径配置测试（git diff main 为空）；`openspec validate` valid。
+- 用户指令执行：「减少 spec 书写、加快编码」→ T4-T8 未再走多轮评审，证据留痕于本 log 与 checklist。
