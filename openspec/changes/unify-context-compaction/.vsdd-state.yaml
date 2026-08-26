@@ -1,0 +1,24 @@
+change: unify-context-compaction
+stage: apply
+current_phase: apply
+execution_mode: serial
+base_commit: 25420ec3e7b801d31ec181da6c453c9993bd56cc
+branch: feature/unify-context-compaction
+complexity_mode: standard # 🔴
+exploration_handoff_path: openspec/changes/unify-context-compaction/exploration-handoff.md
+skills_loaded:
+  explore:
+    - brainstorming
+    - vsdd-workflow-router
+    - openspec-explore
+  propose:
+    - vsdd-workflow-router
+    - vsdd-workflow-reverse-sync
+    - vsdd-workflow-design-review
+    - openspec-propose
+    - writing-plans
+codex_reference_commit: d52478c5
+design_review_passed: true # 第2轮复审 PASS（2026-08-26）
+design_review_round: 2
+user_confirm_apply: true # 用户原话（2026-08-26）："开始 propose，然后直接 apply 就可以了"
+created: 2026-08-26
