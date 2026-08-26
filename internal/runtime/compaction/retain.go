@@ -28,7 +28,7 @@ func RetainUserEntries(req Request, entries []Entry) []Entry {
 			continue
 		}
 		if remaining > 0 {
-			entry.Content = truncateToTokens(req, entry.Content, remaining)
+			entry.Content = TruncateToTokens(req, entry.Content, remaining)
 			if strings.TrimSpace(entry.Content) != "" {
 				kept = append(kept, entry)
 			}
@@ -41,8 +41,8 @@ func RetainUserEntries(req Request, entries []Entry) []Entry {
 	return kept
 }
 
-// truncateToTokens binary-searches the longest rune prefix within limit tokens.
-func truncateToTokens(req Request, text string, limit int) string {
+// TruncateToTokens binary-searches the longest rune prefix within limit tokens.
+func TruncateToTokens(req Request, text string, limit int) string {
 	runes := []rune(text)
 	lo, hi := 0, len(runes)
 	for lo < hi {

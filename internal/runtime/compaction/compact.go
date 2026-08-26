@@ -157,7 +157,7 @@ func summarize(ctx context.Context, client llm.ChatClient, req Request, entries 
 		for _, entry := range trimmed {
 			content := renderEntry(entry)
 			if limit := req.perEntryLimit(); limit > 0 && req.tokenCount(content) > limit {
-				content = truncateToTokens(req, content, limit)
+				content = TruncateToTokens(req, content, limit)
 			}
 			messages = append(messages, llm.ChatMessage{Role: entry.Role, Content: content})
 		}

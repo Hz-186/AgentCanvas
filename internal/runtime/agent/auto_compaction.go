@@ -14,15 +14,9 @@ import (
 	"agentcanvas/internal/domain/conversation"
 	"agentcanvas/internal/infrastructure/llm"
 	"agentcanvas/internal/pkg/tokencounter"
+	"agentcanvas/internal/runtime/compaction"
 
 	"gorm.io/gorm"
-)
-
-const (
-	defaultAutoCompactRatio         = .90
-	defaultCompactUserMessageTokens = 20_000
-	defaultCompactTimeout           = 20 * time.Second
-	compactionSummaryPrefix         = conversation.CompactionSummaryPrefix
 )
 
 func autoCompactLimit(req RunRequest) int {
@@ -33,7 +27,7 @@ func autoCompactLimit(req RunRequest) int {
 	if window <= 0 {
 		window = defaultMaxInputTokens
 	}
-	limit := int(float64(window) * defaultAutoCompactRatio)
+	limit := int(float64(window) * compaction.ThresholdRatio)
 	if limit <= 0 {
 		limit = window
 	}
@@ -73,9 +67,9 @@ func runtimeTokenStatus(req RunRequest, baseMessages, transcript []llm.ChatMessa
 	return runtimeTokenStatusResult{Measured: measured, Limit: limit, HardLimit: hard, TokenLimitReached: measured >= limit || total >= hard}
 }
 
-// compactRuntimeTranscript follows Codex's mid-turn compaction shape: the
-// complete history is sent back to the model and the result contains only user
-// messages plus a final user-role summary.
+// compactRuntimeTranscript delegates to the shared compaction core: the
+// complete history (tool entries included) goes to the summarizer and the
+// result contains only retained user messages plus a final user-role summary.
 func (r *Runner) compactRuntimeTranscript(ctx context.Context, req RunRequest, transcript []llm.ChatMessage) ([]llm.ChatMessage, llm.Usage, *CompactionTrace) {
 	history := runtimeCompactionHistory(req, transcript)
 	beforeTokens := modelMessagesTokens(req, history)
@@ -83,29 +77,54 @@ func (r *Runner) compactRuntimeTranscript(ctx context.Context, req RunRequest, t
 	if req.TokenBudgetCompaction {
 		var retained []llm.ChatMessage
 		if req.RetainClientDeveloperMessages {
-			retained = retainMessagesByRole(req, history, conversation.RoleDeveloper, defaultCompactUserMessageTokens)
+			retained = retainMessagesByRole(req, history, conversation.RoleDeveloper, compaction.UserMessageBudgetTokens)
 		}
 		trace.AfterTokens = modelMessagesTokens(req, retained)
 		trace.SavedTokens = maxInt(0, beforeTokens-trace.AfterTokens)
 		return retained, llm.Usage{}, trace
 	}
-	summary, usage, err := r.summarizeContext(ctx, req, history)
+	provider, model := req.CompactionProvider, strings.TrimSpace(req.CompactionModel)
+	if strings.TrimSpace(provider.ProviderType) == "" || model == "" {
+		provider, model = req.Provider, req.Model
+	}
+	coreReq := compaction.Request{
+		SystemPrompt:  req.SystemPrompt,
+		CompactPrompt: req.CompactPrompt,
+		Provider:      provider,
+		Model:         model,
+	}
+	result, err := compaction.Compact(ctx, chatClientAdapter{r.LLM}, coreReq, compaction.FromChat(history))
 	trace.ModelCalled = true
-	trace.Summary = summary
+	trace.Summary = result.Summary
 	if err != nil {
 		trace.Status = "failed"
 		trace.Error = err.Error()
-		return transcript, usage, trace
+		return transcript, result.Usage, trace
 	}
-	if strings.TrimSpace(summary) == "" {
-		summary = "(no summary available)"
-		trace.Summary = summary
+	kept := make([]llm.ChatMessage, 0, len(result.Retained)+1)
+	for _, entry := range result.Retained {
+		kept = append(kept, llm.ChatMessage{Role: entry.Role, Content: entry.Content})
 	}
-	kept := retainUserMessages(req, history, defaultCompactUserMessageTokens)
-	kept = append(kept, llm.ChatMessage{Role: conversation.RoleUser, Content: compactionSummaryPrefix + summary})
+	kept = append(kept, llm.ChatMessage{Role: conversation.RoleUser, Content: compaction.SummaryPrefix + result.Summary})
 	trace.AfterTokens = modelMessagesTokens(req, kept)
 	trace.SavedTokens = maxInt(0, beforeTokens-trace.AfterTokens)
-	return kept, usage, trace
+	return kept, result.Usage, trace
+}
+
+// chatClientAdapter lets the core package drive a ToolCallingClient through
+// the plain Chat interface.
+type chatClientAdapter struct{ client llm.ToolCallingClient }
+
+func (a chatClientAdapter) Chat(ctx context.Context, cfg llm.ChatProviderConfig, req llm.ChatRequest) (*llm.ChatResponse, error) {
+	response, err := a.client.ChatWithTools(ctx, cfg, llm.ToolChatRequest{Model: req.Model, Messages: req.Messages, Temperature: req.Temperature})
+	if err != nil || response == nil {
+		return nil, err
+	}
+	return &llm.ChatResponse{Content: response.Message.Content, Usage: response.Usage}, nil
+}
+
+func (a chatClientAdapter) StreamChat(ctx context.Context, cfg llm.ChatProviderConfig, req llm.ChatRequest, onEvent func(llm.StreamEvent) error) error {
+	return errors.New("streaming unsupported for compaction")
 }
 
 func runtimeCompactionHistory(req RunRequest, transcript []llm.ChatMessage) []llm.ChatMessage {
@@ -116,74 +135,12 @@ func runtimeCompactionHistory(req RunRequest, transcript []llm.ChatMessage) []ll
 	return history
 }
 
-func (r *Runner) summarizeContext(ctx context.Context, req RunRequest, history []llm.ChatMessage) (string, llm.Usage, error) {
-	if len(history) == 0 {
-		return "(no summary available)", llm.Usage{}, nil
-	}
-	provider, model := req.CompactionProvider, strings.TrimSpace(req.CompactionModel)
-	if strings.TrimSpace(provider.ProviderType) == "" || model == "" {
-		provider, model = req.Provider, req.Model
-	}
-	custom := strings.TrimSpace(req.CompactPrompt)
-	prompt := "Summarize the conversation for continuation. Include: progress and decisions; context constraints and preferences; remaining work; key data and references. Return summary text only."
-	if custom != "" {
-		prompt += "\nAdditional guidance:\n" + custom
-	}
-	zero := 0.0
-	usage := llm.Usage{}
-	trimmed := append([]llm.ChatMessage(nil), history...)
-	retries := 0
-	for {
-		messages := make([]llm.ChatMessage, 0, len(trimmed)+2)
-		system := strings.TrimSpace(req.SystemPrompt)
-		if system == "" {
-			system = "You are a context compaction engine."
-		}
-		messages = append(messages, llm.ChatMessage{Role: conversation.RoleSystem, Content: system})
-		messages = append(messages, trimmed...)
-		messages = append(messages, llm.ChatMessage{Role: conversation.RoleUser, Content: prompt})
-		callCtx, cancel := context.WithTimeout(ctx, defaultCompactTimeout)
-		response, err := r.LLM.ChatWithTools(callCtx, provider, llm.ToolChatRequest{Model: model, Messages: messages, Temperature: &zero})
-		cancel()
-		if response != nil {
-			usage = addUsage(usage, response.Usage)
-		}
-		if err == nil {
-			if response == nil || strings.TrimSpace(response.Message.Content) == "" {
-				return "(no summary available)", usage, nil
-			}
-			return strings.TrimSpace(response.Message.Content), usage, nil
-		}
-		if errors.Is(err, llm.ErrContextWindowExceeded) {
-			if len(trimmed) <= 1 {
-				return "", usage, err
-			}
-			trimmed, retries = trimmed[1:], 0
-			continue
-		}
-		if retries < 2 {
-			select {
-			case <-ctx.Done():
-				return "", usage, ctx.Err()
-			case <-time.After(time.Duration(1<<retries) * 10 * time.Millisecond):
-			}
-			retries++
-			continue
-		}
-		return "", usage, err
-	}
-}
-
-func retainUserMessages(req RunRequest, history []llm.ChatMessage, budget int) []llm.ChatMessage {
-	return retainMessagesByRole(req, history, conversation.RoleUser, budget)
-}
-
 func retainMessagesByRole(req RunRequest, history []llm.ChatMessage, role string, budget int) []llm.ChatMessage {
 	kept := make([]llm.ChatMessage, 0, len(history))
 	remaining := budget
 	for i := len(history) - 1; i >= 0; i-- {
 		message := history[i]
-		if message.Role != role || strings.HasPrefix(strings.TrimSpace(message.Content), compactionSummaryPrefix) {
+		if message.Role != role || strings.HasPrefix(strings.TrimSpace(message.Content), compaction.SummaryPrefix) {
 			continue
 		}
 		tokens := modelTextTokens(req, message.Content)
@@ -193,7 +150,7 @@ func retainMessagesByRole(req RunRequest, history []llm.ChatMessage, role string
 			continue
 		}
 		if remaining > 0 {
-			message.Content = truncateMessageTokens(req, message.Content, remaining)
+			message.Content = compaction.TruncateToTokens(compaction.Request{Provider: req.Provider, Model: req.Model}, message.Content, remaining)
 			if strings.TrimSpace(message.Content) != "" {
 				kept = append(kept, message)
 			}
@@ -204,20 +161,6 @@ func retainMessagesByRole(req RunRequest, history []llm.ChatMessage, role string
 		kept[i], kept[j] = kept[j], kept[i]
 	}
 	return kept
-}
-
-func truncateMessageTokens(req RunRequest, text string, limit int) string {
-	runes := []rune(text)
-	lo, hi := 0, len(runes)
-	for lo < hi {
-		mid := (lo + hi + 1) / 2
-		if modelTextTokens(req, string(runes[:mid])) <= limit {
-			lo = mid
-		} else {
-			hi = mid - 1
-		}
-	}
-	return string(runes[:lo])
 }
 
 func hasUserContent(messages []llm.ChatMessage, content string) bool {
@@ -237,7 +180,7 @@ func baseMessagesAfterTokenBudget(req RunRequest, messages []llm.ChatMessage, re
 		}
 	}
 	if retainDeveloper {
-		kept = append(kept, retainMessagesByRole(req, messages, conversation.RoleDeveloper, defaultCompactUserMessageTokens)...)
+		kept = append(kept, retainMessagesByRole(req, messages, conversation.RoleDeveloper, compaction.UserMessageBudgetTokens)...)
 	}
 	return kept
 }
@@ -256,7 +199,7 @@ func (r *Runner) persistRuntimeCompaction(ctx context.Context, req RunRequest, t
 		parentID, parentVersion = &current.ID, current.SnapshotVersion
 	}
 	token := fmt.Sprintf("runtime-%d-%d", req.RunID, time.Now().UnixNano())
-	claimed, err := r.Snapshots.ClaimSnapshot(ctx, req.OwnerID, *req.ConversationID, parentID, parentVersion, token, time.Now().Add(defaultCompactTimeout+5*time.Second))
+	claimed, err := r.Snapshots.ClaimSnapshot(ctx, req.OwnerID, *req.ConversationID, parentID, parentVersion, token, time.Now().Add(compaction.SummarizeTimeout+5*time.Second))
 	if err != nil || !claimed {
 		return err
 	}
@@ -282,7 +225,7 @@ func (r *Runner) persistRuntimeCompaction(ctx context.Context, req RunRequest, t
 		SummaryTokens: modelTextTokens(req, trace.Summary), CompletedAt: &now,
 		ContextWindowTokens: req.ContextWindowTokens,
 	}
-	if !req.TokenBudgetCompaction && len(kept) > 0 && !strings.HasPrefix(kept[0].Content, compactionSummaryPrefix) {
+	if !req.TokenBudgetCompaction && len(kept) > 0 && !strings.HasPrefix(kept[0].Content, compaction.SummaryPrefix) {
 		item.FirstMessageContent = kept[0].Content
 	}
 	if err := r.Snapshots.CompleteSnapshot(ctx, item, parentID, parentVersion, token); err != nil {

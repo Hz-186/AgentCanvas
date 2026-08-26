@@ -12,6 +12,7 @@ import (
 	"agentcanvas/internal/domain/conversation"
 	reflectiondomain "agentcanvas/internal/domain/reflection"
 	"agentcanvas/internal/infrastructure/llm"
+	"agentcanvas/internal/runtime/compaction"
 	"agentcanvas/internal/runtime/harness/rules"
 	"agentcanvas/internal/runtime/toolruntime"
 )
@@ -462,9 +463,12 @@ func TestRuntimeCompactionUsesConfiguredAuxiliaryModelWithoutFallback(t *testing
 	runner := NewRunner(client)
 	req := RunRequest{Provider: llm.ChatProviderConfig{ProviderType: "main", BaseURL: "main"}, Model: "main-model",
 		CompactionProvider: llm.ChatProviderConfig{ProviderType: "aux", BaseURL: "aux"}, CompactionModel: "aux-model", ModelAutoCompactTokenLimit: 1000}
-	summary, _, err := runner.summarizeContext(context.Background(), req, []llm.ChatMessage{{Role: conversation.RoleTool, Content: "result"}})
-	if err != nil || summary == "" || len(client.models) != 2 || client.models[0] != "aux-model" || client.models[1] != "aux-model" {
-		t.Fatalf("auxiliary model should be retried without provider fallback: summary=%q providers=%+v models=%+v err=%v", summary, client.providers, client.models, err)
+	compacted, _, trace := runner.compactRuntimeTranscript(context.Background(), req, []llm.ChatMessage{{Role: conversation.RoleTool, Content: "result"}})
+	if trace.Status != "completed" || trace.Summary == "" || len(client.models) != 2 || client.models[0] != "aux-model" || client.models[1] != "aux-model" {
+		t.Fatalf("auxiliary model should be retried without provider fallback: summary=%q status=%s providers=%+v models=%+v", trace.Summary, trace.Status, client.providers, client.models)
+	}
+	if len(compacted) != 1 || compacted[0].Role != conversation.RoleUser || !strings.HasPrefix(compacted[0].Content, compaction.SummaryPrefix) {
+		t.Fatalf("compacted transcript must be a single user-role summary: %+v", compacted)
 	}
 }
 
@@ -473,17 +477,17 @@ func TestRuntimeCompactionAcceptsUnstructuredSummary(t *testing.T) {
 	runner := NewRunner(client)
 	req := RunRequest{Provider: llm.ChatProviderConfig{ProviderType: "main", BaseURL: "main"}, Model: "main-model",
 		CompactionProvider: llm.ChatProviderConfig{ProviderType: "aux", BaseURL: "aux"}, CompactionModel: "aux-model", ModelAutoCompactTokenLimit: 1000}
-	summary, usage, err := runner.summarizeContext(context.Background(), req, []llm.ChatMessage{{Role: conversation.RoleTool, Content: "result"}})
-	if err != nil || summary != "invalid summary" || client.calls != 1 || usage.TotalTokens != 1 || client.models[0] != "aux-model" {
-		t.Fatalf("summary structure must not be validated: summary=%q usage=%+v calls=%d models=%v err=%v", summary, usage, client.calls, client.models, err)
+	_, usage, trace := runner.compactRuntimeTranscript(context.Background(), req, []llm.ChatMessage{{Role: conversation.RoleTool, Content: "result"}})
+	if trace.Status != "completed" || trace.Summary != "invalid summary" || client.calls != 1 || usage.TotalTokens != 1 || client.models[0] != "aux-model" {
+		t.Fatalf("summary structure must not be validated: summary=%q status=%s usage=%+v calls=%d models=%v", trace.Summary, trace.Status, usage, client.calls, client.models)
 	}
 }
 
 func TestRuntimeCompactionStopsRetryingWhenOnlyOneInputRemains(t *testing.T) {
 	client := &fakeToolClient{errs: []error{llm.ErrContextWindowExceeded}}
-	_, _, err := NewRunner(client).summarizeContext(context.Background(), RunRequest{Model: "m"}, []llm.ChatMessage{{Role: conversation.RoleUser, Content: "only"}})
-	if !errors.Is(err, llm.ErrContextWindowExceeded) || len(client.requests) != 1 {
-		t.Fatalf("single oversized input must fail once: calls=%d err=%v", len(client.requests), err)
+	compacted, _, trace := NewRunner(client).compactRuntimeTranscript(context.Background(), RunRequest{Model: "m"}, []llm.ChatMessage{{Role: conversation.RoleUser, Content: "only"}})
+	if trace.Status != "failed" || !strings.Contains(trace.Error, "context window exceeded") || len(client.requests) != 1 || len(compacted) != 1 || compacted[0].Content != "only" {
+		t.Fatalf("single oversized input must fail once and keep the transcript: calls=%d status=%s err=%q transcript=%+v", len(client.requests), trace.Status, trace.Error, compacted)
 	}
 }
 
@@ -526,7 +530,7 @@ func TestTokenBudgetCompactionSkipsModelAndRetainsDeveloper(t *testing.T) {
 	developer := strings.Repeat("client rule ", 50000)
 	req := RunRequest{Provider: llm.ChatProviderConfig{ProviderType: "openai_compatible"}, Model: "m", Task: "task", TokenBudgetCompaction: true, RetainClientDeveloperMessages: true}
 	compacted, usage, trace := runner.compactRuntimeTranscript(context.Background(), req, []llm.ChatMessage{{Role: conversation.RoleDeveloper, Content: developer}, {Role: conversation.RoleAssistant, Content: "discard"}})
-	if len(client.requests) != 0 || usage.TotalTokens != 0 || trace == nil || trace.ModelCalled || len(compacted) != 1 || compacted[0].Role != conversation.RoleDeveloper || modelTextTokens(req, compacted[0].Content) > defaultCompactUserMessageTokens || len(compacted[0].Content) >= len(developer) {
+	if len(client.requests) != 0 || usage.TotalTokens != 0 || trace == nil || trace.ModelCalled || len(compacted) != 1 || compacted[0].Role != conversation.RoleDeveloper || modelTextTokens(req, compacted[0].Content) > compaction.UserMessageBudgetTokens || len(compacted[0].Content) >= len(developer) {
 		t.Fatalf("token-budget compaction must skip summarization: calls=%d trace=%+v messages=%+v", len(client.requests), trace, compacted)
 	}
 }
@@ -538,7 +542,7 @@ func TestTokenBudgetBaseMessagesLimitRetainedDeveloper(t *testing.T) {
 		{Role: conversation.RoleSystem, Content: "system"},
 		{Role: conversation.RoleDeveloper, Content: developer},
 	}, true)
-	if len(kept) != 2 || modelTextTokens(req, kept[1].Content) > defaultCompactUserMessageTokens || len(kept[1].Content) >= len(developer) {
+	if len(kept) != 2 || modelTextTokens(req, kept[1].Content) > compaction.UserMessageBudgetTokens || len(kept[1].Content) >= len(developer) {
 		t.Fatalf("retained developer messages must share the token-budget limit: messages=%d tokens=%d chars=%d", len(kept), modelTextTokens(req, kept[1].Content), len(kept[1].Content))
 	}
 }
