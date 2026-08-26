@@ -34,3 +34,6 @@ study
 test
 .playwright-cli/.playwright-cli
 output/playwright/
+
+# subagent-driven-development scratch workspace
+.superpowers/
