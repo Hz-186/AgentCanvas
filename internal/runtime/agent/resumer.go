@@ -8,6 +8,7 @@ import (
 	"agentcanvas/internal/domain/conversation"
 	"agentcanvas/internal/infrastructure/llm"
 	"agentcanvas/internal/runtime/harness/rules"
+	"agentcanvas/internal/runtime/toolruntime"
 )
 
 type ResumeRequest struct {
@@ -40,8 +41,26 @@ func BuildResumeRequest(req ResumeRequest) (*RunRequest, error) {
 			return nil, fmt.Errorf("unknown interaction option %q", choiceID)
 		}
 	}
+	if req.Approved && req.Checkpoint.Interaction != nil && req.Checkpoint.Interaction.Kind == "request_user_input" && req.Checkpoint.PendingToolCall != nil {
+		answers := map[string]string{}
+		if strings.HasPrefix(req.RejectionNote, "answers:") {
+			if err := json.Unmarshal([]byte(strings.TrimPrefix(req.RejectionNote, "answers:")), &answers); err != nil {
+				return nil, fmt.Errorf("invalid request_user_input answers: %w", err)
+			}
+		}
+		if err := ValidateUserInputAnswers(req.Checkpoint.Interaction.Questions, answers); err != nil {
+			return nil, err
+		}
+		payload, _ := json.Marshal(map[string]any{"answers": answers})
+		messages = append(messages, llm.ChatMessage{Role: conversation.RoleTool, ToolCallID: req.Checkpoint.PendingToolCall.ID, Content: string(payload)})
+		if req.Checkpoint.SnapshotVersion >= 2 {
+			transcript = append(transcript, messages[len(messages)-1])
+		}
+	}
 	if req.Approved && req.Checkpoint.PendingToolCall != nil {
-		approvedToolCallIDs = appendUniqueString(approvedToolCallIDs, req.Checkpoint.PendingToolCall.ID)
+		if req.Checkpoint.Interaction == nil || req.Checkpoint.Interaction.Kind != "request_user_input" {
+			approvedToolCallIDs = appendUniqueString(approvedToolCallIDs, req.Checkpoint.PendingToolCall.ID)
+		}
 	}
 	if value, ok := req.Checkpoint.Metadata["iteration"].(float64); ok {
 		iteration = int(value)
@@ -78,31 +97,60 @@ func BuildResumeRequest(req ResumeRequest) (*RunRequest, error) {
 	}
 	reflectionPolicy := req.ReflectionPolicy
 	recalledReflectionIDs := append([]int64(nil), req.RecalledReflectionIDs...)
-	plan := req.Plan
 	if req.Checkpoint.ReflectionPolicy.RuntimeMode != "" {
 		reflectionPolicy = req.Checkpoint.ReflectionPolicy
 		recalledReflectionIDs = append([]int64(nil), req.Checkpoint.RecalledReflectionIDs...)
 	}
-	if req.Checkpoint.Plan != nil {
-		cloned := clonePlan(req.Checkpoint.Plan)
-		plan = &cloned
-	}
 	return &RunRequest{
-		OwnerID: req.OwnerID, AgentID: req.AgentID, AgentReleaseID: req.AgentReleaseID, RunID: req.RunID,
+		OwnerID: req.OwnerID, AgentID: req.AgentID, RunID: req.RunID, InitialUserMessageID: req.InitialUserMessageID,
 		DelegationDepth: req.DelegationDepth, ConversationID: req.ConversationID, ProjectID: req.ProjectID,
-		Provider: req.Provider, Model: req.Model, Mode: req.Mode, Plan: plan, SystemPrompt: req.SystemPrompt, Task: req.Task,
+		Provider: req.Provider, Model: req.Model, CompactionProvider: req.CompactionProvider, CompactionModel: req.CompactionModel, CompactionProviderID: req.CompactionProviderID,
+		Mode: req.Mode, SystemPrompt: req.SystemPrompt, Task: req.Task,
 		ReflectionEnabled: req.ReflectionEnabled, ReflectionPolicy: reflectionPolicy, RecalledReflectionIDs: recalledReflectionIDs,
 		Temperature: req.Temperature, MaxIterations: req.MaxIterations, MaxToolCalls: req.MaxToolCalls,
 		MaxExecutionTimeMS: req.MaxExecutionTimeMS, MaxParallelTools: req.MaxParallelTools, MaxInputChars: req.MaxInputChars,
 		MaxInputTokens: req.MaxInputTokens, ContextWindowTokens: req.ContextWindowTokens, ReservedOutputTokens: req.ReservedOutputTokens,
 		ContextSafetyMarginTokens: req.ContextSafetyMarginTokens, ModelAutoCompactTokenLimit: req.ModelAutoCompactTokenLimit,
-		CompactPrompt: req.CompactPrompt,
+		ModelAutoCompactTokenLimitScope: req.ModelAutoCompactTokenLimitScope, CompactPrompt: req.CompactPrompt,
+		ManualCompaction: req.ManualCompaction, TokenBudgetCompaction: req.TokenBudgetCompaction, RetainClientDeveloperMessages: req.RetainClientDeveloperMessages,
 		MaxRuleTokens: req.MaxRuleTokens, RuleTags: append([]string(nil), req.RuleTags...), RuleRiskLevel: req.RuleRiskLevel,
 		RuleHash: firstNonEmpty(req.Checkpoint.RuleHash, req.RuleHash), Rules: ruleItems, RuleTrace: req.RuleTrace,
-		ContextBlocks: req.ContextBlocks, ToolPolicy: req.ToolPolicy, ToolHookChain: req.ToolHookChain, Tools: req.Tools,
+		ContextBlocks: req.ContextBlocks, ToolPolicy: req.ToolPolicy, ToolHookChain: req.ToolHookChain, Tools: req.Tools, GoalRepository: req.GoalRepository, GoalTokenBudgetCeiling: req.GoalTokenBudgetCeiling, DefaultModeRequestUserInput: req.DefaultModeRequestUserInput, SteeringProvider: req.SteeringProvider,
 		ResumeMessages: messages, ResumeBaseMessages: baseMessages, ResumeTranscript: transcript, ResumeSteps: resumeSteps,
 		ResumeContext: req.Checkpoint.Context, ResumeIteration: iteration, ResumeToolCalls: toolCalls, ResumeApprovedToolCallIDs: approvedToolCallIDs,
 	}, nil
+}
+
+func ValidateUserInputAnswers(questions []toolruntime.UserInputQuestion, answers map[string]string) error {
+	if len(questions) == 0 {
+		return fmt.Errorf("request_user_input checkpoint has no questions")
+	}
+	allowed := make(map[string]map[string]struct{}, len(questions))
+	for _, question := range questions {
+		if strings.TrimSpace(question.ID) == "" {
+			return fmt.Errorf("request_user_input question id is required")
+		}
+		options := make(map[string]struct{}, len(question.Options))
+		for _, option := range question.Options {
+			options[option.Label] = struct{}{}
+		}
+		allowed[question.ID] = options
+		answer, ok := answers[question.ID]
+		if !ok || strings.TrimSpace(answer) == "" {
+			return fmt.Errorf("missing answer for request_user_input question %q", question.ID)
+		}
+		if len(options) > 0 {
+			if _, ok := options[answer]; !ok && !(question.IsOther && answer != "__other__") {
+				return fmt.Errorf("invalid answer for request_user_input question %q", question.ID)
+			}
+		}
+	}
+	for id := range answers {
+		if _, ok := allowed[id]; !ok {
+			return fmt.Errorf("unknown request_user_input question %q", id)
+		}
+	}
+	return nil
 }
 
 func firstNonEmpty(values ...string) string {

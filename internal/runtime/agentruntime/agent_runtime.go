@@ -19,15 +19,15 @@ type Runtime interface {
 	Resume(ctx context.Context, req ResumeRequest, emit EventEmitter) (*RunResult, error)
 }
 
-// Definition is the normalized runtime form of an immutable Agent release.
+// Definition is the normalized runtime form of an immutable Run snapshot.
 type Definition agentRuntimeConfig
 
 type RunIdentity struct {
-	OwnerID        int64
-	AgentID        int64
-	AgentReleaseID int64
-	RunID          int64
-	ParentRunID    *int64
+	OwnerID       int64
+	AgentID       int64
+	RunID         int64
+	UserMessageID int64
+	ParentRunID   *int64
 }
 
 type ConversationContext struct {
@@ -37,7 +37,8 @@ type ConversationContext struct {
 }
 
 type ExecutionTask struct {
-	Task string
+	Task             string
+	ManualCompaction bool
 }
 
 type RuntimeResources struct {
@@ -65,6 +66,7 @@ type RunRequest struct {
 	RuntimePolicy
 	WorkspaceContext
 	PersistenceHooks
+	Steering func() []string
 }
 
 type ResumeRequest struct {
@@ -135,12 +137,17 @@ func DecodeDefinition(raw json.RawMessage) (Definition, error) {
 	}
 	if len(release.Rules) > 0 && string(release.Rules) != "null" {
 		if err := json.Unmarshal(release.Rules, &cfg.Rules); err != nil {
-			return Definition{}, fmt.Errorf("decode agent release rules: %w", err)
+			return Definition{}, fmt.Errorf("decode Agent rules: %w", err)
 		}
 		if _, err := rules.ValidateRules(cfg.Rules); err != nil {
-			return Definition{}, fmt.Errorf("validate agent release rules: %w", err)
+			return Definition{}, fmt.Errorf("validate Agent rules: %w", err)
 		}
 	}
+	mode, modeErr := normalizeRuntimeMode(cfg.Mode)
+	if modeErr != nil {
+		return Definition{}, modeErr
+	}
+	cfg.Mode = mode
 	return Definition(cfg), nil
 }
 
@@ -157,17 +164,18 @@ func (r *AgentRuntime) Resume(ctx context.Context, req ResumeRequest, emit Event
 func (r *AgentRuntime) run(ctx context.Context, req RunRequest, emit EventEmitter, resume *AgentResumeOptions) (*RunResult, error) {
 	conversationID := req.ConversationID
 	rc := &RunContext{
-		OwnerID: req.OwnerID, AgentID: req.AgentID, AgentReleaseID: req.AgentReleaseID,
-		RuleHash: req.RuleHash, RunID: req.RunID, ParentRunID: req.ParentRunID, DelegationDepth: req.DelegationDepth,
+		OwnerID: req.OwnerID, AgentID: req.AgentID,
+		UserMessageID: req.UserMessageID,
+		RuleHash:      req.RuleHash, RunID: req.RunID, ParentRunID: req.ParentRunID, DelegationDepth: req.DelegationDepth,
 		ConversationID: conversationID, ProjectID: req.ProjectID, Input: map[string]any{"query": req.Task},
 		Workspace: req.Workspace,
+		Steering:  req.Steering,
 		Events:    emit, AgentSteps: req.StepRecorder,
 	}
 	cfg := agentRuntimeConfig(req.Definition)
 	cfg.RuleHash = req.RuleHash
 	cfg.TaskTemplate = req.Task
-	// Child work is model-authored through run_subagent.
-	cfg.AllowSubagents = true
+	cfg.ManualCompaction = req.ManualCompaction
 	cfg.AdditionalContextBlocks = append([]runtimeagent.ContextBlock(nil), req.ContextBlocks...)
 	output, err := r.core.runAgent(ctx, rc, RunInput{"query": req.Task}, cfg, resume)
 	if err != nil {

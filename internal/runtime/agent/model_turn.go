@@ -45,6 +45,15 @@ func (r *Runner) executeModelTurn(ctx context.Context, cfg llm.ChatProviderConfi
 			}
 			return nil, ErrEmptyModelResponse
 		}
+		response.Message.Content, response.ProposedPlan = llm.NormalizeProposedPlan(response.Message.Content)
+		if response.Usage.TotalTokens == 0 && response.Usage.PromptTokens == 0 && response.Usage.CompletionTokens == 0 && state.hasUsage {
+			response.Usage = state.lastUsage
+		}
+		if response.Usage.PromptTokens != 0 || response.Usage.CompletionTokens != 0 || response.Usage.TotalTokens != 0 {
+			if err := r.emitModelEvent(ctx, llm.ModelStreamEvent{Kind: llm.ModelUsage, Usage: response.Usage}); err != nil {
+				return nil, err
+			}
+		}
 		if state.terminal == "" {
 			if err := state.forward(ctx, r, llm.ModelStreamEvent{Kind: llm.ModelDone}); err != nil {
 				return nil, err
@@ -65,6 +74,7 @@ func (r *Runner) executeNonStreamingModelTurn(ctx context.Context, cfg llm.ChatP
 		_ = r.emitModelEvent(ctx, llm.ModelStreamEvent{Kind: llm.ModelError, Err: ErrEmptyModelResponse})
 		return nil, ErrEmptyModelResponse
 	}
+	response.Message.Content, response.ProposedPlan = llm.NormalizeProposedPlan(response.Message.Content)
 	if err := r.emitAccumulatedModelEvents(ctx, response); err != nil {
 		return nil, err
 	}
@@ -76,6 +86,10 @@ type modelTurnStreamState struct {
 	terminal    llm.ModelStreamKind
 	terminalErr error
 	emitterErr  error
+	lastUsage   llm.Usage
+	hasUsage    bool
+	parser      llm.ProposedPlanStreamParser
+	textOpen    bool
 }
 
 func (s *modelTurnStreamState) forward(ctx context.Context, runner *Runner, event llm.ModelStreamEvent) error {
@@ -87,7 +101,43 @@ func (s *modelTurnStreamState) forward(ctx context.Context, runner *Runner, even
 		}
 		return fmt.Errorf("model stream emitted %s after terminal event %s", event.Kind, s.terminal)
 	}
-	if err := runner.emitModelEvent(ctx, event); err != nil {
+	var err error
+	switch event.Kind {
+	case llm.ModelUsage:
+		s.lastUsage, s.hasUsage = event.Usage, true
+		err = nil
+	case llm.ModelTextStart:
+		// Delay the visible text start until a non-plan line is available.
+	case llm.ModelTextDelta:
+		for _, parsed := range s.parser.Push(event.Text) {
+			if parsed.Kind == llm.ModelTextDelta {
+				if !s.textOpen {
+					err = runner.emitModelEvent(ctx, llm.ModelStreamEvent{Kind: llm.ModelTextStart})
+					s.textOpen = true
+				}
+				if err == nil {
+					err = runner.emitModelEvent(ctx, parsed)
+				}
+			} else if err == nil {
+				err = runner.emitModelEvent(ctx, parsed)
+			}
+			if err != nil {
+				break
+			}
+		}
+	case llm.ModelTextEnd:
+		err = s.emitParserFinish(ctx, runner)
+	case llm.ModelDone:
+		err = s.emitParserFinish(ctx, runner)
+		if err == nil {
+			err = runner.emitModelEvent(ctx, event)
+		}
+	case llm.ModelError:
+		err = runner.emitModelEvent(ctx, event)
+	default:
+		err = runner.emitModelEvent(ctx, event)
+	}
+	if err != nil {
 		s.emitterErr = err
 		return err
 	}
@@ -98,6 +148,31 @@ func (s *modelTurnStreamState) forward(ctx context.Context, runner *Runner, even
 	case llm.ModelError:
 		s.terminal = llm.ModelError
 		s.terminalErr = event.Err
+	}
+	return nil
+}
+
+func (s *modelTurnStreamState) emitParserFinish(ctx context.Context, runner *Runner) error {
+	for _, parsed := range s.parser.Finish() {
+		if parsed.Kind == llm.ModelTextDelta {
+			if !s.textOpen {
+				if err := runner.emitModelEvent(ctx, llm.ModelStreamEvent{Kind: llm.ModelTextStart}); err != nil {
+					return err
+				}
+				s.textOpen = true
+			}
+			if err := runner.emitModelEvent(ctx, parsed); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := runner.emitModelEvent(ctx, parsed); err != nil {
+			return err
+		}
+	}
+	if s.textOpen {
+		s.textOpen = false
+		return runner.emitModelEvent(ctx, llm.ModelStreamEvent{Kind: llm.ModelTextEnd})
 	}
 	return nil
 }
@@ -116,14 +191,35 @@ func (r *Runner) emitAccumulatedModelEvents(ctx context.Context, response *llm.T
 	if response == nil {
 		return ErrEmptyModelResponse
 	}
-	if response.Message.Content != "" {
-		for _, event := range []llm.ModelStreamEvent{
-			{Kind: llm.ModelTextStart},
-			{Kind: llm.ModelTextDelta, Text: response.Message.Content},
-			{Kind: llm.ModelTextEnd},
-		} {
+	if response.Message.Content != "" || response.ProposedPlan != "" {
+		parser := &llm.ProposedPlanStreamParser{}
+		events := append(parser.Push(response.Message.Content), parser.Finish()...)
+		textOpen := false
+		for _, event := range events {
+			if event.Kind == llm.ModelTextDelta && !textOpen {
+				if err := r.emitModelEvent(ctx, llm.ModelStreamEvent{Kind: llm.ModelTextStart}); err != nil {
+					return err
+				}
+				textOpen = true
+			}
 			if err := r.emitModelEvent(ctx, event); err != nil {
 				return err
+			}
+		}
+		if textOpen {
+			if err := r.emitModelEvent(ctx, llm.ModelStreamEvent{Kind: llm.ModelTextEnd}); err != nil {
+				return err
+			}
+		}
+		if response.ProposedPlan != "" {
+			for _, event := range []llm.ModelStreamEvent{
+				{Kind: llm.ModelProposedPlanStart},
+				{Kind: llm.ModelProposedPlanDelta, Text: response.ProposedPlan},
+				{Kind: llm.ModelProposedPlanEnd},
+			} {
+				if err := r.emitModelEvent(ctx, event); err != nil {
+					return err
+				}
 			}
 		}
 	}

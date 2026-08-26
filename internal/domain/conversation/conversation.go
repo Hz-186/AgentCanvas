@@ -1,18 +1,35 @@
 package conversation
 
 import (
+	"fmt"
+	"strings"
 	"time"
 
 	"agentcanvas/internal/domain"
 )
 
-const ()
+const (
+	ModeDefault = "default"
+	ModePlan    = "plan"
+)
+
+// NormalizeMode keeps legacy aliases at the persistence/API boundary while
+// making every newly produced collaboration-mode value canonical.
+func NormalizeMode(mode string) (string, error) {
+	switch strings.TrimSpace(mode) {
+	case "", ModeDefault, "goal", "react":
+		return ModeDefault, nil
+	case ModePlan, "plan_execute":
+		return ModePlan, nil
+	default:
+		return "", fmt.Errorf("mode must be default or plan")
+	}
+}
 
 type Conversation struct {
 	domain.SoftDeleteModel
 	Title                string     `json:"title" gorm:"column:title"`
 	AgentID              *int64     `json:"agent_id,omitempty" gorm:"column:agent_id"`
-	AgentReleaseID       *int64     `json:"agent_release_id,omitempty" gorm:"column:agent_release_id"`
 	ProjectID            *int64     `json:"project_id,omitempty" gorm:"column:project_id"`
 	WorkspaceMode        string     `json:"workspace_mode" gorm:"column:workspace_mode"`
 	AgentMode            string     `json:"agent_mode,omitempty" gorm:"column:agent_mode"`

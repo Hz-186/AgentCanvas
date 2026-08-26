@@ -114,12 +114,6 @@ func calculateRuleBudget(state RulePlanningState) RuleBudget {
 	return budget
 }
 
-func transcriptBudget(state RulePlanningState) int {
-	state.Transcript = nil
-	budget := calculateRuleBudget(state)
-	return budget.InputBudgetTokens - budget.FixedTokens - budget.ToolSchemaTokens - budget.SafetyMarginTokens
-}
-
 func estimateMessagesTokens(messages []llm.ChatMessage) int {
 	total := 0
 	for _, message := range messages {

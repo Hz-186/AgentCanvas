@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"agentcanvas/internal/domain"
+	"agentcanvas/internal/domain/conversation"
 )
 
 const (
@@ -26,8 +27,7 @@ const (
 	TurnStatusRetryWait    = "retry_wait"
 )
 
-// Definition is the complete, transport-independent configuration used by an
-// Agent release. Resource references live here so a release stays reproducible.
+// Definition is the complete, transport-independent Agent configuration.
 type ModelConfig struct {
 	ProviderID  int64    `json:"provider_id"`
 	Model       string   `json:"model"`
@@ -45,11 +45,10 @@ type PromptConfig struct {
 }
 
 type ToolConfig struct {
-	ToolPackIDs     []int64         `json:"tool_pack_ids,omitempty"`
-	ToolIDs         []int64         `json:"tool_ids,omitempty"`
-	PythonToolNames []string        `json:"python_tool_names,omitempty"`
-	MCPServerIDs    []int64         `json:"mcp_server_ids,omitempty"`
-	ToolPolicyJSON  json.RawMessage `json:"tool_policy_json,omitempty"`
+	ToolPackIDs    []int64         `json:"tool_pack_ids,omitempty"`
+	ToolIDs        []int64         `json:"tool_ids,omitempty"`
+	MCPServerIDs   []int64         `json:"mcp_server_ids,omitempty"`
+	ToolPolicyJSON json.RawMessage `json:"tool_policy_json,omitempty"`
 }
 
 type ResourceRefs struct {
@@ -96,9 +95,9 @@ type Definition struct {
 	ExecutionLimits
 }
 
-// definitionFlat is the canonical release wire format. Its field order is
+// definitionFlat is the canonical definition wire format. Its field order is
 // intentionally identical to the historical Definition layout because the
-// release checksum is computed from these bytes.
+// definition checksum is computed from these bytes.
 type definitionFlat struct {
 	ProviderID                int64           `json:"provider_id"`
 	Model                     string          `json:"model"`
@@ -110,7 +109,6 @@ type definitionFlat struct {
 	Temperature               *float64        `json:"temperature,omitempty"`
 	ToolPackIDs               []int64         `json:"tool_pack_ids,omitempty"`
 	ToolIDs                   []int64         `json:"tool_ids,omitempty"`
-	PythonToolNames           []string        `json:"python_tool_names,omitempty"`
 	SkillIDs                  []int64         `json:"skill_ids,omitempty"`
 	SkillLoadingMode          string          `json:"skill_loading_mode,omitempty"`
 	KnowledgeBaseIDs          []int64         `json:"knowledge_base_ids,omitempty"`
@@ -180,13 +178,14 @@ func (d *Definition) UnmarshalJSON(data []byte) error {
 	if nested.ExecutionLimits != nil {
 		d.ExecutionLimits = *nested.ExecutionLimits
 	}
+	*d = d.Normalize()
 	return nil
 }
 
 func (d Definition) flat() definitionFlat {
 	return definitionFlat{
 		ProviderID: d.ProviderID, Model: d.Model, SystemPrompt: d.SystemPrompt, Role: d.Role, Goal: d.Goal, Backstory: d.Backstory,
-		Mode: d.Mode, Temperature: d.Temperature, ToolPackIDs: d.ToolPackIDs, ToolIDs: d.ToolIDs, PythonToolNames: d.PythonToolNames,
+		Mode: d.Mode, Temperature: d.Temperature, ToolPackIDs: d.ToolPackIDs, ToolIDs: d.ToolIDs,
 		SkillIDs: d.SkillIDs, SkillLoadingMode: d.SkillLoadingMode, KnowledgeBaseIDs: d.KnowledgeBaseIDs, KnowledgeTopK: d.KnowledgeTopK,
 		KnowledgeMode: d.KnowledgeMode, MCPServerIDs: d.MCPServerIDs, AllowSubagents: d.AllowSubagents,
 		MaxParallelSubAgents: d.MaxParallelSubAgents, MaxSubagentDepth: d.MaxSubagentDepth, MemoryEnabled: d.MemoryEnabled,
@@ -205,7 +204,7 @@ func definitionFromFlat(f definitionFlat) Definition {
 		ModelConfig: ModelConfig{ProviderID: f.ProviderID, Model: f.Model, Temperature: f.Temperature},
 		PromptConfig: PromptConfig{SystemPrompt: f.SystemPrompt, Role: f.Role, Goal: f.Goal, Backstory: f.Backstory,
 			OutputSchemaJSON: f.OutputSchemaJSON, OutputMode: f.OutputMode, ReturnIntermediateSteps: f.ReturnIntermediateSteps},
-		ToolConfig: ToolConfig{ToolPackIDs: f.ToolPackIDs, ToolIDs: f.ToolIDs, PythonToolNames: f.PythonToolNames,
+		ToolConfig: ToolConfig{ToolPackIDs: f.ToolPackIDs, ToolIDs: f.ToolIDs,
 			MCPServerIDs: f.MCPServerIDs, ToolPolicyJSON: f.ToolPolicyJSON},
 		ResourceRefs: ResourceRefs{SkillIDs: f.SkillIDs, SkillLoadingMode: f.SkillLoadingMode, KnowledgeBaseIDs: f.KnowledgeBaseIDs,
 			KnowledgeTopK: f.KnowledgeTopK, KnowledgeMode: f.KnowledgeMode},
@@ -220,8 +219,8 @@ func definitionFromFlat(f definitionFlat) Definition {
 }
 
 func (d Definition) Normalize() Definition {
-	if strings.TrimSpace(d.Mode) == "" {
-		d.Mode = "react"
+	if mode, err := conversation.NormalizeMode(d.Mode); err == nil {
+		d.Mode = mode
 	}
 	if d.MaxIterations == 0 {
 		d.MaxIterations = 8
@@ -256,7 +255,6 @@ func (d Definition) Normalize() Definition {
 	if strings.TrimSpace(d.OutputMode) == "" {
 		d.OutputMode = "final_answer"
 	}
-	d.PythonToolNames = normalizeNames(d.PythonToolNames)
 	return d
 }
 
@@ -265,8 +263,8 @@ func (d Definition) Validate() error {
 	if d.ProviderID <= 0 {
 		return fmt.Errorf("provider_id is required")
 	}
-	if d.Mode != "react" && d.Mode != "plan_execute" {
-		return fmt.Errorf("mode must be react or plan_execute")
+	if d.Mode != conversation.ModePlan && d.Mode != conversation.ModeDefault {
+		return fmt.Errorf("mode must be default or plan")
 	}
 	if d.Temperature != nil && (*d.Temperature < 0 || *d.Temperature > 2) {
 		return fmt.Errorf("temperature must be 0..2")
@@ -291,9 +289,6 @@ func (d Definition) Validate() error {
 	}
 	if d.MaxSubagentDepth < 1 || d.MaxSubagentDepth > 5 {
 		return fmt.Errorf("max_subagent_depth must be 1..5")
-	}
-	if len(d.PythonToolNames) > 64 {
-		return fmt.Errorf("python_tool_names must contain at most 64 tools")
 	}
 	if d.KnowledgeTopK < 1 || d.KnowledgeTopK > 20 {
 		return fmt.Errorf("knowledge_top_k must be 1..20")
@@ -329,13 +324,13 @@ func (d Definition) Snapshot() (json.RawMessage, string, error) {
 func (d Definition) ResourceSnapshot() (json.RawMessage, string, string, error) {
 	resources := map[string]any{
 		"tool_pack_ids": d.ToolPackIDs, "tool_ids": d.ToolIDs, "skill_ids": d.SkillIDs,
-		"python_tool_names": d.PythonToolNames, "knowledge_base_ids": d.KnowledgeBaseIDs, "mcp_server_ids": d.MCPServerIDs,
+		"knowledge_base_ids": d.KnowledgeBaseIDs, "mcp_server_ids": d.MCPServerIDs,
 	}
 	raw, err := json.Marshal(resources)
 	if err != nil {
 		return nil, "", "", err
 	}
-	toolRaw, err := json.Marshal(map[string]any{"tool_pack_ids": d.ToolPackIDs, "tool_ids": d.ToolIDs, "python_tool_names": d.PythonToolNames, "mcp_server_ids": d.MCPServerIDs})
+	toolRaw, err := json.Marshal(map[string]any{"tool_pack_ids": d.ToolPackIDs, "tool_ids": d.ToolIDs, "mcp_server_ids": d.MCPServerIDs})
 	if err != nil {
 		return nil, "", "", err
 	}
@@ -368,27 +363,13 @@ type Agent struct {
 	Status              string          `json:"status" gorm:"column:status"`
 	DraftDefinitionJSON json.RawMessage `json:"-" gorm:"column:draft_definition_json"`
 	DraftDefinition     Definition      `json:"definition" gorm:"-"`
-	CurrentReleaseID    *int64          `json:"current_release_id,omitempty" gorm:"column:current_release_id"`
 }
 
 func (Agent) TableName() string { return "agents" }
 
-type Release struct {
-	domain.ImmutableModel
-	AgentID        int64           `json:"agent_id" gorm:"column:agent_id"`
-	VersionNumber  int             `json:"version_number" gorm:"column:version_number"`
-	DefinitionJSON json.RawMessage `json:"-" gorm:"column:definition_json"`
-	Definition     Definition      `json:"definition" gorm:"-"`
-	Checksum       string          `json:"checksum" gorm:"column:checksum"`
-	RuleHash       string          `json:"rule_hash" gorm:"column:rule_hash"`
-}
-
-func (Release) TableName() string { return "agent_releases" }
-
 type Turn struct {
 	domain.BaseModel
 	AgentID            int64           `json:"agent_id" gorm:"column:agent_id"`
-	AgentReleaseID     int64           `json:"agent_release_id" gorm:"column:agent_release_id"`
 	ConversationID     int64           `json:"conversation_id" gorm:"column:conversation_id"`
 	RunID              *int64          `json:"run_id,omitempty" gorm:"column:run_id"`
 	UserMessageID      int64           `json:"user_message_id" gorm:"column:user_message_id"`
@@ -430,7 +411,6 @@ const (
 type ImprovementReview struct {
 	domain.BaseModel
 	AgentID         int64      `json:"agent_id" gorm:"column:agent_id"`
-	AgentReleaseID  int64      `json:"agent_release_id" gorm:"column:agent_release_id"`
 	ConversationID  int64      `json:"conversation_id" gorm:"column:conversation_id"`
 	TurnID          int64      `json:"turn_id" gorm:"column:turn_id"`
 	RunID           int64      `json:"run_id" gorm:"column:run_id"`

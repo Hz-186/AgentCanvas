@@ -6,10 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"strings"
 	"time"
 
+	"agentcanvas/internal/domain/conversation"
 	"agentcanvas/internal/domain/reflection"
 	"agentcanvas/internal/domain/retrieval"
 	"agentcanvas/internal/observability"
@@ -39,6 +39,13 @@ func (n runtimeCore) runAgent(
 	cfg = applyRuntimeMemoryPolicy(cfg, cfg.MemoryPolicyJSON)
 	cfg = applyRuntimeContextPolicy(cfg, cfg.ContextPolicyJSON)
 	cfg = applyRuntimeToolPolicy(cfg, cfg.ToolPolicyJSON)
+	mode, modeErr := normalizeRuntimeMode(cfg.Mode)
+	if modeErr != nil {
+		return nil, modeErr
+	}
+	cfg.Mode = mode
+	cfg.RequestUserInputEnabled = rc != nil && rc.DelegationDepth == 0 && (mode == conversation.ModePlan || n.DefaultModeRequestUserInput)
+	cfg.GoalToolsEnabled = rc != nil && rc.ConversationID != nil && *rc.ConversationID > 0
 	if err := validateAgentRuntimeConfig(cfg, true); err != nil {
 		return nil, err
 	}
@@ -107,18 +114,17 @@ func (n runtimeCore) runAgent(
 		}
 	}
 	systemPrompt := cfg.SystemPrompt
-	mode := agentMode(cfg.Mode)
 	compactionProvider := loaded
 	if cfg.CompactionProviderID > 0 || strings.TrimSpace(cfg.CompactionModel) != "" {
 		providerID := cfg.CompactionProviderID
 		if providerID <= 0 {
 			providerID = loaded.ProviderID
 		}
-		if candidate, loadErr := n.Providers.LoadChatProviderConfig(ctx, rc.OwnerID, providerID, cfg.CompactionModel); loadErr == nil {
-			compactionProvider = candidate
-		} else {
-			slog.WarnContext(ctx, "load auxiliary compaction model failed; using main model", "provider_id", providerID, "model", cfg.CompactionModel, "error", loadErr)
+		candidate, loadErr := n.Providers.LoadChatProviderConfig(ctx, rc.OwnerID, providerID, cfg.CompactionModel)
+		if loadErr != nil {
+			return nil, fmt.Errorf("load compaction model: %w", loadErr)
 		}
+		compactionProvider = candidate
 	}
 	// Conversation blocks provide context; they do not track plan progress.
 	conversationBlocks := []runtimeagent.ContextBlock(nil)
@@ -148,19 +154,21 @@ func (n runtimeCore) runAgent(
 			if errors.Is(err, conversationcontext.ErrOverflow) {
 				observability.ContextSystemMetrics.RecordContextOverflow()
 			}
-			return nil, err
+			emitRuntimeEvent(ctx, rc, runtimeevent.Event{Type: runtimeevent.AgentStep, RunID: rc.RunID, Payload: map[string]any{"type": runtimeagent.StepTypeError, "error": err.Error()}})
+			return RunOutput{"stop_reason": runtimeagent.StopReasonLLMError, "error": err.Error()}, nil
 		}
 		if historyPrepared {
 			observability.ContextSystemMetrics.RecordConversationSnapshot(historyTrace.Reused, historyTrace.BeforeTokens, historyTrace.AfterTokens, historyTrace.ModelCalls, historyTrace.LatencyMS)
-			if historyTrace.FallbackReason != "" {
-				slog.WarnContext(ctx, "conversation compaction used main-model fallback", "reason", historyTrace.FallbackReason, "provider_id", historyTrace.ProviderID, "model", historyTrace.Model, "model_calls", historyTrace.ModelCalls)
-			}
 			if historyTrace.Created {
 				observability.ContextSystemMetrics.RecordCompaction("completed")
 			} else if historyTrace.Failure != "" {
 				observability.ContextSystemMetrics.RecordCompaction("fallback")
 			}
 		}
+	}
+	if cfg.ManualCompaction {
+		content := "Context compacted."
+		return RunOutput{"content": content, "final_answer": content, "stop_reason": runtimeagent.StopReasonFinalAnswer, "iterations": 0, "tool_calls": 0, "usage": historyTrace.Usage, "total_tokens": historyTrace.Usage.TotalTokens, "context_trace": historyTrace}, nil
 	}
 	var ruleErr error
 	cfg.Rules, ruleErr = rules.RuntimeRules(cfg.Rules, len(cfg.Rules) == 0)
@@ -192,6 +200,9 @@ func (n runtimeCore) runAgent(
 	if resume != nil && resume.Checkpoint != nil && resume.Checkpoint.ReflectionPolicy.RuntimeMode != "" {
 		reflectionPolicy = resume.Checkpoint.ReflectionPolicy.Normalize()
 	}
+	if mode == "plan" {
+		reflectionPolicy.Enabled = false
+	}
 	var reflectionRecall reflection.RecallResult
 	if resume == nil && n.Reflections != nil && reflectionPolicy.Active() {
 		reflectionRecall, _ = n.Reflections.Recall(ctx, reflection.RecallRequest{
@@ -213,27 +224,6 @@ func (n runtimeCore) runAgent(
 			})
 		}
 	}
-	// Redis Working Memory configuration remains parse-compatible but is no
-	// longer wired into Agent Runtime. Durable snapshots own cross-run continuity.
-	var plan *runtimeagent.Plan
-	// Generate an initial plan only for a new plan-and-execute run.
-	if resume == nil && mode == "plan_execute" && task != "" {
-		planner := runtimeagent.Planner{
-			LLM:        n.LLM,
-			MaxSteps:   8,
-			ProviderID: loaded.ProviderID,
-			ModelName:  loaded.Model,
-		}
-		lessons := ""
-		if reflectionAffectsExecution(reflectionPolicy) {
-			lessons = reflectionRecall.Context
-		}
-		generatedPlan, planErr := planner.GeneratePlanWithLessons(ctx, loaded.Config, loaded.Model, task, lessons, cfg.Temperature)
-		if planErr == nil && generatedPlan != nil {
-			plan = generatedPlan
-		}
-	}
-
 	emitRuntimeEvent(ctx, rc, runtimeevent.Event{
 		Type:  runtimeevent.AgentStarted,
 		RunID: rc.RunID,
@@ -246,7 +236,13 @@ func (n runtimeCore) runAgent(
 		},
 	})
 	runner := runtimeagent.Runner{
-		LLM:        n.LLM,
+		LLM: n.LLM,
+		Snapshots: func() conversation.SnapshotRepository {
+			if n.Coordinator != nil {
+				return n.Coordinator.Snapshots
+			}
+			return nil
+		}(),
 		ProviderID: loaded.ProviderID,
 		ModelName:  loaded.Model,
 		OnModelEvent: func(ctx context.Context, event llm.ModelStreamEvent) error {
@@ -268,44 +264,47 @@ func (n runtimeCore) runAgent(
 		},
 	}
 	runRequest := runtimeagent.RunRequest{
-		OwnerID:            rc.OwnerID,
-		AgentID:            rc.AgentID,
-		AgentReleaseID:     rc.AgentReleaseID,
-		RunID:              rc.RunID,
-		DelegationDepth:    rc.DelegationDepth,
-		ConversationID:     rc.ConversationID,
-		ProjectID:          projectIDFromRunContext(rc),
-		Provider:           loaded.Config,
-		Model:              loaded.Model,
-		CompactionProvider: compactionProvider.Config,
-		CompactionModel:    compactionProvider.Model,
-		Mode:               mode,
-		// Runner records the plan and injects it into execution context.
-		Plan:                       plan,
-		SystemPrompt:               systemPrompt,
-		Task:                       task,
-		ReflectionEnabled:          cfg.ReflectionEnabled,
-		ReflectionPolicy:           reflectionPolicy,
-		RecalledReflectionIDs:      reflectionLessonIDs(reflectionRecall.Lessons),
-		Temperature:                cfg.Temperature,
-		MaxIterations:              cfg.MaxIterations,
-		MaxToolCalls:               cfg.MaxToolCalls,
-		MaxExecutionTimeMS:         cfg.MaxExecutionTimeMS,
-		MaxParallelTools:           cfg.MaxParallelSubAgents,
-		MaxInputChars:              cfg.MaxInputChars,
-		MaxInputTokens:             cfg.MaxInputTokens,
-		ContextWindowTokens:        cfg.ContextWindowTokens,
-		ReservedOutputTokens:       cfg.ReservedOutputTokens,
-		ContextSafetyMarginTokens:  cfg.ContextSafetyMarginTokens,
-		ModelAutoCompactTokenLimit: cfg.ModelAutoCompactTokenLimit,
-		CompactPrompt:              cfg.CompactPrompt,
-		MaxRuleTokens:              cfg.MaxRuleTokens,
-		RuleTags:                   ruleTags,
-		RuleRiskLevel:              ruleRisk,
-		RuleHash:                   cfg.RuleHash,
-		Rules:                      append([]rules.Rule(nil), cfg.Rules...),
-		RuleTrace:                  ruleTrace,
-		ContextBlocks:              contextBlocks,
+		OwnerID:                         rc.OwnerID,
+		AgentID:                         rc.AgentID,
+		RunID:                           rc.RunID,
+		InitialUserMessageID:            rc.UserMessageID,
+		DelegationDepth:                 rc.DelegationDepth,
+		ConversationID:                  rc.ConversationID,
+		ProjectID:                       projectIDFromRunContext(rc),
+		Provider:                        loaded.Config,
+		Model:                           loaded.Model,
+		CompactionProvider:              compactionProvider.Config,
+		CompactionModel:                 compactionProvider.Model,
+		CompactionProviderID:            compactionProvider.ProviderID,
+		Mode:                            mode,
+		SystemPrompt:                    systemPrompt,
+		Task:                            task,
+		ReflectionEnabled:               cfg.ReflectionEnabled,
+		ReflectionPolicy:                reflectionPolicy,
+		RecalledReflectionIDs:           reflectionLessonIDs(reflectionRecall.Lessons),
+		Temperature:                     cfg.Temperature,
+		MaxIterations:                   cfg.MaxIterations,
+		MaxToolCalls:                    cfg.MaxToolCalls,
+		MaxExecutionTimeMS:              cfg.MaxExecutionTimeMS,
+		MaxParallelTools:                cfg.MaxParallelSubAgents,
+		MaxInputChars:                   cfg.MaxInputChars,
+		MaxInputTokens:                  cfg.MaxInputTokens,
+		ContextWindowTokens:             cfg.ContextWindowTokens,
+		ReservedOutputTokens:            cfg.ReservedOutputTokens,
+		ContextSafetyMarginTokens:       cfg.ContextSafetyMarginTokens,
+		ModelAutoCompactTokenLimit:      cfg.ModelAutoCompactTokenLimit,
+		ModelAutoCompactTokenLimitScope: cfg.ModelAutoCompactTokenLimitScope,
+		CompactPrompt:                   cfg.CompactPrompt,
+		ManualCompaction:                cfg.ManualCompaction,
+		TokenBudgetCompaction:           cfg.CompactionMode == "token_budget",
+		RetainClientDeveloperMessages:   cfg.RetainClientDeveloperMessages,
+		MaxRuleTokens:                   cfg.MaxRuleTokens,
+		RuleTags:                        ruleTags,
+		RuleRiskLevel:                   ruleRisk,
+		RuleHash:                        cfg.RuleHash,
+		Rules:                           append([]rules.Rule(nil), cfg.Rules...),
+		RuleTrace:                       ruleTrace,
+		ContextBlocks:                   contextBlocks,
 		ToolPolicy: runtimeagent.ToolPolicy{
 			RequireApprovalForRisk: cfg.RequireApprovalForRisk,
 			MaxToolTimeoutMS:       cfg.MaxToolTimeoutMS,
@@ -314,8 +313,17 @@ func (n runtimeCore) runAgent(
 			DenyAllHosts:           cfg.DenyAllHosts,
 			RuleBindings:           rules.PolicyBindingsForRules(cfg.Rules),
 		},
-		Tools:     tools,
-		Workspace: rc.Workspace,
+		Tools:                       tools,
+		Workspace:                   rc.Workspace,
+		GoalRepository:              n.Goals,
+		GoalTokenBudgetCeiling:      n.GoalTokenBudgetCeiling,
+		DefaultModeRequestUserInput: n.DefaultModeRequestUserInput,
+		SteeringProvider: func() []string {
+			if rc.Steering == nil {
+				return nil
+			}
+			return rc.Steering()
+		},
 		EmitEvent: func(eventCtx context.Context, eventType string, payload map[string]any) error {
 			emitRuntimeEvent(eventCtx, rc, runtimeevent.Event{Type: eventType, RunID: rc.RunID, Payload: payload})
 			return nil
@@ -404,9 +412,6 @@ func (n runtimeCore) runAgent(
 	}
 	// Automatic memory review is handled by the candidate pipeline. Do not
 	// persist the final answer into Working Memory and inject it again later.
-	if result.Plan != nil {
-		output["plan"] = result.Plan
-	}
 	if result.Approval != nil {
 		if strings.TrimSpace(result.Approval.Kind) == "" {
 			result.Approval.Kind = "tool_approval"
@@ -426,8 +431,8 @@ func (n runtimeCore) runAgent(
 			interactionHash := stableRuntimeJSONHash(map[string]any{"run_id": rc.RunID, "tool_call_id": result.Approval.ToolCallID})
 			result.Checkpoint.Interaction = &runtimeagent.Interaction{
 				ID: "approval-" + interactionHash[:24], Kind: result.Approval.Kind, Title: result.Approval.Title,
-				Reason: result.Approval.Reason, Options: append([]toolruntime.ApprovalOption(nil), result.Approval.Options...),
-				ToolCallID: result.Approval.ToolCallID,
+				Reason: result.Approval.Reason, IsBlocking: result.Approval.IsBlocking, Options: append([]toolruntime.ApprovalOption(nil), result.Approval.Options...),
+				ToolCallID: result.Approval.ToolCallID, Questions: append([]toolruntime.UserInputQuestion(nil), result.Approval.Questions...),
 			}
 		}
 		output["checkpoint"] = result.Checkpoint

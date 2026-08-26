@@ -104,29 +104,45 @@ func buildPreparedConversationContext(
 		return buildConversationContext(ctx, n, rc, task, cfg.MaxInputChars, cfg.RetrievalPolicy), conversationcontext.Trace{}, false, nil
 	}
 	extraTokens := coordinatorExtraTokens(provider.ProviderType, model, systemPrompt, task, cfg.MaxRuleTokens, tools, budgetBlocks)
+	compactionTrigger := conversation.CompactionTriggerAuto
+	if cfg.ManualCompaction {
+		compactionTrigger = conversation.CompactionTriggerManual
+	}
 	started := time.Now()
 	prepared, err := n.Coordinator.Prepare(ctx, conversationcontext.Request{
-		OwnerID:              rc.OwnerID,
-		ConversationID:       *rc.ConversationID,
-		ProviderID:           providerID,
-		Provider:             provider,
-		Model:                model,
-		CompactionProviderID: compactionProviderID,
-		CompactionProvider:   compactionProvider,
-		CompactionModel:      compactionModel,
-		WindowTokens:         cfg.ContextWindowTokens,
-		ReservedOutput:       cfg.ReservedOutputTokens,
-		SafetyMargin:         cfg.ContextSafetyMarginTokens,
-		AutoLimit:            cfg.ModelAutoCompactTokenLimit,
-		Trigger:              conversation.CompactionTriggerAuto,
-		CompactPrompt:        cfg.CompactPrompt,
+		OwnerID:                       rc.OwnerID,
+		ConversationID:                *rc.ConversationID,
+		ProviderID:                    providerID,
+		Provider:                      provider,
+		Model:                         model,
+		CompactionProviderID:          compactionProviderID,
+		CompactionProvider:            compactionProvider,
+		CompactionModel:               compactionModel,
+		SystemPrompt:                  systemPrompt,
+		WindowTokens:                  cfg.ContextWindowTokens,
+		ReservedOutput:                cfg.ReservedOutputTokens,
+		SafetyMargin:                  cfg.ContextSafetyMarginTokens,
+		AutoLimit:                     cfg.ModelAutoCompactTokenLimit,
+		AutoLimitScope:                cfg.ModelAutoCompactTokenLimitScope,
+		Trigger:                       compactionTrigger,
+		CompactPrompt:                 cfg.CompactPrompt,
+		Force:                         cfg.ManualCompaction,
+		TokenBudgetCompaction:         cfg.CompactionMode == "token_budget",
+		RetainClientDeveloperMessages: cfg.RetainClientDeveloperMessages,
 		Render: func(window conversationcontext.Window) ([]llm.ChatMessage, int, error) {
 			messages := make([]llm.ChatMessage, 0, len(window.Messages)+1)
-			if window.Snapshot != nil && strings.TrimSpace(window.Snapshot.Summary) != "" {
-				messages = append(messages, llm.ChatMessage{Role: conversation.RoleSystem, Content: "EARLIER CONVERSATION SNAPSHOT:\n" + strings.TrimSpace(window.Snapshot.Summary)})
-			}
+			summaryAdded := false
 			for _, item := range window.Messages {
+				if window.Snapshot != nil && !summaryAdded && item.ID > window.Snapshot.LastMessageID {
+					if strings.TrimSpace(window.Snapshot.Summary) != "" {
+						messages = append(messages, llm.ChatMessage{Role: conversation.RoleUser, Content: conversation.CompactionSummaryPrefix + strings.TrimSpace(window.Snapshot.Summary)})
+					}
+					summaryAdded = true
+				}
 				messages = append(messages, llm.ChatMessage{Role: item.Role, Content: item.Content})
+			}
+			if window.Snapshot != nil && !summaryAdded && strings.TrimSpace(window.Snapshot.Summary) != "" {
+				messages = append(messages, llm.ChatMessage{Role: conversation.RoleUser, Content: conversation.CompactionSummaryPrefix + strings.TrimSpace(window.Snapshot.Summary)})
 			}
 			return messages, extraTokens, nil
 		},
@@ -137,11 +153,7 @@ func buildPreparedConversationContext(
 	prepared.Trace.LatencyMS = time.Since(started).Milliseconds()
 	blocks := make([]runtimeagent.ContextBlock, 0, len(prepared.Messages))
 	for _, message := range prepared.Messages {
-		name := "conversation"
-		if message.Role == conversation.RoleSystem && strings.HasPrefix(message.Content, "EARLIER CONVERSATION SNAPSHOT:") {
-			name = "history_snapshot"
-		}
-		blocks = append(blocks, runtimeagent.ContextBlock{Name: name, Role: message.Role, Content: message.Content})
+		blocks = append(blocks, runtimeagent.ContextBlock{Name: "conversation", Role: message.Role, Content: message.Content})
 	}
 	return blocks, prepared.Trace, true, nil
 }
@@ -280,7 +292,7 @@ func inferRuleTags(task, mode string, cfg agentRuntimeConfig, tools []toolruntim
 	if cfg.CodeExecutionEnabled {
 		tags = append(tags, "code", "engineering")
 	}
-	if mode == "plan_execute" {
+	if mode == "plan" {
 		tags = append(tags, "planning")
 	}
 	text := strings.ToLower(strings.TrimSpace(task + "\n" + conversationText(conversation)))

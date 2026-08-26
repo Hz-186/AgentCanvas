@@ -11,6 +11,7 @@ const (
 	RoleAssistant = "assistant"
 	RoleSystem    = "system"
 	RoleTool      = "tool"
+	RoleDeveloper = "developer"
 )
 
 type Message struct {

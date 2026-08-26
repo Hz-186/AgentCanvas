@@ -47,7 +47,7 @@ func TestDecodeDefinitionAcceptsNestedRuntimeConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := agentRuntimeConfig(definition)
-	if cfg.ProviderID != 2 || cfg.Model != "m" || cfg.Mode != "react" || cfg.SystemPrompt != "base" || len(cfg.ToolPackIDs) != 1 || !cfg.AllowSubagents || cfg.MemoryEnabled {
+	if cfg.ProviderID != 2 || cfg.Model != "m" || cfg.Mode != "default" || cfg.SystemPrompt != "base" || len(cfg.ToolPackIDs) != 1 || !cfg.AllowSubagents || cfg.MemoryEnabled {
 		t.Fatalf("nested runtime definition was not decoded: %+v", cfg)
 	}
 }
@@ -79,6 +79,40 @@ func TestWorkspaceCodingContextTreatsCommitsBeyondWorktreeBaseAsUnpushed(t *test
 
 type configuredMemoryRepository struct {
 	memory.Repository
+}
+
+type classifiedTestTool struct {
+	name     string
+	metadata toolruntime.ToolMetadata
+}
+
+func (t classifiedTestTool) Name() string                       { return t.name }
+func (classifiedTestTool) Description() string                  { return "test" }
+func (classifiedTestTool) Parameters() json.RawMessage          { return json.RawMessage(`{"type":"object"}`) }
+func (t classifiedTestTool) Metadata() toolruntime.ToolMetadata { return t.metadata }
+func (classifiedTestTool) Execute(context.Context, toolruntime.ToolRunContext, json.RawMessage) (*toolruntime.ToolResult, error) {
+	return &toolruntime.ToolResult{}, nil
+}
+
+type unclassifiedTestTool struct{ name string }
+
+func (t unclassifiedTestTool) Name() string              { return t.name }
+func (unclassifiedTestTool) Description() string         { return "test" }
+func (unclassifiedTestTool) Parameters() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
+func (unclassifiedTestTool) Execute(context.Context, toolruntime.ToolRunContext, json.RawMessage) (*toolruntime.ToolResult, error) {
+	return &toolruntime.ToolResult{}, nil
+}
+
+func TestRuntimeModeCanonicalizesLegacyAliases(t *testing.T) {
+	for legacy, want := range map[string]string{"": "default", "goal": "default", "react": "default", "plan_execute": "plan", "plan": "plan"} {
+		got, err := normalizeRuntimeMode(legacy)
+		if err != nil || got != want {
+			t.Fatalf("normalizeRuntimeMode(%q) = %q, %v; want %q", legacy, got, err, want)
+		}
+	}
+	if _, err := normalizeRuntimeMode("other"); err == nil {
+		t.Fatal("unsupported mode was accepted")
+	}
 }
 
 func TestAgentRuntimeMemoryRequiresUnifiedContextIndex(t *testing.T) {

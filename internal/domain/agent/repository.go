@@ -18,11 +18,6 @@ type Repository interface {
 	FindByID(ctx context.Context, ownerID, id int64) (*Agent, error)
 	Update(ctx context.Context, item *Agent) error
 	SoftDelete(ctx context.Context, ownerID, id int64) error
-	CreateRelease(ctx context.Context, item *Release) error
-	ListReleases(ctx context.Context, ownerID, agentID int64) ([]Release, error)
-	FindReleaseByID(ctx context.Context, ownerID, id int64) (*Release, error)
-	NextReleaseVersion(ctx context.Context, ownerID, agentID int64) (int, error)
-	SetCurrentRelease(ctx context.Context, ownerID, agentID, releaseID int64) error
 }
 
 type TurnRepository interface {

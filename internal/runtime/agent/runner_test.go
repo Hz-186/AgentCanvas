@@ -19,6 +19,38 @@ import (
 type fakeToolClient struct {
 	responses []llm.ToolChatResponse
 	requests  []llm.ToolChatRequest
+	errs      []error
+}
+
+type runtimeSnapshotRepo struct {
+	current     *conversation.Compaction
+	completed   *conversation.Compaction
+	completeErr error
+	claimed     bool
+	released    bool
+}
+
+func (r *runtimeSnapshotRepo) FindCurrentSnapshot(context.Context, int64, int64) (*conversation.Compaction, error) {
+	return r.current, nil
+}
+
+func (r *runtimeSnapshotRepo) ClaimSnapshot(context.Context, int64, int64, *int64, int, string, time.Time) (bool, error) {
+	r.claimed = true
+	return true, nil
+}
+
+func (r *runtimeSnapshotRepo) CompleteSnapshot(_ context.Context, item *conversation.Compaction, _ *int64, _ int, _ string) error {
+	if r.completeErr != nil {
+		return r.completeErr
+	}
+	copy := *item
+	r.completed = &copy
+	return nil
+}
+
+func (r *runtimeSnapshotRepo) ReleaseSnapshotClaim(context.Context, int64, int64, string, string) error {
+	r.released = true
+	return nil
 }
 
 type compactionFallbackClient struct {
@@ -39,7 +71,7 @@ func (c *compactionInvalidAuxClient) ChatWithTools(_ context.Context, provider l
 	if c.calls < 3 {
 		return &llm.ToolChatResponse{Message: llm.ChatMessage{Role: conversation.RoleAssistant, Content: "invalid summary"}, Usage: llm.Usage{TotalTokens: 1}}, nil
 	}
-	return &llm.ToolChatResponse{Message: llm.ChatMessage{Role: conversation.RoleAssistant, Content: validCompactionSummary("main fallback")}, Usage: llm.Usage{TotalTokens: 2}}, nil
+	return &llm.ToolChatResponse{Message: llm.ChatMessage{Role: conversation.RoleAssistant, Content: "summary: main fallback"}, Usage: llm.Usage{TotalTokens: 2}}, nil
 }
 
 func (c *compactionFallbackClient) ChatWithTools(_ context.Context, provider llm.ChatProviderConfig, request llm.ToolChatRequest) (*llm.ToolChatResponse, error) {
@@ -48,11 +80,16 @@ func (c *compactionFallbackClient) ChatWithTools(_ context.Context, provider llm
 	if len(c.models) == 1 {
 		return nil, errors.New("auxiliary context too small")
 	}
-	return &llm.ToolChatResponse{Message: llm.ChatMessage{Role: conversation.RoleAssistant, Content: validCompactionSummary("fallback")}}, nil
+	return &llm.ToolChatResponse{Message: llm.ChatMessage{Role: conversation.RoleAssistant, Content: "summary: fallback"}}, nil
 }
 
 func (c *fakeToolClient) ChatWithTools(ctx context.Context, cfg llm.ChatProviderConfig, req llm.ToolChatRequest) (*llm.ToolChatResponse, error) {
 	c.requests = append(c.requests, req)
+	if len(c.errs) > 0 {
+		err := c.errs[0]
+		c.errs = c.errs[1:]
+		return nil, err
+	}
 	if len(c.responses) == 0 {
 		return &llm.ToolChatResponse{Message: llm.ChatMessage{Role: conversation.RoleAssistant, Content: "done"}}, nil
 	}
@@ -69,6 +106,21 @@ type fakeRuntimeTool struct {
 	runContext  toolruntime.ToolRunContext
 	metadata    toolruntime.ToolMetadata
 	sawDeadline bool
+}
+
+type unclassifiedRuntimeTool struct {
+	name       string
+	executions int
+}
+
+func (t *unclassifiedRuntimeTool) Name() string        { return t.name }
+func (t *unclassifiedRuntimeTool) Description() string { return "unclassified tool" }
+func (t *unclassifiedRuntimeTool) Parameters() json.RawMessage {
+	return json.RawMessage(`{"type":"object"}`)
+}
+func (t *unclassifiedRuntimeTool) Execute(context.Context, toolruntime.ToolRunContext, json.RawMessage) (*toolruntime.ToolResult, error) {
+	t.executions++
+	return &toolruntime.ToolResult{ContentText: "executed"}, nil
 }
 
 type concurrentDelegationTool struct {
@@ -185,7 +237,7 @@ func TestRunnerPassesImmutableWorkspaceContextToTools(t *testing.T) {
 	}
 	runner := &Runner{LLM: client, ProviderID: 1, ModelName: "gpt-4"}
 	if _, err := runner.Run(context.Background(), RunRequest{
-		OwnerID: 1, AgentID: 2, AgentReleaseID: 3, RunID: 7, ProjectID: 42, Model: "gpt-4", Task: "read",
+		OwnerID: 1, AgentID: 2, RunID: 7, ProjectID: 42, Model: "gpt-4", Task: "read",
 		MaxIterations: 3, MaxToolCalls: 1, Tools: []toolruntime.RuntimeTool{tool}, Workspace: workspace,
 	}); err != nil {
 		t.Fatal(err)
@@ -226,6 +278,7 @@ func TestRunnerExecutesToolAndReturnsFinalAnswer(t *testing.T) {
 		OwnerID:       1,
 		RunID:         2,
 		Model:         "gpt-4",
+		Mode:          "goal",
 		Task:          "answer",
 		MaxIterations: 4,
 		MaxToolCalls:  2,
@@ -257,6 +310,39 @@ func TestRunnerExecutesToolAndReturnsFinalAnswer(t *testing.T) {
 	}
 }
 
+func TestRunnerPlanModeUsesNormalToolRegistration(t *testing.T) {
+	client := &fakeToolClient{responses: []llm.ToolChatResponse{
+		{Message: llm.ChatMessage{Role: conversation.RoleAssistant, ToolCalls: []llm.ToolCall{
+			{ID: "write", Name: "write_file", Arguments: json.RawMessage(`{}`)},
+			{ID: "unknown", Name: "unknown_effect", Arguments: json.RawMessage(`{}`)},
+		}}},
+		{Message: llm.ChatMessage{Role: conversation.RoleAssistant, Content: "read-only plan"}},
+	}}
+	writeTool := &fakeRuntimeTool{name: "write_file", metadata: toolruntime.ToolMetadata{SideEffect: toolruntime.SideEffectWrite}}
+	unclassified := &unclassifiedRuntimeTool{name: "unknown_effect"}
+	updates := 0
+
+	result, err := NewRunner(client).Run(context.Background(), RunRequest{
+		Model: "m", Mode: "plan", Task: "plan safely", MaxIterations: 2, MaxToolCalls: 4,
+		Tools: []toolruntime.RuntimeTool{writeTool, unclassified},
+		EmitEvent: func(_ context.Context, eventType string, payload map[string]any) error {
+			if eventType == "todo.updated" {
+				updates++
+			}
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if writeTool.input == nil || unclassified.executions != 1 {
+		t.Fatalf("Plan mode did not execute registered tools: write_input=%s unclassified_calls=%d", writeTool.input, unclassified.executions)
+	}
+	if updates != 0 {
+		t.Fatalf("Plan mode generated automatic Todo state: updates=%d result=%+v", updates, result)
+	}
+}
+
 func TestRunnerReflectsOnToolFailureAndFeedsNextRound(t *testing.T) {
 	client := &fakeToolClient{responses: []llm.ToolChatResponse{
 		{Message: llm.ChatMessage{Role: conversation.RoleAssistant, ToolCalls: []llm.ToolCall{{ID: "missing_1", Name: "missing_tool", Arguments: json.RawMessage(`{}`)}}}},
@@ -285,20 +371,19 @@ func TestRunnerReflectsOnToolFailureAndFeedsNextRound(t *testing.T) {
 	}
 }
 
-func TestRunnerResumeDoesNotDuplicateRecallOrPlanTraceSteps(t *testing.T) {
+func TestRunnerResumeDoesNotDuplicateRecallTraceSteps(t *testing.T) {
 	client := &fakeToolClient{responses: []llm.ToolChatResponse{{Message: llm.ChatMessage{Role: conversation.RoleAssistant, Content: "done"}}}}
 	result, err := NewRunner(client).Run(context.Background(), RunRequest{Model: "m", Task: "task", MaxIterations: 2,
-		Plan:                  &Plan{Version: 2, Steps: []PlanStep{{Number: 1, Description: "continue", Status: "pending"}}},
 		RecalledReflectionIDs: []int64{7}, ResumeMessages: []llm.ChatMessage{{Role: conversation.RoleUser, Content: "task"}}, ResumeIteration: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, step := range result.Steps {
-		if step.Type == StepTypePlan || step.Type == StepTypeReflectionRecall {
-			t.Fatalf("resume must not duplicate historical plan/recall trace steps: %+v", result.Steps)
+		if step.Type == StepTypeReflectionRecall {
+			t.Fatalf("resume must not duplicate historical recall trace steps: %+v", result.Steps)
 		}
 	}
-	if result.Plan == nil || len(result.Reflection.RecalledIDs) != 1 {
+	if len(result.Reflection.RecalledIDs) != 1 {
 		t.Fatalf("resume still needs the checkpoint state in its result: %+v", result)
 	}
 	if len(result.Context.RuleRounds) == 0 {
@@ -330,66 +415,217 @@ func TestRunnerResumeIgnoresNewContextOverflowAndUsesCheckpointContext(t *testin
 	}
 }
 
-func TestRuntimeCompactionDoesNotRecompactSummaryWithoutNewOldExchanges(t *testing.T) {
+func TestRuntimeCompactionRebuildsFullHistoryAndKeepsUserSummary(t *testing.T) {
 	client := &fakeToolClient{responses: []llm.ToolChatResponse{
-		{Message: llm.ChatMessage{Role: conversation.RoleAssistant, Content: validCompactionSummary("first")}},
-		{Message: llm.ChatMessage{Role: conversation.RoleAssistant, Content: validCompactionSummary("rolled")}},
+		{Message: llm.ChatMessage{Role: conversation.RoleAssistant, Content: "summary: first"}},
+		{Message: llm.ChatMessage{Role: conversation.RoleAssistant, Content: "summary: rolled"}},
 	}}
 	runner := NewRunner(client)
 	req := RunRequest{Provider: llm.ChatProviderConfig{ProviderType: "openai_compatible"}, Model: "gpt-4o", Task: "task", ModelAutoCompactTokenLimit: 1}
-	transcript := make([]llm.ChatMessage, 0, 5)
-	for index := 0; index < 5; index++ {
-		transcript = append(transcript, llm.ChatMessage{Role: conversation.RoleAssistant, Content: "exchange"})
-	}
-	compacted, _, trace := runner.compactRuntimeTranscript(context.Background(), req, nil, transcript, nil)
-	if trace == nil || len(client.requests) != 1 || len(compacted) != 5 {
+	transcript := []llm.ChatMessage{{Role: conversation.RoleAssistant, Content: "exchange"}, {Role: conversation.RoleTool, Content: "result"}}
+	compacted, _, trace := runner.compactRuntimeTranscript(context.Background(), req, transcript)
+	if trace == nil || len(client.requests) != 1 || len(compacted) != 2 || compacted[0].Role != conversation.RoleUser || compacted[1].Role != conversation.RoleUser || !strings.HasPrefix(compacted[1].Content, conversation.CompactionSummaryPrefix) {
 		t.Fatalf("expected first compaction: calls=%d trace=%+v transcript=%+v", len(client.requests), trace, compacted)
 	}
-	unchanged, _, repeated := runner.compactRuntimeTranscript(context.Background(), req, nil, compacted, nil)
-	if repeated != nil || len(client.requests) != 1 || len(unchanged) != len(compacted) {
-		t.Fatalf("existing summary must not be compacted again without new old exchanges: calls=%d trace=%+v", len(client.requests), repeated)
-	}
-	withNewExchanges := append(append([]llm.ChatMessage(nil), compacted...),
-		llm.ChatMessage{Role: conversation.RoleAssistant, Content: "new exchange 1"},
-		llm.ChatMessage{Role: conversation.RoleAssistant, Content: "new exchange 2"})
-	_, _, rolled := runner.compactRuntimeTranscript(context.Background(), req, nil, withNewExchanges, nil)
-	if rolled == nil || len(client.requests) != 2 {
-		t.Fatalf("new old exchanges must roll the summary forward: calls=%d trace=%+v", len(client.requests), rolled)
+	if !messageContains(client.requests[0].Messages, "task") || client.requests[0].Messages[len(client.requests[0].Messages)-1].Role != conversation.RoleUser {
+		t.Fatalf("compaction request must include initial task and trailing user prompt: %+v", client.requests[0].Messages)
 	}
 }
 
-func TestRuntimeCompactionFallsBackFromAuxiliaryToMainModel(t *testing.T) {
+func TestRuntimeCompactionDoesNotDuplicateTrimmedTask(t *testing.T) {
+	client := &fakeToolClient{responses: []llm.ToolChatResponse{
+		{Message: llm.ChatMessage{Role: conversation.RoleAssistant, ToolCalls: []llm.ToolCall{{ID: "call_1", Name: "lookup", Arguments: json.RawMessage(`{}`)}}}},
+		{Message: llm.ChatMessage{Role: conversation.RoleAssistant, Content: "summary"}},
+		{Message: llm.ChatMessage{Role: conversation.RoleAssistant, Content: "done"}},
+	}}
+	_, err := NewRunner(client).Run(context.Background(), RunRequest{
+		Provider: llm.ChatProviderConfig{ProviderType: "openai_compatible"}, Model: "m", Task: "  task  ",
+		ContextWindowTokens: 1000, ModelAutoCompactTokenLimit: 1, MaxIterations: 2, MaxToolCalls: 2,
+		Tools: []toolruntime.RuntimeTool{&fakeRuntimeTool{name: "lookup", output: "result"}},
+	})
+	if err != nil || len(client.requests) != 3 {
+		t.Fatalf("runtime compaction failed: calls=%d err=%v", len(client.requests), err)
+	}
+	count := 0
+	for _, message := range client.requests[2].Messages {
+		if message.Role == conversation.RoleUser && strings.TrimSpace(message.Content) == "task" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("compacted task must be injected once, got %d: %+v", count, client.requests[2].Messages)
+	}
+}
+
+func TestRuntimeCompactionUsesConfiguredAuxiliaryModelWithoutFallback(t *testing.T) {
 	client := &compactionFallbackClient{}
 	runner := NewRunner(client)
 	req := RunRequest{Provider: llm.ChatProviderConfig{ProviderType: "main", BaseURL: "main"}, Model: "main-model",
 		CompactionProvider: llm.ChatProviderConfig{ProviderType: "aux", BaseURL: "aux"}, CompactionModel: "aux-model", ModelAutoCompactTokenLimit: 1000}
 	summary, _, err := runner.summarizeContext(context.Background(), req, []llm.ChatMessage{{Role: conversation.RoleTool, Content: "result"}})
-	if err != nil || summary == "" || len(client.models) != 2 || client.models[0] != "aux-model" || client.models[1] != "main-model" || client.providers[1].ProviderType != "main" {
-		t.Fatalf("auxiliary fallback failed: summary=%q providers=%+v models=%+v err=%v", summary, client.providers, client.models, err)
+	if err != nil || summary == "" || len(client.models) != 2 || client.models[0] != "aux-model" || client.models[1] != "aux-model" {
+		t.Fatalf("auxiliary model should be retried without provider fallback: summary=%q providers=%+v models=%+v err=%v", summary, client.providers, client.models, err)
 	}
 }
 
-func TestRuntimeCompactionStopsAfterAuxiliaryValidationRetry(t *testing.T) {
+func TestRuntimeCompactionAcceptsUnstructuredSummary(t *testing.T) {
 	client := &compactionInvalidAuxClient{}
 	runner := NewRunner(client)
 	req := RunRequest{Provider: llm.ChatProviderConfig{ProviderType: "main", BaseURL: "main"}, Model: "main-model",
 		CompactionProvider: llm.ChatProviderConfig{ProviderType: "aux", BaseURL: "aux"}, CompactionModel: "aux-model", ModelAutoCompactTokenLimit: 1000}
 	summary, usage, err := runner.summarizeContext(context.Background(), req, []llm.ChatMessage{{Role: conversation.RoleTool, Content: "result"}})
-	if err == nil || summary != "" || client.calls != 2 || usage.TotalTokens != 2 || client.models[0] != "aux-model" || client.models[1] != "aux-model" {
-		t.Fatalf("invalid auxiliary summary must stop after one repair: summary=%q usage=%+v calls=%d models=%v err=%v", summary, usage, client.calls, client.models, err)
+	if err != nil || summary != "invalid summary" || client.calls != 1 || usage.TotalTokens != 1 || client.models[0] != "aux-model" {
+		t.Fatalf("summary structure must not be validated: summary=%q usage=%+v calls=%d models=%v err=%v", summary, usage, client.calls, client.models, err)
 	}
 }
 
-func validCompactionSummary(value string) string {
-	return "Goal: " + value + "\nConstraints and preferences: none\nConfirmed decisions: none\nCompleted work: none\nCurrent progress: ongoing\nOpen issues and next actions: continue\nEvidence and artifacts: none"
+func TestRuntimeCompactionStopsRetryingWhenOnlyOneInputRemains(t *testing.T) {
+	client := &fakeToolClient{errs: []error{llm.ErrContextWindowExceeded}}
+	_, _, err := NewRunner(client).summarizeContext(context.Background(), RunRequest{Model: "m"}, []llm.ChatMessage{{Role: conversation.RoleUser, Content: "only"}})
+	if !errors.Is(err, llm.ErrContextWindowExceeded) || len(client.requests) != 1 {
+		t.Fatalf("single oversized input must fail once: calls=%d err=%v", len(client.requests), err)
+	}
 }
 
-func TestRuntimeSummaryTokenLimitUsesBoundedTenthWindow(t *testing.T) {
-	if got := runtimeSummaryTokenLimit(RunRequest{ContextWindowTokens: 10000, ReservedOutputTokens: 1000, ContextSafetyMarginTokens: 100}); got != 890 {
-		t.Fatalf("unexpected summary budget: %d", got)
+func TestAutoCompactLimitOnlyAllowsLowerOverride(t *testing.T) {
+	req := RunRequest{ContextWindowTokens: 1000, ModelAutoCompactTokenLimit: 9999}
+	if got := autoCompactLimit(req); got != 900 {
+		t.Fatalf("higher override must be clamped to 90%%: %d", got)
 	}
-	if got := runtimeSummaryTokenLimit(RunRequest{ContextWindowTokens: 1000000, ReservedOutputTokens: 1, ContextSafetyMarginTokens: 1}); got != maxCompactSummaryTokens {
-		t.Fatalf("summary budget must be capped: %d", got)
+	req.ModelAutoCompactTokenLimit = 400
+	if got := autoCompactLimit(req); got != 400 {
+		t.Fatalf("lower override must be used: %d", got)
+	}
+}
+
+func TestRuntimeTokenStatusSupportsBodyAfterPrefix(t *testing.T) {
+	req := RunRequest{Provider: llm.ChatProviderConfig{ProviderType: "openai_compatible"}, Model: "gpt-4o", ContextWindowTokens: 1000, ModelAutoCompactTokenLimit: 100, ModelAutoCompactTokenLimitScope: "body_after_prefix"}
+	base := []llm.ChatMessage{{Role: conversation.RoleSystem, Content: strings.Repeat("prefix ", 500)}}
+	status := runtimeTokenStatus(req, base, []llm.ChatMessage{{Role: conversation.RoleAssistant, Content: "small body"}}, nil)
+	if status.TokenLimitReached || status.Measured >= 100 {
+		t.Fatalf("fixed prefix must not count in body_after_prefix scope: %+v", status)
+	}
+	req.Task = strings.Repeat("task body ", 500)
+	base = append(base, llm.ChatMessage{Role: conversation.RoleUser, Content: req.Task})
+	status = runtimeTokenStatus(req, base, nil, nil)
+	if !status.TokenLimitReached || status.Measured < 100 {
+		t.Fatalf("initial user task must count in body_after_prefix scope: %+v", status)
+	}
+	req.Task = "small"
+	req.ModelAutoCompactTokenLimit = 900
+	base = []llm.ChatMessage{{Role: conversation.RoleSystem, Content: strings.Repeat("fixed prefix ", 2000)}, {Role: conversation.RoleUser, Content: req.Task}}
+	status = runtimeTokenStatus(req, base, nil, nil)
+	if !status.TokenLimitReached || status.Measured >= status.HardLimit {
+		t.Fatalf("hard limit must use the total request even in body_after_prefix scope: %+v", status)
+	}
+}
+
+func TestTokenBudgetCompactionSkipsModelAndRetainsDeveloper(t *testing.T) {
+	client := &fakeToolClient{}
+	runner := NewRunner(client)
+	developer := strings.Repeat("client rule ", 50000)
+	req := RunRequest{Provider: llm.ChatProviderConfig{ProviderType: "openai_compatible"}, Model: "m", Task: "task", TokenBudgetCompaction: true, RetainClientDeveloperMessages: true}
+	compacted, usage, trace := runner.compactRuntimeTranscript(context.Background(), req, []llm.ChatMessage{{Role: conversation.RoleDeveloper, Content: developer}, {Role: conversation.RoleAssistant, Content: "discard"}})
+	if len(client.requests) != 0 || usage.TotalTokens != 0 || trace == nil || trace.ModelCalled || len(compacted) != 1 || compacted[0].Role != conversation.RoleDeveloper || modelTextTokens(req, compacted[0].Content) > defaultCompactUserMessageTokens || len(compacted[0].Content) >= len(developer) {
+		t.Fatalf("token-budget compaction must skip summarization: calls=%d trace=%+v messages=%+v", len(client.requests), trace, compacted)
+	}
+}
+
+func TestTokenBudgetBaseMessagesLimitRetainedDeveloper(t *testing.T) {
+	req := RunRequest{Provider: llm.ChatProviderConfig{ProviderType: "openai_compatible"}, Model: "m"}
+	developer := strings.Repeat("client rule ", 50000)
+	kept := baseMessagesAfterTokenBudget(req, []llm.ChatMessage{
+		{Role: conversation.RoleSystem, Content: "system"},
+		{Role: conversation.RoleDeveloper, Content: developer},
+	}, true)
+	if len(kept) != 2 || modelTextTokens(req, kept[1].Content) > defaultCompactUserMessageTokens || len(kept[1].Content) >= len(developer) {
+		t.Fatalf("retained developer messages must share the token-budget limit: messages=%d tokens=%d chars=%d", len(kept), modelTextTokens(req, kept[1].Content), len(kept[1].Content))
+	}
+}
+
+func TestRunnerTokenBudgetStartsNewWindow(t *testing.T) {
+	client := &fakeToolClient{responses: []llm.ToolChatResponse{
+		{Message: llm.ChatMessage{Role: conversation.RoleAssistant, ToolCalls: []llm.ToolCall{{ID: "call_1", Name: "lookup", Arguments: json.RawMessage(`{}`)}}}},
+		{Message: llm.ChatMessage{Role: conversation.RoleAssistant, Content: "done"}},
+	}}
+	result, err := NewRunner(client).Run(context.Background(), RunRequest{
+		Provider: llm.ChatProviderConfig{ProviderType: "openai_compatible"}, Model: "m", SystemPrompt: "system", Task: "task",
+		ContextBlocks:         []ContextBlock{{Name: "client", Role: conversation.RoleDeveloper, Content: "client rule"}, {Name: "conversation", Role: conversation.RoleUser, Content: "old history"}},
+		TokenBudgetCompaction: true, RetainClientDeveloperMessages: true, ContextWindowTokens: 1000, ModelAutoCompactTokenLimit: 1,
+		MaxIterations: 2, MaxToolCalls: 2, Tools: []toolruntime.RuntimeTool{&fakeRuntimeTool{name: "lookup", output: "result"}},
+	})
+	if err != nil || result.FinalAnswer != "done" || len(client.requests) != 2 {
+		t.Fatalf("token-budget run failed: result=%+v calls=%d err=%v", result, len(client.requests), err)
+	}
+	second := client.requests[1].Messages
+	taskFound, historyFound, developerFound := false, false, false
+	for _, message := range second {
+		taskFound = taskFound || message.Content == "task"
+		historyFound = historyFound || message.Content == "old history"
+		developerFound = developerFound || message.Content == "client rule"
+	}
+	if taskFound || historyFound || !developerFound {
+		t.Fatalf("new token-budget window must retain only fixed instructions and opted-in developer messages: %+v", second)
+	}
+}
+
+func TestRunnerPersistsRuntimeCompaction(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		persistErr  error
+		wantStatus  string
+		wantCalls   int
+		wantPersist bool
+	}{
+		{name: "completed", wantStatus: "completed", wantCalls: 3, wantPersist: true},
+		{name: "persistence failure", persistErr: errors.New("database unavailable"), wantStatus: "failed", wantCalls: 2},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			client := &fakeToolClient{responses: []llm.ToolChatResponse{
+				{Message: llm.ChatMessage{Role: conversation.RoleAssistant, ToolCalls: []llm.ToolCall{{ID: "call_1", Name: "lookup", Arguments: json.RawMessage(`{}`)}}}},
+				{Message: llm.ChatMessage{Role: conversation.RoleAssistant, Content: "continuation summary"}},
+				{Message: llm.ChatMessage{Role: conversation.RoleAssistant, Content: "done"}},
+			}}
+			repo := &runtimeSnapshotRepo{completeErr: test.persistErr}
+			conversationID := int64(11)
+			result, err := (&Runner{LLM: client, ProviderID: 3, ModelName: "m", Snapshots: repo}).Run(context.Background(), RunRequest{
+				OwnerID: 1, RunID: 7, ConversationID: &conversationID, InitialUserMessageID: 42,
+				Provider: llm.ChatProviderConfig{ProviderType: "openai_compatible"}, Model: "m", Task: "task",
+				ContextWindowTokens: 1000, ModelAutoCompactTokenLimit: 1, MaxIterations: 2, MaxToolCalls: 2,
+				Tools: []toolruntime.RuntimeTool{&fakeRuntimeTool{name: "lookup", output: "result"}},
+			})
+			if (test.persistErr == nil && err != nil) || (test.persistErr != nil && err == nil) || len(result.Context.Compactions) != 1 || result.Context.Compactions[0].Status != test.wantStatus || len(client.requests) != test.wantCalls {
+				t.Fatalf("runtime compaction result mismatch: result=%+v calls=%d err=%v", result, len(client.requests), err)
+			}
+			if test.wantPersist {
+				if repo.completed == nil || repo.completed.TriggerType != conversation.CompactionTriggerRuntime || repo.completed.FirstMessageID != 42 || repo.completed.LastMessageID != 42 || repo.completed.FirstMessageContent != "task" || repo.completed.Summary != "continuation summary" {
+					t.Fatalf("runtime snapshot was not persisted: %+v", repo.completed)
+				}
+			} else if repo.completed != nil || !repo.released || result.StopReason != StopReasonLLMError {
+				t.Fatalf("persistence failure must stop the run and release the claim: result=%+v repo=%+v", result, repo)
+			}
+		})
+	}
+}
+
+func TestRuntimeCompactionFingerprintChangesWithWindow(t *testing.T) {
+	repo := &runtimeSnapshotRepo{}
+	conversationID := int64(11)
+	runner := &Runner{Snapshots: repo}
+	req := RunRequest{OwnerID: 1, RunID: 7, ConversationID: &conversationID, InitialUserMessageID: 42, Model: "m"}
+	trace := &CompactionTrace{Status: "completed", Summary: "same summary"}
+	history := []llm.ChatMessage{{Role: conversation.RoleUser, Content: "same history"}}
+	if err := runner.persistRuntimeCompaction(context.Background(), req, trace, history, history); err != nil {
+		t.Fatal(err)
+	}
+	first := repo.completed.SourceFingerprint
+	repo.current = &conversation.Compaction{SnapshotVersion: 1}
+	repo.current.ID = 9
+	if err := runner.persistRuntimeCompaction(context.Background(), req, trace, history, history); err != nil {
+		t.Fatal(err)
+	}
+	if first == repo.completed.SourceFingerprint {
+		t.Fatalf("runtime fingerprint must change with the parent window: %s", first)
 	}
 }
 
@@ -408,36 +644,6 @@ func TestRunnerDoesNotCompactInitialHistory(t *testing.T) {
 	}
 	if len(client.requests) != 1 || len(result.Context.Compactions) != 0 {
 		t.Fatalf("initial history must be prepared only by conversation coordinator: calls=%d compactions=%+v", len(client.requests), result.Context.Compactions)
-	}
-}
-
-func TestRunnerRevisesOnlyUnfinishedPlanAfterReflection(t *testing.T) {
-	client := &fakeToolClient{responses: []llm.ToolChatResponse{
-		{Message: llm.ChatMessage{Role: conversation.RoleAssistant, ToolCalls: []llm.ToolCall{{ID: "missing", Name: "missing_tool", Arguments: json.RawMessage(`{}`)}}}},
-		{Message: llm.ChatMessage{Role: conversation.RoleAssistant, Content: `{"action":"replan","root_cause":"tool unavailable","corrective_action":"use an available path","lesson":"verify tool availability","applicability":"tool plans","confidence":0.9}`}},
-		{Message: llm.ChatMessage{Role: conversation.RoleAssistant, Content: `{"steps":[{"number":1,"description":"repeat external write","status":"pending"},{"number":2,"description":"use available path","status":"pending"}]}`}},
-		{Message: llm.ChatMessage{Role: conversation.RoleAssistant, Content: "recovered"}},
-	}}
-	plan := &Plan{Version: 1, Steps: []PlanStep{
-		{Number: 1, Description: "completed external write", Status: "completed", ToolName: "writer"},
-		{Number: 2, Description: "call unavailable tool", Status: "pending"},
-	}}
-	result, err := NewRunner(client).Run(context.Background(), RunRequest{Model: "m", Mode: "plan_execute", Task: "finish", Plan: plan,
-		MaxIterations: 3, MaxToolCalls: 2, ReflectionPolicy: reflectiondomain.DefaultPolicy()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.Plan == nil || result.Plan.Version != 2 || result.Plan.Steps[0].Description != "completed external write" || result.Plan.Steps[1].Description != "use available path" {
-		t.Fatalf("unexpected revised plan: %+v", result.Plan)
-	}
-	foundRevision := false
-	for _, step := range result.Steps {
-		if step.Type == StepTypePlanRevision {
-			foundRevision = true
-		}
-	}
-	if !foundRevision {
-		t.Fatalf("plan revision step missing: %+v", result.Steps)
 	}
 }
 
@@ -533,45 +739,6 @@ func TestMergeRuleTracesPreservesPermanentAndDynamicRules(t *testing.T) {
 	)
 	if !containsRule(merged.Loaded, "core.task.completion") || !containsRule(merged.Loaded, "scenario.code.change_verification") || merged.EstimatedUsed != 18 {
 		t.Fatalf("expected merged persistent and dynamic trace, got %+v", merged)
-	}
-}
-
-func TestCompactTranscriptForBudgetKeepsLatestToolExchange(t *testing.T) {
-	messages := []llm.ChatMessage{
-		{Role: conversation.RoleAssistant, ToolCalls: []llm.ToolCall{{ID: "old", Name: "search"}}},
-		{Role: conversation.RoleTool, ToolCallID: "old", Content: strings.Repeat("old ", 80)},
-		{Role: conversation.RoleAssistant, ToolCalls: []llm.ToolCall{{ID: "new", Name: "bash"}}},
-		{Role: conversation.RoleTool, ToolCallID: "new", Content: "latest observation"},
-	}
-	compacted, saved := compactTranscriptForBudget(messages, 20)
-	if saved == 0 || len(compacted) != 2 {
-		t.Fatalf("expected old exchange to be pruned, got saved=%d messages=%+v", saved, compacted)
-	}
-	if compacted[0].ToolCalls[0].ID != "new" || compacted[1].ToolCallID != "new" {
-		t.Fatalf("latest exchange was not preserved as a valid pair: %+v", compacted)
-	}
-}
-
-func TestCompactTranscriptForZeroBudgetDropsTranscript(t *testing.T) {
-	messages := []llm.ChatMessage{{Role: conversation.RoleAssistant, ToolCalls: []llm.ToolCall{{ID: "call", Name: "bash"}}}, {Role: conversation.RoleTool, ToolCallID: "call", Content: "observation"}}
-	compacted, saved := compactTranscriptForBudget(messages, 0)
-	if len(compacted) != 0 || saved == 0 {
-		t.Fatalf("expected transcript removal under zero budget, got saved=%d messages=%+v", saved, compacted)
-	}
-}
-
-func TestClipToolResultsForCompactionPreservesPairAndHeadTail(t *testing.T) {
-	messages := []llm.ChatMessage{
-		{Role: conversation.RoleAssistant, ToolCalls: []llm.ToolCall{{ID: "call-1", Name: "read", Arguments: json.RawMessage(`{"path":"/tmp/project/file.go","version":"v2"}`)}}},
-		{Role: conversation.RoleTool, ToolCallID: "call-1", Content: "status=failed error=E42 path=/tmp/project/file.go\n" + strings.Repeat("a", 4096) + strings.Repeat("b", 4096) + strings.Repeat("c", 2048) + "\nresource_id=res-99"},
-	}
-	clipped := clipToolResultsForCompaction(messages)
-	if clipped[0].ToolCalls[0].Name != "read" || string(clipped[0].ToolCalls[0].Arguments) != string(messages[0].ToolCalls[0].Arguments) || clipped[1].ToolCallID != "call-1" ||
-		!strings.HasPrefix(clipped[1].Content, "status=failed error=E42 path=/tmp/project/file.go") || !strings.HasSuffix(clipped[1].Content, "resource_id=res-99") {
-		t.Fatalf("tool result pair or head/tail was not preserved: %+v", clipped[1])
-	}
-	if len([]rune(clipped[1].Content)) >= len([]rune(messages[1].Content)) {
-		t.Fatalf("tool result was not clipped: before=%d after=%d", len([]rune(messages[1].Content)), len([]rune(clipped[1].Content)))
 	}
 }
 
@@ -1328,54 +1495,11 @@ func TestContextAssemblerProducesContextTrace(t *testing.T) {
 	}
 }
 
-func TestRunnerRecordsPlanAndEndsItUnverified(t *testing.T) {
-	client := &fakeToolClient{responses: []llm.ToolChatResponse{
-		{Message: llm.ChatMessage{Role: conversation.RoleAssistant, Content: "planned answer"}},
-	}}
-	plan := &Plan{Steps: []PlanStep{
-		{Number: 1, Description: "inspect", Status: "pending"},
-		{Number: 2, Description: "answer", Status: "pending"},
-	}}
-	runner := NewRunner(client)
-	result, err := runner.Run(context.Background(), RunRequest{
-		Model:         "test-model",
-		Mode:          "plan_execute",
-		Plan:          plan,
-		Task:          "answer with a plan",
-		MaxIterations: 2,
-		MaxToolCalls:  2,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.StopReason != StopReasonFinalAnswer || result.Plan == nil || result.Plan.Finished || result.Plan.ExecutionState != "ended_unverified" {
-		t.Fatalf("expected unverified guided plan result, got %+v", result)
-	}
-	if result.Plan.Steps[0].Status != "pending" || result.Plan.Steps[1].Status != "pending" {
-		t.Fatalf("unverified plan steps must remain pending, got %+v", result.Plan.Steps)
-	}
-	if len(result.Steps) == 0 || result.Steps[0].Type != StepTypePlan {
-		t.Fatalf("expected first step to be plan, got %+v", result.Steps)
-	}
-	if len(client.requests[0].Messages) < 2 {
-		t.Fatalf("expected plan context in messages, got %+v", client.requests[0].Messages)
-	}
-	foundPlan := false
-	for _, message := range client.requests[0].Messages {
-		if message.Role == conversation.RoleSystem && strings.Contains(message.Content, "Execution Plan") {
-			foundPlan = true
-		}
-	}
-	if !foundPlan {
-		t.Fatalf("plan context was not added to messages: %+v", client.requests[0].Messages)
-	}
-}
-
-func TestPlanExecuteModeInstruction(t *testing.T) {
-	req := RunRequest{Mode: "plan_execute"}
+func TestPlanModeInstruction(t *testing.T) {
+	req := RunRequest{Mode: "plan"}
 	instr := modeInstruction(req)
-	if instr == "" {
-		t.Fatal("expected plan_execute instruction")
+	if !strings.Contains(instr, "Plan Mode") {
+		t.Fatalf("expected plan mode instruction, got %q", instr)
 	}
 }
 
@@ -1387,26 +1511,18 @@ func TestUnsupportedModeHasNoInstruction(t *testing.T) {
 	}
 }
 
-func TestReactModeNoExtraInstruction(t *testing.T) {
-	req := RunRequest{Mode: "react"}
+func TestDefaultModeInstruction(t *testing.T) {
+	req := RunRequest{Mode: "default"}
 	instr := modeInstruction(req)
-	if instr != "" {
-		t.Fatalf("expected no instruction for plain react mode, got %q", instr)
-	}
-}
-
-func TestReactWithReflectionInstruction(t *testing.T) {
-	req := RunRequest{Mode: "react", ReflectionEnabled: true}
-	instr := modeInstruction(req)
-	if instr == "" {
-		t.Fatal("expected reflection instruction for react+reflection mode")
+	if !strings.Contains(instr, "Default mode") {
+		t.Fatalf("expected default mode instruction, got %q", instr)
 	}
 }
 
 func TestStepTypeConstants(t *testing.T) {
 	expected := map[string]string{
 		"llm_response":      StepTypeLLMResponse,
-		"plan":              StepTypePlan,
+		"proposed_plan":     StepTypeProposedPlan,
 		"tool_call":         StepTypeToolCall,
 		"tool_result":       StepTypeToolResult,
 		"approval_required": StepTypeApproval,
@@ -1431,26 +1547,25 @@ func TestStopReasonConstants(t *testing.T) {
 		StopReasonWaitingHuman:     true,
 		StopReasonLLMError:         true,
 		StopReasonToolNameNotFound: true,
-		StopReasonPlanCompleted:    true,
 		StopReasonReflectionFailed: true,
 		StopReasonContextOverflow:  true,
 		StopReasonClarification:    true,
 	}
-	if len(reasons) != 12 {
-		t.Fatalf("expected 12 stop reasons, got %d", len(reasons))
+	if len(reasons) != 11 {
+		t.Fatalf("expected 11 stop reasons, got %d", len(reasons))
 	}
 }
 
-func TestRunnerRejectsContextOverflowBeforeProviderCall(t *testing.T) {
+func TestRunnerLetsProviderReportInitialContextOverflow(t *testing.T) {
 	client := &fakeToolClient{}
 	result, err := NewRunner(client).Run(context.Background(), RunRequest{
 		Provider: llm.ChatProviderConfig{ProviderType: "openai_compatible"}, Model: "gpt-4o", Task: strings.Repeat("hard constraint ", 200),
 		MaxIterations: 1, MaxToolCalls: 1, ContextWindowTokens: 64, ReservedOutputTokens: 8, ContextSafetyMarginTokens: 4,
 	})
-	if !errors.Is(err, ErrContextOverflow) || result == nil || result.StopReason != StopReasonContextOverflow {
-		t.Fatalf("expected context overflow, result=%+v err=%v", result, err)
+	if err != nil || result == nil || result.StopReason != StopReasonFinalAnswer {
+		t.Fatalf("initial request should reach provider without deterministic truncation: result=%+v err=%v", result, err)
 	}
-	if len(client.requests) != 0 {
-		t.Fatalf("provider received %d requests after overflow", len(client.requests))
+	if len(client.requests) != 1 {
+		t.Fatalf("provider should receive one request, got %d", len(client.requests))
 	}
 }

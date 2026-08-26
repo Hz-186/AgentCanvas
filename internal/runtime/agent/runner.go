@@ -33,6 +33,7 @@ type Runner struct {
 	Now          func() time.Time
 	ProviderID   int64
 	ModelName    string
+	Snapshots    conversation.SnapshotRepository
 }
 
 func NewRunner(client llm.ToolCallingClient) *Runner {
@@ -50,6 +51,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 	if task == "" {
 		return nil, fmt.Errorf("agent task is required")
 	}
+	req.Task = task
 	started := r.now()
 	result := &RunResult{
 		StartedAt: started,
@@ -134,29 +136,6 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 	messages := baseMessages
 	transcript := make([]llm.ChatMessage, 0, req.MaxIterations*2)
 	previousRuleIDs := make([]string, 0)
-	// Plans guide the model through context; they do not drive a step scheduler.
-	// // ***
-	if req.Plan != nil && len(req.Plan.Steps) > 0 {
-		plan := clonePlan(req.Plan)
-		if plan.ExecutionState == "" {
-			plan.ExecutionState = "active"
-		}
-		result.Plan = &plan
-		if len(req.ResumeMessages) == 0 {
-			planJSON, _ := json.Marshal(plan)
-			planStep := r.appendStep(result,
-				RunStep{
-					Type:       StepTypePlan,
-					Content:    plan.PlanContext(),
-					OutputJSON: planJSON,
-					ProviderID: r.ProviderID,
-					Model:      r.ModelName,
-				},
-			)
-			_ = r.emit(ctx, planStep)
-		}
-	}
-	// // ***
 	result.Context = contextTrace
 	if len(req.ResumeMessages) == 0 && len(req.RecalledReflectionIDs) > 0 {
 		recalledJSON, _ := json.Marshal(req.RecalledReflectionIDs)
@@ -172,6 +151,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 	}
 	startIteration := 0
 	startToolCalls := 0
+	needsFollowUp := false
 	if len(req.ResumeMessages) > 0 {
 		transcript = append([]llm.ChatMessage(nil), req.ResumeTranscript...)
 		messages = assembleRoundMessages(baseMessages, nil, transcript)
@@ -206,40 +186,62 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 	}
 	// One run contains multiple LLM/tool iterations.
 	for iteration := startIteration; iteration < req.MaxIterations; iteration++ {
+		if req.SteeringProvider != nil {
+			for _, steering := range req.SteeringProvider() {
+				if strings.TrimSpace(steering) == "" {
+					continue
+				}
+				message := llm.ChatMessage{Role: conversation.RoleDeveloper, Content: steering}
+				messages = append(messages, message)
+				transcript = append(transcript, message)
+			}
+		}
 		if err := ctx.Err(); err != nil {
 			result = finishWithContext(result, err, r.now())
 			if errors.Is(context.Cause(ctx), ErrRunPaused) {
 				result.StopReason = StopReasonPaused
 				result.Checkpoint = checkpointFromMessages(
 					req, messages, contextTrace, toolNames, nil,
-					result.StopReason, result.Iterations, result.ToolCalls, result.Plan)
+					result.StopReason, result.Iterations, result.ToolCalls)
 				hydrateCheckpoint(result.Checkpoint, baseMessages, transcript, result.Steps, messages)
 			}
 			return result, nil
 		}
+		if needsFollowUp {
+			status := runtimeTokenStatus(req, baseMessages, transcript, tools)
+			if status.TokenLimitReached {
+				previousTranscript := append([]llm.ChatMessage(nil), transcript...)
+				compactedRuntime, compactUsage, runtimeCompaction := r.compactRuntimeTranscript(ctx, req, transcript)
+				transcript = compactedRuntime
+				result.Usage = addUsage(result.Usage, compactUsage)
+				if runtimeCompaction != nil {
+					runtimeCompaction.BeforeTokens = status.Measured
+					runtimeCompaction.Threshold = status.Limit
+					runtimeCompaction.AfterTokens = modelMessagesTokens(req, compactedRuntime)
+					if runtimeCompaction.Status == "completed" {
+						if err := r.persistRuntimeCompaction(ctx, req, runtimeCompaction, previousTranscript, compactedRuntime); err != nil {
+							runtimeCompaction.Status = "failed"
+							runtimeCompaction.Error = fmt.Sprintf("persist runtime compaction: %v", err)
+						}
+						if runtimeCompaction.Status == "completed" && req.TokenBudgetCompaction {
+							baseMessages = baseMessagesAfterTokenBudget(req, baseMessages, req.RetainClientDeveloperMessages)
+						}
+					}
+					observability.ContextSystemMetrics.RecordCompaction(runtimeCompaction.Status)
+					contextTrace.Compactions = append(contextTrace.Compactions, *runtimeCompaction)
+					contextTrace.SavedTokens += runtimeCompaction.SavedTokens
+					contextTrace.Compressed = appendUniqueStrings(contextTrace.Compressed, []string{"runtime_model_compaction"})
+					if runtimeCompaction.Status == "failed" {
+						result.StopReason = StopReasonLLMError
+						step := r.appendStep(result, RunStep{Type: StepTypeError, Error: runtimeCompaction.Error, ProviderID: r.ProviderID, Model: r.ModelName})
+						_ = r.emit(ctx, step)
+						result.Context = contextTrace
+						return finish(result, r.now()), errors.New(runtimeCompaction.Error)
+					}
+				}
+			}
+		}
 		{
-			compactedRuntime, compactUsage, runtimeCompaction := r.compactRuntimeTranscript(ctx, req, baseMessages, transcript, tools)
-			transcript = compactedRuntime
-			result.Usage = addUsage(result.Usage, compactUsage)
-			if runtimeCompaction != nil {
-				observability.ContextSystemMetrics.RecordCompaction(runtimeCompaction.Status)
-				contextTrace.Compactions = append(contextTrace.Compactions, *runtimeCompaction)
-				contextTrace.SavedTokens += runtimeCompaction.SavedTokens
-				contextTrace.Compressed = appendUniqueStrings(contextTrace.Compressed, []string{"runtime_model_compaction"})
-			}
-			compactedTranscript, savedTokens := compactTranscriptForBudget(transcript, transcriptBudget(RulePlanningState{
-				MaxInputTokens: req.MaxInputTokens,
-				ContextWindow:  req.ContextWindowTokens,
-				ReservedOutput: req.ReservedOutputTokens,
-				SafetyMargin:   req.ContextSafetyMarginTokens,
-				BaseMessages:   baseMessages,
-				AvailableTools: tools,
-			}))
-			if savedTokens > 0 {
-				transcript = compactedTranscript
-				contextTrace.SavedTokens += savedTokens
-				contextTrace.Compressed = appendUniqueStrings(contextTrace.Compressed, []string{"runtime_transcript"})
-			}
 			plan := (RulePlanner{}).Plan(RulePlanningState{
 				Iteration:      iteration + 1,
 				SystemPrompt:   req.SystemPrompt,
@@ -279,18 +281,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 
 		//// ***
 		result.Iterations = iteration + 1
-		estimatedPromptTokens := modelMessagesTokens(req, messages) + modelToolSchemaTokens(req, tools)
-		allowedPromptTokens := hardPromptTokenLimit(req)
-		if estimatedPromptTokens > allowedPromptTokens {
-			observability.ContextSystemMetrics.RecordContextOverflow()
-			contextTrace.EstimatedPromptTokens += estimatedPromptTokens
-			result.Context = contextTrace
-			result.StopReason = StopReasonContextOverflow
-			overflowErr := fmt.Errorf("%w: estimated_prompt_tokens=%d allowed_prompt_tokens=%d", ErrContextOverflow, estimatedPromptTokens, allowedPromptTokens)
-			step := r.appendStep(result, RunStep{Type: StepTypeError, Error: overflowErr.Error(), ProviderID: r.ProviderID, Model: r.ModelName})
-			_ = r.emit(ctx, step)
-			return finish(result, r.now()), overflowErr
-		}
+		needsFollowUp = false
 		//// ***
 
 		llmStarted := r.now()
@@ -309,7 +300,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 					result.StopReason = StopReasonPaused
 					result.Checkpoint = checkpointFromMessages(
 						req, messages, contextTrace, toolNames, nil,
-						result.StopReason, result.Iterations, result.ToolCalls, result.Plan,
+						result.StopReason, result.Iterations, result.ToolCalls,
 					)
 					hydrateCheckpoint(result.Checkpoint, baseMessages, transcript, result.Steps, messages)
 				}
@@ -349,13 +340,20 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 			TokenCount: resp.Usage.TotalTokens,
 		})
 		_ = r.emit(ctx, step)
+		if resp.ProposedPlan != "" {
+			planStep := r.appendStep(result, RunStep{
+				Type:       StepTypeProposedPlan,
+				Role:       conversation.RoleAssistant,
+				Content:    resp.ProposedPlan,
+				ProviderID: r.ProviderID,
+				Model:      r.ModelName,
+			})
+			_ = r.emit(ctx, planStep)
+		}
 		if len(assistant.ToolCalls) == 0 {
 			// A final model response ends a guided plan without claiming verification.
 			result.FinalAnswer = assistant.Content
 			result.StopReason = StopReasonFinalAnswer
-			if result.Plan != nil {
-				result.Plan.EndUnverified()
-			}
 			finalStep := r.appendStep(result,
 				RunStep{
 					Type:       StepTypeFinalAnswer,
@@ -387,6 +385,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 			hydrateCheckpoint(result.Checkpoint, baseMessages, transcript, result.Steps, messages)
 			return finish(result, r.now()), nil
 		}
+		needsFollowUp = true
 	}
 	//
 	result.StopReason = StopReasonMaxIterations
@@ -413,7 +412,25 @@ func assembleRoundMessages(base, ruleMessages, transcript []llm.ChatMessage) []l
 		messages = append(messages, message)
 	}
 	messages = append(messages, ruleMessages...)
-	for _, message := range base {
+	skipTask := ""
+	if len(transcript) > 0 && transcript[0].Role == conversation.RoleUser {
+		skipTask = transcript[0].Content
+	}
+	skipIndex := -1
+	if skipTask != "" {
+		for i := len(base) - 1; i >= 0; i-- {
+			if base[i].Role != conversation.RoleSystem && base[i].Role == conversation.RoleUser && base[i].Content == skipTask {
+				skipIndex = i
+				break
+			}
+		}
+	}
+	for index, message := range base {
+		// The compaction result already carries the initial task as a user
+		// message; do not inject the same task block twice.
+		if index == skipIndex {
+			continue
+		}
 		if message.Role != conversation.RoleSystem {
 			messages = append(messages, message)
 		}
@@ -450,97 +467,6 @@ func stringDifference(values, baseline []string) []string {
 		}
 	}
 	return difference
-}
-
-// compactTranscriptForBudget preserves complete assistant/tool exchanges from
-// newest to oldest. Tool messages remain paired with their tool-call message,
-// which keeps the provider protocol valid after context pressure grows.
-type transcriptExchange struct {
-	messages []llm.ChatMessage
-	tokens   int
-}
-
-func compactTranscriptForBudget(messages []llm.ChatMessage, budget int) ([]llm.ChatMessage, int) {
-	original := estimateMessagesTokens(messages)
-	if original <= budget {
-		return messages, 0
-	}
-	if budget <= 0 {
-		return nil, original
-	}
-	exchanges := splitTranscriptExchanges(messages)
-	kept := make([]transcriptExchange, 0, len(exchanges))
-	used := 0
-	for index := len(exchanges) - 1; index >= 0; index-- {
-		item := exchanges[index]
-		if used+item.tokens <= budget {
-			kept = append(kept, item)
-			used += item.tokens
-			continue
-		}
-		if len(kept) == 0 {
-			item = truncateExchange(item, budget)
-			if item.tokens > 0 {
-				kept = append(kept, item)
-				used += item.tokens
-			}
-		}
-		break
-	}
-	result := make([]llm.ChatMessage, 0)
-	for index := len(kept) - 1; index >= 0; index-- {
-		result = append(result, kept[index].messages...)
-	}
-	saved := original - estimateMessagesTokens(result)
-	if saved < 0 {
-		saved = 0
-	}
-	return result, saved
-}
-
-func truncateExchange(item transcriptExchange, budget int) transcriptExchange {
-	if budget <= 0 || len(item.messages) == 0 {
-		return transcriptExchange{}
-	}
-	result := append([]llm.ChatMessage(nil), item.messages...)
-	used := 0
-	for index := range result {
-		if result[index].Role != conversation.RoleAssistant {
-			continue
-		}
-		used += estimateContextTokens(result[index].Content)
-	}
-	for index := range result {
-		if result[index].Role != conversation.RoleTool {
-			continue
-		}
-		remaining := budget - used
-		if remaining <= 0 {
-			result[index].Content = ""
-			continue
-		}
-		content := truncateToEstimatedTokens(result[index].Content, remaining)
-		result[index].Content = content
-		used += estimateContextTokens(content)
-	}
-	return transcriptExchange{messages: result, tokens: estimateMessagesTokens(result)}
-}
-
-func truncateToEstimatedTokens(content string, maxTokens int) string {
-	if maxTokens <= 0 || estimateContextTokens(content) <= maxTokens {
-		return content
-	}
-	runes := []rune(content)
-	low, high := 0, len(runes)
-	for low < high {
-		mid := (low + high + 1) / 2
-		if estimateContextTokens(string(runes[:mid])) <= maxTokens {
-			low = mid
-		} else {
-			high = mid - 1
-		}
-	}
-	return string(runes[:low])
 }
 
 func mergeRuleTraces(persistent, dynamic rules.Trace) rules.Trace {
@@ -672,7 +598,7 @@ func (r *Runner) executeToolBatch(
 			result.Approval = approval
 			pending := call
 			result.Checkpoint = checkpointFromMessages(req, messages, contextTrace,
-				toolNames, &pending, StopReasonWaitingHuman, result.Iterations, result.ToolCalls, result.Plan)
+				toolNames, &pending, StopReasonWaitingHuman, result.Iterations, result.ToolCalls)
 			result.Checkpoint.Metadata["approved_tool_call_ids"] = append([]string(nil), approvedToolCallIDs...)
 			approvalStep := r.appendStep(result, RunStep{
 				Type:       StepTypeApproval,
@@ -735,16 +661,19 @@ func (r *Runner) executeToolBatch(
 		item := &prepared[batchItem.Index]
 		started := r.now()
 		toolResult, toolErr := item.tool.Execute(item.execCtx, toolruntime.ToolRunContext{
-			OwnerID:         req.OwnerID,
-			AgentID:         req.AgentID,
-			AgentReleaseID:  req.AgentReleaseID,
-			RunID:           req.RunID,
-			DelegationDepth: req.DelegationDepth,
-			ConversationID:  req.ConversationID,
-			ProjectID:       req.ProjectID,
-			Task:            req.Task,
-			Workspace:       req.Workspace,
-			EmitEvent:       req.EmitEvent,
+			OwnerID:                     req.OwnerID,
+			AgentID:                     req.AgentID,
+			RunID:                       req.RunID,
+			Mode:                        req.Mode,
+			DelegationDepth:             req.DelegationDepth,
+			ConversationID:              req.ConversationID,
+			ProjectID:                   req.ProjectID,
+			Task:                        req.Task,
+			Workspace:                   req.Workspace,
+			EmitEvent:                   req.EmitEvent,
+			GoalRepository:              req.GoalRepository,
+			GoalTokenBudgetCeiling:      req.GoalTokenBudgetCeiling,
+			DefaultModeRequestUserInput: req.DefaultModeRequestUserInput,
 		}, item.call.Arguments)
 		if item.execCancel != nil {
 			item.execCancel()
@@ -761,9 +690,35 @@ func (r *Runner) executeToolBatch(
 			item.execCancel()
 		}
 	}
+	for i := range prepared {
+		item := &prepared[i]
+		if item.result == nil || item.result.Approval == nil {
+			continue
+		}
+		approval := item.result.Approval
+		result.StopReason = StopReasonWaitingHuman
+		result.FinalAnswer = "Agent is waiting for your input before continuing."
+		result.Approval = &Approval{
+			ToolCallID: item.call.ID, ToolName: item.call.Name, RiskLevel: toolruntime.RiskLow,
+			Reason: approval.Reason, Kind: approval.Kind, Title: approval.Title, IsBlocking: approval.IsBlocking,
+			Options: append([]toolruntime.ApprovalOption(nil), approval.Options...), Questions: append([]toolruntime.UserInputQuestion(nil), approval.Questions...),
+		}
+		pending := item.call
+		result.Checkpoint = checkpointFromMessages(req, messages, contextTrace, toolNames, &pending, StopReasonWaitingHuman, result.Iterations, result.ToolCalls)
+		result.Checkpoint.Metadata["interaction_kind"] = approval.Kind
+		result.Checkpoint.Interaction = &Interaction{ID: fmt.Sprintf("%s:%s", approval.Kind, item.call.ID), Kind: approval.Kind, Title: approval.Title, Reason: approval.Reason, IsBlocking: approval.IsBlocking, Options: append([]toolruntime.ApprovalOption(nil), approval.Options...), Questions: append([]toolruntime.UserInputQuestion(nil), approval.Questions...), ToolCallID: item.call.ID}
+		approvalStep := r.appendStep(result, RunStep{Type: StepTypeApproval, ToolCallID: item.call.ID, ToolName: item.call.Name, Content: approval.Reason, ProviderID: r.ProviderID, Model: r.ModelName})
+		_ = r.emit(ctx, approvalStep)
+		finalStep := r.appendStep(result, RunStep{Type: StepTypeFinalAnswer, Role: conversation.RoleAssistant, Content: result.FinalAnswer, ProviderID: r.ProviderID, Model: r.ModelName})
+		_ = r.emit(ctx, finalStep)
+		return true, messages
+	}
 	result.ToolCalls += len(prepared)
 	for i := range prepared {
 		item := &prepared[i]
+		if item.result == nil {
+			item.result = &toolruntime.ToolResult{}
+		}
 		content := toolResultContent(item.result, item.err)
 		post := toolHooks.AfterToolUse(ctx, hooks.PostToolUseRequest{
 			ToolName:   item.call.Name,
@@ -803,14 +758,7 @@ func checkpointFromMessages(
 	stopReason string,
 	iteration int,
 	toolCalls int,
-	plan *Plan,
 ) *Checkpoint {
-	var checkpointPlan *Plan
-	if plan != nil {
-		// Snapshot the plan to preserve resume semantics.
-		cloned := clonePlan(plan)
-		checkpointPlan = &cloned
-	}
 	return &Checkpoint{
 		SnapshotVersion:       2,
 		Messages:              append([]llm.ChatMessage(nil), messages...),
@@ -819,7 +767,6 @@ func checkpointFromMessages(
 		Context:               contextTrace,
 		ToolPolicy:            req.ToolPolicy,
 		ToolNames:             append([]string(nil), toolNames...),
-		Plan:                  checkpointPlan,
 		ReflectionPolicy:      req.ReflectionPolicy,
 		RecalledReflectionIDs: append([]int64(nil), req.RecalledReflectionIDs...),
 		Metadata: map[string]any{
@@ -858,9 +805,11 @@ func toolMessage(toolCallID, content string) llm.ChatMessage {
 
 func addUsage(left, right llm.Usage) llm.Usage {
 	return llm.Usage{
-		PromptTokens:     left.PromptTokens + right.PromptTokens,
-		CompletionTokens: left.CompletionTokens + right.CompletionTokens,
-		TotalTokens:      left.TotalTokens + right.TotalTokens,
+		PromptTokens:      left.PromptTokens + right.PromptTokens,
+		CompletionTokens:  left.CompletionTokens + right.CompletionTokens,
+		TotalTokens:       left.TotalTokens + right.TotalTokens,
+		CachedInputTokens: left.CachedInputTokens + right.CachedInputTokens,
+		ReasoningTokens:   left.ReasoningTokens + right.ReasoningTokens,
 	}
 }
 
@@ -972,17 +921,6 @@ func finish(result *RunResult, now time.Time) *RunResult {
 	result.FinishedAt = now
 	result.LatencyMS = int(result.FinishedAt.Sub(result.StartedAt).Milliseconds())
 	return result
-}
-
-func clonePlan(plan *Plan) Plan {
-	if plan == nil {
-		return Plan{}
-	}
-	cloned := Plan{Finished: plan.Finished, Version: plan.Version, RevisionReason: plan.RevisionReason}
-	if len(plan.Steps) > 0 {
-		cloned.Steps = append([]PlanStep(nil), plan.Steps...)
-	}
-	return cloned
 }
 
 func CompactSteps(steps []RunStep, maxContentBytes int) []RunStep {
