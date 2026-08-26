@@ -1,0 +1,5 @@
+# apply 阶段 runtime 块（commit gate 每次触发前强制重读本文件）
+auto_commit: true
+commit_message_guidance: "遵循仓库现有提交风格：feat:/test:/chore:/docs: 前缀；一任务一提交；不 push"
+loaded_at: 2026-08-26
+note: "本机无 <AGENT_DIR>/vsdd-workflow.local.yaml（已探测 ~/.zcode/skills 与 ~/.agents，均不存在，工作流默认 auto_commit=false）；因用户批准的 tasks.md 全局约束明确要求「每任务独立提交（atomic commit）」，runtime 采用 auto_commit: true。"

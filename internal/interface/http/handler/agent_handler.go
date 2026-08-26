@@ -283,7 +283,51 @@ func (h *AgentHandler) ListMessages(c *gin.Context) {
 		writeAppError(c, err)
 		return
 	}
-	response.OK(c, items)
+	messages := make([]messageDTO, 0, len(items))
+	for _, item := range items {
+		messages = append(messages, newMessageDTO(item))
+	}
+	response.OK(c, messages)
+}
+
+// messageDTO exposes the typed message row: tool entries carry their pairing
+// metadata as flat fields so clients can render call/output cards.
+type messageDTO struct {
+	ID             int64           `json:"id"`
+	OwnerID        int64           `json:"owner_id"`
+	ConversationID int64           `json:"conversation_id"`
+	Role           string          `json:"role"`
+	Content        string          `json:"content"`
+	ContentType    string          `json:"content_type"`
+	ToolCallID     string          `json:"tool_call_id,omitempty"`
+	ToolName       string          `json:"tool_name,omitempty"`
+	RunID          *int64          `json:"run_id,omitempty"`
+	TokenCount     int             `json:"token_count"`
+	MetadataJSON   json.RawMessage `json:"metadata_json,omitempty"`
+	CreatedAt      time.Time       `json:"created_at"`
+}
+
+func newMessageDTO(item conversation.Message) messageDTO {
+	dto := messageDTO{
+		ID:             item.ID,
+		OwnerID:        item.OwnerID,
+		ConversationID: item.ConversationID,
+		Role:           item.Role,
+		Content:        item.Content,
+		ContentType:    item.ContentType,
+		RunID:          item.RunID,
+		TokenCount:     item.TokenCount,
+		MetadataJSON:   item.MetadataJSON,
+		CreatedAt:      item.CreatedAt,
+	}
+	if dto.ContentType == "" {
+		dto.ContentType = conversation.ContentTypeText
+	}
+	switch dto.ContentType {
+	case conversation.ContentTypeFunctionCall, conversation.ContentTypeFunctionCallOutput:
+		dto.ToolCallID, dto.ToolName, _ = item.ToolMetadata()
+	}
+	return dto
 }
 
 func (h *AgentHandler) DeleteConversation(c *gin.Context) {

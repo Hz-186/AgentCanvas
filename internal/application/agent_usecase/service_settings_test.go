@@ -1291,6 +1291,7 @@ type settingsTurnRepo struct {
 	completedRun      *agentdomain.Run
 	ownedUpdateErr    error
 	ownedUpdateFailed bool
+	completedMessages []*conversation.Message
 }
 
 func (r *settingsTurnRepo) FindLatestByConversation(context.Context, int64, int64, int64) (*agentdomain.Turn, error) {
@@ -1349,5 +1350,6 @@ func (r *settingsTurnRepo) CompleteWithMessage(_ context.Context, turn *agentdom
 	message.ID = 302
 	turn.AssistantMessageID = &message.ID
 	r.updated = turn
+	r.completedMessages = append(r.completedMessages, message)
 	return nil
 }

@@ -271,6 +271,7 @@ func (n runtimeCore) runAgent(
 		DelegationDepth:                 rc.DelegationDepth,
 		ConversationID:                  rc.ConversationID,
 		ProjectID:                       projectIDFromRunContext(rc),
+		MessageSink:                     n.messageSinkForRun(rc),
 		Provider:                        loaded.Config,
 		Model:                           loaded.Model,
 		CompactionProvider:              compactionProvider.Config,
@@ -357,15 +358,16 @@ func (n runtimeCore) runAgent(
 		return nil, err
 	}
 	output := RunOutput{
-		"content":       result.FinalAnswer,
-		"final_answer":  result.FinalAnswer,
-		"stop_reason":   result.StopReason,
-		"iterations":    result.Iterations,
-		"tool_calls":    result.ToolCalls,
-		"usage":         result.Usage,
-		"total_tokens":  result.Usage.TotalTokens,
-		"latency_ms":    result.LatencyMS,
-		"context_trace": result.Context,
+		"content":             result.FinalAnswer,
+		"final_answer":        result.FinalAnswer,
+		"stop_reason":         result.StopReason,
+		"iterations":          result.Iterations,
+		"tool_calls":          result.ToolCalls,
+		"usage":               result.Usage,
+		"total_tokens":        result.Usage.TotalTokens,
+		"latency_ms":          result.LatencyMS,
+		"context_trace":       result.Context,
+		"assistant_message_id": result.AssistantMessageID,
 	}
 	if len(cfg.OutputSchemaJSON) > 0 &&
 		string(bytes.TrimSpace(cfg.OutputSchemaJSON)) != "{}" &&

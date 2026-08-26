@@ -104,6 +104,7 @@ func BuildResumeRequest(req ResumeRequest) (*RunRequest, error) {
 	return &RunRequest{
 		OwnerID: req.OwnerID, AgentID: req.AgentID, RunID: req.RunID, InitialUserMessageID: req.InitialUserMessageID,
 		DelegationDepth: req.DelegationDepth, ConversationID: req.ConversationID, ProjectID: req.ProjectID,
+		MessageSink: req.MessageSink,
 		Provider: req.Provider, Model: req.Model, CompactionProvider: req.CompactionProvider, CompactionModel: req.CompactionModel, CompactionProviderID: req.CompactionProviderID,
 		Mode: req.Mode, SystemPrompt: req.SystemPrompt, Task: req.Task,
 		ReflectionEnabled: req.ReflectionEnabled, ReflectionPolicy: reflectionPolicy, RecalledReflectionIDs: recalledReflectionIDs,
@@ -117,7 +118,8 @@ func BuildResumeRequest(req ResumeRequest) (*RunRequest, error) {
 		RuleHash: firstNonEmpty(req.Checkpoint.RuleHash, req.RuleHash), Rules: ruleItems, RuleTrace: req.RuleTrace,
 		ContextBlocks: req.ContextBlocks, ToolPolicy: req.ToolPolicy, ToolHookChain: req.ToolHookChain, Tools: req.Tools, GoalRepository: req.GoalRepository, GoalTokenBudgetCeiling: req.GoalTokenBudgetCeiling, DefaultModeRequestUserInput: req.DefaultModeRequestUserInput, SteeringProvider: req.SteeringProvider,
 		ResumeMessages: messages, ResumeBaseMessages: baseMessages, ResumeTranscript: transcript, ResumeSteps: resumeSteps,
-		ResumeContext: req.Checkpoint.Context, ResumeIteration: iteration, ResumeToolCalls: toolCalls, ResumeApprovedToolCallIDs: approvedToolCallIDs,
+		ResumePersistedMessageCount: req.Checkpoint.PersistedMessageCount,
+		ResumeContext:               req.Checkpoint.Context, ResumeIteration: iteration, ResumeToolCalls: toolCalls, ResumeApprovedToolCallIDs: approvedToolCallIDs,
 	}, nil
 }
 

@@ -39,6 +39,7 @@ type coreRepositories struct {
 	MemoryRecallLogs memory.RecallLogRepository
 	MemoryCandidates memory.CandidateWriter
 	MessageHistory   MessageHistoryReader
+	MessageWriter    MessageWriter
 	Compactions      conversation.CompactionRepository
 	SessionSearch    conversation.MessageSearchIndex
 	ContextIndex     contextresource.Index

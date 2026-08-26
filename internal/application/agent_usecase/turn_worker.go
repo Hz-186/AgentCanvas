@@ -633,6 +633,15 @@ func (s *Service) completeTurn(ctx context.Context, turn *agentdomain.Turn, run 
 	}
 	content, _ := result.Output["final_answer"].(string)
 	totalTokens, _ := result.Output["total_tokens"].(int)
+	// Realtime-written final answer: reference the row the sink already
+	// created instead of inserting a duplicate. JSON-decoded outputs carry
+	// the id as float64, direct runs as int64.
+	existingMessageID, _ := result.Output["assistant_message_id"].(int64)
+	if existingMessageID <= 0 {
+		if value, ok := result.Output["assistant_message_id"].(float64); ok {
+			existingMessageID = int64(value)
+		}
+	}
 	assistant := &conversation.Message{
 		ImmutableModel: domain.ImmutableModel{OwnerID: turn.OwnerID},
 		ConversationID: turn.ConversationID,
@@ -640,6 +649,14 @@ func (s *Service) completeTurn(ctx context.Context, turn *agentdomain.Turn, run 
 		Content:        content,
 		RunID:          &run.ID,
 		TokenCount:     totalTokens,
+	}
+	manualCompaction := false
+	if manualInput, manualErr := decodeInputJSON(run.InputJSON); manualErr == nil {
+		manualCompaction, _ = manualInput["manual_compaction"].(bool)
+	}
+	if manualCompaction {
+		// Zero-iteration /compact ack, not a model answer.
+		assistant.ContentType = conversation.ContentTypeSystemEcho
 	}
 	now := time.Now().UTC()
 	output, _ := json.Marshal(result.Output)
@@ -653,7 +670,16 @@ func (s *Service) completeTurn(ctx context.Context, turn *agentdomain.Turn, run 
 		run.TotalTokens = value
 	}
 	run.LatencyMS = int(now.Sub(run.StartedAt).Milliseconds())
-	if err := s.turns.CompleteWithMessage(ctx, turn, assistant, run); err != nil {
+	if existingMessageID > 0 {
+		assistant.ID = int64(existingMessageID)
+		if err := s.turns.UpdateRunOwned(ctx, turn, run, true); err != nil {
+			if errors.Is(err, agentdomain.ErrLeaseLost) {
+				return
+			}
+			s.failTurn(ctx, turn, run, err)
+			return
+		}
+	} else if err := s.turns.CompleteWithMessage(ctx, turn, assistant, run); err != nil {
 		if errors.Is(err, agentdomain.ErrLeaseLost) {
 			return
 		}
@@ -667,7 +693,7 @@ func (s *Service) completeTurn(ctx context.Context, turn *agentdomain.Turn, run 
 			_ = s.improvement.EnqueueTurnReview(ctx, turn, definition)
 		}
 	}
-	if s.sessionSearch != nil {
+	if s.sessionSearch != nil && assistant.ContentType == conversation.ContentTypeText {
 		_ = s.sessionSearch.IndexMessage(ctx, turn.OwnerID, turn.AgentID, assistant)
 	}
 	s.maybeContinueGoal(ctx, run)

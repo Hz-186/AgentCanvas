@@ -20,6 +20,9 @@ func NewMessageRepository(db *gorm.DB) *MessageRepository {
 
 func (r *MessageRepository) Create(ctx context.Context, message *conversation.Message) error {
 	message.CreatedAt = time.Now().UTC()
+	if message.ContentType == "" {
+		message.ContentType = conversation.ContentTypeText
+	}
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(message).Error; err != nil {
 			return err
@@ -28,8 +31,10 @@ func (r *MessageRepository) Create(ctx context.Context, message *conversation.Me
 		if err := tx.Raw("SELECT COALESCE(agent_id, 0) FROM conversations WHERE owner_id = ? AND id = ?", message.OwnerID, message.ConversationID).Scan(&agentID).Error; err != nil {
 			return err
 		}
-		if err := enqueueContextResource(ctx, tx, message.OwnerID, agentID, message.ConversationID, contextresource.TypeConversationMessage, message.ID, contextresource.OperationUpsert, messageContextText(*message)); err != nil {
-			return err
+		if message.ContentType == conversation.ContentTypeText {
+			if err := enqueueContextResource(ctx, tx, message.OwnerID, agentID, message.ConversationID, contextresource.TypeConversationMessage, message.ID, contextresource.OperationUpsert, messageContextText(*message)); err != nil {
+				return err
+			}
 		}
 		return touchConversationLastMessage(ctx, tx, message.OwnerID, message.ConversationID, message.CreatedAt)
 	})

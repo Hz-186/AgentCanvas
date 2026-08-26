@@ -557,12 +557,17 @@ export interface ChangeProposal {
 
 export type MessageRole = 'user' | 'assistant' | 'system' | 'tool';
 
+export type MessageContentType = 'text' | 'function_call' | 'function_call_output' | 'reasoning' | 'system_echo';
+
 export interface Message {
   id: number;
   owner_id: number;
   conversation_id: number;
   role: MessageRole;
   content: string;
+  content_type?: MessageContentType;
+  tool_call_id?: string;
+  tool_name?: string;
   run_id?: number | null;
   token_count: number;
   created_at: string;

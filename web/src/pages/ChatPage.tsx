@@ -13,6 +13,7 @@ import {
   Settings2,
   Square,
   Trash2,
+  Wrench,
   X,
 } from 'lucide-react';
 import { useNavigate, useParams } from 'react-router-dom';
@@ -115,7 +116,32 @@ function mergeRuns(current: Run[], incoming: Run[]): Run[] {
 }
 
 export function visibleChatMessages(items: Message[]): Message[] {
-  return items.filter((item) => item.role === 'user' || item.role === 'assistant');
+  return items.filter((item) => {
+    if (item.content_type === 'system_echo' || item.content_type === 'reasoning') return false;
+    if (item.content_type === 'function_call' || item.content_type === 'function_call_output') return true;
+    return item.role === 'user' || item.role === 'assistant';
+  });
+}
+
+// MessageBubble renders one visible message: plain bubbles for user/assistant
+// text, and collapsed tool cards for function_call / function_call_output rows.
+function MessageBubble({ item, agentName }: { item: Message; agentName: string }) {
+  if (item.content_type === 'function_call' || item.content_type === 'function_call_output') {
+    const isCall = item.content_type === 'function_call';
+    const title = isCall ? `调用 ${item.tool_name || 'tool'}` : `结果 ${item.tool_name || 'tool'}`;
+    return (
+      <details className={`chat-trace-row message-tool-entry ${item.content_type}`}>
+        <summary><Wrench size={14} /><span>{title}</span><code>{item.tool_call_id || ''}</code></summary>
+        <p>{item.content || '（空）'}</p>
+      </details>
+    );
+  }
+  return (
+    <article className={`message ${item.role}`}>
+      <span className="message-role">{item.role === 'user' ? '你' : agentName}</span>
+      <p>{item.content}</p>
+    </article>
+  );
 }
 
 export function deduplicateSearchResults(items: MessageSearchResult[]): MessageSearchResult[] {
@@ -706,7 +732,7 @@ export function ChatPage() {
       </div>
       <div className="message-list" ref={messageListRef} role="log" aria-live="polite" aria-busy={busy}>
         {visibleMessages.length === 0 && !busy ? <EmptyState icon={<MessageSquareText size={24} />} title="开始对话" description="输入任务，或输入 / 选择运行模式。" /> : null}
-        {visibleMessages.map((item) => <article className={`message ${item.role}`} key={item.id}><span className="message-role">{item.role === 'user' ? '你' : currentAgent?.name ?? 'Agent'}</span><p>{item.content}</p></article>)}
+        {visibleMessages.map((item) => <MessageBubble item={item} agentName={currentAgent?.name ?? 'Agent'} key={item.id} />)}
         {streamSegments.map((segment) => segment.kind === 'assistant'
           ? <article className="message assistant pending" data-run-segment={segment.id} key={`stream:${segment.id}`}><span className="message-role">{currentAgent?.name ?? 'Agent'}</span><p>{segment.text || <><i />正在处理…</>}</p></article>
           : <article className={`chat-trace-row chat-stream-segment ${segment.kind}`} data-run-segment={segment.id} key={`stream:${segment.id}`}><strong>{segment.kind === 'tool' ? segment.toolName || 'Tool' : segment.kind === 'reasoning' ? 'Reasoning' : 'Status'}</strong><p>{segment.text || segment.status || (segment.kind === 'reasoning' ? '正在推理…' : '正在执行…')}</p></article>)}
