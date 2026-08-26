@@ -1771,3 +1771,34 @@ func TestFailedRunKeepsSinkWrittenEntries(t *testing.T) {
 		t.Fatalf("no entries should be written before the first model turn: %+v", sink.batches)
 	}
 }
+
+// --- Task 6: subagent delegation pair is the only sink write ---
+
+func TestDelegationPairPersistsExactlyTwoEntriesViaParentSink(t *testing.T) {
+	client := &fakeToolClient{responses: []llm.ToolChatResponse{
+		{Message: llm.ChatMessage{Role: conversation.RoleAssistant, ToolCalls: []llm.ToolCall{{ID: "call_sub", Name: "worker_a", Arguments: json.RawMessage(`{"task":"research"}`)}}}},
+		{Message: llm.ChatMessage{Role: conversation.RoleAssistant, Content: "done"}},
+	}}
+	sink := &recordingMessageSink{}
+	result, err := NewRunner(client).Run(context.Background(), RunRequest{
+		Provider: llm.ChatProviderConfig{ProviderType: "openai_compatible"}, Model: "m", Task: "delegate",
+		MessageSink: sink, DelegationDepth: 0,
+		Tools: []toolruntime.RuntimeTool{concurrentDelegationTool{name: "worker_a", state: &concurrencyState{}}},
+	})
+	if err != nil || result.FinalAnswer != "done" {
+		t.Fatalf("delegation run failed: err=%v result=%+v", err, result)
+	}
+	entries := sink.entries()
+	if len(entries) != 3 {
+		t.Fatalf("parent sink must record the delegation pair plus final answer (3 entries), got %d: %+v", len(entries), entries)
+	}
+	if entries[0].ContentType != conversation.ContentTypeFunctionCall || entries[0].ToolName != "worker_a" {
+		t.Fatalf("first entry must be the delegation function_call: %+v", entries[0])
+	}
+	if entries[1].ContentType != conversation.ContentTypeFunctionCallOutput || entries[1].ToolCallID != "call_sub" {
+		t.Fatalf("second entry must be the delegation output paired to call_sub: %+v", entries[1])
+	}
+	if entries[2].ContentType != conversation.ContentTypeText || entries[2].Role != conversation.RoleAssistant {
+		t.Fatalf("last entry must be the final answer text: %+v", entries[2])
+	}
+}
