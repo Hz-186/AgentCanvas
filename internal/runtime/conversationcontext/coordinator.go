@@ -16,14 +16,13 @@ import (
 	"agentcanvas/internal/domain/conversation"
 	"agentcanvas/internal/infrastructure/llm"
 	"agentcanvas/internal/pkg/tokencounter"
+	"agentcanvas/internal/runtime/compaction"
 
 	"gorm.io/gorm"
 )
 
 const (
-	PromptVersion     = "conversation-snapshot-v3"
-	compactUserBudget = 20_000
-	compactionTimeout = 20 * time.Second
+	PromptVersion = "conversation-snapshot-v3"
 )
 
 var (
@@ -258,7 +257,7 @@ func (c Coordinator) compact(ctx context.Context, req Request, current Window, b
 		before.Failure = err.Error()
 		return Result{Window: current, Trace: before}, err
 	}
-	claimed, err := c.Snapshots.ClaimSnapshot(ctx, req.OwnerID, req.ConversationID, parentID, parentVersion, token, time.Now().UTC().Add(compactionTimeout+5*time.Second))
+	claimed, err := c.Snapshots.ClaimSnapshot(ctx, req.OwnerID, req.ConversationID, parentID, parentVersion, token, time.Now().UTC().Add(compaction.SummarizeTimeout+5*time.Second))
 	if err != nil {
 		before.Failure = err.Error()
 		return Result{Window: current, Trace: before}, err
@@ -287,7 +286,7 @@ func (c Coordinator) compact(ctx context.Context, req Request, current Window, b
 	retained := []conversation.Message(nil)
 	if req.TokenBudgetCompaction {
 		if req.RetainClientDeveloperMessages {
-			retained = retainRoleMessages(req, all, conversation.RoleDeveloper, compactUserBudget)
+			retained = retainRoleMessages(req, all, conversation.RoleDeveloper, compaction.UserMessageBudgetTokens)
 		}
 	} else {
 		summaryResult, err = c.summarize(ctx, req, current.Snapshot, all)
@@ -295,9 +294,9 @@ func (c Coordinator) compact(ctx context.Context, req Request, current Window, b
 			return fail(err)
 		}
 		if strings.TrimSpace(summaryResult.Summary) == "" {
-			summaryResult.Summary = "(no summary available)"
+			summaryResult.Summary = compaction.FallbackSummary
 		}
-		retained = retainUserMessages(req, all, compactUserBudget)
+		retained = retainUserMessages(req, all, compaction.UserMessageBudgetTokens)
 	}
 	firstID, lastID := int64(0), int64(0)
 	if len(retained) > 0 {
@@ -343,67 +342,30 @@ func (c Coordinator) compact(ctx context.Context, req Request, current Window, b
 	return prepared, nil
 }
 
+// summarize delegates to the shared compaction core so cross-turn and mid-run
+// triggers run the exact same algorithm.
 func (c Coordinator) summarize(ctx context.Context, req Request, parent *conversation.Compaction, messages []conversation.Message) (summaryResult, error) {
-	history := make([]llm.ChatMessage, 0, len(messages)+1)
-	if parent != nil && strings.TrimSpace(parent.Summary) != "" {
-		history = append(history, llm.ChatMessage{Role: conversation.RoleUser, Content: conversation.CompactionSummaryPrefix + strings.TrimSpace(parent.Summary)})
-	}
-	for _, message := range messages {
-		history = append(history, llm.ChatMessage{Role: message.Role, Content: message.Content})
-	}
-	prompt := "Summarize the conversation for continuation. Include: progress and decisions; context constraints and preferences; remaining work; key data and references. Return summary text only."
-	if custom := strings.TrimSpace(req.CompactPrompt); custom != "" {
-		prompt += "\nAdditional guidance:\n" + custom
-	}
 	provider, providerID, model := req.CompactionProvider, req.CompactionProviderID, strings.TrimSpace(req.CompactionModel)
 	if strings.TrimSpace(provider.ProviderType) == "" || model == "" {
 		provider, providerID, model = req.Provider, req.ProviderID, req.Model
 	}
-	result := summaryResult{ProviderID: providerID, Model: model}
-	trimmed := append([]llm.ChatMessage(nil), history...)
-	retries := 0
-	for {
-		modelMessages := make([]llm.ChatMessage, 0, len(trimmed)+2)
-		system := strings.TrimSpace(req.SystemPrompt)
-		if system == "" {
-			system = "You are a context compaction engine."
-		}
-		modelMessages = append(modelMessages, llm.ChatMessage{Role: conversation.RoleSystem, Content: system})
-		modelMessages = append(modelMessages, trimmed...)
-		modelMessages = append(modelMessages, llm.ChatMessage{Role: conversation.RoleUser, Content: prompt})
-		callCtx, cancel := context.WithTimeout(ctx, compactionTimeout)
-		response, callErr := c.Client.Chat(callCtx, provider, llm.ChatRequest{Model: model, Messages: modelMessages})
-		cancel()
-		result.ModelCalls++
-		if response != nil {
-			result.Usage = addChatUsage(result.Usage, response.Usage)
-		}
-		if callErr == nil {
-			if response == nil || strings.TrimSpace(response.Content) == "" {
-				result.Summary = "(no summary available)"
-			} else {
-				result.Summary = strings.TrimSpace(response.Content)
-			}
-			return result, nil
-		}
-		if errors.Is(callErr, llm.ErrContextWindowExceeded) {
-			if len(trimmed) <= 1 {
-				return result, fmt.Errorf("%w: %v", ErrCompactionFailed, callErr)
-			}
-			trimmed, retries = trimmed[1:], 0
-			continue
-		}
-		if retries < 2 {
-			select {
-			case <-ctx.Done():
-				return result, ctx.Err()
-			case <-time.After(time.Duration(1<<retries) * 10 * time.Millisecond):
-			}
-			retries++
-			continue
-		}
-		return result, fmt.Errorf("%w: %v", ErrCompactionFailed, callErr)
+	parentSummary := ""
+	if parent != nil {
+		parentSummary = strings.TrimSpace(parent.Summary)
 	}
+	coreReq := compaction.Request{
+		SystemPrompt:  req.SystemPrompt,
+		CompactPrompt: req.CompactPrompt,
+		Provider:      provider,
+		Model:         model,
+		ParentSummary: parentSummary,
+	}
+	result, err := compaction.Compact(ctx, c.Client, coreReq, compaction.FromMessages(messages))
+	summary := summaryResult{ProviderID: providerID, Model: model, Summary: result.Summary, Usage: result.Usage, ModelCalls: result.ModelCalls}
+	if err != nil {
+		return summary, fmt.Errorf("%w: %v", ErrCompactionFailed, err)
+	}
+	return summary, nil
 }
 
 func retainUserMessages(req Request, messages []conversation.Message, budget int) []conversation.Message {

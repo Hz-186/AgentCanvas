@@ -2,6 +2,7 @@ package conversationcontext
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"sync"
@@ -11,6 +12,7 @@ import (
 	"agentcanvas/internal/domain"
 	"agentcanvas/internal/domain/conversation"
 	"agentcanvas/internal/infrastructure/llm"
+	"agentcanvas/internal/runtime/compaction"
 
 	"gorm.io/gorm"
 )
@@ -230,4 +232,82 @@ func TestTokenBudgetCompactionSkipsSummaryModel(t *testing.T) {
 	if err != nil || !result.Trace.Created || result.Trace.ModelCalls != 0 || snapshots.current == nil || snapshots.current.Summary != "" || snapshots.current.LastMessageID != 3 || len(result.Window.Messages) != 1 || result.Window.Messages[0].Role != conversation.RoleDeveloper {
 		t.Fatalf("token-budget window mismatch: result=%+v snapshot=%+v err=%v", result, snapshots.current, err)
 	}
+}
+
+func typedMessage(id int64, role, contentType, content string, metadata json.RawMessage) conversation.Message {
+	return conversation.Message{ImmutableModel: domain.ImmutableModel{ID: id}, Role: role, ContentType: contentType, Content: content, MetadataJSON: metadata}
+}
+
+func TestPrepareSummarizerInputIncludesToolEntries(t *testing.T) {
+	messages := []conversation.Message{
+		testMessage(1, conversation.RoleUser, strings.Repeat("old ", 50000)),
+		typedMessage(2, conversation.RoleAssistant, conversation.ContentTypeText, "I will search", nil),
+		typedMessage(3, conversation.RoleAssistant, conversation.ContentTypeFunctionCall, "", json.RawMessage(`{"tool_call_id":"c1","tool_name":"search","arguments":{"q":"x"}}`)),
+		typedMessage(4, conversation.RoleTool, conversation.ContentTypeFunctionCallOutput, "found it", json.RawMessage(`{"tool_call_id":"c1","tool_name":"search"}`)),
+		testMessage(5, conversation.RoleUser, "latest request"),
+	}
+	chat := &fakeChat{}
+	snapshots := &fakeSnapshots{}
+	c := Coordinator{History: fakeHistory{messages: messages}, Snapshots: snapshots, Client: chat}
+	_, err := c.Prepare(context.Background(), Request{OwnerID: 1, ConversationID: 1, Provider: llm.ChatProviderConfig{ProviderType: "main"}, Model: "m", WindowTokens: 30000, AutoLimit: 1, Render: render})
+	if err != nil {
+		t.Fatalf("compaction failed: %v", err)
+	}
+	if chat.calls != 1 {
+		t.Fatalf("expected 1 summarizer call, got %d", chat.calls)
+	}
+	req := chat.requests[0]
+	joined := make([]string, 0, len(req.Messages))
+	for _, msg := range req.Messages {
+		joined = append(joined, msg.Content)
+	}
+	all := strings.Join(joined, "\n")
+	if !strings.Contains(all, "[tool call: search]") || !strings.Contains(all, `[tool result: search] found it`) {
+		t.Fatalf("summarizer input must include typed tool entries: %s", all)
+	}
+}
+
+func TestPrepareRenderReplaysToolPairing(t *testing.T) {
+	// Mirror the production Render callback in assembly.go: typed rows go
+	// through compaction.FromMessages (metadata preserved) then ToChat, so
+	// role=tool messages always follow an assistant message carrying the
+	// matching ToolCalls.
+	window := Window{
+		Snapshot: &conversation.Compaction{LastMessageID: 1, Summary: "progress and decisions"},
+		Messages: []conversation.Message{
+			testMessage(1, conversation.RoleUser, "frozen request"),
+			typedMessage(2, conversation.RoleAssistant, conversation.ContentTypeFunctionCall, "", json.RawMessage(`{"tool_call_id":"c1","tool_name":"search","arguments":{"q":"x"}}`)),
+			typedMessage(3, conversation.RoleTool, conversation.ContentTypeFunctionCallOutput, "found it", json.RawMessage(`{"tool_call_id":"c1","tool_name":"search"}`)),
+			testMessage(4, conversation.RoleUser, "latest request"),
+		},
+	}
+	entries := compaction.FromMessages(window.Messages)
+	summary := strings.TrimSpace(window.Snapshot.Summary)
+	insertAt := len(entries)
+	for i, entry := range entries {
+		if entry.MessageID > window.Snapshot.LastMessageID {
+			insertAt = i
+			break
+		}
+	}
+	entries = append(entries, compaction.Entry{})
+	copy(entries[insertAt+1:], entries[insertAt:])
+	entries[insertAt] = compaction.Entry{Role: conversation.RoleUser, ContentType: conversation.ContentTypeText, Content: conversation.CompactionSummaryPrefix + summary}
+	paired := compaction.ToChat(entries)
+
+	toolIdx := -1
+	for i, msg := range paired {
+		if msg.Role == conversation.RoleTool {
+			toolIdx = i
+		}
+	}
+	if toolIdx == -1 || paired[toolIdx].ToolCallID != "c1" {
+		t.Fatalf("role=tool message missing or mispaired: %+v", paired)
+	}
+	for i := 0; i < toolIdx; i++ {
+		if paired[i].Role == conversation.RoleAssistant && len(paired[i].ToolCalls) == 1 && paired[i].ToolCalls[0].ID == "c1" {
+			return // legal pairing found
+		}
+	}
+	t.Fatalf("role=tool message has no preceding assistant ToolCalls pairing: %+v", paired)
 }

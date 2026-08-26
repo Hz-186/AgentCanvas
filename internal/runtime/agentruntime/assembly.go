@@ -13,6 +13,7 @@ import (
 	"agentcanvas/internal/infrastructure/llm"
 	"agentcanvas/internal/pkg/tokencounter"
 	runtimeagent "agentcanvas/internal/runtime/agent"
+	"agentcanvas/internal/runtime/compaction"
 	"agentcanvas/internal/runtime/conversationcontext"
 	"agentcanvas/internal/runtime/harness/rules"
 	"agentcanvas/internal/runtime/toolruntime"
@@ -130,21 +131,26 @@ func buildPreparedConversationContext(
 		TokenBudgetCompaction:         cfg.CompactionMode == "token_budget",
 		RetainClientDeveloperMessages: cfg.RetainClientDeveloperMessages,
 		Render: func(window conversationcontext.Window) ([]llm.ChatMessage, int, error) {
-			messages := make([]llm.ChatMessage, 0, len(window.Messages)+1)
-			summaryAdded := false
-			for _, item := range window.Messages {
-				if window.Snapshot != nil && !summaryAdded && item.ID > window.Snapshot.LastMessageID {
-					if strings.TrimSpace(window.Snapshot.Summary) != "" {
-						messages = append(messages, llm.ChatMessage{Role: conversation.RoleUser, Content: conversation.CompactionSummaryPrefix + strings.TrimSpace(window.Snapshot.Summary)})
+			// Typed rows keep their tool metadata through FromMessages; the
+			// summary is injected as a user entry between frozen and tail rows,
+			// then ToChat merges function_call entries back into legal pairings.
+			entries := compaction.FromMessages(window.Messages)
+			if window.Snapshot != nil {
+				if summary := strings.TrimSpace(window.Snapshot.Summary); summary != "" {
+					summaryEntry := compaction.Entry{Role: conversation.RoleUser, ContentType: conversation.ContentTypeText, Content: conversation.CompactionSummaryPrefix + summary}
+					insertAt := len(entries)
+					for i, entry := range entries {
+						if entry.MessageID > window.Snapshot.LastMessageID {
+							insertAt = i
+							break
+						}
 					}
-					summaryAdded = true
+					entries = append(entries, compaction.Entry{})
+					copy(entries[insertAt+1:], entries[insertAt:])
+					entries[insertAt] = summaryEntry
 				}
-				messages = append(messages, llm.ChatMessage{Role: item.Role, Content: item.Content})
 			}
-			if window.Snapshot != nil && !summaryAdded && strings.TrimSpace(window.Snapshot.Summary) != "" {
-				messages = append(messages, llm.ChatMessage{Role: conversation.RoleUser, Content: conversation.CompactionSummaryPrefix + strings.TrimSpace(window.Snapshot.Summary)})
-			}
-			return messages, extraTokens, nil
+			return compaction.ToChat(entries), extraTokens, nil
 		},
 	})
 	if err != nil {
