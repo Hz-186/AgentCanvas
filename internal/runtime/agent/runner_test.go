@@ -1573,3 +1573,201 @@ func TestRunnerLetsProviderReportInitialContextOverflow(t *testing.T) {
 		t.Fatalf("provider should receive one request, got %d", len(client.requests))
 	}
 }
+
+// --- Task 5: realtime message sink ---
+
+type recordingMessageSink struct {
+	mu      sync.Mutex
+	batches [][]compaction.Entry
+	nextID  int64
+	err     error
+}
+
+func (s *recordingMessageSink) PersistEntries(_ context.Context, entries []compaction.Entry) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.batches = append(s.batches, append([]compaction.Entry(nil), entries...))
+	if s.err != nil {
+		return 0, s.err
+	}
+	first := s.nextID + 1
+	s.nextID += int64(len(entries))
+	return first, nil
+}
+
+func (s *recordingMessageSink) entries() []compaction.Entry {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var all []compaction.Entry
+	for _, batch := range s.batches {
+		all = append(all, batch...)
+	}
+	return all
+}
+
+func TestSinkPersistsAssistantTextToolCallsAndResultsInOrder(t *testing.T) {
+	client := &fakeToolClient{responses: []llm.ToolChatResponse{
+		{Message: llm.ChatMessage{Role: conversation.RoleAssistant, ToolCalls: []llm.ToolCall{
+			{ID: "call_1", Name: "lookup", Arguments: json.RawMessage(`{"q":"a"}`)},
+			{ID: "call_2", Name: "fetch", Arguments: json.RawMessage(`{}`)},
+		}}},
+		{Message: llm.ChatMessage{Role: conversation.RoleAssistant, Content: "final"}},
+	}}
+	sink := &recordingMessageSink{}
+	result, err := NewRunner(client).Run(context.Background(), RunRequest{
+		Provider: llm.ChatProviderConfig{ProviderType: "openai_compatible"}, Model: "m", Task: "task",
+		MessageSink: sink, Tools: []toolruntime.RuntimeTool{
+			&fakeRuntimeTool{name: "lookup", output: "r1"},
+			&fakeRuntimeTool{name: "fetch", output: "r2"},
+		},
+	})
+	if err != nil || result.FinalAnswer != "final" {
+		t.Fatalf("run failed: err=%v result=%+v", err, result)
+	}
+	entries := sink.entries()
+	// assistant text (skipped: first response has no text) + 2 function_call
+	// + 2 function_call_output + final assistant text = 5 entries.
+	if len(entries) != 5 {
+		t.Fatalf("sink must receive 5 entries, got %d: %+v", len(entries), entries)
+	}
+	if entries[0].ContentType != conversation.ContentTypeFunctionCall || entries[0].ToolName != "lookup" {
+		t.Fatalf("first entry must be lookup function_call: %+v", entries[0])
+	}
+	if entries[1].ContentType != conversation.ContentTypeFunctionCall || entries[1].ToolName != "fetch" {
+		t.Fatalf("second entry must be fetch function_call: %+v", entries[1])
+	}
+	if entries[2].ContentType != conversation.ContentTypeFunctionCallOutput || entries[2].ToolCallID != "call_1" || entries[2].Content != "r1" {
+		t.Fatalf("third entry must be call_1 output: %+v", entries[2])
+	}
+	if entries[3].ContentType != conversation.ContentTypeFunctionCallOutput || entries[3].ToolCallID != "call_2" {
+		t.Fatalf("fourth entry must be call_2 output: %+v", entries[3])
+	}
+	if entries[4].ContentType != conversation.ContentTypeText || entries[4].Role != conversation.RoleAssistant || entries[4].Content != "final" {
+		t.Fatalf("last entry must be final assistant text: %+v", entries[4])
+	}
+	if result.AssistantMessageID == 0 {
+		t.Fatalf("run result must expose the sink-written assistant row id: %d", result.AssistantMessageID)
+	}
+}
+
+func TestSinkFailureDegradesWithoutAbortingRun(t *testing.T) {
+	client := &fakeToolClient{responses: []llm.ToolChatResponse{{Message: llm.ChatMessage{Role: conversation.RoleAssistant, Content: "done"}}}}
+	sink := &recordingMessageSink{err: errors.New("db down")}
+	result, err := NewRunner(client).Run(context.Background(), RunRequest{
+		Provider: llm.ChatProviderConfig{ProviderType: "openai_compatible"}, Model: "m", Task: "task",
+		MessageSink: sink,
+	})
+	if err != nil || result.FinalAnswer != "done" || result.StopReason != StopReasonFinalAnswer {
+		t.Fatalf("sink failure must not abort the run: err=%v result=%+v", err, result)
+	}
+	found := false
+	for _, step := range result.Steps {
+		if step.Type == StepTypeError && strings.Contains(step.Error, "persist transcript entries") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("sink failure must surface exactly one error step: %+v", result.Steps)
+	}
+}
+
+func TestSinkCursorSkipsPersistedEntriesOnResume(t *testing.T) {
+	client := &fakeToolClient{responses: []llm.ToolChatResponse{{Message: llm.ChatMessage{Role: conversation.RoleAssistant, Content: "done"}}}}
+	sink := &recordingMessageSink{}
+	// 5-entry checkpoint transcript fully covered by the cursor: nothing
+	// may hit the sink, not even the resumer's own reconstruction.
+	transcript := make([]llm.ChatMessage, 0, 8)
+	transcript = append(transcript, llm.ChatMessage{Role: conversation.RoleUser, Content: "task"})
+	transcript = append(transcript, llm.ChatMessage{Role: conversation.RoleAssistant, ToolCalls: []llm.ToolCall{{ID: "call_1", Name: "lookup", Arguments: json.RawMessage(`{}`)}}})
+	transcript = append(transcript, llm.ChatMessage{Role: conversation.RoleTool, ToolCallID: "call_1", Content: "result"})
+	for _, extra := range []string{"a", "b"} {
+		transcript = append(transcript, llm.ChatMessage{Role: conversation.RoleUser, Content: extra})
+	}
+	checkpoint := &Checkpoint{
+		SnapshotVersion:       2,
+		PersistedMessageCount: 5,
+		Messages:              append([]llm.ChatMessage(nil), transcript...),
+		BaseMessages:          []llm.ChatMessage{{Role: conversation.RoleSystem, Content: "system"}, {Role: conversation.RoleUser, Content: "task"}},
+		Transcript:            append([]llm.ChatMessage(nil), transcript...),
+	}
+	resumeReq, err := BuildResumeRequest(ResumeRequest{
+		RunRequest: RunRequest{Model: "m", Task: "task", MessageSink: sink},
+		Checkpoint: checkpoint,
+		Approved:   true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resumeReq.MessageSink = sink
+	if _, err := NewRunner(client).Run(context.Background(), *resumeReq); err != nil {
+		t.Fatal(err)
+	}
+	entries := sink.entries()
+	if len(entries) != 0 {
+		t.Fatalf("already-persisted transcript entries must not be re-written, got %d: %+v", len(entries), entries)
+	}
+}
+
+func TestCheckpointCarriesPersistedMessageCount(t *testing.T) {
+	client := &fakeToolClient{responses: []llm.ToolChatResponse{{Message: llm.ChatMessage{Role: conversation.RoleAssistant, ToolCalls: []llm.ToolCall{
+		{ID: "call_1", Name: "dangerous_write", Arguments: json.RawMessage(`{}`)},
+	}}}}}
+	sink := &recordingMessageSink{}
+	state := &concurrencyState{}
+	result, err := NewRunner(client).Run(context.Background(), RunRequest{
+		Provider: llm.ChatProviderConfig{ProviderType: "openai_compatible"}, Model: "m", Task: "task",
+		MessageSink: sink, Tools: []toolruntime.RuntimeTool{
+			classifiedConcurrencyTool{name: "dangerous_write", sideEffect: toolruntime.SideEffectWrite, riskLevel: toolruntime.RiskHigh, state: state},
+		},
+		ToolPolicy: ToolPolicy{RequireApprovalForRisk: []string{toolruntime.RiskHigh}},
+	})
+	if err != nil || result.StopReason != StopReasonWaitingHuman {
+		t.Fatalf("run must pause for approval: err=%v reason=%s", err, result.StopReason)
+	}
+	if result.Checkpoint == nil || result.Checkpoint.PersistedMessageCount != 1 {
+		t.Fatalf("checkpoint must carry the sink cursor: %+v", result.Checkpoint)
+	}
+}
+
+func TestCompactionResetsSinkCursorForRetainedEntries(t *testing.T) {
+	client := &fakeToolClient{responses: []llm.ToolChatResponse{
+		{Message: llm.ChatMessage{Role: conversation.RoleAssistant, ToolCalls: []llm.ToolCall{{ID: "call_1", Name: "lookup", Arguments: json.RawMessage(`{}`)}}}},
+		{Message: llm.ChatMessage{Role: conversation.RoleAssistant, Content: "summary"}},
+		{Message: llm.ChatMessage{Role: conversation.RoleAssistant, Content: "done"}},
+	}}
+	sink := &recordingMessageSink{}
+	result, err := NewRunner(client).Run(context.Background(), RunRequest{
+		Provider: llm.ChatProviderConfig{ProviderType: "openai_compatible"}, Model: "m", Task: "task",
+		MessageSink: sink, ModelAutoCompactTokenLimit: 1,
+		Tools: []toolruntime.RuntimeTool{&fakeRuntimeTool{name: "lookup", output: strings.Repeat("x ", 5000)}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Context.Compactions) == 0 {
+		t.Fatalf("run must compact mid-run: %+v", result.Context)
+	}
+	if result.AssistantMessageID == 0 {
+		t.Fatalf("final answer row id must be exposed after compaction: %d", result.AssistantMessageID)
+	}
+	for _, entry := range sink.entries() {
+		if strings.HasPrefix(entry.Content, conversation.CompactionSummaryPrefix) {
+			t.Fatalf("SUMMARY entries must never be persisted: %+v", entry)
+		}
+	}
+}
+
+func TestFailedRunKeepsSinkWrittenEntries(t *testing.T) {
+	client := &fakeToolClient{errs: []error{errors.New("boom")}}
+	sink := &recordingMessageSink{}
+	_, err := NewRunner(client).Run(context.Background(), RunRequest{
+		Provider: llm.ChatProviderConfig{ProviderType: "openai_compatible"}, Model: "m", Task: "task",
+		MessageSink: sink, Tools: []toolruntime.RuntimeTool{&fakeRuntimeTool{name: "lookup", output: "r"}},
+	})
+	if err == nil {
+		t.Fatal("run must fail")
+	}
+	if len(sink.batches) != 0 {
+		t.Fatalf("no entries should be written before the first model turn: %+v", sink.batches)
+	}
+}

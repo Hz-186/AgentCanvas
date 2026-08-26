@@ -37,6 +37,12 @@ type MessageHistoryReader interface {
 	ListActiveByConversation(ctx context.Context, ownerID, conversationID int64) ([]conversation.Message, error)
 }
 
+// MessageWriter creates typed conversation rows for the realtime sink. It is
+// the write-side counterpart of MessageHistoryReader.
+type MessageWriter interface {
+	Create(ctx context.Context, message *conversation.Message) error
+}
+
 type ArchivalIndexFactory interface {
 	ForProvider(LoadedProvider) memory.ArchivalIndex
 }
@@ -51,6 +57,7 @@ type Repositories struct {
 	Retriever        retrieval.Retriever
 	Providers        ProviderConfigLoader
 	MessageHistory   MessageHistoryReader
+	MessageWriter    MessageWriter
 	Compactions      conversation.CompactionRepository
 	SessionSearch    conversation.MessageSearchIndex
 	Memories         memory.Repository
@@ -114,7 +121,7 @@ func buildRuntimeCore(deps Deps) runtimeCore {
 			Providers: deps.Providers, ToolPacks: deps.ToolPacks, Skills: deps.Skills, MCPServers: deps.MCPServers,
 			Retriever: deps.Retriever, MemoryRetriever: deps.MemoryRetriever, Memories: deps.Memories, MemoryReader: deps.MemoryReader,
 			MemoryLogs: deps.MemoryWriteLogs, MemoryRecallLogs: deps.MemoryRecallLogs, MemoryCandidates: deps.MemoryCandidates,
-			MessageHistory: deps.MessageHistory, Compactions: deps.Compactions, SessionSearch: deps.SessionSearch,
+			MessageHistory: deps.MessageHistory, MessageWriter: deps.MessageWriter, Compactions: deps.Compactions, SessionSearch: deps.SessionSearch,
 			ContextIndex: deps.ContextIndex,
 		},
 		coreClients: coreClients{LLM: deps.ToolCalling, Embedder: deps.Embedder, Archival: deps.Archival},

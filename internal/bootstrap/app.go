@@ -312,7 +312,7 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 	toolRegistry := toolruntime.BasicRegistry{Tools: toolDefinitionRepo, Invocations: toolInvocationRepo}
 	agentRuntime, err := agentruntime.New(agentruntime.Deps{
 		Repositories: agentruntime.Repositories{
-			Retriever: retrievalService, Providers: providerLoader, MessageHistory: messageRepo, Compactions: compactionRepo,
+			Retriever: retrievalService, Providers: providerLoader, MessageHistory: messageRepo, MessageWriter: messageRepo, Compactions: compactionRepo,
 			SessionSearch: sessionSearch, Memories: memoryRepo, MemoryReader: memoryService, MemoryWriteLogs: memoryWriteLogRepo,
 			MemoryRecallLogs: memoryRecallLogRepo, MemoryCandidates: memoryCandidateService, MemoryRetriever: memoryRetrievalStore,
 			ToolPacks: toolPackRepo, Skills: skillRepo, MCPServers: mcpRepo,

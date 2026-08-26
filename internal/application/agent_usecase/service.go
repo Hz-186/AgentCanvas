@@ -604,11 +604,15 @@ func (s *Service) ForkConversationWithOptions(ctx context.Context, ownerID, agen
 			Role:           message.Role,
 			Content:        message.Content,
 			TokenCount:     message.TokenCount,
+			ContentType:    message.ContentType,
+			MetadataJSON:   append(json.RawMessage(nil), message.MetadataJSON...),
 		}
 		if err := s.messages.Create(ctx, copyMessage); err != nil {
 			return nil, err
 		}
-		if s.sessionSearch != nil {
+		// Only text rows carry searchable prose; tool entries and echoes stay
+		// out of the session index.
+		if s.sessionSearch != nil && copyMessage.ContentType == conversation.ContentTypeText {
 			_ = s.sessionSearch.IndexMessage(ctx, ownerID, agentID, copyMessage)
 		}
 	}
@@ -765,6 +769,11 @@ func (s *Service) StartTurn(ctx context.Context, ownerID, agentID, conversationI
 	if req.GoalContinuation {
 		userMessage.Role = conversation.RoleDeveloper
 	}
+	if req.ManualCompaction {
+		// /compact is an operator echo, not real user input: tag it so
+		// compaction skips it and the search index never sees it.
+		userMessage.ContentType = conversation.ContentTypeSystemEcho
+	}
 	now := time.Now().UTC()
 	mode, err := normalizeAgentMode(conv.AgentMode)
 	if err != nil {
@@ -809,7 +818,7 @@ func (s *Service) StartTurn(ctx context.Context, ownerID, agentID, conversationI
 		}
 		return nil, err
 	}
-	if s.sessionSearch != nil {
+	if s.sessionSearch != nil && userMessage.ContentType == conversation.ContentTypeText {
 		_ = s.sessionSearch.IndexMessage(ctx, ownerID, agentID, userMessage)
 	}
 	return &TurnAccepted{

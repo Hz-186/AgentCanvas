@@ -13,6 +13,7 @@ import (
 	"agentcanvas/internal/infrastructure/llm"
 	"agentcanvas/internal/observability"
 	"agentcanvas/internal/pkg/strutil"
+	"agentcanvas/internal/runtime/compaction"
 	"agentcanvas/internal/runtime/harness/hooks"
 	"agentcanvas/internal/runtime/harness/rules"
 	"agentcanvas/internal/runtime/toolruntime"
@@ -135,6 +136,13 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 	}
 	messages := baseMessages
 	transcript := make([]llm.ChatMessage, 0, req.MaxIterations*2)
+	// Cursor over transcript entries that are exempt from sink writes:
+	// already-persisted entries (resume), steering messages, and the
+	// post-compaction window all count without needing a row.
+	persistedCount := 0
+	if req.ResumePersistedMessageCount > 0 {
+		persistedCount = req.ResumePersistedMessageCount
+	}
 	previousRuleIDs := make([]string, 0)
 	result.Context = contextTrace
 	if len(req.ResumeMessages) == 0 && len(req.RecalledReflectionIDs) > 0 {
@@ -154,6 +162,13 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 	needsFollowUp := false
 	if len(req.ResumeMessages) > 0 {
 		transcript = append([]llm.ChatMessage(nil), req.ResumeTranscript...)
+		// Entries the resumer appended past the persisted cursor (approval
+		// answers, rejection notes) still need rows so tool pairings stay
+		// complete; legacy checkpoints with a zero cursor replay everything.
+		if persistedCount > len(transcript) {
+			persistedCount = len(transcript)
+		}
+		persistedCount, _ = r.persistTranscriptEntries(ctx, result, req, transcript[persistedCount:], persistedCount)
 		messages = assembleRoundMessages(baseMessages, nil, transcript)
 		startIteration = req.ResumeIteration
 		startToolCalls = req.ResumeToolCalls
@@ -167,19 +182,21 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 		if len(unresolved) > 0 {
 			messageCountBeforeTools := len(messages)
 			stepStart := len(result.Steps)
-			stop, updatedMessages := r.executeToolBatch(ctx, req, result, messages, unresolved, toolHooks, contextTrace, toolNames, req.ResumeApprovedToolCallIDs)
+			stop, updatedMessages := r.executeToolBatch(ctx, req, result, messages, unresolved, toolHooks, contextTrace, toolNames, req.ResumeApprovedToolCallIDs, persistedCount)
 			messages = updatedMessages
 			if len(updatedMessages) > messageCountBeforeTools {
 				transcript = append(transcript, updatedMessages[messageCountBeforeTools:]...)
+				persistedCount, _ = r.persistTranscriptEntries(ctx, result, req, updatedMessages[messageCountBeforeTools:], persistedCount)
 			}
 			if !stop {
 				if feedback := r.maybeReflect(ctx, req, result, result.Steps[stepStart:]); feedback != nil {
 					messages = append(messages, *feedback)
 					transcript = append(transcript, *feedback)
+					persistedCount, _ = r.persistTranscriptEntries(ctx, result, req, []llm.ChatMessage{*feedback}, persistedCount)
 				}
 			}
 			if stop {
-				hydrateCheckpoint(result.Checkpoint, baseMessages, transcript, result.Steps, messages)
+				hydrateCheckpoint(result.Checkpoint, baseMessages, transcript, result.Steps, messages, persistedCount)
 				return finish(result, r.now()), nil
 			}
 		}
@@ -194,6 +211,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 				message := llm.ChatMessage{Role: conversation.RoleDeveloper, Content: steering}
 				messages = append(messages, message)
 				transcript = append(transcript, message)
+				persistedCount++
 			}
 		}
 		if err := ctx.Err(); err != nil {
@@ -203,7 +221,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 				result.Checkpoint = checkpointFromMessages(
 					req, messages, contextTrace, toolNames, nil,
 					result.StopReason, result.Iterations, result.ToolCalls)
-				hydrateCheckpoint(result.Checkpoint, baseMessages, transcript, result.Steps, messages)
+				hydrateCheckpoint(result.Checkpoint, baseMessages, transcript, result.Steps, messages, persistedCount)
 			}
 			return result, nil
 		}
@@ -213,6 +231,10 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 				previousTranscript := append([]llm.ChatMessage(nil), transcript...)
 				compactedRuntime, compactUsage, runtimeCompaction := r.compactRuntimeTranscript(ctx, req, transcript)
 				transcript = compactedRuntime
+				// Retained user entries and the SUMMARY entry are exempt
+				// (user rows already exist; SUMMARY never persists), so the
+				// sink cursor restarts at the compacted length.
+				persistedCount = len(transcript)
 				result.Usage = addUsage(result.Usage, compactUsage)
 				if runtimeCompaction != nil {
 					runtimeCompaction.BeforeTokens = status.Measured
@@ -302,7 +324,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 						req, messages, contextTrace, toolNames, nil,
 						result.StopReason, result.Iterations, result.ToolCalls,
 					)
-					hydrateCheckpoint(result.Checkpoint, baseMessages, transcript, result.Steps, messages)
+					hydrateCheckpoint(result.Checkpoint, baseMessages, transcript, result.Steps, messages, persistedCount)
 				}
 				return result, nil
 			}
@@ -354,6 +376,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 			// A final model response ends a guided plan without claiming verification.
 			result.FinalAnswer = assistant.Content
 			result.StopReason = StopReasonFinalAnswer
+			_, result.AssistantMessageID = r.persistTranscriptEntries(ctx, result, req, []llm.ChatMessage{assistant}, persistedCount)
 			finalStep := r.appendStep(result,
 				RunStep{
 					Type:       StepTypeFinalAnswer,
@@ -369,20 +392,23 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 		messages = append(messages, assistant)
 		messageCountBeforeTools := len(messages)
 		stepStart := len(result.Steps)
-		stop, updatedMessages := r.executeToolBatch(ctx, req, result, messages, assistant.ToolCalls, toolHooks, contextTrace, toolNames, nil)
+		stop, updatedMessages := r.executeToolBatch(ctx, req, result, messages, assistant.ToolCalls, toolHooks, contextTrace, toolNames, nil, persistedCount)
 		messages = updatedMessages
 		transcript = append(transcript, assistant)
+		persistedCount, _ = r.persistTranscriptEntries(ctx, result, req, []llm.ChatMessage{assistant}, persistedCount)
 		if len(updatedMessages) > messageCountBeforeTools {
 			transcript = append(transcript, updatedMessages[messageCountBeforeTools:]...)
+			persistedCount, _ = r.persistTranscriptEntries(ctx, result, req, updatedMessages[messageCountBeforeTools:], persistedCount)
 		}
 		if !stop {
 			if feedback := r.maybeReflect(ctx, req, result, result.Steps[stepStart:]); feedback != nil {
 				messages = append(messages, *feedback)
 				transcript = append(transcript, *feedback)
+				persistedCount, _ = r.persistTranscriptEntries(ctx, result, req, []llm.ChatMessage{*feedback}, persistedCount)
 			}
 		}
 		if stop {
-			hydrateCheckpoint(result.Checkpoint, baseMessages, transcript, result.Steps, messages)
+			hydrateCheckpoint(result.Checkpoint, baseMessages, transcript, result.Steps, messages, persistedCount)
 			return finish(result, r.now()), nil
 		}
 		needsFollowUp = true
@@ -511,6 +537,7 @@ func (r *Runner) executeToolBatch(
 	contextTrace ContextTrace,
 	toolNames []string,
 	approvedToolCallIDs []string,
+	persistedCount int,
 ) (bool, []llm.ChatMessage) {
 	normalizer, normalizeErr := NewToolCallNormalizer(req.Tools, nil)
 	prepared := make([]preparedToolCall, 0, len(calls))
@@ -783,16 +810,42 @@ func checkpointFromMessages(
 	}
 }
 
-func hydrateCheckpoint(checkpoint *Checkpoint, baseMessages, transcript []llm.ChatMessage, steps []RunStep, messages []llm.ChatMessage) {
+func hydrateCheckpoint(checkpoint *Checkpoint, baseMessages, transcript []llm.ChatMessage, steps []RunStep, messages []llm.ChatMessage, persistedCount int) {
 	if checkpoint == nil {
 		return
 	}
 	checkpoint.SnapshotVersion = 2
+	checkpoint.PersistedMessageCount = persistedCount
 	checkpoint.BaseMessages = append([]llm.ChatMessage(nil), baseMessages...)
 	checkpoint.Transcript = append([]llm.ChatMessage(nil), transcript...)
 	checkpoint.Steps = append([]RunStep(nil), steps...)
 	checkpoint.Messages = append([]llm.ChatMessage(nil), messages...)
 	checkpoint.MessagesSummary = summarizeMessages(messages)
+}
+
+// persistTranscriptEntries feeds the given transcript slice to the message
+// sink and returns the new persisted-entry cursor plus the first written row
+// ID (0 when nothing was written). Sink failures degrade to the pre-sink
+// behavior: the cursor still advances (entries stay visible within the run)
+// and the error is surfaced once as an error step.
+func (r *Runner) persistTranscriptEntries(ctx context.Context, result *RunResult, req RunRequest, entries []llm.ChatMessage, persistedCount int) (int, int64) {
+	if len(entries) == 0 {
+		return persistedCount, 0
+	}
+	if req.MessageSink == nil {
+		return persistedCount + len(entries), 0
+	}
+	firstID, err := req.MessageSink.PersistEntries(ctx, compaction.FromChat(entries))
+	if err != nil {
+		step := r.appendStep(result, RunStep{
+			Type:       StepTypeError,
+			Error:      fmt.Sprintf("persist transcript entries: %v", err),
+			ProviderID: r.ProviderID,
+			Model:      r.ModelName,
+		})
+		_ = r.emit(ctx, step)
+	}
+	return persistedCount + len(entries), firstID
 }
 
 func toolMessage(toolCallID, content string) llm.ChatMessage {

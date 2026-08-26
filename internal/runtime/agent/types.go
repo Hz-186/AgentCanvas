@@ -8,6 +8,7 @@ import (
 	goalDomain "agentcanvas/internal/domain/goal"
 	"agentcanvas/internal/domain/reflection"
 	"agentcanvas/internal/infrastructure/llm"
+	"agentcanvas/internal/runtime/compaction"
 	"agentcanvas/internal/runtime/harness/hooks"
 	"agentcanvas/internal/runtime/harness/rules"
 	"agentcanvas/internal/runtime/toolruntime"
@@ -40,6 +41,14 @@ const (
 	StepTypeError            = "error"
 )
 
+// MessageSink persists transcript entries to the conversation message table
+// as they are produced. Implementations map entries to typed rows and return
+// the first written row ID; write failures degrade to the pre-sink behavior
+// (run continues, entries lost across turns).
+type MessageSink interface {
+	PersistEntries(ctx context.Context, entries []compaction.Entry) (firstID int64, err error)
+}
+
 type RunRequest struct {
 	OwnerID              int64
 	AgentID              int64
@@ -47,6 +56,7 @@ type RunRequest struct {
 	DelegationDepth      int
 	ConversationID       *int64
 	ProjectID            int64
+	MessageSink          MessageSink
 	Provider             llm.ChatProviderConfig
 	Model                string
 	CompactionProvider   llm.ChatProviderConfig
@@ -99,6 +109,7 @@ type RunRequest struct {
 	ResumeMessages                  []llm.ChatMessage
 	ResumeBaseMessages              []llm.ChatMessage
 	ResumeTranscript                []llm.ChatMessage
+	ResumePersistedMessageCount     int
 	ResumeSteps                     []RunStep
 	ResumeContext                   ContextTrace
 	ResumeIteration                 int
@@ -107,20 +118,21 @@ type RunRequest struct {
 }
 
 type RunResult struct {
-	FinalAnswer string          `json:"final_answer"`
-	StopReason  string          `json:"stop_reason"`
-	Iterations  int             `json:"iterations"`
-	ToolCalls   int             `json:"tool_calls"`
-	Usage       llm.Usage       `json:"usage"`
-	Steps       []RunStep       `json:"steps,omitempty"`
-	Context     ContextTrace    `json:"context_trace,omitempty"`
-	HookTrace   []HookTrace     `json:"hook_trace,omitempty"`
-	Approval    *Approval       `json:"approval,omitempty"`
-	Checkpoint  *Checkpoint     `json:"checkpoint,omitempty"`
-	Reflection  ReflectionTrace `json:"reflection_trace,omitempty"`
-	StartedAt   time.Time       `json:"started_at"`
-	FinishedAt  time.Time       `json:"finished_at"`
-	LatencyMS   int             `json:"latency_ms"`
+	FinalAnswer        string          `json:"final_answer"`
+	StopReason         string          `json:"stop_reason"`
+	Iterations         int             `json:"iterations"`
+	ToolCalls          int             `json:"tool_calls"`
+	Usage              llm.Usage       `json:"usage"`
+	AssistantMessageID int64           `json:"assistant_message_id,omitempty"`
+	Steps              []RunStep       `json:"steps,omitempty"`
+	Context            ContextTrace    `json:"context_trace,omitempty"`
+	HookTrace          []HookTrace     `json:"hook_trace,omitempty"`
+	Approval           *Approval       `json:"approval,omitempty"`
+	Checkpoint         *Checkpoint     `json:"checkpoint,omitempty"`
+	Reflection         ReflectionTrace `json:"reflection_trace,omitempty"`
+	StartedAt          time.Time       `json:"started_at"`
+	FinishedAt         time.Time       `json:"finished_at"`
+	LatencyMS          int             `json:"latency_ms"`
 }
 
 type InlineReflection struct {
@@ -194,6 +206,7 @@ type Interaction struct {
 
 type Checkpoint struct {
 	SnapshotVersion       int               `json:"snapshot_version,omitempty"`
+	PersistedMessageCount int               `json:"persisted_message_count,omitempty"`
 	BaseMessages          []llm.ChatMessage `json:"base_messages,omitempty"`
 	Transcript            []llm.ChatMessage `json:"transcript,omitempty"`
 	Steps                 []RunStep         `json:"steps,omitempty"`
