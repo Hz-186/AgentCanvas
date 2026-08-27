@@ -134,6 +134,37 @@ func (r *ExtractionJobRepository) ListByStatus(ctx context.Context, ownerID int6
 	return jobs, err
 }
 
+// ListByStatusAfterID is the keyset-paginated companion used by the Codex
+// consolidation reader. It deliberately has a separate optional method so
+// older callers of ExtractionJobRepository keep their bounded ListByStatus
+// contract while the memory pipeline can consume the complete history.
+func (r *ExtractionJobRepository) ListByStatusAfterID(ctx context.Context, ownerID int64, status string, afterID int64, limit int) ([]memory.ExtractionJob, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 500
+	}
+	query := r.db.WithContext(ctx).Where("owner_id = ? AND status = ?", ownerID, status)
+	if afterID > 0 {
+		query = query.Where("id > ?", afterID)
+	}
+	var jobs []memory.ExtractionJob
+	err := query.Order("id ASC").Limit(limit).Find(&jobs).Error
+	return jobs, err
+}
+
+// ListPhase2Retries is intentionally separate from the Phase 1 pending queue:
+// a completed extraction with a phase-2 error must be consolidated again
+// without re-running rollout extraction.
+func (r *ExtractionJobRepository) ListPhase2Retries(ctx context.Context, limit int) ([]memory.ExtractionJob, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	var jobs []memory.ExtractionJob
+	err := r.db.WithContext(ctx).
+		Where("status = ? AND trigger_reason = ? AND error_message LIKE ? AND (due_at IS NULL OR due_at <= ?)", string(memory.ExtractionCompleted), "codex", "phase2:%", time.Now().UTC()).
+		Order("id ASC").Limit(limit).Find(&jobs).Error
+	return jobs, err
+}
+
 func (r *ExtractionJobRepository) LatestCompletedThrough(ctx context.Context, ownerID, conversationID, beforeJobID int64) (int64, error) {
 	var through int64
 	query := r.db.WithContext(ctx).Model(&memory.ExtractionJob{}).
