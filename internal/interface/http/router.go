@@ -137,7 +137,7 @@ func NewRouter(deps RouterDeps) *gin.Engine {
 
 			protected.GET("/audit-logs", deps.AuditHandler.List)
 
-			// Durable memory is owned by the asynchronous Codex consolidation
+			// Durable memory is owned by the asynchronous durable-memory consolidation
 			// pipeline. Keep legacy SQL memory endpoints read-only for migration
 			// and audit visibility; no HTTP route may mutate durable memory or
 			// approve a memory proposal.

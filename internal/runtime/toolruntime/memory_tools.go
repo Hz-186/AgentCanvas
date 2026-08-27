@@ -68,10 +68,10 @@ func (t SessionSearchTool) Execute(ctx context.Context, rc ToolRunContext, input
 }
 
 type MemoryReadTool struct {
-	// Files is the Codex-style durable memory reader. When configured it is the
+	// Files is the file-backed durable memory reader. When configured it is the
 	// only Agent-facing memory surface; the SQL repository fields below exist
 	// solely for old maintenance/test integrations.
-	Files        memory.CodexReader
+	Files        memory.DurableReader
 	Memories     memory.Repository
 	RecallLogs   memory.RecallLogRepository
 	Retriever    memory.SemanticRetriever
@@ -192,7 +192,7 @@ type memoryWriteInput struct {
 func (MemoryWriteTool) Name() string { return "write_memory" }
 
 func (MemoryWriteTool) Description() string {
-	return "Retired. Durable memory is written only by the asynchronous Codex consolidation pipeline."
+	return "Retired. Durable memory is written only by the asynchronous durable-memory consolidation pipeline."
 }
 
 func (MemoryWriteTool) Parameters() json.RawMessage {

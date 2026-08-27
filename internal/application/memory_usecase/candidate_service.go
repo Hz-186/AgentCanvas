@@ -11,8 +11,8 @@ import (
 )
 
 // ErrDurableMemoryWritesDisabled marks the retired candidate path. Durable
-// memory is now produced only by the Codex extraction/consolidation pipeline.
-var ErrDurableMemoryWritesDisabled = errors.New("durable memory candidate writes are disabled; use the Codex consolidation pipeline")
+// memory is now produced only by the durable-memory extraction/consolidation pipeline.
+var ErrDurableMemoryWritesDisabled = errors.New("durable memory candidate writes are disabled; use the Durable consolidation pipeline")
 
 // CandidateService is shared by Agent tools, Dream, extraction and review
 // APIs. It writes proposals only; applying one requires an explicit approval.

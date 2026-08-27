@@ -15,41 +15,41 @@ import (
 	"github.com/google/uuid"
 )
 
-// CodexFileStore is the file-backed durable-memory boundary. It deliberately
+// DurableFileStore is the file-backed durable-memory boundary. It deliberately
 // has no SQL memory categories: the owner directory and the artifact path are
 // the only partitioning rules.
-type CodexFileStore struct {
+type DurableFileStore struct {
 	Root string
 }
 
-var codexAdHocWriteMu sync.Mutex
+var durableAdHocWriteMu sync.Mutex
 
-func NewCodexFileStore(root string) *CodexFileStore {
-	return &CodexFileStore{Root: strings.TrimSpace(root)}
+func NewDurableFileStore(root string) *DurableFileStore {
+	return &DurableFileStore{Root: strings.TrimSpace(root)}
 }
 
-func (s *CodexFileStore) ownerRoot(ownerID int64) (string, error) {
+func (s *DurableFileStore) ownerRoot(ownerID int64) (string, error) {
 	if s == nil || ownerID <= 0 {
-		return "", fmt.Errorf("codex memory owner is required")
+		return "", fmt.Errorf("durable memory owner is required")
 	}
 	root := strings.TrimSpace(s.Root)
 	if root == "" {
-		return "", fmt.Errorf("codex memory root is not configured")
+		return "", fmt.Errorf("durable memory root is not configured")
 	}
 	owner := filepath.Join(root, fmt.Sprintf("owner-%d", ownerID))
 	// Read paths are intentionally lazy: an owner with no consolidated
 	// workspace is a normal empty-memory state, not an infrastructure error.
-	if _, err := ensureCodexDirectory(root, false); err != nil && !os.IsNotExist(err) {
+	if _, err := ensureDurableDirectory(root, false); err != nil && !os.IsNotExist(err) {
 		return "", err
 	}
 	// Reads must never follow a user-controlled symlink into another tenant.
-	if _, err := ensureCodexDirectory(owner, false); err != nil && !os.IsNotExist(err) {
+	if _, err := ensureDurableDirectory(owner, false); err != nil && !os.IsNotExist(err) {
 		return "", err
 	}
 	return owner, nil
 }
 
-func (s *CodexFileStore) ReadSummary(ctx context.Context, ownerID int64, tokenBudget int) (string, error) {
+func (s *DurableFileStore) ReadSummary(ctx context.Context, ownerID int64, tokenBudget int) (string, error) {
 	select {
 	case <-ctx.Done():
 		return "", ctx.Err()
@@ -83,7 +83,7 @@ func (s *CodexFileStore) ReadSummary(ctx context.Context, ownerID int64, tokenBu
 	return value, nil
 }
 
-func (s *CodexFileStore) Search(ctx context.Context, ownerID int64, query string, limit int) ([]memory.FileSearchResult, error) {
+func (s *DurableFileStore) Search(ctx context.Context, ownerID int64, query string, limit int) ([]memory.FileSearchResult, error) {
 	if strings.TrimSpace(query) == "" {
 		return nil, fmt.Errorf("memory search query is required")
 	}
@@ -164,7 +164,7 @@ func (s *CodexFileStore) Search(ctx context.Context, ownerID int64, query string
 			continue
 		}
 		rel, _ := filepath.Rel(root, path)
-		results = append(results, memory.FileSearchResult{Path: filepath.ToSlash(rel), Content: truncateCodexDetail(text, 6000)})
+		results = append(results, memory.FileSearchResult{Path: filepath.ToSlash(rel), Content: truncateDurableDetail(text, 6000)})
 		if len(results) >= limit {
 			break
 		}
@@ -175,7 +175,7 @@ func (s *CodexFileStore) Search(ctx context.Context, ownerID int64, query string
 // AppendAdHocNote is the only user-directed durable-memory mutation. It is
 // append-only and intentionally writes outside MEMORY.md so consolidation can
 // review the request with the same provenance rules as rollout input.
-func (s *CodexFileStore) AppendAdHocNote(ctx context.Context, ownerID, conversationID, runID int64, request, answer string) (string, error) {
+func (s *DurableFileStore) AppendAdHocNote(ctx context.Context, ownerID, conversationID, runID int64, request, answer string) (string, error) {
 	if !HasExplicitMemoryIntent(request) {
 		return "", fmt.Errorf("explicit memory intent is required")
 	}
@@ -183,12 +183,12 @@ func (s *CodexFileStore) AppendAdHocNote(ctx context.Context, ownerID, conversat
 	if err != nil {
 		return "", err
 	}
-	dir, err := ensureCodexDirectory(root, true, "extensions", "ad_hoc", "notes")
+	dir, err := ensureDurableDirectory(root, true, "extensions", "ad_hoc", "notes")
 	if err != nil {
 		return "", err
 	}
-	codexAdHocWriteMu.Lock()
-	defer codexAdHocWriteMu.Unlock()
+	durableAdHocWriteMu.Lock()
+	defer durableAdHocWriteMu.Unlock()
 	if existing, err := existingAdHocNoteForRun(ctx, dir, runID); err != nil {
 		return "", err
 	} else if existing != "" {
@@ -201,7 +201,7 @@ func (s *CodexFileStore) AppendAdHocNote(ctx context.Context, ownerID, conversat
 	// second note for the same run. It is deliberately retained as an audit
 	// tombstone; preferring a false negative over duplicate durable memory is
 	// the safe failure mode.
-	claims, err := ensureCodexDirectory(root, true, "extensions", "ad_hoc", "notes", ".claims")
+	claims, err := ensureDurableDirectory(root, true, "extensions", "ad_hoc", "notes", ".claims")
 	if err != nil {
 		return "", err
 	}
@@ -209,7 +209,7 @@ func (s *CodexFileStore) AppendAdHocNote(ctx context.Context, ownerID, conversat
 	now := time.Now().UTC()
 	name := fmt.Sprintf("%s-%s.md", now.Format("20060102T150405.000000000Z"), uuid.NewString())
 	path := filepath.Join(dir, name)
-	content := fmt.Sprintf("# Ad-hoc memory note\n\n- created_at: %s\n- source_conversation_id: %d\n- source_run_id: %d\n\n## User request\n\n%s\n\n## Run answer\n\n%s\n", now.Format(time.RFC3339Nano), conversationID, runID, redactCodexSecrets(truncateCodexDetail(strings.TrimSpace(request), 12000)), redactCodexSecrets(truncateCodexDetail(strings.TrimSpace(answer), 12000)))
+	content := fmt.Sprintf("# Ad-hoc memory note\n\n- created_at: %s\n- source_conversation_id: %d\n- source_run_id: %d\n\n## User request\n\n%s\n\n## Run answer\n\n%s\n", now.Format(time.RFC3339Nano), conversationID, runID, redactDurableSecrets(truncateDurableDetail(strings.TrimSpace(request), 12000)), redactDurableSecrets(truncateDurableDetail(strings.TrimSpace(answer), 12000)))
 	claim, err := os.OpenFile(claimPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		if os.IsExist(err) {
@@ -225,7 +225,7 @@ func (s *CodexFileStore) AppendAdHocNote(ctx context.Context, ownerID, conversat
 				return "", fmt.Errorf("ad-hoc note for run %d is already reserved: %w", runID, readErr)
 			}
 			path = filepath.Join(dir, reserved)
-			if writeErr := writeCodexAtomicExclusive(path, content); writeErr != nil && !os.IsExist(writeErr) {
+			if writeErr := writeDurableAtomicExclusive(path, content); writeErr != nil && !os.IsExist(writeErr) {
 				return "", writeErr
 			}
 			return path, nil
@@ -239,7 +239,7 @@ func (s *CodexFileStore) AppendAdHocNote(ctx context.Context, ownerID, conversat
 	if err := claim.Close(); err != nil {
 		return "", err
 	}
-	if err := writeCodexAtomicExclusive(path, content); err != nil {
+	if err := writeDurableAtomicExclusive(path, content); err != nil {
 		return "", err
 	}
 	return path, nil
@@ -274,14 +274,14 @@ func readAdHocClaimNameEventually(ctx context.Context, path string) (string, err
 	return "", err
 }
 
-// writeCodexAtomicExclusive publishes a file exactly once. Linking a closed
+// writeDurableAtomicExclusive publishes a file exactly once. Linking a closed
 // temp file is atomic and returns EEXIST when another process won the claim.
-func writeCodexAtomicExclusive(path, content string) error {
+func writeDurableAtomicExclusive(path, content string) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(dir, ".codex-memory-claim-*")
+	tmp, err := os.CreateTemp(dir, ".durable-memory-claim-*")
 	if err != nil {
 		return err
 	}
@@ -301,13 +301,13 @@ func writeCodexAtomicExclusive(path, content string) error {
 	return os.Link(tmpName, path)
 }
 
-// ensureCodexDirectory creates/checks only directories below the configured
+// ensureDurableDirectory creates/checks only directories below the configured
 // memory root and rejects symlink components. MkdirAll would otherwise follow
 // a swapped symlink between the owner and notes paths.
-func ensureCodexDirectory(root string, create bool, parts ...string) (string, error) {
+func ensureDurableDirectory(root string, create bool, parts ...string) (string, error) {
 	root = strings.TrimSpace(root)
 	if root == "" {
-		return "", fmt.Errorf("codex memory root is not configured")
+		return "", fmt.Errorf("durable memory root is not configured")
 	}
 	root, err := filepath.Abs(root)
 	if err != nil {
@@ -318,13 +318,13 @@ func ensureCodexDirectory(root string, create bool, parts ...string) (string, er
 			return "", err
 		}
 	}
-	if err := checkCodexDir(root, create); err != nil {
+	if err := checkDurableDir(root, create); err != nil {
 		return "", err
 	}
 	current := root
 	for _, part := range parts {
 		if part == "" || part == "." || part == ".." || filepath.Base(part) != part {
-			return "", fmt.Errorf("invalid codex memory directory component %q", part)
+			return "", fmt.Errorf("invalid durable memory directory component %q", part)
 		}
 		next := filepath.Join(current, part)
 		if create {
@@ -332,7 +332,7 @@ func ensureCodexDirectory(root string, create bool, parts ...string) (string, er
 				return "", err
 			}
 		}
-		if err := checkCodexDir(next, create); err != nil {
+		if err := checkDurableDir(next, create); err != nil {
 			return "", err
 		}
 		current = next
@@ -340,7 +340,7 @@ func ensureCodexDirectory(root string, create bool, parts ...string) (string, er
 	return current, nil
 }
 
-func checkCodexDir(path string, allowMissing bool) error {
+func checkDurableDir(path string, allowMissing bool) error {
 	info, err := os.Lstat(path)
 	if os.IsNotExist(err) && allowMissing {
 		return nil
@@ -349,10 +349,10 @@ func checkCodexDir(path string, allowMissing bool) error {
 		return err
 	}
 	if info.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("codex memory path must not be a symlink: %s", path)
+		return fmt.Errorf("durable memory path must not be a symlink: %s", path)
 	}
 	if !info.IsDir() {
-		return fmt.Errorf("codex memory path is not a directory: %s", path)
+		return fmt.Errorf("durable memory path is not a directory: %s", path)
 	}
 	return nil
 }
@@ -391,7 +391,7 @@ func HasExplicitMemoryIntent(value string) bool {
 	return memory.HasExplicitMemoryIntent(value)
 }
 
-func truncateCodexDetail(value string, maxChars int) string {
+func truncateDurableDetail(value string, maxChars int) string {
 	value = strings.TrimSpace(value)
 	if maxChars <= 0 || len([]rune(value)) <= maxChars {
 		return value
@@ -406,5 +406,5 @@ func minInt(left, right int) int {
 	return right
 }
 
-var _ memory.CodexReader = (*CodexFileStore)(nil)
-var _ memory.AdHocWriter = (*CodexFileStore)(nil)
+var _ memory.DurableReader = (*DurableFileStore)(nil)
+var _ memory.AdHocWriter = (*DurableFileStore)(nil)

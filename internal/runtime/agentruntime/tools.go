@@ -217,12 +217,12 @@ func (n runtimeCore) loadTools(ctx context.Context, ownerID int64, cfg agentRunt
 		tools = append(tools, toolruntime.PythonSandboxTool{Runner: n.Sandbox})
 	}
 	if cfg.MemoryEnabled {
-		// Codex-style file memory is mandatory. Keeping a SQL/vector fallback here
+		// File-backed durable memory is mandatory. Keeping a SQL/vector fallback here
 		// would reintroduce a second recall path and expose retired taxonomy.
 		if n.MemoryFiles == nil {
 			// Preserve the established configuration error text for callers that
 			// still map it to a deployment diagnostic.
-			return nil, fmt.Errorf("agent runtime unified context index is not configured: Codex memory file store is required")
+			return nil, fmt.Errorf("agent runtime unified context index is not configured: durable memory file store is required")
 		}
 		tools = append(tools, toolruntime.MemoryReadTool{Files: n.MemoryFiles, TokenBudget: cfg.MemoryPolicy.TokenBudget})
 		if n.SessionSearch != nil {

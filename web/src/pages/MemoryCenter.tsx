@@ -6,7 +6,7 @@ import { Button, EmptyState, Modal, StatusBadge, Toast } from '../components/ui'
 import type { Memory, MemoryRecallLog } from '../types/api';
 import { formatDate, friendlyErrorMessage } from '../utils/format';
 
-/** Durable memory is owned by the asynchronous Codex consolidation worker. */
+/** Durable memory is owned by the asynchronous durable-memory consolidation worker. */
 export function MemoryCenter() {
   const [memories, setMemories] = useState<Memory[]>([]);
   const [view, setView] = useState<'active' | 'conflicts' | 'history'>('active');
@@ -45,7 +45,7 @@ export function MemoryCenter() {
 
   return (
     <div className="page memory-page">
-      <EditorialHeader word="Memory" script="Audit" kicker="CODEX CONSOLIDATION" description="持久记忆由后台单一 consolidation 管线维护；此处只展示审计快照与召回证据。" action={<span className="muted"><Network size={16} /> read-only</span>} />
+      <EditorialHeader word="Memory" script="Audit" kicker="DURABLE MEMORY" description="持久记忆由后台单一 consolidation 管线维护；此处只展示审计快照与召回证据。" action={<span className="muted"><Network size={16} /> read-only</span>} />
       {error ? <p className="error-text">{error}</p> : null}
       <div className="row-wrap" role="tablist" aria-label="Memory audit views">
         {([

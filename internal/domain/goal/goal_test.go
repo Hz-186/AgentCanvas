@@ -18,7 +18,7 @@ func TestNormalizeBudgetDefaultsAndCaps(t *testing.T) {
 	}
 }
 
-func TestGoalStatusTerminalMatchesCodex(t *testing.T) {
+func TestGoalStatusTerminalMatchesDurable(t *testing.T) {
 	if !IsTerminal(StatusBudgetLimited) || !IsTerminal(StatusComplete) {
 		t.Fatal("budget_limited and complete must be terminal")
 	}

@@ -288,12 +288,12 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 	knowledgeService.ConfigureRetrievalBackends(applicationRetrievers, retrievalIndexers)
 	knowledgeService.ConfigurePythonChunking(cfg.PythonBridge.AllowExperimentalChunking, cfg.PythonBridge.AllowedChunkMethods...)
 	jobQueue := infraDeps.JobQueue
-	codexMemoryQueue := jobQueue
+	durableMemoryQueue := jobQueue
 	if cfg.Queue.Backend == "mysql" {
-		codexMemoryQueue = nil
+		durableMemoryQueue = nil
 	}
-	codexMemoryCfg := memoryusecase.NewCodexMemoryConfig(cfg.EffectiveCodexMemory())
-	codexFileStore := memoryusecase.NewCodexFileStore(codexMemoryCfg.Root)
+	durableMemoryCfg := memoryusecase.NewDurableMemoryConfig(cfg.EffectiveDurableMemory())
+	durableFileStore := memoryusecase.NewDurableFileStore(durableMemoryCfg.Root)
 	if jobQueue != nil {
 		knowledgeService.WithJobQueue(jobQueue)
 	}
@@ -314,7 +314,7 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 		Repositories: agentruntime.Repositories{
 			Retriever: retrievalService, Providers: providerLoader, MessageHistory: messageRepo, MessageWriter: messageRepo, Compactions: compactionRepo,
 			SessionSearch: sessionSearch, Memories: memoryRepo, MemoryReader: memoryService, MemoryWriteLogs: memoryWriteLogRepo,
-			MemoryRecallLogs: memoryRecallLogRepo, MemoryRetriever: memoryRetrievalStore, MemoryFiles: codexFileStore, AdHocNotes: codexFileStore,
+			MemoryRecallLogs: memoryRecallLogRepo, MemoryRetriever: memoryRetrievalStore, MemoryFiles: durableFileStore, AdHocNotes: durableFileStore,
 			ToolPacks: toolPackRepo, Skills: skillRepo, MCPServers: mcpRepo,
 			ContextIndex: contextIndex,
 		},
@@ -333,8 +333,8 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 		Workspace:     agentruntime.Workspace{Sandbox: sandbox.NewDockerRunner(), Git: gitService},
 		Observability: agentruntime.Observability{Audits: auditRepo, Reflections: reflectionService},
 		Policies: agentruntime.Policies{
-			MemoryExtractionTrigger: memoryusecase.NewCodexMemoryTrigger(codexMemoryQueue, redisClient, codexMemoryCfg, extractionJobRepo, messageRepo),
-			AdHocMemoryNoteWriter:   codexFileStore,
+			MemoryExtractionTrigger: memoryusecase.NewDurableMemoryTrigger(durableMemoryQueue, redisClient, durableMemoryCfg, extractionJobRepo, messageRepo),
+			AdHocMemoryNoteWriter:   durableFileStore,
 			FileReadMaxChars:        cfg.GitWorkspace.FileReadMaxChars, MaxOutputBytes: cfg.GitWorkspace.MaxOutputBytes,
 			WorkspaceTimeout: time.Duration(cfg.GitWorkspace.GitCommandTimeoutSeconds) * time.Second,
 		},

@@ -13,9 +13,9 @@ type FileSearchResult struct {
 	Content string `json:"content"`
 }
 
-// CodexReader provides the single progressive-read path for durable memory.
+// DurableReader provides the single progressive-read path for durable memory.
 // Summary is used once during run assembly; Search is used only on demand.
-type CodexReader interface {
+type DurableReader interface {
 	ReadSummary(ctx context.Context, ownerID int64, tokenBudget int) (string, error)
 	Search(ctx context.Context, ownerID int64, query string, limit int) ([]FileSearchResult, error)
 }

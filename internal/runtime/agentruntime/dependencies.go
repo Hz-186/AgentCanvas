@@ -66,7 +66,7 @@ type Repositories struct {
 	MemoryRecallLogs memory.RecallLogRepository
 	MemoryCandidates memory.CandidateWriter
 	MemoryRetriever  memory.SemanticRetriever
-	MemoryFiles      memory.CodexReader
+	MemoryFiles      memory.DurableReader
 	AdHocNotes       memory.AdHocWriter
 	ToolPacks        tool.PackRepository
 	Skills           skill.Repository

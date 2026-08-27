@@ -134,7 +134,7 @@ func (r *ExtractionJobRepository) ListByStatus(ctx context.Context, ownerID int6
 	return jobs, err
 }
 
-// ListByStatusAfterID is the keyset-paginated companion used by the Codex
+// ListByStatusAfterID is the keyset-paginated companion used by the durable-memory
 // consolidation reader. It deliberately has a separate optional method so
 // older callers of ExtractionJobRepository keep their bounded ListByStatus
 // contract while the memory pipeline can consume the complete history.
@@ -160,7 +160,7 @@ func (r *ExtractionJobRepository) ListPhase2Retries(ctx context.Context, limit i
 	}
 	var jobs []memory.ExtractionJob
 	err := r.db.WithContext(ctx).
-		Where("status = ? AND trigger_reason = ? AND error_message LIKE ? AND (due_at IS NULL OR due_at <= ?)", string(memory.ExtractionCompleted), "codex", "phase2:%", time.Now().UTC()).
+		Where("status = ? AND trigger_reason = ? AND error_message LIKE ? AND (due_at IS NULL OR due_at <= ?)", string(memory.ExtractionCompleted), "durable", "phase2:%", time.Now().UTC()).
 		Order("id ASC").Limit(limit).Find(&jobs).Error
 	return jobs, err
 }

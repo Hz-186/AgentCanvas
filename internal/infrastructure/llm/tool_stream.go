@@ -140,7 +140,7 @@ func (p *ProposedPlanStreamParser) VisiblePlan() (string, string) {
 }
 
 // NormalizeProposedPlan removes plan blocks from a completed assistant
-// message and returns the final block (the last block wins, matching Codex).
+// message and returns the final block (the last block wins).
 func NormalizeProposedPlan(text string) (visible, plan string) {
 	parser := &ProposedPlanStreamParser{}
 	var visibleBuilder strings.Builder

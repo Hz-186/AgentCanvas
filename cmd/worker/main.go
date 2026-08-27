@@ -225,12 +225,12 @@ func main() {
 	hostname, _ := os.Hostname()
 	workerID := fmt.Sprintf("%s-%d", hostname, os.Getpid())
 	extractionJobRepo := mysqlinfra.NewExtractionJobRepository(db)
-	codexMemoryWorker := memoryusecase.NewCodexMemoryWorker(
+	durableMemoryWorker := memoryusecase.NewDurableMemoryWorker(
 		baseChatClient(),
 		messageRepo,
 		extractionJobRepo,
 		infraDeps.Redis,
-		memoryusecase.NewCodexMemoryConfig(cfg.EffectiveCodexMemory()),
+		memoryusecase.NewDurableMemoryConfig(cfg.EffectiveDurableMemory()),
 		workerID,
 	)
 	reflectionRepo := mysqlinfra.NewReflectionRepository(db)
@@ -281,7 +281,7 @@ func main() {
 		var processed bool
 		var err error
 		if jobQueue != nil {
-			processed, err = processNextJob(ctx, jobQueue, workerID, service, codexMemoryWorker)
+			processed, err = processNextJob(ctx, jobQueue, workerID, service, durableMemoryWorker)
 			if !processed && err == nil {
 				processed, err = service.ProcessNext(ctx, workerID)
 			}
@@ -294,8 +294,8 @@ func main() {
 		if processed {
 			continue
 		}
-		if drained, drainErr := codexMemoryWorker.ProcessNext(ctx); drainErr != nil {
-			appLogger.Error("process Codex memory job failed", "error", drainErr)
+		if drained, drainErr := durableMemoryWorker.ProcessNext(ctx); drainErr != nil {
+			appLogger.Error("process durable memory job failed", "error", drainErr)
 		} else if drained {
 			continue
 		}
@@ -331,29 +331,31 @@ func baseChatClient() llm.ChatClient {
 	return llm.NewOpenAICompatibleChatClient()
 }
 
-func processNextJob(ctx context.Context, jobQueue queue.JobQueue, workerID string, ingestion *ingestionusecase.Service, codexMemoryWorker *memoryusecase.CodexMemoryWorker) (bool, error) {
+func processNextJob(ctx context.Context, jobQueue queue.JobQueue, workerID string, ingestion *ingestionusecase.Service, durableMemoryWorker *memoryusecase.DurableMemoryWorker) (bool, error) {
 	claimed, err := jobQueue.Claim(ctx, queue.ClaimOptions{WorkerID: workerID, Limit: 1})
 	if err != nil || len(claimed) == 0 {
 		return false, err
 	}
 	job := claimed[0]
 	switch job.Type {
-	case memoryusecase.CodexMemoryJobType:
-		payload := memoryusecase.CodexMemoryPayload{JobID: payloadInt64(job.Payload, "job_id"), OwnerID: payloadInt64(job.Payload, "owner_id"), ConversationID: payloadInt64(job.Payload, "conversation_id")}
-		if err := codexMemoryWorker.Handle(ctx, payload); err != nil {
+	// "memory:codex" is the retired job type; accept it so transport jobs
+	// published before the rename are still processed after an upgrade.
+	case memoryusecase.DurableMemoryJobType, "memory:codex":
+		payload := memoryusecase.DurableMemoryPayload{JobID: payloadInt64(job.Payload, "job_id"), OwnerID: payloadInt64(job.Payload, "owner_id"), ConversationID: payloadInt64(job.Payload, "conversation_id")}
+		if err := durableMemoryWorker.Handle(ctx, payload); err != nil {
 			attemptCount := job.AttemptCount
 			if attemptCount < 1 {
 				attemptCount = 1
 			}
 			if nackErr := jobQueue.Nack(ctx, job.ID, time.Now().Add(time.Duration(attemptCount)*time.Minute)); nackErr != nil {
-				return true, fmt.Errorf("Codex memory job failed: %v; nack: %w", err, nackErr)
+				return true, fmt.Errorf("durable memory job failed: %v; nack: %w", err, nackErr)
 			}
 			return true, err
 		}
 		return true, jobQueue.Ack(ctx, job.ID)
 	case memoryusecase.DreamJobType:
 		// Drain legacy transport jobs without routing them through the retired
-		// Dream writer. New jobs are emitted only as memory:codex.
+		// Dream writer. New jobs are emitted only as memory:durable.
 		return true, jobQueue.Ack(ctx, job.ID)
 	default:
 		processed, err := ingestion.ProcessNextFromQueue(ctx, singleJobQueue{jobQueue: jobQueue, claimed: job}, workerID)

@@ -31,7 +31,7 @@ resource_cache:
   key_prefix: agentcanvas
   ttl_seconds: 60
 
-codex_memory:
+durable_memory:
   enabled: false
   idle_timeout_seconds: 21600
   llm_provider_type: openai_compatible

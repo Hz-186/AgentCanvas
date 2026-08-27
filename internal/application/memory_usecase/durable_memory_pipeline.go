@@ -27,29 +27,29 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// CodexMemoryJobType is the only production memory-generation job. Candidate
+// DurableMemoryJobType is the only production memory-generation job. Candidate
 // proposals and retention-tier schedulers are deliberately not part of this
 // pipeline: a rollout is extracted once, then one consolidation writer owns
 // the durable artifacts.
-const CodexMemoryJobType = "memory:codex"
+const DurableMemoryJobType = "memory:durable"
 
 const (
-	codexStage1Lease           = 2 * time.Minute
-	codexPhase2Lease           = 10 * time.Minute
-	codexMaxRolloutLen         = 120_000
-	codexPhase2MaxBackoff      = 6 * time.Hour
-	codexWorkspaceDiffFile     = "phase2_workspace_diff.md"
-	codexWorkspaceManifestFile = ".phase2.baseline.json"
-	codexConsumedWatermarkFile = ".phase2.consumed_watermark"
+	durableStage1Lease           = 2 * time.Minute
+	durablePhase2Lease           = 10 * time.Minute
+	durableMaxRolloutLen         = 120_000
+	durablePhase2MaxBackoff      = 6 * time.Hour
+	durableWorkspaceDiffFile     = "phase2_workspace_diff.md"
+	durableWorkspaceManifestFile = ".phase2.baseline.json"
+	durableConsumedWatermarkFile = ".phase2.consumed_watermark"
 )
 
 // ponytail: one process-local lock is the smallest safe fallback when Redis
 // is unavailable; deployments that need cross-process coordination must keep
 // Redis enabled (the normal production path).
-var codexPhase2FallbackLock sync.Mutex
-var codexConversationFallbackLocks sync.Map
+var durablePhase2FallbackLock sync.Mutex
+var durableConversationFallbackLocks sync.Map
 
-type CodexMemoryConfig struct {
+type DurableMemoryConfig struct {
 	Enabled     bool
 	IdleTimeout time.Duration
 	Provider    llm.ChatProviderConfig
@@ -57,7 +57,7 @@ type CodexMemoryConfig struct {
 	Root        string
 }
 
-func NewCodexMemoryConfig(cfg config.MemoryDreamConfig) CodexMemoryConfig {
+func NewDurableMemoryConfig(cfg config.MemoryDreamConfig) DurableMemoryConfig {
 	root := strings.TrimSpace(os.Getenv("AGENTCANVAS_MEMORY_ROOT"))
 	if root == "" {
 		if home, err := os.UserHomeDir(); err == nil && home != "" {
@@ -70,7 +70,7 @@ func NewCodexMemoryConfig(cfg config.MemoryDreamConfig) CodexMemoryConfig {
 	if idle <= 0 {
 		idle = 6 * time.Hour
 	}
-	return CodexMemoryConfig{
+	return DurableMemoryConfig{
 		Enabled:     cfg.Enabled,
 		IdleTimeout: idle,
 		Provider:    llm.ChatProviderConfig{ProviderType: cfg.LLMProviderType, BaseURL: cfg.LLMBaseURL, APIKey: cfg.LLMAPIKey},
@@ -79,60 +79,60 @@ func NewCodexMemoryConfig(cfg config.MemoryDreamConfig) CodexMemoryConfig {
 	}
 }
 
-type CodexMemoryPayload struct {
+type DurableMemoryPayload struct {
 	JobID          int64 `json:"job_id"`
 	OwnerID        int64 `json:"owner_id"`
 	ConversationID int64 `json:"conversation_id"`
 }
 
-// CodexStage1Result is intentionally the same three-field boundary used by
-// Codex. The result is stored on the claimed extraction row before Phase 2.
-type CodexStage1Result struct {
+// DurableStage1Result is the three-field boundary between extraction and
+// consolidation. The result is stored on the claimed extraction row before Phase 2.
+type DurableStage1Result struct {
 	RawMemory      string `json:"raw_memory"`
 	RolloutSummary string `json:"rollout_summary"`
 	RolloutSlug    string `json:"rollout_slug,omitempty"`
 }
 
-type codexPhase2RetryReader interface {
+type durablePhase2RetryReader interface {
 	ListPhase2Retries(ctx context.Context, limit int) ([]memory.ExtractionJob, error)
 }
 
-type codexStatusAfterIDReader interface {
+type durableStatusAfterIDReader interface {
 	ListByStatusAfterID(ctx context.Context, ownerID int64, status string, afterID int64, limit int) ([]memory.ExtractionJob, error)
 }
 
-type codexAdHocInput struct {
+type durableAdHocInput struct {
 	Path    string
 	Content string
 }
 
-type codexRolloutInput struct {
+type durableRolloutInput struct {
 	Job    memory.ExtractionJob
-	Result CodexStage1Result
+	Result DurableStage1Result
 }
 
-type codexConsolidationResult struct {
+type durableConsolidationResult struct {
 	Memory  string `json:"memory"`
 	Summary string `json:"summary"`
 }
 
-type CodexMemoryWorker struct {
+type DurableMemoryWorker struct {
 	chatClient llm.ChatClient
 	messages   DreamMessageRepository
 	jobs       memory.ExtractionJobRepository
 	redis      *redis.Client
-	cfg        CodexMemoryConfig
+	cfg        DurableMemoryConfig
 	workerID   string
 }
 
-func NewCodexMemoryWorker(chatClient llm.ChatClient, messages DreamMessageRepository, jobs memory.ExtractionJobRepository, redisClient *redis.Client, cfg CodexMemoryConfig, workerID string) *CodexMemoryWorker {
-	return &CodexMemoryWorker{chatClient: chatClient, messages: messages, jobs: jobs, redis: redisClient, cfg: cfg, workerID: workerID}
+func NewDurableMemoryWorker(chatClient llm.ChatClient, messages DreamMessageRepository, jobs memory.ExtractionJobRepository, redisClient *redis.Client, cfg DurableMemoryConfig, workerID string) *DurableMemoryWorker {
+	return &DurableMemoryWorker{chatClient: chatClient, messages: messages, jobs: jobs, redis: redisClient, cfg: cfg, workerID: workerID}
 }
 
-// NewCodexMemoryTrigger schedules one job per stable conversation boundary.
+// NewDurableMemoryTrigger schedules one job per stable conversation boundary.
 // Redis only coalesces bursts; the extraction idempotency key is the durable
 // exactly-once guard.
-func NewCodexMemoryTrigger(jobQueue queueinfra.JobQueue, redisClient *redis.Client, cfg CodexMemoryConfig, jobs memory.ExtractionJobRepository, messages DreamMessageRepository) func(context.Context, int64, int64, int) {
+func NewDurableMemoryTrigger(jobQueue queueinfra.JobQueue, redisClient *redis.Client, cfg DurableMemoryConfig, jobs memory.ExtractionJobRepository, messages DreamMessageRepository) func(context.Context, int64, int64, int) {
 	if !cfg.Enabled || jobs == nil || messages == nil {
 		return nil
 	}
@@ -140,13 +140,13 @@ func NewCodexMemoryTrigger(jobQueue queueinfra.JobQueue, redisClient *redis.Clie
 		if ownerID <= 0 || conversationID <= 0 {
 			return
 		}
-		through, err := latestCodexMessageID(ctx, messages, ownerID, conversationID)
+		through, err := latestDurableMessageID(ctx, messages, ownerID, conversationID)
 		if err != nil || through <= 0 {
 			return
 		}
 		// Scope burst coalescing to this exact source boundary. A conversation
 		// level key would suppress a later boundary and lose messages.
-		pendingKey := fmt.Sprintf("codex:pending:%d:%d:%d", ownerID, conversationID, through)
+		pendingKey := fmt.Sprintf("durable:pending:%d:%d:%d", ownerID, conversationID, through)
 		if redisClient != nil {
 			ttl := cfg.IdleTimeout
 			if ttl <= 0 {
@@ -156,7 +156,7 @@ func NewCodexMemoryTrigger(jobQueue queueinfra.JobQueue, redisClient *redis.Clie
 				return
 			}
 		}
-		key := fmt.Sprintf("codex:%d:%d:%d", ownerID, conversationID, through)
+		key := fmt.Sprintf("durable:%d:%d:%d", ownerID, conversationID, through)
 		// Check before creating so a repeated terminal event does not enqueue the
 		// same durable extraction row again. The unique database key remains the
 		// final race-safe guard when two callers arrive concurrently.
@@ -168,9 +168,9 @@ func NewCodexMemoryTrigger(jobQueue queueinfra.JobQueue, redisClient *redis.Clie
 			ConversationID:   conversationID,
 			ThroughMessageID: through,
 			IdempotencyKey:   key,
-			TriggerReason:    "codex",
+			TriggerReason:    "durable",
 			Status:           string(memory.ExtractionPending),
-			DueAt:            codexPtrTime(time.Now().UTC().Add(cfg.IdleTimeout)),
+			DueAt:            durablePtrTime(time.Now().UTC().Add(cfg.IdleTimeout)),
 		}
 		created := true
 		if err := jobs.Create(ctx, job); err != nil {
@@ -189,14 +189,14 @@ func NewCodexMemoryTrigger(jobQueue queueinfra.JobQueue, redisClient *redis.Clie
 		if !created {
 			return
 		}
-		queueJob := queueinfra.Job{SchemaVersion: queueinfra.JobSchemaVersion, ID: fmt.Sprintf("codex-job-%d", job.ID), Type: CodexMemoryJobType, Payload: map[string]any{"job_id": job.ID, "owner_id": ownerID, "conversation_id": conversationID}, AvailableAt: *job.DueAt}
+		queueJob := queueinfra.Job{SchemaVersion: queueinfra.JobSchemaVersion, ID: fmt.Sprintf("durable-job-%d", job.ID), Type: DurableMemoryJobType, Payload: map[string]any{"job_id": job.ID, "owner_id": ownerID, "conversation_id": conversationID}, AvailableAt: *job.DueAt}
 		if err := jobQueue.Publish(ctx, queueJob); err != nil && redisClient != nil {
 			_, _ = redisClient.Del(context.Background(), pendingKey).Result()
 		}
 	}
 }
 
-func (w *CodexMemoryWorker) ProcessNext(ctx context.Context) (bool, error) {
+func (w *DurableMemoryWorker) ProcessNext(ctx context.Context) (bool, error) {
 	if w == nil || w.jobs == nil || !w.cfg.Enabled {
 		return false, nil
 	}
@@ -205,12 +205,12 @@ func (w *CodexMemoryWorker) ProcessNext(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	for _, job := range jobs {
-		if job.TriggerReason != "codex" {
+		if job.TriggerReason != "durable" {
 			continue
 		}
-		return true, w.Handle(ctx, CodexMemoryPayload{JobID: job.ID, OwnerID: job.OwnerID, ConversationID: job.ConversationID})
+		return true, w.Handle(ctx, DurableMemoryPayload{JobID: job.ID, OwnerID: job.OwnerID, ConversationID: job.ConversationID})
 	}
-	if retries, ok := w.jobs.(codexPhase2RetryReader); ok {
+	if retries, ok := w.jobs.(durablePhase2RetryReader); ok {
 		pending, listErr := retries.ListPhase2Retries(ctx, 20)
 		if listErr != nil {
 			return false, listErr
@@ -234,7 +234,7 @@ func (w *CodexMemoryWorker) ProcessNext(ctx context.Context) (bool, error) {
 	return false, nil
 }
 
-func (w *CodexMemoryWorker) Handle(ctx context.Context, payload CodexMemoryPayload) (retErr error) {
+func (w *DurableMemoryWorker) Handle(ctx context.Context, payload DurableMemoryPayload) (retErr error) {
 	if w == nil || w.jobs == nil || w.messages == nil || !w.cfg.Enabled {
 		return nil
 	}
@@ -262,7 +262,7 @@ func (w *CodexMemoryWorker) Handle(ctx context.Context, payload CodexMemoryPaylo
 		}
 		job.Status = string(memory.ExtractionPending)
 		job.ErrorMessage = retErr.Error()
-		job.DueAt = codexPtrTime(time.Now().UTC().Add(time.Duration(job.AttemptCount+1) * time.Minute))
+		job.DueAt = durablePtrTime(time.Now().UTC().Add(time.Duration(job.AttemptCount+1) * time.Minute))
 		job.LockedBy, job.LockedAt, job.LeaseExpiresAt = "", nil, nil
 		_ = w.updateJob(context.WithoutCancel(ctx), job, leaseOwner)
 	}()
@@ -273,7 +273,7 @@ func (w *CodexMemoryWorker) Handle(ctx context.Context, payload CodexMemoryPaylo
 		return w.updateJob(ctx, job, leaseOwner)
 	}
 	if job.ThroughMessageID <= 0 {
-		job.ThroughMessageID, err = latestCodexMessageID(ctx, w.messages, job.OwnerID, job.ConversationID)
+		job.ThroughMessageID, err = latestDurableMessageID(ctx, w.messages, job.OwnerID, job.ConversationID)
 		if err != nil || job.ThroughMessageID <= 0 {
 			return err
 		}
@@ -310,7 +310,7 @@ func (w *CodexMemoryWorker) Handle(ctx context.Context, payload CodexMemoryPaylo
 	}
 	job.Status = string(memory.ExtractionCompleted)
 	job.ErrorMessage = ""
-	job.CompletedAt = codexPtrTime(time.Now().UTC())
+	job.CompletedAt = durablePtrTime(time.Now().UTC())
 	job.LockedBy, job.LockedAt, job.LeaseExpiresAt = "", nil, nil
 	if err := w.updateJob(ctx, job, leaseOwner); err != nil {
 		return err
@@ -323,7 +323,7 @@ func (w *CodexMemoryWorker) Handle(ctx context.Context, payload CodexMemoryPaylo
 		// status so a consolidation retry never re-runs extraction.
 		job.ErrorMessage = "phase2:" + err.Error()
 		job.Phase2AttemptCount++
-		job.DueAt = codexPtrTime(time.Now().UTC().Add(codexPhase2RetryDelay(job.Phase2AttemptCount)))
+		job.DueAt = durablePtrTime(time.Now().UTC().Add(durablePhase2RetryDelay(job.Phase2AttemptCount)))
 		_ = w.updateJob(context.WithoutCancel(ctx), job, leaseOwner)
 		return err
 	}
@@ -331,12 +331,12 @@ func (w *CodexMemoryWorker) Handle(ctx context.Context, payload CodexMemoryPaylo
 	return nil
 }
 
-func (w *CodexMemoryWorker) claim(ctx context.Context, payload CodexMemoryPayload) (*memory.ExtractionJob, bool, error) {
+func (w *DurableMemoryWorker) claim(ctx context.Context, payload DurableMemoryPayload) (*memory.ExtractionJob, bool, error) {
 	if payload.JobID <= 0 {
-		return nil, false, errors.New("codex memory job_id is required")
+		return nil, false, errors.New("durable memory job_id is required")
 	}
 	if leased, ok := w.jobs.(memory.ExtractionLeaseRepository); ok {
-		return leased.ClaimByID(ctx, payload.OwnerID, payload.JobID, w.workerID, time.Now().UTC().Add(codexStage1Lease))
+		return leased.ClaimByID(ctx, payload.OwnerID, payload.JobID, w.workerID, time.Now().UTC().Add(durableStage1Lease))
 	}
 	job, err := w.jobs.FindByID(ctx, payload.OwnerID, payload.JobID)
 	if err != nil {
@@ -350,7 +350,7 @@ func (w *CodexMemoryWorker) claim(ctx context.Context, payload CodexMemoryPayloa
 	return job, true, w.jobs.Update(ctx, job)
 }
 
-func (w *CodexMemoryWorker) updateJob(ctx context.Context, job *memory.ExtractionJob, leaseOwner ...string) error {
+func (w *DurableMemoryWorker) updateJob(ctx context.Context, job *memory.ExtractionJob, leaseOwner ...string) error {
 	owner := ""
 	if len(leaseOwner) > 0 {
 		owner = strings.TrimSpace(leaseOwner[0])
@@ -361,18 +361,18 @@ func (w *CodexMemoryWorker) updateJob(ctx context.Context, job *memory.Extractio
 	return w.jobs.Update(ctx, job)
 }
 
-func (w *CodexMemoryWorker) heartbeatStage1Lease(ctx context.Context, leased memory.ExtractionLeaseRepository, jobID int64) {
+func (w *DurableMemoryWorker) heartbeatStage1Lease(ctx context.Context, leased memory.ExtractionLeaseRepository, jobID int64) {
 	if leased == nil || jobID <= 0 || strings.TrimSpace(w.workerID) == "" {
 		return
 	}
-	ticker := time.NewTicker(codexStage1Lease / 3)
+	ticker := time.NewTicker(durableStage1Lease / 3)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			until := time.Now().UTC().Add(codexStage1Lease)
+			until := time.Now().UTC().Add(durableStage1Lease)
 			if err := leased.RenewLease(ctx, jobID, w.workerID, until); err != nil {
 				return
 			}
@@ -380,7 +380,7 @@ func (w *CodexMemoryWorker) heartbeatStage1Lease(ctx context.Context, leased mem
 	}
 }
 
-func (w *CodexMemoryWorker) extract(ctx context.Context, messages []conversation.Message) (CodexStage1Result, error) {
+func (w *DurableMemoryWorker) extract(ctx context.Context, messages []conversation.Message) (DurableStage1Result, error) {
 	var text strings.Builder
 	for _, item := range messages {
 		content := strings.TrimSpace(item.Content)
@@ -391,32 +391,32 @@ func (w *CodexMemoryWorker) extract(ctx context.Context, messages []conversation
 		text.WriteString(": ")
 		text.WriteString(content)
 		text.WriteByte('\n')
-		if text.Len() >= codexMaxRolloutLen {
+		if text.Len() >= durableMaxRolloutLen {
 			break
 		}
 	}
 	if text.Len() == 0 {
-		return CodexStage1Result{}, nil
+		return DurableStage1Result{}, nil
 	}
 	if w.chatClient == nil || w.cfg.Model == "" {
-		return CodexStage1Result{RawMemory: redactCodexSecrets(text.String()), RolloutSummary: summarizeCodexText(text.String())}, nil
+		return DurableStage1Result{RawMemory: redactDurableSecrets(text.String()), RolloutSummary: summarizeDurableText(text.String())}, nil
 	}
 	prompt := "Extract durable, reusable memory from this completed rollout. Do not invent facts. Return JSON only: {\"raw_memory\":\"...\",\"rollout_summary\":\"...\",\"rollout_slug\":\"lowercase-slug\"}. If nothing is durable, return empty strings.\n\nROLLOUT:\n" + text.String()
 	response, err := w.chatClient.Chat(ctx, w.cfg.Provider, llm.ChatRequest{Model: w.cfg.Model, Messages: []llm.ChatMessage{{Role: conversation.RoleUser, Content: prompt}}})
 	if err != nil {
-		return CodexStage1Result{}, err
+		return DurableStage1Result{}, err
 	}
-	var result CodexStage1Result
-	if err := json.Unmarshal([]byte(extractCodexJSON(response.Content)), &result); err != nil {
-		return CodexStage1Result{}, err
+	var result DurableStage1Result
+	if err := json.Unmarshal([]byte(extractDurableJSON(response.Content)), &result); err != nil {
+		return DurableStage1Result{}, err
 	}
-	result.RawMemory = redactCodexSecrets(strings.TrimSpace(result.RawMemory))
-	result.RolloutSummary = redactCodexSecrets(strings.TrimSpace(result.RolloutSummary))
-	result.RolloutSlug = safeCodexSlug(result.RolloutSlug)
+	result.RawMemory = redactDurableSecrets(strings.TrimSpace(result.RawMemory))
+	result.RolloutSummary = redactDurableSecrets(strings.TrimSpace(result.RolloutSummary))
+	result.RolloutSlug = safeDurableSlug(result.RolloutSlug)
 	return result, nil
 }
 
-func (w *CodexMemoryWorker) previousBoundary(ctx context.Context, current *memory.ExtractionJob) int64 {
+func (w *DurableMemoryWorker) previousBoundary(ctx context.Context, current *memory.ExtractionJob) int64 {
 	if current == nil || current.ThroughMessageID <= 0 {
 		return 0
 	}
@@ -426,7 +426,7 @@ func (w *CodexMemoryWorker) previousBoundary(ctx context.Context, current *memor
 	}
 	var boundary int64
 	for _, item := range items {
-		if item.TriggerReason != "codex" || item.ID == current.ID || item.ConversationID != current.ConversationID {
+		if item.TriggerReason != "durable" || item.ID == current.ID || item.ConversationID != current.ConversationID {
 			continue
 		}
 		// Completion order is not message order: a newer boundary may finish
@@ -442,7 +442,7 @@ func (w *CodexMemoryWorker) previousBoundary(ctx context.Context, current *memor
 	return boundary
 }
 
-func (w *CodexMemoryWorker) messagesThrough(ctx context.Context, ownerID, conversationID, after, through int64) ([]conversation.Message, error) {
+func (w *DurableMemoryWorker) messagesThrough(ctx context.Context, ownerID, conversationID, after, through int64) ([]conversation.Message, error) {
 	if ranged, ok := w.messages.(dreamMessageRangeReader); ok {
 		return ranged.ListActiveAfterThrough(ctx, ownerID, conversationID, after, through)
 	}
@@ -459,140 +459,140 @@ func (w *CodexMemoryWorker) messagesThrough(ctx context.Context, ownerID, conver
 	return filtered, nil
 }
 
-func (w *CodexMemoryWorker) conversationLock(ctx context.Context, ownerID, conversationID int64) (func(), error) {
+func (w *DurableMemoryWorker) conversationLock(ctx context.Context, ownerID, conversationID int64) (func(), error) {
 	if w.redis == nil {
 		key := fmt.Sprintf("%d:%d", ownerID, conversationID)
-		value, _ := codexConversationFallbackLocks.LoadOrStore(key, &sync.Mutex{})
+		value, _ := durableConversationFallbackLocks.LoadOrStore(key, &sync.Mutex{})
 		lock := value.(*sync.Mutex)
 		lock.Lock()
 		return lock.Unlock, nil
 	}
-	key := fmt.Sprintf("codex:memory:conversation:%d:%d", ownerID, conversationID)
+	key := fmt.Sprintf("durable:memory:conversation:%d:%d", ownerID, conversationID)
 	token := uuid.NewString()
-	ok, err := w.redis.SetNX(ctx, key, token, codexStage1Lease).Result()
+	ok, err := w.redis.SetNX(ctx, key, token, durableStage1Lease).Result()
 	if err != nil {
 		return nil, err
 	}
 	if !ok {
-		return nil, fmt.Errorf("codex memory conversation is already being extracted")
+		return nil, fmt.Errorf("durable memory conversation is already being extracted")
 	}
 	leaseCtx, cancel := context.WithCancel(ctx)
-	go renewCodexRedisLease(leaseCtx, w.redis, key, token, codexStage1Lease)
+	go renewDurableRedisLease(leaseCtx, w.redis, key, token, durableStage1Lease)
 	return func() {
 		cancel()
 		_, _ = w.redis.Eval(context.Background(), `if redis.call("get", KEYS[1]) == ARGV[1] then return redis.call("del", KEYS[1]) else return 0 end`, []string{key}, token).Result()
 	}, nil
 }
 
-func (w *CodexMemoryWorker) consolidate(ctx context.Context, ownerID int64) error {
+func (w *DurableMemoryWorker) consolidate(ctx context.Context, ownerID int64) error {
 	unlock, err := w.phase2Lock(ctx)
 	if err != nil {
 		return err
 	}
 	defer unlock()
-	jobs, err := listCompletedCodexJobs(ctx, w.jobs, ownerID)
+	jobs, err := listCompletedDurableJobs(ctx, w.jobs, ownerID)
 	if err != nil {
 		return err
 	}
-	inputs := make([]codexRolloutInput, 0, len(jobs))
+	inputs := make([]durableRolloutInput, 0, len(jobs))
 	for _, job := range jobs {
-		if job.TriggerReason != "codex" || len(job.ResultJSON) == 0 {
+		if job.TriggerReason != "durable" || len(job.ResultJSON) == 0 {
 			continue
 		}
-		var result CodexStage1Result
+		var result DurableStage1Result
 		if json.Unmarshal(job.ResultJSON, &result) == nil && (result.RawMemory != "" || result.RolloutSummary != "") {
-			inputs = append(inputs, codexRolloutInput{Job: job, Result: result})
+			inputs = append(inputs, durableRolloutInput{Job: job, Result: result})
 		}
 	}
 	sort.Slice(inputs, func(i, j int) bool { return inputs[i].Job.ID < inputs[j].Job.ID })
 	root := filepath.Join(w.cfg.Root, fmt.Sprintf("owner-%d", ownerID))
-	if _, err := ensureCodexDirectory(root, true, "rollout_summaries"); err != nil {
+	if _, err := ensureDurableDirectory(root, true, "rollout_summaries"); err != nil {
 		return err
 	}
-	notes, err := readCodexAdHocInputs(ctx, root)
+	notes, err := readDurableAdHocInputs(ctx, root)
 	if err != nil {
 		return err
 	}
-	digest := codexInputDigest(inputs, notes)
-	// Codex initializes an empty workspace without a model call. Once a
+	digest := durableInputDigest(inputs, notes)
+	// The pipeline initializes an empty workspace without a model call. Once a
 	// baseline exists, however, deletions are workspace changes too and must go
 	// through the one consolidation writer rather than silently resetting it.
 	if len(inputs) == 0 && len(notes) == 0 {
-		if _, err := os.Stat(filepath.Join(root, codexWorkspaceManifestFile)); os.IsNotExist(err) {
-			return ensureCodexEmptyArtifacts(root, digest)
+		if _, err := os.Stat(filepath.Join(root, durableWorkspaceManifestFile)); os.IsNotExist(err) {
+			return ensureDurableEmptyArtifacts(root, digest)
 		} else if err != nil {
 			return err
 		}
 	}
-	raw := renderCodexRawMemories(inputs, notes)
-	if err := writeCodexAtomic(filepath.Join(root, "raw_memories.md"), raw); err != nil {
+	raw := renderDurableRawMemories(inputs, notes)
+	if err := writeDurableAtomic(filepath.Join(root, "raw_memories.md"), raw); err != nil {
 		return err
 	}
-	if err := syncCodexRolloutSummaries(root, inputs); err != nil {
+	if err := syncDurableRolloutSummaries(root, inputs); err != nil {
 		return err
 	}
-	currentManifest, err := buildCodexWorkspaceManifest(root)
+	currentManifest, err := buildDurableWorkspaceManifest(root)
 	if err != nil {
 		return err
 	}
-	baseline, err := readCodexWorkspaceManifest(filepath.Join(root, codexWorkspaceManifestFile))
+	baseline, err := readDurableWorkspaceManifest(filepath.Join(root, durableWorkspaceManifestFile))
 	if err != nil {
 		return err
 	}
-	changes := codexWorkspaceChanges(baseline, currentManifest)
-	if len(changes) == 0 && codexArtifactsExist(root) {
+	changes := durableWorkspaceChanges(baseline, currentManifest)
+	if len(changes) == 0 && durableArtifactsExist(root) {
 		return nil
 	}
-	if err := writeCodexWorkspaceDiff(root, changes); err != nil {
+	if err := writeDurableWorkspaceDiff(root, changes); err != nil {
 		return err
 	}
 	currentMemory, _ := os.ReadFile(filepath.Join(root, "MEMORY.md"))
 	currentSummary, _ := os.ReadFile(filepath.Join(root, "memory_summary.md"))
-	diffBytes, _ := os.ReadFile(filepath.Join(root, codexWorkspaceDiffFile))
+	diffBytes, _ := os.ReadFile(filepath.Join(root, durableWorkspaceDiffFile))
 	result, err := w.runConsolidation(ctx, string(currentMemory), string(currentSummary), raw, string(diffBytes))
 	if err != nil {
 		return err
 	}
-	if err := writeCodexConsolidatedArtifacts(root, string(currentMemory), string(currentSummary), result); err != nil {
+	if err := writeDurableConsolidatedArtifacts(root, string(currentMemory), string(currentSummary), result); err != nil {
 		return err
 	}
-	finalManifest, err := buildCodexWorkspaceManifest(root)
+	finalManifest, err := buildDurableWorkspaceManifest(root)
 	if err != nil {
 		return err
 	}
-	if err := writeCodexWorkspaceManifest(filepath.Join(root, codexWorkspaceManifestFile), finalManifest); err != nil {
+	if err := writeDurableWorkspaceManifest(filepath.Join(root, durableWorkspaceManifestFile), finalManifest); err != nil {
 		return err
 	}
-	if err := writeCodexAtomic(filepath.Join(root, ".phase2.sha256"), codexManifestDigest(finalManifest, digest)+"\n"); err != nil {
+	if err := writeDurableAtomic(filepath.Join(root, ".phase2.sha256"), durableManifestDigest(finalManifest, digest)+"\n"); err != nil {
 		return err
 	}
-	return writeCodexAtomic(filepath.Join(root, codexConsumedWatermarkFile), fmt.Sprintf("%d\n", maxCodexJobID(inputs)))
+	return writeDurableAtomic(filepath.Join(root, durableConsumedWatermarkFile), fmt.Sprintf("%d\n", maxDurableJobID(inputs)))
 }
 
-func (w *CodexMemoryWorker) phase2Lock(ctx context.Context) (func(), error) {
+func (w *DurableMemoryWorker) phase2Lock(ctx context.Context) (func(), error) {
 	if w.redis == nil {
-		if !codexPhase2FallbackLock.TryLock() {
-			return nil, fmt.Errorf("codex memory phase2 is already running")
+		if !durablePhase2FallbackLock.TryLock() {
+			return nil, fmt.Errorf("durable memory phase2 is already running")
 		}
-		return codexPhase2FallbackLock.Unlock, nil
+		return durablePhase2FallbackLock.Unlock, nil
 	}
-	key, token := "codex:memory:phase2", uuid.NewString()
-	ok, err := w.redis.SetNX(ctx, key, token, codexPhase2Lease).Result()
+	key, token := "durable:memory:phase2", uuid.NewString()
+	ok, err := w.redis.SetNX(ctx, key, token, durablePhase2Lease).Result()
 	if err != nil {
 		return nil, err
 	}
 	if !ok {
-		return nil, fmt.Errorf("codex memory phase2 is already running")
+		return nil, fmt.Errorf("durable memory phase2 is already running")
 	}
 	leaseCtx, cancel := context.WithCancel(ctx)
-	go renewCodexRedisLease(leaseCtx, w.redis, key, token, codexPhase2Lease)
+	go renewDurableRedisLease(leaseCtx, w.redis, key, token, durablePhase2Lease)
 	return func() {
 		cancel()
 		_, _ = w.redis.Eval(context.Background(), `if redis.call("get", KEYS[1]) == ARGV[1] then return redis.call("del", KEYS[1]) else return 0 end`, []string{key}, token).Result()
 	}, nil
 }
 
-func renewCodexRedisLease(ctx context.Context, client *redis.Client, key, token string, ttl time.Duration) {
+func renewDurableRedisLease(ctx context.Context, client *redis.Client, key, token string, ttl time.Duration) {
 	if client == nil || ttl <= 0 {
 		return
 	}
@@ -611,18 +611,18 @@ func renewCodexRedisLease(ctx context.Context, client *redis.Client, key, token 
 	}
 }
 
-func (w *CodexMemoryWorker) runConsolidation(ctx context.Context, currentMemory, currentSummary, raw, workspaceDiff string) (codexConsolidationResult, error) {
+func (w *DurableMemoryWorker) runConsolidation(ctx context.Context, currentMemory, currentSummary, raw, workspaceDiff string) (durableConsolidationResult, error) {
 	if w.chatClient == nil || w.cfg.Model == "" {
-		return codexConsolidationResult{Memory: raw, Summary: summarizeCodexText(raw)}, nil
+		return durableConsolidationResult{Memory: raw, Summary: summarizeDurableText(raw)}, nil
 	}
-	prompt := "You are the single internal Codex-style memory consolidation agent. Read the workspace diff first. Consolidate into one durable, non-duplicated handbook. Preserve supported facts, merge duplicates, remove stale contradictions, and keep provenance from rollout evidence. Return JSON only: {\"memory\":\"MEMORY.md markdown\",\"summary\":\"compact routing summary\"}. Do not include v1 in summary and do not emit taxonomy, scopes, tiers, or promotion instructions.\n\nWORKSPACE DIFF (read first):\n" + workspaceDiff + "\n\nEXISTING MEMORY:\n" + currentMemory + "\n\nEXISTING SUMMARY:\n" + currentSummary + "\n\nNEW RAW INPUT:\n" + raw
+	prompt := "You are the single internal memory consolidation agent. Read the workspace diff first. Consolidate into one durable, non-duplicated handbook. Preserve supported facts, merge duplicates, remove stale contradictions, and keep provenance from rollout evidence. Return JSON only: {\"memory\":\"MEMORY.md markdown\",\"summary\":\"compact routing summary\"}. Do not include v1 in summary and do not emit taxonomy, scopes, tiers, or promotion instructions.\n\nWORKSPACE DIFF (read first):\n" + workspaceDiff + "\n\nEXISTING MEMORY:\n" + currentMemory + "\n\nEXISTING SUMMARY:\n" + currentSummary + "\n\nNEW RAW INPUT:\n" + raw
 	response, err := w.chatClient.Chat(ctx, w.cfg.Provider, llm.ChatRequest{Model: w.cfg.Model, Messages: []llm.ChatMessage{{Role: conversation.RoleUser, Content: prompt}}})
 	if err != nil {
-		return codexConsolidationResult{}, err
+		return durableConsolidationResult{}, err
 	}
-	var result codexConsolidationResult
-	if err := json.Unmarshal([]byte(extractCodexJSON(response.Content)), &result); err != nil {
-		return codexConsolidationResult{}, err
+	var result durableConsolidationResult
+	if err := json.Unmarshal([]byte(extractDurableJSON(response.Content)), &result); err != nil {
+		return durableConsolidationResult{}, err
 	}
 	result.Memory = strings.TrimSpace(result.Memory)
 	result.Summary = strings.TrimSpace(result.Summary)
@@ -630,12 +630,12 @@ func (w *CodexMemoryWorker) runConsolidation(ctx context.Context, currentMemory,
 		result.Memory = raw
 	}
 	if result.Summary == "" {
-		result.Summary = summarizeCodexText(result.Memory)
+		result.Summary = summarizeDurableText(result.Memory)
 	}
 	return result, nil
 }
 
-func latestCodexMessageID(ctx context.Context, messages DreamMessageRepository, ownerID, conversationID int64) (int64, error) {
+func latestDurableMessageID(ctx context.Context, messages DreamMessageRepository, ownerID, conversationID int64) (int64, error) {
 	if reader, ok := messages.(dreamMessageBoundaryReader); ok {
 		return reader.LatestActiveMessageID(ctx, ownerID, conversationID)
 	}
@@ -646,8 +646,8 @@ func latestCodexMessageID(ctx context.Context, messages DreamMessageRepository, 
 	return items[len(items)-1].ID, nil
 }
 
-func listCompletedCodexJobs(ctx context.Context, jobs memory.ExtractionJobRepository, ownerID int64) ([]memory.ExtractionJob, error) {
-	if reader, ok := jobs.(codexStatusAfterIDReader); ok {
+func listCompletedDurableJobs(ctx context.Context, jobs memory.ExtractionJobRepository, ownerID int64) ([]memory.ExtractionJob, error) {
+	if reader, ok := jobs.(durableStatusAfterIDReader); ok {
 		const pageSize = 500
 		all := make([]memory.ExtractionJob, 0, pageSize)
 		var afterID int64
@@ -662,7 +662,7 @@ func listCompletedCodexJobs(ctx context.Context, jobs memory.ExtractionJobReposi
 			all = append(all, page...)
 			lastID := page[len(page)-1].ID
 			if lastID <= afterID {
-				return nil, fmt.Errorf("completed Codex job pagination did not advance")
+				return nil, fmt.Errorf("completed durable-memory job pagination did not advance")
 			}
 			afterID = lastID
 			if len(page) < pageSize {
@@ -677,9 +677,9 @@ func listCompletedCodexJobs(ctx context.Context, jobs memory.ExtractionJobReposi
 	return jobs.ListByStatus(ctx, ownerID, string(memory.ExtractionCompleted), 256)
 }
 
-func codexPtrTime(value time.Time) *time.Time { return &value }
+func durablePtrTime(value time.Time) *time.Time { return &value }
 
-func codexInputDigest(inputs []codexRolloutInput, notes []codexAdHocInput) string {
+func durableInputDigest(inputs []durableRolloutInput, notes []durableAdHocInput) string {
 	hash := sha256.New()
 	for _, input := range inputs {
 		fmt.Fprintf(hash, "%d\x00%d\x00%s\x00%s\x00%s\n", input.Job.ID, input.Job.ThroughMessageID, input.Result.RawMemory, input.Result.RolloutSummary, input.Result.RolloutSlug)
@@ -690,23 +690,23 @@ func codexInputDigest(inputs []codexRolloutInput, notes []codexAdHocInput) strin
 	return hex.EncodeToString(hash.Sum(nil))
 }
 
-// codexWorkspaceManifest is the small, explicit baseline used instead of
+// durableWorkspaceManifest is the small, explicit baseline used instead of
 // treating a digest of only the input rows as the workspace state. It includes
 // every markdown artifact that Phase 2 may read or write, while excluding
 // locks, claims, and the generated diff itself.
-type codexWorkspaceManifest map[string]string
+type durableWorkspaceManifest map[string]string
 
-type codexWorkspaceChange struct {
+type durableWorkspaceChange struct {
 	Status string
 	Path   string
 	Before string
 	After  string
 }
 
-func buildCodexWorkspaceManifest(root string) (codexWorkspaceManifest, error) {
-	manifest := codexWorkspaceManifest{}
+func buildDurableWorkspaceManifest(root string) (durableWorkspaceManifest, error) {
+	manifest := durableWorkspaceManifest{}
 	for _, name := range []string{"MEMORY.md", "memory_summary.md", "raw_memories.md"} {
-		if err := addCodexManifestFile(root, name, manifest); err != nil {
+		if err := addDurableManifestFile(root, name, manifest); err != nil {
 			return nil, err
 		}
 	}
@@ -732,7 +732,7 @@ func buildCodexWorkspaceManifest(root string) (codexWorkspaceManifest, error) {
 			if relErr != nil {
 				return relErr
 			}
-			return addCodexManifestFile(root, filepath.ToSlash(rel), manifest)
+			return addDurableManifestFile(root, filepath.ToSlash(rel), manifest)
 		})
 		if walkErr != nil {
 			return nil, walkErr
@@ -741,7 +741,7 @@ func buildCodexWorkspaceManifest(root string) (codexWorkspaceManifest, error) {
 	return manifest, nil
 }
 
-func addCodexManifestFile(root, rel string, manifest codexWorkspaceManifest) error {
+func addDurableManifestFile(root, rel string, manifest durableWorkspaceManifest) error {
 	path := filepath.Join(root, filepath.FromSlash(rel))
 	info, err := os.Lstat(path)
 	if os.IsNotExist(err) {
@@ -751,7 +751,7 @@ func addCodexManifestFile(root, rel string, manifest codexWorkspaceManifest) err
 		return err
 	}
 	if info.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("codex memory artifact must not be a symlink: %s", path)
+		return fmt.Errorf("durable memory artifact must not be a symlink: %s", path)
 	}
 	if !info.Mode().IsRegular() {
 		return nil
@@ -765,36 +765,36 @@ func addCodexManifestFile(root, rel string, manifest codexWorkspaceManifest) err
 	return nil
 }
 
-func readCodexWorkspaceManifest(path string) (codexWorkspaceManifest, error) {
+func readDurableWorkspaceManifest(path string) (durableWorkspaceManifest, error) {
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
-		return codexWorkspaceManifest{}, nil
+		return durableWorkspaceManifest{}, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	var manifest codexWorkspaceManifest
+	var manifest durableWorkspaceManifest
 	if err := json.Unmarshal(data, &manifest); err != nil {
-		return nil, fmt.Errorf("decode codex memory baseline: %w", err)
+		return nil, fmt.Errorf("decode durable memory baseline: %w", err)
 	}
 	if manifest == nil {
-		manifest = codexWorkspaceManifest{}
+		manifest = durableWorkspaceManifest{}
 	}
 	return manifest, nil
 }
 
-func writeCodexWorkspaceManifest(path string, manifest codexWorkspaceManifest) error {
+func writeDurableWorkspaceManifest(path string, manifest durableWorkspaceManifest) error {
 	if manifest == nil {
-		manifest = codexWorkspaceManifest{}
+		manifest = durableWorkspaceManifest{}
 	}
 	data, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
 		return err
 	}
-	return writeCodexAtomic(path, string(data)+"\n")
+	return writeDurableAtomic(path, string(data)+"\n")
 }
 
-func codexWorkspaceChanges(previous, current codexWorkspaceManifest) []codexWorkspaceChange {
+func durableWorkspaceChanges(previous, current durableWorkspaceManifest) []durableWorkspaceChange {
 	paths := make(map[string]struct{}, len(previous)+len(current))
 	for path := range previous {
 		paths[path] = struct{}{}
@@ -802,24 +802,24 @@ func codexWorkspaceChanges(previous, current codexWorkspaceManifest) []codexWork
 	for path := range current {
 		paths[path] = struct{}{}
 	}
-	changes := make([]codexWorkspaceChange, 0, len(paths))
+	changes := make([]durableWorkspaceChange, 0, len(paths))
 	for path := range paths {
 		before, hadBefore := previous[path]
 		after, hadAfter := current[path]
 		switch {
 		case !hadBefore && hadAfter:
-			changes = append(changes, codexWorkspaceChange{Status: "added", Path: path, After: after})
+			changes = append(changes, durableWorkspaceChange{Status: "added", Path: path, After: after})
 		case hadBefore && !hadAfter:
-			changes = append(changes, codexWorkspaceChange{Status: "deleted", Path: path, Before: before})
+			changes = append(changes, durableWorkspaceChange{Status: "deleted", Path: path, Before: before})
 		case before != after:
-			changes = append(changes, codexWorkspaceChange{Status: "modified", Path: path, Before: before, After: after})
+			changes = append(changes, durableWorkspaceChange{Status: "modified", Path: path, Before: before, After: after})
 		}
 	}
 	sort.Slice(changes, func(i, j int) bool { return changes[i].Path < changes[j].Path })
 	return changes
 }
 
-func writeCodexWorkspaceDiff(root string, changes []codexWorkspaceChange) error {
+func writeDurableWorkspaceDiff(root string, changes []durableWorkspaceChange) error {
 	var b strings.Builder
 	b.WriteString("# Memory Workspace Diff\n\n")
 	b.WriteString("Generated before Phase 2. Read this file first; it is system input and must not be edited.\n\n")
@@ -835,7 +835,7 @@ func writeCodexWorkspaceDiff(root string, changes []codexWorkspaceChange) error 
 			fmt.Fprintf(&b, "- `%s` before=%s after=%s\n", change.Path, emptyHash(change.Before), emptyHash(change.After))
 		}
 	}
-	return writeCodexAtomic(filepath.Join(root, codexWorkspaceDiffFile), b.String())
+	return writeDurableAtomic(filepath.Join(root, durableWorkspaceDiffFile), b.String())
 }
 
 func emptyHash(value string) string {
@@ -845,7 +845,7 @@ func emptyHash(value string) string {
 	return value
 }
 
-func codexManifestDigest(manifest codexWorkspaceManifest, inputDigest string) string {
+func durableManifestDigest(manifest durableWorkspaceManifest, inputDigest string) string {
 	data, _ := json.Marshal(manifest)
 	hash := sha256.New()
 	_, _ = hash.Write(data)
@@ -853,7 +853,7 @@ func codexManifestDigest(manifest codexWorkspaceManifest, inputDigest string) st
 	return hex.EncodeToString(hash.Sum(nil))
 }
 
-func maxCodexJobID(inputs []codexRolloutInput) int64 {
+func maxDurableJobID(inputs []durableRolloutInput) int64 {
 	var maxID int64
 	for _, input := range inputs {
 		if input.Job.ID > maxID {
@@ -863,7 +863,7 @@ func maxCodexJobID(inputs []codexRolloutInput) int64 {
 	return maxID
 }
 
-func renderCodexRawMemories(inputs []codexRolloutInput, notes []codexAdHocInput) string {
+func renderDurableRawMemories(inputs []durableRolloutInput, notes []durableAdHocInput) string {
 	if len(inputs) == 0 && len(notes) == 0 {
 		return "# Raw Memories\n\nNo durable memory was extracted.\n"
 	}
@@ -891,7 +891,7 @@ func renderCodexRawMemories(inputs []codexRolloutInput, notes []codexAdHocInput)
 	return builder.String()
 }
 
-func syncCodexRolloutSummaries(root string, inputs []codexRolloutInput) error {
+func syncDurableRolloutSummaries(root string, inputs []durableRolloutInput) error {
 	dir := filepath.Join(root, "rollout_summaries")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
@@ -900,20 +900,20 @@ func syncCodexRolloutSummaries(root string, inputs []codexRolloutInput) error {
 	// batch, but never clear older rollouts merely because the selection window
 	// is bounded.
 	for _, input := range inputs {
-		slug := safeCodexSlug(input.Result.RolloutSlug)
+		slug := safeDurableSlug(input.Result.RolloutSlug)
 		if slug == "" {
 			slug = fmt.Sprintf("rollout-%d", input.Job.ID)
 		}
 		path := filepath.Join(dir, fmt.Sprintf("%s-%d.md", slug, input.Job.ID))
 		content := fmt.Sprintf("# Rollout %d\n\n%s\n", input.Job.ID, input.Result.RolloutSummary)
-		if err := writeCodexAtomic(path, content); err != nil {
+		if err := writeDurableAtomic(path, content); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func codexArtifactsExist(root string) bool {
+func durableArtifactsExist(root string) bool {
 	for _, name := range []string{"MEMORY.md", "memory_summary.md", "raw_memories.md"} {
 		if _, err := os.Stat(filepath.Join(root, name)); err != nil {
 			return false
@@ -922,7 +922,7 @@ func codexArtifactsExist(root string) bool {
 	return true
 }
 
-func readCodexAdHocInputs(ctx context.Context, root string) ([]codexAdHocInput, error) {
+func readDurableAdHocInputs(ctx context.Context, root string) ([]durableAdHocInput, error) {
 	dir := filepath.Join(root, "extensions", "ad_hoc", "notes")
 	entries, err := os.ReadDir(dir)
 	if os.IsNotExist(err) {
@@ -939,7 +939,7 @@ func readCodexAdHocInputs(ctx context.Context, root string) ([]codexAdHocInput, 
 		paths = append(paths, entry.Name())
 	}
 	sort.Strings(paths)
-	inputs := make([]codexAdHocInput, 0, len(paths))
+	inputs := make([]durableAdHocInput, 0, len(paths))
 	for _, name := range paths {
 		select {
 		case <-ctx.Done():
@@ -950,16 +950,16 @@ func readCodexAdHocInputs(ctx context.Context, root string) ([]codexAdHocInput, 
 		if readErr != nil {
 			return nil, readErr
 		}
-		content := strings.TrimSpace(redactCodexSecrets(string(data)))
+		content := strings.TrimSpace(redactDurableSecrets(string(data)))
 		if content == "" {
 			continue
 		}
-		inputs = append(inputs, codexAdHocInput{Path: filepath.ToSlash(filepath.Join("extensions", "ad_hoc", "notes", name)), Content: content})
+		inputs = append(inputs, durableAdHocInput{Path: filepath.ToSlash(filepath.Join("extensions", "ad_hoc", "notes", name)), Content: content})
 	}
 	return inputs, nil
 }
 
-func codexWorkspaceDigest(root, inputDigest string) (string, error) {
+func durableWorkspaceDigest(root, inputDigest string) (string, error) {
 	hash := sha256.New()
 	fmt.Fprintf(hash, "input\x00%s\n", inputDigest)
 	paths := []string{"MEMORY.md", "memory_summary.md", "raw_memories.md"}
@@ -1027,7 +1027,7 @@ func codexWorkspaceDigest(root, inputDigest string) (string, error) {
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
-func ensureCodexEmptyArtifacts(root, inputDigest string) error {
+func ensureDurableEmptyArtifacts(root, inputDigest string) error {
 	for name, content := range map[string]string{
 		"raw_memories.md":   "# Raw Memories\n\nNo durable memory was extracted.\n",
 		"MEMORY.md":         "# Memory\n",
@@ -1035,52 +1035,52 @@ func ensureCodexEmptyArtifacts(root, inputDigest string) error {
 	} {
 		path := filepath.Join(root, name)
 		if _, err := os.Stat(path); os.IsNotExist(err) {
-			if err := writeCodexAtomic(path, content); err != nil {
+			if err := writeDurableAtomic(path, content); err != nil {
 				return err
 			}
 		} else if err != nil {
 			return err
 		}
 	}
-	digest, err := codexWorkspaceDigest(root, inputDigest)
+	digest, err := durableWorkspaceDigest(root, inputDigest)
 	if err != nil {
 		return err
 	}
-	manifest, err := buildCodexWorkspaceManifest(root)
+	manifest, err := buildDurableWorkspaceManifest(root)
 	if err != nil {
 		return err
 	}
-	if err := writeCodexWorkspaceManifest(filepath.Join(root, codexWorkspaceManifestFile), manifest); err != nil {
+	if err := writeDurableWorkspaceManifest(filepath.Join(root, durableWorkspaceManifestFile), manifest); err != nil {
 		return err
 	}
-	if err := writeCodexAtomic(filepath.Join(root, ".phase2.sha256"), digest+"\n"); err != nil {
+	if err := writeDurableAtomic(filepath.Join(root, ".phase2.sha256"), digest+"\n"); err != nil {
 		return err
 	}
-	return writeCodexAtomic(filepath.Join(root, codexConsumedWatermarkFile), "0\n")
+	return writeDurableAtomic(filepath.Join(root, durableConsumedWatermarkFile), "0\n")
 }
 
-func writeCodexConsolidatedArtifacts(root, previousMemory, previousSummary string, result codexConsolidationResult) error {
+func writeDurableConsolidatedArtifacts(root, previousMemory, previousSummary string, result durableConsolidationResult) error {
 	memoryPath := filepath.Join(root, "MEMORY.md")
 	summaryPath := filepath.Join(root, "memory_summary.md")
-	if err := writeCodexAtomic(memoryPath, result.Memory); err != nil {
+	if err := writeDurableAtomic(memoryPath, result.Memory); err != nil {
 		return err
 	}
-	if err := writeCodexAtomic(summaryPath, "v1\n\n"+result.Summary); err != nil {
+	if err := writeDurableAtomic(summaryPath, "v1\n\n"+result.Summary); err != nil {
 		// Keep the last successful pair intact if the second replacement fails.
 		if previousMemory == "" {
 			_ = os.Remove(memoryPath)
 		} else {
-			_ = writeCodexAtomic(memoryPath, previousMemory)
+			_ = writeDurableAtomic(memoryPath, previousMemory)
 		}
 		if previousSummary != "" {
-			_ = writeCodexAtomic(summaryPath, previousSummary)
+			_ = writeDurableAtomic(summaryPath, previousSummary)
 		}
 		return err
 	}
 	return nil
 }
 
-func codexPhase2RetryDelay(attempt int) time.Duration {
+func durablePhase2RetryDelay(attempt int) time.Duration {
 	if attempt < 1 {
 		attempt = 1
 	}
@@ -1088,28 +1088,28 @@ func codexPhase2RetryDelay(attempt int) time.Duration {
 		attempt = 8
 	}
 	delay := time.Minute * time.Duration(1<<uint(attempt-1))
-	if delay > codexPhase2MaxBackoff {
-		return codexPhase2MaxBackoff
+	if delay > durablePhase2MaxBackoff {
+		return durablePhase2MaxBackoff
 	}
 	return delay
 }
 
-func (w *CodexMemoryWorker) deferPhase2Retry(ctx context.Context, job *memory.ExtractionJob, cause error) error {
+func (w *DurableMemoryWorker) deferPhase2Retry(ctx context.Context, job *memory.ExtractionJob, cause error) error {
 	if job == nil || w == nil || w.jobs == nil {
 		return nil
 	}
 	job.Phase2AttemptCount++
 	job.ErrorMessage = "phase2:" + cause.Error()
-	job.DueAt = codexPtrTime(time.Now().UTC().Add(codexPhase2RetryDelay(job.Phase2AttemptCount)))
+	job.DueAt = durablePtrTime(time.Now().UTC().Add(durablePhase2RetryDelay(job.Phase2AttemptCount)))
 	return w.jobs.Update(ctx, job)
 }
 
-func writeCodexAtomic(path, content string) error {
+func writeDurableAtomic(path, content string) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(dir, ".codex-memory-*")
+	tmp, err := os.CreateTemp(dir, ".durable-memory-*")
 	if err != nil {
 		return err
 	}
@@ -1129,25 +1129,25 @@ func writeCodexAtomic(path, content string) error {
 	return os.Rename(tmpName, path)
 }
 
-var codexSecretPatterns = []*regexp.Regexp{
+var durableSecretPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)(api[_-]?key|secret|password|token)\s*[:=]\s*[^\s,;]{8,}`),
 	regexp.MustCompile(`(?i)bearer\s+[a-z0-9._-]{12,}`),
 	regexp.MustCompile(`-----BEGIN [A-Z ]+PRIVATE KEY-----`),
 }
 
-func redactCodexSecrets(value string) string {
-	value = codexSecretPatterns[0].ReplaceAllStringFunc(value, func(match string) string {
+func redactDurableSecrets(value string) string {
+	value = durableSecretPatterns[0].ReplaceAllStringFunc(value, func(match string) string {
 		key := strings.TrimSpace(match)
 		if colon := strings.IndexAny(key, ":="); colon > 0 {
 			return key[:colon+1] + "[REDACTED]"
 		}
 		return "[REDACTED]"
 	})
-	value = codexSecretPatterns[1].ReplaceAllString(value, "bearer [REDACTED]")
-	return codexSecretPatterns[2].ReplaceAllString(value, "[REDACTED PRIVATE KEY]")
+	value = durableSecretPatterns[1].ReplaceAllString(value, "bearer [REDACTED]")
+	return durableSecretPatterns[2].ReplaceAllString(value, "[REDACTED PRIVATE KEY]")
 }
 
-func safeCodexSlug(value string) string {
+func safeDurableSlug(value string) string {
 	value = strings.ToLower(strings.TrimSpace(value))
 	var builder strings.Builder
 	for _, r := range value {
@@ -1160,7 +1160,7 @@ func safeCodexSlug(value string) string {
 	return strings.Trim(builder.String(), "-")
 }
 
-func summarizeCodexText(value string) string {
+func summarizeDurableText(value string) string {
 	value = strings.Join(strings.Fields(value), " ")
 	if len([]rune(value)) > 1200 {
 		value = string([]rune(value)[:1200]) + "..."
@@ -1168,7 +1168,7 @@ func summarizeCodexText(value string) string {
 	return value
 }
 
-func extractCodexJSON(raw string) string {
+func extractDurableJSON(raw string) string {
 	raw = strings.TrimSpace(raw)
 	if start := strings.Index(raw, "{"); start >= 0 {
 		if end := strings.LastIndex(raw, "}"); end > start {

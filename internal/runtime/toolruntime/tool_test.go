@@ -27,10 +27,10 @@ func TestValidateAllowedHostsNormalizesURLs(t *testing.T) {
 	}
 }
 
-func TestUpdatePlanToolMatchesCodexContract(t *testing.T) {
-	const codexBaseline = "46aa019e805352c9d7fd9a740cbf7f8b9aeb162d"
-	if codexBaseline == "" {
-		t.Fatal("Codex baseline must stay explicit")
+func TestUpdatePlanToolMatchesDurableContract(t *testing.T) {
+	const durableBaseline = "46aa019e805352c9d7fd9a740cbf7f8b9aeb162d"
+	if durableBaseline == "" {
+		t.Fatal("Durable baseline must stay explicit")
 	}
 	tool := UpdatePlanTool{}
 	schema := string(tool.Parameters())

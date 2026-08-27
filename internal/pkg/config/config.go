@@ -17,36 +17,42 @@ type Config struct {
 	Queue         QueueConfig         `yaml:"queue"`
 	LLMCache      LLMCacheConfig      `yaml:"llm_cache"`
 	ResourceCache ResourceCacheConfig `yaml:"resource_cache"`
-	// CodexMemory is the active durable-memory worker configuration.
-	CodexMemory CodexMemoryConfig `yaml:"codex_memory"`
-	// MemoryDream is a parse-only compatibility alias for pre-Codex deployments.
-	// setDefaults migrates it into CodexMemory before production wiring starts.
+	// DurableMemory is the active durable-memory worker configuration.
+	DurableMemory DurableMemoryConfig `yaml:"durable_memory"`
+	// CodexMemoryLegacy is a parse-only compatibility alias for the retired
+	// codex_memory key. setDefaults migrates it into DurableMemory before
+	// production wiring starts.
+	CodexMemoryLegacy DurableMemoryConfig `yaml:"codex_memory"`
+	// MemoryDream is a parse-only compatibility alias for pre-pipeline
+	// deployments. setDefaults migrates it into DurableMemory last.
 	MemoryDream MemoryDreamConfig `yaml:"memory_dream"`
 	// WorkingMemory is accepted for backwards-compatible config parsing only.
 	// Runtime continuity is provided by conversation history/snapshots; no
 	// production component reads this field. Remove it after the migration
 	// window closes.
-	WorkingMemory         WorkingMemoryConfig   `yaml:"working_memory"`
-	NATS                  NATSConfig            `yaml:"nats"`
-	ReflectionQueue       ReflectionQueueConfig `yaml:"reflection_queue"`
-	AgentRuntime          AgentRuntimeConfig    `yaml:"agent_runtime"`
-	Tools                 ToolsConfig           `yaml:"tools"`
-	Goals                 GoalsConfig           `yaml:"goals"`
-	MinIO                 MinIOConfig           `yaml:"minio"`
-	Retrieval             RetrievalConfig       `yaml:"retrieval"`
-	Elasticsearch         ElasticsearchConfig   `yaml:"elasticsearch"`
-	Milvus                MilvusConfig          `yaml:"milvus"`
-	ContextIndex          ContextIndexConfig    `yaml:"context_index"`
-	OCR                   OCRConfig             `yaml:"ocr"`
-	PythonBridge          PythonBridgeConfig    `yaml:"python_bridge"`
-	Security              SecurityConfig        `yaml:"security"`
-	OAuth                 OAuthConfig           `yaml:"oauth"`
-	GitWorkspace          GitWorkspaceConfig    `yaml:"git_workspace"`
-	codexMemoryConfigured bool
+	WorkingMemory               WorkingMemoryConfig   `yaml:"working_memory"`
+	NATS                        NATSConfig            `yaml:"nats"`
+	ReflectionQueue             ReflectionQueueConfig `yaml:"reflection_queue"`
+	AgentRuntime                AgentRuntimeConfig    `yaml:"agent_runtime"`
+	Tools                       ToolsConfig           `yaml:"tools"`
+	Goals                       GoalsConfig           `yaml:"goals"`
+	MinIO                       MinIOConfig           `yaml:"minio"`
+	Retrieval                   RetrievalConfig       `yaml:"retrieval"`
+	Elasticsearch               ElasticsearchConfig   `yaml:"elasticsearch"`
+	Milvus                      MilvusConfig          `yaml:"milvus"`
+	ContextIndex                ContextIndexConfig    `yaml:"context_index"`
+	OCR                         OCRConfig             `yaml:"ocr"`
+	PythonBridge                PythonBridgeConfig    `yaml:"python_bridge"`
+	Security                    SecurityConfig        `yaml:"security"`
+	OAuth                       OAuthConfig           `yaml:"oauth"`
+	GitWorkspace                GitWorkspaceConfig    `yaml:"git_workspace"`
+	durableMemoryConfigured     bool
+	codexMemoryLegacyConfigured bool
 }
 
-// UnmarshalYAML records whether codex_memory was present so an explicit
-// enabled: false cannot be overridden by the deprecated memory_dream alias.
+// UnmarshalYAML records which durable-memory sections were present so an
+// explicit enabled: false in a higher-precedence section cannot be
+// overridden by a deprecated alias.
 func (c *Config) UnmarshalYAML(node *yaml.Node) error {
 	type plainConfig Config
 	var decoded plainConfig
@@ -56,9 +62,11 @@ func (c *Config) UnmarshalYAML(node *yaml.Node) error {
 	*c = Config(decoded)
 	if node.Kind == yaml.MappingNode {
 		for i := 0; i+1 < len(node.Content); i += 2 {
-			if node.Content[i].Value == "codex_memory" {
-				c.codexMemoryConfigured = true
-				break
+			switch node.Content[i].Value {
+			case "durable_memory":
+				c.durableMemoryConfigured = true
+			case "codex_memory":
+				c.codexMemoryLegacyConfigured = true
 			}
 		}
 	}
@@ -146,16 +154,16 @@ type ResourceCacheConfig struct {
 	TTLSeconds int    `yaml:"ttl_seconds"`
 }
 
-type CodexMemoryConfig struct {
+type DurableMemoryConfig struct {
 	Enabled bool `yaml:"enabled"`
-	// Deprecated: Codex extraction is idle-driven and ignores turn counts.
+	// Deprecated: durable-memory extraction is idle-driven and ignores turn counts.
 	TriggerEveryNTurns int    `yaml:"trigger_every_n_turns"`
 	IdleTimeoutSeconds int    `yaml:"idle_timeout_seconds"`
 	LLMProviderType    string `yaml:"llm_provider_type"`
 	LLMBaseURL         string `yaml:"llm_base_url"`
 	LLMAPIKey          string `yaml:"llm_api_key"`
 	LLMModel           string `yaml:"llm_model"`
-	// Deprecated: the file-backed Codex pipeline does not use embeddings.
+	// Deprecated: the file-backed durable-memory pipeline does not use embeddings.
 	EmbeddingProviderType string `yaml:"embedding_provider_type"`
 	EmbeddingBaseURL      string `yaml:"embedding_base_url"`
 	EmbeddingAPIKey       string `yaml:"embedding_api_key"`
@@ -163,13 +171,14 @@ type CodexMemoryConfig struct {
 }
 
 // MemoryDreamConfig is kept as a source-compatible alias while deployments
-// migrate from memory_dream to codex_memory.
-// Deprecated: use CodexMemoryConfig.
-type MemoryDreamConfig = CodexMemoryConfig
+// migrate from memory_dream to durable_memory.
+// Deprecated: use DurableMemoryConfig.
+type MemoryDreamConfig = DurableMemoryConfig
 
 // WorkingMemoryConfig is retained only so existing deployments keep parsing.
 // Deprecated: the runtime ignores this section; use conversation snapshots and
-// Codex file-backed memory instead. It is intentionally not defaulted.
+// the file-backed durable memory store instead. It is intentionally not
+// defaulted.
 type WorkingMemoryConfig struct {
 	TTLSeconds int `yaml:"ttl_seconds"`
 	LockTTLMS  int `yaml:"lock_ttl_ms"`
@@ -319,26 +328,32 @@ func LoadConfig(path string) (*Config, error) {
 	return &cfg, cfg.Validate()
 }
 
-// EffectiveCodexMemory returns the sole runtime durable-memory configuration.
-// Legacy memory_dream values are normalized into this field during loading.
-func (c *Config) EffectiveCodexMemory() CodexMemoryConfig {
+// EffectiveDurableMemory returns the sole runtime durable-memory configuration.
+// Legacy codex_memory and memory_dream values are normalized into this field
+// during loading.
+func (c *Config) EffectiveDurableMemory() DurableMemoryConfig {
 	if c == nil {
-		return CodexMemoryConfig{}
+		return DurableMemoryConfig{}
 	}
-	return c.CodexMemory
+	return c.DurableMemory
 }
 
-func isZeroCodexMemory(cfg CodexMemoryConfig) bool {
+func isZeroDurableMemory(cfg DurableMemoryConfig) bool {
 	return !cfg.Enabled && cfg.TriggerEveryNTurns == 0 && cfg.IdleTimeoutSeconds == 0 &&
 		cfg.LLMProviderType == "" && cfg.LLMBaseURL == "" && cfg.LLMAPIKey == "" && cfg.LLMModel == "" &&
 		cfg.EmbeddingProviderType == "" && cfg.EmbeddingBaseURL == "" && cfg.EmbeddingAPIKey == "" && cfg.EmbeddingModel == ""
 }
 
 func (c *Config) setDefaults() {
-	// Migrate the old YAML section once at load time. If both sections are
-	// present, codex_memory wins, including an explicit enabled: false.
-	if !c.codexMemoryConfigured && isZeroCodexMemory(c.CodexMemory) && !isZeroCodexMemory(c.MemoryDream) {
-		c.CodexMemory = c.MemoryDream
+	// Migrate the retired YAML sections once at load time. Precedence is
+	// durable_memory > codex_memory > memory_dream; an explicit enabled: false
+	// in a present higher-precedence section wins over any alias.
+	if !c.durableMemoryConfigured && isZeroDurableMemory(c.DurableMemory) {
+		if c.codexMemoryLegacyConfigured || !isZeroDurableMemory(c.CodexMemoryLegacy) {
+			c.DurableMemory = c.CodexMemoryLegacy
+		} else if !isZeroDurableMemory(c.MemoryDream) {
+			c.DurableMemory = c.MemoryDream
+		}
 	}
 	if c.App.Name == "" {
 		c.App.Name = "agentcanvas"
@@ -397,10 +412,11 @@ func (c *Config) setDefaults() {
 	if c.ResourceCache.TTLSeconds == 0 {
 		c.ResourceCache.TTLSeconds = 60
 	}
-	// Codex consolidation is idle-driven; it has no turn-count trigger. Keep
-	// the longer Codex idle default separate from the legacy Dream alias.
-	if c.CodexMemory.IdleTimeoutSeconds == 0 {
-		c.CodexMemory.IdleTimeoutSeconds = 6 * 60 * 60
+	// Durable-memory consolidation is idle-driven; it has no turn-count
+	// trigger, so apply the longer idle default here rather than in the
+	// deprecated alias sections.
+	if c.DurableMemory.IdleTimeoutSeconds == 0 {
+		c.DurableMemory.IdleTimeoutSeconds = 6 * 60 * 60
 	}
 	if c.NATS.URL == "" {
 		c.NATS.URL = "nats://localhost:4222"
@@ -601,17 +617,17 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("%s must not use an unresolved or placeholder value", name)
 		}
 	}
-	activeMemory := c.EffectiveCodexMemory()
+	activeMemory := c.EffectiveDurableMemory()
 	if activeMemory.Enabled {
 		if strings.TrimSpace(activeMemory.LLMProviderType) == "" || strings.TrimSpace(activeMemory.LLMBaseURL) == "" || strings.TrimSpace(activeMemory.LLMAPIKey) == "" || strings.TrimSpace(activeMemory.LLMModel) == "" {
-			return fmt.Errorf("codex_memory LLM provider, base URL, API key, and model are required when enabled")
+			return fmt.Errorf("durable_memory LLM provider, base URL, API key, and model are required when enabled")
 		}
 		// Only the deprecated memory_dream alias ever required an embedding
-		// provider. Codex file-backed consolidation does not perform vector
+		// provider. File-backed consolidation does not perform vector
 		// extraction, so embedding settings are ignored on the active path.
-		if !c.CodexMemory.Enabled && c.MemoryDream.Enabled &&
+		if !c.DurableMemory.Enabled && !c.CodexMemoryLegacy.Enabled && c.MemoryDream.Enabled &&
 			(strings.TrimSpace(activeMemory.EmbeddingProviderType) == "" || strings.TrimSpace(activeMemory.EmbeddingBaseURL) == "" || strings.TrimSpace(activeMemory.EmbeddingModel) == "") {
-			return fmt.Errorf("codex_memory embedding provider, base URL, and model are required when enabled")
+			return fmt.Errorf("durable_memory embedding provider, base URL, and model are required when enabled")
 		}
 	}
 	if c.Queue.Backend != "mysql" && c.Queue.Backend != "redis_stream" && c.Queue.Backend != "nats" {

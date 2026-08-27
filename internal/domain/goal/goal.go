@@ -67,7 +67,7 @@ func ValidateObjective(objective string) error {
 	return nil
 }
 
-// NormalizeObjective applies Codex's trim-before-validation contract.
+// NormalizeObjective applies the trim-before-validation contract.
 func NormalizeObjective(objective string) (string, error) {
 	objective = strings.TrimSpace(objective)
 	if err := ValidateObjective(objective); err != nil {
