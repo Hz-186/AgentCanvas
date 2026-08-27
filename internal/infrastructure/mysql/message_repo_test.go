@@ -199,21 +199,41 @@ func insertColumnValues(t *testing.T, stmt recordedStatement) map[string]driver.
 		t.Fatalf("unexpected insert SQL %q", stmt.Query)
 	}
 	columns := strings.Split(stmt.Query[start+1:end], ",")
-	if len(columns) != len(stmt.Args) {
-		t.Fatalf("insert SQL %q has %d columns but %d args", stmt.Query, len(columns), len(stmt.Args))
-	}
 	values := make(map[string]driver.Value, len(columns))
+	argIndex := 0
+	valuesSQL := stmt.Query[end+1:]
+	valuesStart := strings.Index(valuesSQL, "(")
+	valuesEnd := strings.LastIndex(valuesSQL, ")")
+	if valuesStart < 0 || valuesEnd < valuesStart {
+		t.Fatalf("unexpected insert SQL %q", stmt.Query)
+	}
+	placeholders := strings.Split(valuesSQL[valuesStart+1:valuesEnd], ",")
+	if len(columns) != len(placeholders) {
+		t.Fatalf("insert SQL %q has %d columns but %d value expressions", stmt.Query, len(columns), len(placeholders))
+	}
 	for i, column := range columns {
-		values[strings.Trim(strings.TrimSpace(column), "`")] = stmt.Args[i]
+		column = strings.Trim(strings.TrimSpace(column), "`")
+		if strings.TrimSpace(placeholders[i]) == "?" {
+			if argIndex >= len(stmt.Args) {
+				t.Fatalf("insert SQL %q is missing arg %d", stmt.Query, argIndex)
+			}
+			values[column] = stmt.Args[argIndex]
+			argIndex++
+		} else {
+			values[column] = nil
+		}
+	}
+	if argIndex != len(stmt.Args) {
+		t.Fatalf("insert SQL %q used %d args, got %d", stmt.Query, argIndex, len(stmt.Args))
 	}
 	return values
 }
 
 func messageRowsFixture(rows ...[]driver.Value) func(string) driver.Rows {
 	return func(query string) driver.Rows {
-		if strings.Contains(query, "FROM messages") {
+		if strings.Contains(query, "FROM `messages`") || strings.Contains(query, "FROM messages") {
 			return &fakeRows{
-				columns: []string{"id", "owner_id", "conversation_id", "role", "content", "run_id", "token_count", "archived_at", "created_at", "content_type", "metadata_json"},
+				columns: []string{"id", "owner_id", "conversation_id", "role", "content", "run_id", "transcript_entry_id", "token_count", "archived_at", "created_at", "content_type", "metadata_json"},
 				data:    rows,
 			}
 		}
@@ -286,13 +306,95 @@ func TestMessageRepoCreateDefaultsToText(t *testing.T) {
 	}
 }
 
+func TestMessageRepoCreateIncludesTranscriptIdentity(t *testing.T) {
+	repo, fake := newMessageRepoWithFakeDB(t)
+	fake.setRowsFor(conversationAgentRows(7))
+	runID := int64(9)
+	entryID := "4:1"
+	message := &conversation.Message{
+		ImmutableModel:    domain.ImmutableModel{OwnerID: 1},
+		ConversationID:    2,
+		Role:              conversation.RoleAssistant,
+		Content:           "done",
+		RunID:             &runID,
+		TranscriptEntryID: &entryID,
+	}
+	if err := repo.Create(context.Background(), message); err != nil {
+		t.Fatal(err)
+	}
+	inserts := fake.execsForTable("messages")
+	if len(inserts) != 1 {
+		t.Fatalf("expected 1 messages insert, got %d", len(inserts))
+	}
+	values := insertColumnValues(t, inserts[0])
+	if values["transcript_entry_id"] != entryID {
+		t.Fatalf("transcript_entry_id = %v, want %q", values["transcript_entry_id"], entryID)
+	}
+}
+
+func TestMessageRepoCreateReusesMatchingTranscriptEntry(t *testing.T) {
+	repo, fake := newMessageRepoWithFakeDB(t)
+	createdAt := time.Date(2026, 8, 26, 9, 0, 0, 0, time.UTC)
+	runID := int64(9)
+	entryID := "4:1"
+	metadata := []byte(`{"tool_call_id":"call_1","tool_name":"lookup","arguments":{}}`)
+	fake.setRowsFor(messageRowsFixture(
+		[]driver.Value{int64(101), int64(1), int64(2), conversation.RoleAssistant, "", runID, entryID, int64(0), nil, createdAt, conversation.ContentTypeFunctionCall, metadata},
+	))
+	message := &conversation.Message{
+		ImmutableModel:    domain.ImmutableModel{OwnerID: 1},
+		ConversationID:    2,
+		Role:              conversation.RoleAssistant,
+		ContentType:       conversation.ContentTypeFunctionCall,
+		RunID:             &runID,
+		TranscriptEntryID: &entryID,
+		MetadataJSON:      metadata,
+	}
+	if err := repo.Create(context.Background(), message); err != nil {
+		t.Fatal(err)
+	}
+	if message.ID != 101 {
+		t.Fatalf("idempotent create returned ID %d, want existing 101", message.ID)
+	}
+	if inserts := fake.execsForTable("messages"); len(inserts) != 0 {
+		t.Fatalf("retry must not insert a second message row: %+v", inserts)
+	}
+	if outbox := fake.execsForTable("context_resource_index_outbox"); len(outbox) != 0 {
+		t.Fatalf("retry must not enqueue a second index write: %+v", outbox)
+	}
+}
+
+func TestMessageRepoCreateRejectsConflictingTranscriptEntry(t *testing.T) {
+	repo, fake := newMessageRepoWithFakeDB(t)
+	createdAt := time.Date(2026, 8, 26, 9, 0, 0, 0, time.UTC)
+	runID := int64(9)
+	entryID := "4:1"
+	fake.setRowsFor(messageRowsFixture(
+		[]driver.Value{int64(101), int64(1), int64(2), conversation.RoleAssistant, "first", runID, entryID, int64(0), nil, createdAt, conversation.ContentTypeText, nil},
+	))
+	message := &conversation.Message{
+		ImmutableModel:    domain.ImmutableModel{OwnerID: 1},
+		ConversationID:    2,
+		Role:              conversation.RoleAssistant,
+		Content:           "different",
+		RunID:             &runID,
+		TranscriptEntryID: &entryID,
+	}
+	if err := repo.Create(context.Background(), message); !errors.Is(err, conversation.ErrTranscriptEntryConflict) {
+		t.Fatalf("conflicting retry error = %v, want ErrTranscriptEntryConflict", err)
+	}
+	if inserts := fake.execsForTable("messages"); len(inserts) != 0 {
+		t.Fatalf("conflicting retry must not insert a second message row: %+v", inserts)
+	}
+}
+
 func TestMessageRepoListReturnsTypedRows(t *testing.T) {
 	repo, fake := newMessageRepoWithFakeDB(t)
 	createdAt := time.Date(2026, 8, 26, 9, 0, 0, 0, time.UTC)
 	metadata := []byte(`{"tool_call_id":"call_42","tool_name":"read_file","arguments":{"path":"a.go"}}`)
 	fake.setRowsFor(messageRowsFixture(
-		[]driver.Value{int64(101), int64(1), int64(2), conversation.RoleAssistant, "", nil, int64(3), nil, createdAt, conversation.ContentTypeFunctionCall, metadata},
-		[]driver.Value{int64(102), int64(1), int64(2), conversation.RoleAssistant, "done", nil, int64(4), nil, createdAt, conversation.ContentTypeText, nil},
+		[]driver.Value{int64(101), int64(1), int64(2), conversation.RoleAssistant, "", nil, nil, int64(3), nil, createdAt, conversation.ContentTypeFunctionCall, metadata},
+		[]driver.Value{int64(102), int64(1), int64(2), conversation.RoleAssistant, "done", nil, nil, int64(4), nil, createdAt, conversation.ContentTypeText, nil},
 	))
 
 	messages, err := repo.ListByConversation(context.Background(), 1, 2)
@@ -359,7 +461,7 @@ func TestMessageRepoInvalidMetadataDegradesToText(t *testing.T) {
 	repo, fake := newMessageRepoWithFakeDB(t)
 	createdAt := time.Date(2026, 8, 26, 9, 0, 0, 0, time.UTC)
 	fake.setRowsFor(messageRowsFixture(
-		[]driver.Value{int64(201), int64(1), int64(2), conversation.RoleAssistant, "fallback text", nil, int64(6), nil, createdAt, conversation.ContentTypeFunctionCall, []byte("{not-valid-json")},
+		[]driver.Value{int64(201), int64(1), int64(2), conversation.RoleAssistant, "fallback text", nil, nil, int64(6), nil, createdAt, conversation.ContentTypeFunctionCall, []byte("{not-valid-json")},
 	))
 
 	messages, err := repo.ListByConversation(context.Background(), 1, 2)
@@ -402,6 +504,33 @@ func TestMigrationMessageContentTypeUpAddsColumns(t *testing.T) {
 		"ALTER TABLE messages DROP COLUMN metadata_json;",
 	}
 	for _, statement := range downStatements {
+		if !strings.Contains(string(downSQL), statement) {
+			t.Errorf("down migration missing %q", statement)
+		}
+	}
+}
+
+func TestMigrationMessageTranscriptIdentityAddsUniqueKey(t *testing.T) {
+	upSQL, err := os.ReadFile(filepath.Join("..", "..", "..", "migrations", "000013_message_transcript_idempotency.up.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	downSQL, err := os.ReadFile(filepath.Join("..", "..", "..", "migrations", "000013_message_transcript_idempotency.down.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, statement := range []string{
+		"ADD COLUMN `transcript_entry_id` varchar(191) DEFAULT NULL",
+		"ADD UNIQUE KEY `uk_messages_transcript_entry` (`owner_id`,`conversation_id`,`run_id`,`transcript_entry_id`)",
+	} {
+		if !strings.Contains(string(upSQL), statement) {
+			t.Errorf("up migration missing %q", statement)
+		}
+	}
+	for _, statement := range []string{
+		"DROP INDEX `uk_messages_transcript_entry`",
+		"DROP COLUMN `transcript_entry_id`",
+	} {
 		if !strings.Contains(string(downSQL), statement) {
 			t.Errorf("down migration missing %q", statement)
 		}

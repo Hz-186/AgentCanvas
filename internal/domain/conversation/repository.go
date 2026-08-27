@@ -2,8 +2,13 @@ package conversation
 
 import (
 	"context"
+	"errors"
 	"time"
 )
+
+// ErrTranscriptEntryConflict means a retry reused an identity with different
+// payload. Treating that as success would silently corrupt the rollout.
+var ErrTranscriptEntryConflict = errors.New("transcript entry identity conflict")
 
 type Repository interface {
 	Create(ctx context.Context, item *Conversation) error
