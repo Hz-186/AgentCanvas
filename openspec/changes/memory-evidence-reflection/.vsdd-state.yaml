@@ -4,9 +4,9 @@ current_phase: apply
 base_commit: 235397ae4b492b44b9e3aeae4610ed48f8495d0f
 complexity_mode: standard
 execution_mode: serial
-active_task: ""
-active_review_stage: design_review
-last_verified_task: ""
+active_task: Task 2
+active_review_stage: implementation
+last_verified_task: Task 1
 reverse_sync_required: false
 design_review_rounds: 3
 design_review_passed: true
@@ -14,4 +14,6 @@ design_review_path: design-reviewer
 design_review_verdict: PASS
 propose_artifacts_complete: true
 user_confirm_apply: true
-known_issues: []
+known_issues:
+  - "RESOLVED 2026-08-28: toolruntime/filesystem_path.go syscall.Flock blocks native Windows tests for agent/agentruntime. Written back to design.md (Risks + Test Strategy) and tasks.md (global env gate); overlay-shim test approach approved, no shipping-code change; Windows flock compat layer is out of scope for this change."
+  - "OPEN (verify-phase adjudication): mixed-version resume edge — legacy 2-key output rows persisted by the pre-change binary, re-enriched to 4 keys on resume replay, trip verifyTranscriptPayload byte-equality; runner degrades gracefully (error step + cursor advance, no crash). Decided non-blocking by both Task 1 reviewers."

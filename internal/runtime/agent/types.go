@@ -171,6 +171,7 @@ type RunStep struct {
 	Compressed    bool            `json:"compressed,omitempty"`
 	IsError       bool            `json:"is_error,omitempty"`
 	Error         string          `json:"error,omitempty"`
+	ErrorCode     string          `json:"error_code,omitempty"`
 	LatencyMS     int             `json:"latency_ms,omitempty"`
 	ProviderID    int64           `json:"provider_id,omitempty"`
 	Model         string          `json:"model,omitempty"`

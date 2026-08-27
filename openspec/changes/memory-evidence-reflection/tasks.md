@@ -12,13 +12,20 @@ Wave1:  T1(错误状态落库) ──┐
 Wave4(与 Wave2/3 文件不重叠，可并行):  T8(反思信号+窗口)   T9(终端反思+可观测)
 ```
 
+## 环境与验证门禁（全局，2026-08-28 apply 期 Reverse Sync 回写）
+
+- 工具链：`D:\Users\hongze01.zhang\sdk\go1.26.6\bin\go.exe`（不在 PATH）。
+- Windows 编译约束：除 `internal/infrastructure/mysql` 外，`internal/runtime/toolruntime/filesystem_path.go:100,106` 直接使用 `syscall.Flock`（commit 7e624eb 引入，无构建标签），导致依赖它的 `agent`/`agentruntime` 包在 Windows 上无法原生 `go test`。
+- 测试执行规则：`compaction`、`memory_usecase`、`domain` 等无 toolruntime 依赖的包原生执行；`agent`/`agentruntime` 包测试用 `go test -overlay`，把 `filesystem_path.go` 映射为仓库外 `%TEMP%` 下的 Windows 可编译等价副本（仅替换两处 Flock 为进程内等价实现；`acquirePathLock` 不被这些包测试触达）。垫片不进装运代码、不提交。
+- 装运编译门禁（每任务必过）：`GOOS=linux go build ./...` exit 0，无 overlay。
+
 - 串行约束：T3 依赖 T1 的 Entry 字段与 T2 的读路径；T4 与 T5 共享 `durable_memory_pipeline.go` 不同区段，仍按序执行；T5→T6→T7 严格串行（候选格式→门禁消费→归并整合）。
 - 可并行分组：{T1, T2}（文件不重叠）；{T3, T4}（T3 新文件；T4 改仓储/触发区段）；{T8, T9}（不同文件；与 Wave2/3 亦不重叠）。`execution_mode=serial` 下仍逐个执行。
 - 阻塞点：T6 之前不得激活任何 `source=extraction` 生产者；T7 是 Phase 2 输入构成变化的唯一验证点。
 
 ## Wave 1 — Evidence foundation
 
-- [ ] Task 1: Persist tool error state into message rows
+- [x] Task 1: Persist tool error state into message rows
   - complexity: 🔴
   - files: `internal/runtime/agent/types.go`（RunStep 增 `ErrorCode`）、`internal/runtime/agent/runner.go`（批结果循环填充 ErrorCode，站点约 :769-780；`persistTranscriptEntries` 内 FromChatAt 后的 entry 富化）、`internal/runtime/compaction/entry.go`（Entry 增 `IsError/ErrorCode`）、`internal/runtime/agentruntime/message_sink.go`
   - 接缝说明（design Decision 1）：当前持久化链是 `[]llm.ChatMessage → FromChatAt → MessageSink`，不存在 RunStep→Entry 转换；富化发生在 runner 侧——按 `ToolCallID` 查 `result.Steps` 为 function_call_output entry 填错误状态，查表未命中不加键（保持与旧行字节兼容）。

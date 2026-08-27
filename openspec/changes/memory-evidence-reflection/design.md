@@ -97,12 +97,13 @@ DoD grep 期望（修正后）：`grep -rn "summarizeDurableText" internal/` 恰
 | 多块提取成本（N+1 次模型调用） | debounce 已降低任务数；`enabled=false` 默认关闭，先在开发环境观察 |
 | 写接线首次激活 `source=extraction`，Phase 2 归并输入构成变化 | Task 7 专项测试 `gatherConsolidationInputs` 构成；归并仍受全局锁与版本化 artifacts 保护 |
 | 归档感知读路径被误用到活跃路径 | 方法名显式 `IncludingArchived`；仅 pipeline 内调用；测试断言活跃方法行为不变 |
-| Windows 无法编译 mysql 包 | 验证门禁 = 非 mysql 包原生单测 + `GOOS=linux go build ./...`；集成测试需 `AGENTCANVAS_TEST_MYSQL_DSN` |
+| Windows 无法编译 mysql 包，且 `toolruntime/filesystem_path.go:100,106` 的 `syscall.Flock`（commit 7e624eb 引入，无构建标签）使其上游 `agent`/`agentruntime` 在 Windows 同样无法编译 | 验证门禁 = 非 toolruntime 依赖链包的原生单测（如 `compaction`、`memory_usecase`）+ 依赖链包测试用 `go test -overlay` 将该文件映射为 Windows 可编译等价副本（仅测试期，不进装运代码；`acquirePathLock` 路径不被这些包测试触达）+ `GOOS=linux go build ./...` 全量编译门禁；集成测试需 `AGENTCANVAS_TEST_MYSQL_DSN`。Windows flock 兼容层不在本 change 范围，如需则另立 change |
 | 旧 pending 边界行（旧幂等键）残留 | 调度按会话取最近任务，不依赖键格式；残留行到期后按旧逻辑完成（空窗口或正常提取），不迁移数据 |
 
 ## Test Strategy
 
 - 单测：memory_usecase fakes（延续现有手写 fake 风格）、agent、agentruntime、compaction。
-- 编译门禁：`GOOS=linux go build ./...`（工具链 `D:\Users\hongze01.zhang\sdk\go1.26.6\bin\go.exe`）。
+- Windows 环境事实（2026-08-28 apply 期 Reverse Sync 回写）：`internal/runtime/toolruntime/filesystem_path.go:100,106` 直接使用 `syscall.Flock/LOCK_EX/LOCK_UN`（commit 7e624eb 引入，无构建标签），因此依赖它的 `agent`/`agentruntime` 包在 Windows 上无法原生 `go test`（与 mysql 包同类）。这些包的测试改用 `go test -overlay`，将 `filesystem_path.go` 映射为位于 `%TEMP%` 的 Windows 可编译等价副本（仅两处 Flock 替换为进程内等价实现；`acquirePathLock` 路径不被这些包测试触达）；不修改任何装运代码。`compaction` 与 `memory_usecase` 包仍原生执行。
+- 编译门禁：`GOOS=linux go build ./...`，无 overlay（工具链 `D:\Users\hongze01.zhang\sdk\go1.26.6\bin\go.exe`）。
 - MySQL 集成：`AGENTCANVAS_TEST_MYSQL_DSN` 提供时覆盖 `ScheduleDurableBoundary` 竞态与归档读路径；否则 skip。
 - 每任务 DoD 含 `grep` 断言（旧 Redis 键、文本倾倒路径移除）。
