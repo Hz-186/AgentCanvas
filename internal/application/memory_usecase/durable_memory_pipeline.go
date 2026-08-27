@@ -40,6 +40,14 @@ type dreamMessageRangeReader interface {
 	ListActiveAfterThrough(ctx context.Context, ownerID, conversationID, afterMessageID, throughMessageID int64) ([]conversation.Message, error)
 }
 
+// dreamMessageArchiveRangeReader reads an extraction window INCLUDING
+// soft-archived rows (design Decision 2). Repositories implementing it give
+// the durable worker the compaction-safe archive-inclusive window; anything
+// else keeps the historical active-only reads unchanged.
+type dreamMessageArchiveRangeReader interface {
+	ListThroughIncludingArchived(ctx context.Context, ownerID, conversationID, afterID, throughID int64) ([]conversation.Message, error)
+}
+
 // DurableMemoryJobType is the only production memory-generation job. Candidate
 // proposals and retention-tier schedulers are deliberately not part of this
 // pipeline: a rollout is extracted once, then one consolidation writer owns
@@ -93,14 +101,6 @@ type DurableMemoryPayload struct {
 	JobID          int64 `json:"job_id"`
 	OwnerID        int64 `json:"owner_id"`
 	ConversationID int64 `json:"conversation_id"`
-}
-
-// DurableStage1Result is the three-field boundary between extraction and
-// consolidation. The result is stored on the claimed extraction row before Phase 2.
-type DurableStage1Result struct {
-	RawMemory      string `json:"raw_memory"`
-	RolloutSummary string `json:"rollout_summary"`
-	RolloutSlug    string `json:"rollout_slug,omitempty"`
 }
 
 type durablePhase2RetryReader interface {
@@ -346,28 +346,41 @@ func (w *DurableMemoryWorker) Handle(ctx context.Context, payload DurableMemoryP
 	}
 	defer unlock()
 	// A stored Phase 1 result is immutable. Consolidation retries must never
-	// call the extraction model a second time.
-	if len(bytes.TrimSpace(job.ResultJSON)) == 0 {
+	// call the extraction model a second time. The one exception is a PARTIAL
+	// chunked result (design Decision 8): completed chunks are skipped and
+	// only the missing chunks are re-sent.
+	result, resumable := decodeDurableExtractionResult(job.ResultJSON)
+	if len(bytes.TrimSpace(job.ResultJSON)) == 0 || (resumable && result.Outcome == "") {
 		previousThrough := w.previousBoundary(ctx, job)
 		if previousThrough >= job.ThroughMessageID && job.ThroughMessageID > 0 {
-			job.ResultJSON = json.RawMessage(`{"raw_memory":"","rollout_summary":""}`)
+			result = durableExtractionResult{Chunks: map[int][]ExtractionCandidate{}, Outcome: durableExtractionOutcomeNoOutput}
 		} else {
+			// Resume index soundness: chunk indices are positional within the
+			// plan recomputed from THIS attempt's window. If the window moved
+			// since the partial result was persisted (a successor completed
+			// and previousBoundary advanced), index N no longer maps to the
+			// same evidence — discard the partial chunks and re-extract from
+			// scratch rather than keep stale candidates. A stored marker pair
+			// of (0,0) is a pre-markers payload, which can never be validated
+			// and is discarded the same way.
+			if result.WindowAfter != previousThrough || result.WindowThrough != job.ThroughMessageID {
+				result = durableExtractionResult{Chunks: map[int][]ExtractionCandidate{}}
+			}
 			messages, messageErr := w.messagesThrough(ctx, job.OwnerID, job.ConversationID, previousThrough, job.ThroughMessageID)
 			if messageErr != nil {
 				return messageErr
 			}
-			if len(messages) > 0 {
-				result, extractErr := w.extract(ctx, messages)
-				if extractErr != nil {
-					return extractErr
-				}
-				job.ResultJSON, err = json.Marshal(result)
-				if err != nil {
-					return err
-				}
-			} else {
-				job.ResultJSON = json.RawMessage(`{"raw_memory":"","rollout_summary":""}`)
+			result.WindowAfter = previousThrough
+			result.WindowThrough = job.ThroughMessageID
+			units := NewEvidenceRenderer().Render(messages)
+			chunks := NewEvidenceChunker().Chunk(units)
+			if extractErr := w.extractChunks(ctx, job, &result, chunks, leaseOwner); extractErr != nil {
+				return extractErr
 			}
+		}
+		job.ResultJSON, err = json.Marshal(result)
+		if err != nil {
+			return err
 		}
 	}
 	job.Status = string(memory.ExtractionCompleted)
@@ -442,40 +455,182 @@ func (w *DurableMemoryWorker) heartbeatStage1Lease(ctx context.Context, leased m
 	}
 }
 
-func (w *DurableMemoryWorker) extract(ctx context.Context, messages []conversation.Message) (DurableStage1Result, error) {
-	var text strings.Builder
-	for _, item := range messages {
-		content := strings.TrimSpace(item.Content)
-		if content == "" {
+// ExtractionCandidate is one structured memory candidate emitted by the
+// extraction model (design Decision 7). Candidates are parsed strictly: a
+// missing field is a parse error, never a silent zero.
+type ExtractionCandidate struct {
+	Title        string   `json:"title"`
+	Content      string   `json:"content"`
+	Type         string   `json:"type"`
+	Confidence   float64  `json:"confidence"`
+	Importance   float64  `json:"importance"`
+	EvidenceRefs []string `json:"evidence_refs"`
+}
+
+const (
+	// durableExtractionOutcomeExtracted marks a finished chunked extraction;
+	// the gate pass (Task 6) may still rewrite the outcome to no_output.
+	durableExtractionOutcomeExtracted = "extracted"
+	// durableExtractionOutcomeNoOutput marks jobs whose evidence produced no
+	// candidates; they complete without writing memories.
+	durableExtractionOutcomeNoOutput = "no_output"
+)
+
+// durableExtractionResult is the result_json schema for chunked extraction
+// (design Decision 8): chunks maps chunk index to its candidates, merge is
+// the merge-pass slot, outcome records the terminal Phase-1 state.
+// window_after/window_through are additive resume markers: they record the
+// evidence window the partial chunks were chunked from. Chunk indices are
+// positional within the plan recomputed from that window, so a retry whose
+// window moved must discard the partial chunks instead of reusing them.
+type durableExtractionResult struct {
+	Chunks        map[int][]ExtractionCandidate `json:"chunks"`
+	Merge         []ExtractionCandidate         `json:"merge"`
+	Outcome       string                        `json:"outcome"`
+	WindowAfter   int64                         `json:"window_after"`
+	WindowThrough int64                         `json:"window_through"`
+}
+
+// decodeDurableExtractionResult classifies a stored result_json. resumable is
+// true only for the chunked schema without a terminal outcome; legacy
+// pre-chunking payloads and terminal results are both final and must never be
+// re-extracted.
+func decodeDurableExtractionResult(raw json.RawMessage) (durableExtractionResult, bool) {
+	result := durableExtractionResult{Chunks: map[int][]ExtractionCandidate{}}
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 {
+		return result, false
+	}
+	var probe struct {
+		Chunks json.RawMessage `json:"chunks"`
+	}
+	if err := json.Unmarshal(trimmed, &probe); err != nil || len(probe.Chunks) == 0 {
+		return result, false
+	}
+	if err := json.Unmarshal(trimmed, &result); err != nil || result.Chunks == nil {
+		return durableExtractionResult{Chunks: map[int][]ExtractionCandidate{}}, false
+	}
+	return result, true
+}
+
+// extractChunks runs the per-chunk candidate extraction with incremental
+// persistence (design Decision 8): each completed chunk's candidates are
+// written into the job's result_json immediately, so a crash or retry skips
+// finished chunks and re-sends only the missing ones. Chunk indices are
+// positional within the plan, so the caller must have validated the result's
+// window markers against the window the plan was chunked from (Handle
+// discards partials whose window moved).
+func (w *DurableMemoryWorker) extractChunks(ctx context.Context, job *memory.ExtractionJob, result *durableExtractionResult, chunks []EvidenceChunk, leaseOwner string) error {
+	if len(chunks) == 0 {
+		// Nothing rendered as evidence: no model call, no text dump.
+		result.Outcome = durableExtractionOutcomeNoOutput
+		return nil
+	}
+	// Decision 10: a missing model FAILS the extraction into the linear
+	// backoff; the retired raw-text dump never runs on this path.
+	if w.chatClient == nil || strings.TrimSpace(w.cfg.Model) == "" {
+		return errors.New("durable memory extraction requires a configured model")
+	}
+	for _, chunk := range chunks {
+		if _, done := result.Chunks[chunk.Index]; done {
 			continue
 		}
-		text.WriteString(item.Role)
-		text.WriteString(": ")
-		text.WriteString(content)
-		text.WriteByte('\n')
-		if text.Len() >= durableMaxRolloutLen {
-			break
+		candidates, err := w.extractChunkCandidates(ctx, chunk)
+		if err != nil {
+			return err
+		}
+		result.Chunks[chunk.Index] = candidates
+		encoded, marshalErr := json.Marshal(result)
+		if marshalErr != nil {
+			return marshalErr
+		}
+		job.ResultJSON = encoded
+		if updateErr := w.updateJob(ctx, job, leaseOwner); updateErr != nil {
+			return updateErr
 		}
 	}
-	if text.Len() == 0 {
-		return DurableStage1Result{}, nil
+	result.Outcome = durableExtractionOutcomeExtracted
+	return nil
+}
+
+// extractChunkCandidates asks the extraction model for structured candidates
+// over one chunk of rendered evidence. Unit payloads were redacted by the
+// renderer; the assembled evidence is redacted again as defense in depth so
+// no raw secret reaches the model prompt.
+func (w *DurableMemoryWorker) extractChunkCandidates(ctx context.Context, chunk EvidenceChunk) ([]ExtractionCandidate, error) {
+	var evidence strings.Builder
+	for _, unit := range chunk.Units {
+		evidence.WriteString(evidenceChunkedText(unit))
+		evidence.WriteByte('\n')
 	}
-	if w.chatClient == nil || w.cfg.Model == "" {
-		return DurableStage1Result{RawMemory: redactDurableSecrets(text.String()), RolloutSummary: summarizeDurableText(text.String())}, nil
-	}
-	prompt := "Extract durable, reusable memory from this completed rollout. Do not invent facts. Return JSON only: {\"raw_memory\":\"...\",\"rollout_summary\":\"...\",\"rollout_slug\":\"lowercase-slug\"}. If nothing is durable, return empty strings.\n\nROLLOUT:\n" + text.String()
+	prompt := "Extract durable, reusable memories from this conversation evidence. Do not invent facts. Every candidate must cite evidence from this chunk. Return JSON only: {\"candidates\":[{\"title\":\"...\",\"content\":\"...\",\"type\":\"lesson|preference|fact|constraint\",\"confidence\":0.0,\"importance\":0.0,\"evidence_refs\":[\"messages:<from>-<to>\",\"tool_call:<id>\"]}]}. Return an empty candidates array when nothing is durable.\n\nEVIDENCE:\n" + redactDurableSecrets(evidence.String())
 	response, err := w.chatClient.Chat(ctx, w.cfg.Provider, llm.ChatRequest{Model: w.cfg.Model, Messages: []llm.ChatMessage{{Role: conversation.RoleUser, Content: prompt}}})
 	if err != nil {
-		return DurableStage1Result{}, err
+		return nil, err
 	}
-	var result DurableStage1Result
-	if err := json.Unmarshal([]byte(extractDurableJSON(response.Content)), &result); err != nil {
-		return DurableStage1Result{}, err
+	return parseExtractionCandidates(extractDurableJSON(response.Content))
+}
+
+// rawExtractionCandidate uses pointer fields so a missing key is
+// distinguishable from a zero value; materializing then refuses the candidate
+// instead of silently zeroing it.
+type rawExtractionCandidate struct {
+	Title        *string   `json:"title"`
+	Content      *string   `json:"content"`
+	Type         *string   `json:"type"`
+	Confidence   *float64  `json:"confidence"`
+	Importance   *float64  `json:"importance"`
+	EvidenceRefs *[]string `json:"evidence_refs"`
+}
+
+func parseExtractionCandidates(raw string) ([]ExtractionCandidate, error) {
+	var envelope struct {
+		Candidates *[]rawExtractionCandidate `json:"candidates"`
 	}
-	result.RawMemory = redactDurableSecrets(strings.TrimSpace(result.RawMemory))
-	result.RolloutSummary = redactDurableSecrets(strings.TrimSpace(result.RolloutSummary))
-	result.RolloutSlug = safeDurableSlug(result.RolloutSlug)
-	return result, nil
+	if err := json.Unmarshal([]byte(raw), &envelope); err != nil {
+		return nil, fmt.Errorf("durable extraction returned invalid JSON: %w", err)
+	}
+	if envelope.Candidates == nil {
+		return nil, errors.New(`durable extraction response is missing the "candidates" array`)
+	}
+	candidates := make([]ExtractionCandidate, 0, len(*envelope.Candidates))
+	for index, rawCandidate := range *envelope.Candidates {
+		candidate, err := materializeExtractionCandidate(rawCandidate)
+		if err != nil {
+			return nil, fmt.Errorf("durable extraction candidate %d: %w", index, err)
+		}
+		candidates = append(candidates, candidate)
+	}
+	return candidates, nil
+}
+
+func materializeExtractionCandidate(raw rawExtractionCandidate) (ExtractionCandidate, error) {
+	candidate := ExtractionCandidate{}
+	if raw.Title == nil {
+		return candidate, errors.New(`missing field "title"`)
+	}
+	if raw.Content == nil {
+		return candidate, errors.New(`missing field "content"`)
+	}
+	if raw.Type == nil {
+		return candidate, errors.New(`missing field "type"`)
+	}
+	if raw.Confidence == nil {
+		return candidate, errors.New(`missing field "confidence"`)
+	}
+	if raw.Importance == nil {
+		return candidate, errors.New(`missing field "importance"`)
+	}
+	if raw.EvidenceRefs == nil {
+		return candidate, errors.New(`missing field "evidence_refs"`)
+	}
+	candidate.Title = strings.TrimSpace(*raw.Title)
+	candidate.Content = strings.TrimSpace(*raw.Content)
+	candidate.Type = strings.TrimSpace(*raw.Type)
+	candidate.Confidence = *raw.Confidence
+	candidate.Importance = *raw.Importance
+	candidate.EvidenceRefs = *raw.EvidenceRefs
+	return candidate, nil
 }
 
 // previousBoundary is the window start: the through of the conversation's
@@ -494,7 +649,13 @@ func (w *DurableMemoryWorker) previousBoundary(ctx context.Context, current *mem
 	return boundary
 }
 
+// messagesThrough reads the extraction window. Repositories with the
+// archive-inclusive range read take it (archived rows are durable evidence);
+// everything else falls back to the historical active-only reads unchanged.
 func (w *DurableMemoryWorker) messagesThrough(ctx context.Context, ownerID, conversationID, after, through int64) ([]conversation.Message, error) {
+	if archived, ok := w.messages.(dreamMessageArchiveRangeReader); ok {
+		return archived.ListThroughIncludingArchived(ctx, ownerID, conversationID, after, through)
+	}
 	if ranged, ok := w.messages.(dreamMessageRangeReader); ok {
 		return ranged.ListActiveAfterThrough(ctx, ownerID, conversationID, after, through)
 	}
@@ -746,19 +907,6 @@ func redactDurableSecrets(value string) string {
 	})
 	value = durableSecretPatterns[1].ReplaceAllString(value, "bearer [REDACTED]")
 	return durableSecretPatterns[2].ReplaceAllString(value, "[REDACTED PRIVATE KEY]")
-}
-
-func safeDurableSlug(value string) string {
-	value = strings.ToLower(strings.TrimSpace(value))
-	var builder strings.Builder
-	for _, r := range value {
-		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' {
-			builder.WriteRune(r)
-		} else if builder.Len() > 0 {
-			builder.WriteByte('-')
-		}
-	}
-	return strings.Trim(builder.String(), "-")
 }
 
 func summarizeDurableText(value string) string {

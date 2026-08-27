@@ -118,7 +118,7 @@ Wave4(与 Wave2/3 文件不重叠，可并行):  T8(反思信号+窗口)   T9(�
 
 ## Wave 3 — Chunked extraction, gates, write wiring
 
-- [ ] Task 5: Chunk evidence and extract structured candidates incrementally
+- [x] Task 5: Chunk evidence and extract structured candidates incrementally
   - complexity: 🔴
   - files: `internal/application/memory_usecase/durable_memory_pipeline.go`（extract 区段重写 + `messagesThrough`/:470-485 的归档感知接线，含可选接口扩展）、新文件 `evidence_chunker.go` + 测试
   - RED:

@@ -142,3 +142,32 @@ Should Improve 处理：Decision 10 扩至全部倾倒点（:426-428/:599-601/:6
 - Verdict: **PASS**（Must Fix 0），并发专项无缺陷。单事务覆盖锁读→分支→刷新/插入→冲突重读；发布在提交之后（回滚不泄漏唤醒）；FOR UPDATE 锁集被 `idx_conversation_id` 有界化；0 行回退为设计钦定防御且双路径有测；唯一键冲突仅吞重复错误、其余原样返回（1062 有真例测试）；`roundNumber` 忽略语义未变；3 处 SQL 修正为终态非残留（`through_message_id NOT NULL DEFAULT 0` 佐证去 COALESCE 正确）；sqlmock 7/7 `ExpectationsWereMet`，UPDATE 参数序 `-count=5` 稳定。
 - Should Improve 5 条（非阻塞）：① 刷新非前向单调——design Decision 3 钦定形状，非偏差；可选 `GREATEST` 变体强化（注意朴素 `< ?` 守卫会误入 successor 路径，不可用）；② 发布错误无日志；③/④ 同上的清理候选；⑤ 注释"uses idx_conversation_id"表述为优化器选择非保证。
 - 记录待办（verify 阶段裁定）：发布错误 warn 日志与 `GREATEST` 强化均列为可选改进，不阻塞当前任务。
+
+### Task 5 — 实现者返回：DONE（4 项披露偏差）
+
+- 交付：`evidence_chunker.go`（120k 上限、单元边界切块、超大输出 `part_index/part_count` 无损切片、相邻块恰 2 单元重叠）；extract 段重写为 渲染→分块→逐块提取→增量 `result_json`；`messagesThrough` 优先 `dreamMessageArchiveRangeReader`（管线内声明，domain 接口零改动）、未实现回退活跃读；提取侧倾倒点移除（无模型即报错，线性退避）；死代码 `DurableStage1Result`/旧 `extract`/`safeDurableSlug` 删除（全仓零引用）。
+- 偏差裁定：a) 重叠单元不计入新单元上限预算（Decision 6 分列两参数，避免前沿停摆）——接受；b) `outcome` 增 `extracted` 标记——接受（归档前工件同步，已回写 design Decision 8）；c) 空/影子窗口写新 schema——接受（旧非空负载不可变有回归测试锁定）；d) 归并侧 summarize 站点 :766/:783 保留给 Task 6（grep 4 行=定义+投影+2 站点，与 Decision 10 站点表及 Task 6 DoD「恰剩 2 行」算术一致）——接受。
+
+### Review Evidence Task 5 — spec-compliance reviewer
+
+- Verdict: **PASS**（Must Fix 0）。10/10 场景逐字存在、断言匹配（线性退避通道显式区分、调用次数精确钉死、泛型 map 解码钉 `chunks/merge/outcome` 键、缺字段逐个拒绝、分块只操作 EvidenceUnit 不触碰 Message）；Design 8 崩溃安全逐点核验（至多丢在途块；续跑新鲜读取；空窗/影子窗 0 调用 `no_output`）；Design 10 提取侧无倾倒残留、归并侧站点完整；范围 = 5 文件。
+- Should Improve 4 条：① 无模型分支测试归 Task 6 落地（`shouldFailWithoutModelInsteadOfDumpingText`，须断言线性通道）；② **窗口起点移动时的续跑索引不健全**（见下裁定）；③ outcome 枚举归档前同步工件（已回写）；④ part_index 单调断言可选强化。
+
+### Review Evidence Task 5 — code-quality reviewer
+
+- Verdict: **PASS**（Must Fix 0）。增量持久化原子单行写 + 写入路径校验；续跑每轮 `ClaimByID` 新鲜读取；退避/封顶/双通道隔离复验；可选读接口恰一次调用与回退路径字节级保留旧形状；脱敏先于分块（切片只作用于已脱敏文本，提示词组装二次脱敏）；分块器确定性无 map 序依赖。
+- Should Improve 3 条（两项升级处理）：① **SI-1 续跑索引**：与规格审 ② 同源——successor 先跑、旧任务后完成 → 重试窗口收缩 → 新计划 index 0 映射不同证据，陈旧块候选被保留且新窗口首部单元静默漏提取；② **SI-2 碎片爆炸**：单元外壳本身 ≥120k 时 `budget` 夹到 1 → `partCount=字节数` → 每字节 1 次模型调用；③ 字节切片可能切断多字节 rune（仅限模型输入，可接受，记录在案）。
+
+### Task 5 修复轮（主会话裁定：两项 SI 升级为即改）
+
+- 理由：两项均为生产可达的正确性缺口（静默证据丢失 + 无界模型调用），修复面窄且实现者上下文尚热，推迟到 verify 后成本更高。
+- 派发：原 Task 5 实现者续跑，TDD 增补——① result schema 记录 `window_after/window_through`，resume 窗口不符则作废部分块重提取（新场景 `shouldDiscardPartialChunksWhenWindowShrinksBetweenAttempts` + 防过度丢弃守卫）；② 外壳超限单元按整上限切片，碎片数 O(payload/cap)（新场景 `shouldNotExplodeWhenUnitShellExceedsCap`）。design Decision 8 已同步工件。
+
+### Task 5 修复轮 — 双增量复审均 PASS（2026-08-28）
+
+- 修复 1（续跑索引健全）：`window_after/window_through` 标记在首次逐块持久化之前写入；resume 在**任何模型调用之前**校验（`durable_memory_pipeline.go:366`，双字段相等判定，双向窗口移动均覆盖）；`(0,0)` 永不通过（`ThroughMessageID>0` 前置保证）；陈旧部分块作废即从头重提取，AttemptCount/退避不受影响。新场景 `shouldDiscardPartialChunksWhenWindowShrinksBetweenAttempts` 复现原失效模式（3 次调用、陈旧候选消失、窗口内证据正确）；防过度丢弃由 `shouldPersistChunkCandidatesIncrementallyAndSkipOnRetry`（已增 (0,3] 标记断言）守卫。
+- 修复 2（碎片爆炸守卫）：`evidence_chunker.go:165-171` 外壳超限时 `budget=maxBytes`，碎片数 O(payload/cap)（300000→3 片）；空负载外壳超限早返回整单元；`part_count` 均匀、拼接无损；过度声明的 doc 注释已更正为含外壳溢出例外。新场景 `shouldNotExplodeWhenUnitShellExceedsCap` 通过。
+- 工件同步：design Decision 8 已回写 `outcome` 枚举与窗口标记作废规则；报告增 Fix round 段 + 偏差 6。
+- 门禁复跑：`GOOS=linux build`/`vet` exit 0；全包 `-count=1` ok；8 个候选提取子测试全绿。
+- 剩余 Should Improve（非阻塞，记录）：① 缺窗口"扩张"方向专项测试（由相等语义+收缩场景覆盖）；② 作废后旧部分块在下次成功持久化前暂存 `result_json`（无害，每次重试重校验）；③ 刀锋带宽 `budget=1`（外壳恰低于 `cap-markerMax` 时）理论仍退化——需元数据调至距上限数字节内，极低概率，记录备查。
+- `reverse_sync_required: false`，无阻断。进入关闭。

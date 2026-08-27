@@ -59,6 +59,8 @@ generation 语义编码在幂等键内，无需 `generation` 列。刷新不发�
 
 每块候选提取完成即写入 `result_json`（`chunks: {index: candidates}` + `merge` 槽位）；重试时按已完成 index 跳过。`result_json` 为 json 列，零迁移。合并失败回退 `pending` 时保留各块候选，不重跑提取。
 
+apply 期补充（2026-08-28，Task 5 双审裁定）：`outcome` 值集为 `{extracted, no_output}`（`extracted`=提取完成；`no_output` 见 Decision 7）。result 同时记录其分块所依据的窗口 `window_after`/`window_through`；resume 时若当前窗口与记录不符（边界在两次尝试间移动），作废部分块从头提取——保证"已完成 index == 同一内容"的跳过不变式。旧格式（无 `chunks`）负载仍不可变、终态。
+
 ### 9. 写接线复用 MemoryWritePipeline，去重键按 source 分策略
 
 worker 侧把 `MemoryWritePipeline`（或 jobs 仓储）注入 `DurableMemoryWorker`。候选 → `WriteJobRequest{Source:"extraction", IdempotencyKey:"extraction:<job-id>:<index>"}`。`SQLMemoryWriter` 对 `source=extraction` 计算 `DeduplicationKey=hex(sha256(type+"\n"+normalize(content)))`（normalize = trim + 折叠空白）；其他 source 保持"默认 = 任务幂等键"。64 字符 hex 适配 `varchar(191)` 唯一索引。
