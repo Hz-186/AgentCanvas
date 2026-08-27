@@ -193,6 +193,8 @@ func projectRuntimeEvent(event runtimeevent.Event, conversationID *int64) []even
 		return stream("status.update", map[string]any{"message": "Agent runtime finished; finalizing", "level": "info"})
 	case runtimeevent.TodoUpdated:
 		return stream("todo.updated", event.Payload)
+	case runtimeevent.RequestUserInput:
+		return stream("request_user_input", event.Payload)
 	case runtimeevent.GoalUpdated:
 		return stream(runtimeevent.GoalUpdated, event.Payload)
 	case runtimeevent.AgentStep:

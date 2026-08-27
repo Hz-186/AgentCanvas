@@ -37,15 +37,7 @@ type ContinuationDeferral struct {
 	ConversationID int64 `json:"conversation_id" gorm:"column:conversation_id;uniqueIndex:ux_goal_deferral"`
 }
 
-type ContinuationClaim struct {
-	domain.BaseModel
-	ConversationID int64     `json:"conversation_id" gorm:"column:conversation_id;uniqueIndex:ux_goal_continuation_claim"`
-	GoalID         string    `json:"goal_id" gorm:"column:goal_id"`
-	ClaimedAt      time.Time `json:"claimed_at" gorm:"column:claimed_at"`
-}
-
 func (ContinuationDeferral) TableName() string { return "agent_thread_goal_deferrals" }
-func (ContinuationClaim) TableName() string    { return "agent_thread_goal_claims" }
 
 func (ThreadGoal) TableName() string { return "agent_thread_goals" }
 
@@ -63,11 +55,6 @@ type Repository interface {
 // writes after a goal replacement without changing the stable Repository API.
 type VersionedRepository interface {
 	AccountExpected(context.Context, int64, int64, int64, int64, string, string) (*ThreadGoal, error)
-}
-
-type ContinuationRepository interface {
-	ClaimContinuation(context.Context, int64, int64, string) (bool, error)
-	ReleaseContinuation(context.Context, int64, int64, string) error
 }
 
 func ValidateObjective(objective string) error {

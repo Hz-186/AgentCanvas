@@ -38,6 +38,8 @@ type coreRepositories struct {
 	MemoryLogs       memory.WriteLogRepository
 	MemoryRecallLogs memory.RecallLogRepository
 	MemoryCandidates memory.CandidateWriter
+	MemoryFiles      memory.CodexReader
+	AdHocNotes       memory.AdHocWriter
 	MessageHistory   MessageHistoryReader
 	MessageWriter    MessageWriter
 	Compactions      conversation.CompactionRepository
@@ -77,7 +79,8 @@ type coreObservability struct {
 }
 
 type corePolicies struct {
-	OnExtractTrigger func(ctx context.Context, ownerID int64, conversationID int64, roundNumber int)
+	OnExtractTrigger      func(ctx context.Context, ownerID int64, conversationID int64, roundNumber int)
+	AdHocMemoryNoteWriter memory.AdHocWriter
 }
 
 type runtimeCore struct {

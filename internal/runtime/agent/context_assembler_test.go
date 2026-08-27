@@ -40,7 +40,7 @@ func TestContextAssemblerRuntimePrecedenceInstructionIsPinned(t *testing.T) {
 		SystemPrompt:             "base rules",
 		Task:                     "latest request",
 		EnforceContextPrecedence: true,
-		ContextBlocks:            []ContextBlock{{Name: "working_memory", Role: "system", Content: "stale task", Pinned: false}},
+		ContextBlocks:            []ContextBlock{{Name: "conversation_snapshot", Role: "system", Content: "stale task", Pinned: false}},
 	})
 	if len(messages) < 3 || !strings.Contains(messages[0].Content, "current user request") {
 		t.Fatalf("runtime precedence guardrail must be present in pinned system context: %+v", messages)

@@ -368,7 +368,9 @@ func truncateString(s string, maxLen int) string {
 }
 
 func (n runtimeCore) checkExtractionTrigger(ctx context.Context, rc *RunContext, result *runtimeagent.RunResult, roundNumber int, memoryEnabled bool) {
-	if !memoryEnabled || n.OnExtractTrigger == nil || rc == nil || rc.ConversationID == nil || result == nil || result.StopReason != runtimeagent.StopReasonFinalAnswer {
+	if !memoryEnabled || n.OnExtractTrigger == nil || rc == nil ||
+		rc.ParentRunID != nil || rc.DelegationDepth != 0 ||
+		rc.ConversationID == nil || result == nil || result.StopReason != runtimeagent.StopReasonFinalAnswer {
 		return
 	}
 	n.OnExtractTrigger(ctx, rc.OwnerID, *rc.ConversationID, roundNumber)

@@ -163,3 +163,27 @@ func TestEmitAgentResultEventReflectsFinalOutcome(t *testing.T) {
 		})
 	}
 }
+
+func TestExtractionTriggerRunsOnlyForCompletedRootRun(t *testing.T) {
+	conversationID := int64(7)
+	parentRunID := int64(42)
+	calls := 0
+	core := runtimeCore{corePolicies: corePolicies{
+		OnExtractTrigger: func(_ context.Context, ownerID, gotConversationID int64, roundNumber int) {
+			if ownerID != 1 || gotConversationID != conversationID || roundNumber != 3 {
+				t.Fatalf("unexpected extraction trigger arguments: owner=%d conversation=%d round=%d", ownerID, gotConversationID, roundNumber)
+			}
+			calls++
+		},
+	}}
+	final := &runtimeagent.RunResult{StopReason: runtimeagent.StopReasonFinalAnswer}
+
+	core.checkExtractionTrigger(context.Background(), &RunContext{OwnerID: 1, ConversationID: &conversationID}, final, 3, true)
+	core.checkExtractionTrigger(context.Background(), &RunContext{OwnerID: 1, ConversationID: &conversationID, DelegationDepth: 1}, final, 3, true)
+	core.checkExtractionTrigger(context.Background(), &RunContext{OwnerID: 1, ConversationID: &conversationID, ParentRunID: &parentRunID}, final, 3, true)
+	core.checkExtractionTrigger(context.Background(), &RunContext{OwnerID: 1, ConversationID: &conversationID}, &runtimeagent.RunResult{StopReason: runtimeagent.StopReasonPaused}, 3, true)
+
+	if calls != 1 {
+		t.Fatalf("extraction trigger calls = %d, want exactly one root completed run", calls)
+	}
+}

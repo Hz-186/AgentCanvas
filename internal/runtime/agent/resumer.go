@@ -105,7 +105,7 @@ func BuildResumeRequest(req ResumeRequest) (*RunRequest, error) {
 		OwnerID: req.OwnerID, AgentID: req.AgentID, RunID: req.RunID, InitialUserMessageID: req.InitialUserMessageID,
 		DelegationDepth: req.DelegationDepth, ConversationID: req.ConversationID, ProjectID: req.ProjectID,
 		MessageSink: req.MessageSink,
-		Provider: req.Provider, Model: req.Model, CompactionProvider: req.CompactionProvider, CompactionModel: req.CompactionModel, CompactionProviderID: req.CompactionProviderID,
+		Provider:    req.Provider, Model: req.Model, CompactionProvider: req.CompactionProvider, CompactionModel: req.CompactionModel, CompactionProviderID: req.CompactionProviderID,
 		Mode: req.Mode, SystemPrompt: req.SystemPrompt, Task: req.Task,
 		ReflectionEnabled: req.ReflectionEnabled, ReflectionPolicy: reflectionPolicy, RecalledReflectionIDs: recalledReflectionIDs,
 		Temperature: req.Temperature, MaxIterations: req.MaxIterations, MaxToolCalls: req.MaxToolCalls,
@@ -119,6 +119,7 @@ func BuildResumeRequest(req ResumeRequest) (*RunRequest, error) {
 		ContextBlocks: req.ContextBlocks, ToolPolicy: req.ToolPolicy, ToolHookChain: req.ToolHookChain, Tools: req.Tools, GoalRepository: req.GoalRepository, GoalTokenBudgetCeiling: req.GoalTokenBudgetCeiling, DefaultModeRequestUserInput: req.DefaultModeRequestUserInput, SteeringProvider: req.SteeringProvider,
 		ResumeMessages: messages, ResumeBaseMessages: baseMessages, ResumeTranscript: transcript, ResumeSteps: resumeSteps,
 		ResumePersistedMessageCount: req.Checkpoint.PersistedMessageCount,
+		ResumeTranscriptCursor:      req.Checkpoint.TranscriptCursor,
 		ResumeContext:               req.Checkpoint.Context, ResumeIteration: iteration, ResumeToolCalls: toolCalls, ResumeApprovedToolCallIDs: approvedToolCallIDs,
 	}, nil
 }

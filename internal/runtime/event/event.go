@@ -24,6 +24,7 @@ const (
 	AgentFinished          = "agent_finished"
 	AgentFailed            = "agent_failed"
 	TodoUpdated            = "todo.updated"
+	RequestUserInput       = "request_user_input"
 	GoalUpdated            = "goal.updated"
 	GoalCleared            = "goal.cleared"
 	ClarificationRequired  = "clarification_required"

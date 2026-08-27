@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"agentcanvas/internal/domain/conversation"
+	"agentcanvas/internal/domain/memory"
 	"agentcanvas/internal/domain/reflection"
 	"agentcanvas/internal/domain/retrieval"
 	"agentcanvas/internal/observability"
@@ -136,7 +137,7 @@ func (n runtimeCore) runAgent(
 		tools = n.semanticShortlistTools(ctx, semanticProvider, recallTask, tools)
 		skillBlocks = n.buildSkillContextBlocks(ctx, rc.OwnerID, cfg, semanticProvider, recallTask)
 		workspaceBlock = n.workspaceCodingContext(ctx, rc)
-		memoryBlock = n.buildAutomaticMemoryBlock(ctx, rc, cfg, semanticProvider, recallTask)
+		memoryBlock = n.buildAutomaticMemoryBlock(ctx, rc, cfg)
 		budgetBlocks := append([]runtimeagent.ContextBlock(nil), skillBlocks...)
 		budgetBlocks = append(budgetBlocks, cfg.AdditionalContextBlocks...)
 		if workspaceBlock != nil {
@@ -280,6 +281,7 @@ func (n runtimeCore) runAgent(
 		Mode:                            mode,
 		SystemPrompt:                    systemPrompt,
 		Task:                            task,
+		EnforceContextPrecedence:        true,
 		ReflectionEnabled:               cfg.ReflectionEnabled,
 		ReflectionPolicy:                reflectionPolicy,
 		RecalledReflectionIDs:           reflectionLessonIDs(reflectionRecall.Lessons),
@@ -358,15 +360,15 @@ func (n runtimeCore) runAgent(
 		return nil, err
 	}
 	output := RunOutput{
-		"content":             result.FinalAnswer,
-		"final_answer":        result.FinalAnswer,
-		"stop_reason":         result.StopReason,
-		"iterations":          result.Iterations,
-		"tool_calls":          result.ToolCalls,
-		"usage":               result.Usage,
-		"total_tokens":        result.Usage.TotalTokens,
-		"latency_ms":          result.LatencyMS,
-		"context_trace":       result.Context,
+		"content":              result.FinalAnswer,
+		"final_answer":         result.FinalAnswer,
+		"stop_reason":          result.StopReason,
+		"iterations":           result.Iterations,
+		"tool_calls":           result.ToolCalls,
+		"usage":                result.Usage,
+		"total_tokens":         result.Usage.TotalTokens,
+		"latency_ms":           result.LatencyMS,
+		"context_trace":        result.Context,
 		"assistant_message_id": result.AssistantMessageID,
 	}
 	if len(cfg.OutputSchemaJSON) > 0 &&
@@ -412,8 +414,9 @@ func (n runtimeCore) runAgent(
 		}
 		output["structured_output"] = parsed
 	}
-	// Automatic memory review is handled by the candidate pipeline. Do not
-	// persist the final answer into Working Memory and inject it again later.
+	// Durable memory is never written by the ReAct loop. An explicit user
+	// request is recorded as one append-only note for the background
+	// consolidation pipeline to consume.
 	if result.Approval != nil {
 		if strings.TrimSpace(result.Approval.Kind) == "" {
 			result.Approval.Kind = "tool_approval"
@@ -438,6 +441,19 @@ func (n runtimeCore) runAgent(
 			}
 		}
 		output["checkpoint"] = result.Checkpoint
+	}
+	if result.StopReason == runtimeagent.StopReasonFinalAnswer && n.AdHocMemoryNoteWriter != nil &&
+		rc.ParentRunID == nil && rc.DelegationDepth == 0 && memory.HasExplicitMemoryIntent(task) {
+		conversationID := int64(0)
+		if rc.ConversationID != nil {
+			conversationID = *rc.ConversationID
+		}
+		if _, noteErr := n.AdHocMemoryNoteWriter.AppendAdHocNote(ctx, rc.OwnerID, conversationID, rc.RunID, task, result.FinalAnswer); noteErr != nil {
+			// A note is auxiliary input to consolidation; never turn a successful
+			// user run into a failed run because the note store is unavailable.
+			emitRuntimeEvent(ctx, rc, runtimeevent.Event{Type: runtimeevent.AgentStep, RunID: rc.RunID,
+				Payload: map[string]any{"type": runtimeagent.StepTypeError, "error": "append ad-hoc memory note: " + noteErr.Error()}})
+		}
 	}
 	if cfg.ReturnIntermediateSteps || cfg.OutputMode == "full" {
 		output["steps"] = runtimeagent.CompactSteps(result.Steps, 8192)
