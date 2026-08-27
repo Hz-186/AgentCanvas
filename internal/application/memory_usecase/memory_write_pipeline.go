@@ -2,6 +2,8 @@ package memory_usecase
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -273,9 +275,18 @@ func (w *SQLMemoryWriter) Write(ctx context.Context, job *memory.MemoryWriteJob,
 	if item.Importance > 1 {
 		item.Importance = 1
 	}
-	// A retried claim must not create a second memory row. Without an explicit
-	// deduplication key, the job idempotency key is the exactly-once guard.
-	if item.DeduplicationKey == nil && job != nil {
+	if job != nil && job.Source == extractionWriteSource {
+		// Extraction rows deduplicate by normalized content, not by job:
+		// overlapping windows across consecutive jobs routinely re-extract the
+		// same lesson, and the content hash collapses those repeats onto one
+		// (owner_id, deduplication_key) slot. The idempotency key still
+		// protects the write job itself.
+		key := extractionContentDeduplicationKey(memoryType, content)
+		item.DeduplicationKey = &key
+	} else if item.DeduplicationKey == nil && job != nil {
+		// A retried claim must not create a second memory row. Without an
+		// explicit deduplication key, the job idempotency key is the
+		// exactly-once guard.
 		key := strings.TrimSpace(job.IdempotencyKey)
 		item.DeduplicationKey = &key
 	}
@@ -283,6 +294,18 @@ func (w *SQLMemoryWriter) Write(ctx context.Context, job *memory.MemoryWriteJob,
 		return nil, err
 	}
 	return item, nil
+}
+
+// extractionContentDeduplicationKey hashes the memory type plus the
+// whitespace-normalized content. Normalization folds leading/trailing
+// whitespace, tabs and repeated spaces/newlines into single spaces, so the
+// same lesson extracted with different formatting collapses onto one
+// (owner_id, deduplication_key) slot. The 64-char hex digest fits the
+// varchar(191) deduplication_key column.
+func extractionContentDeduplicationKey(memoryType, content string) string {
+	normalized := strings.Join(strings.Fields(content), " ")
+	sum := sha256.Sum256([]byte(memoryType + "\n" + normalized))
+	return hex.EncodeToString(sum[:])
 }
 
 // AdHocWriteJobAdapter routes explicit ad-hoc memory notes through the

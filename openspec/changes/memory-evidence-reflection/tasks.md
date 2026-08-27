@@ -141,7 +141,7 @@ Wave4(与 Wave2/3 文件不重叠，可并行):  T8(反思信号+窗口)   T9(�
   - DoD:
     - 上述测试全部转绿 + `GOOS=linux go build ./...` exit 0。
 
-- [ ] Task 6: Gate candidates and wire writes through memory_write_jobs
+- [x] Task 6: Gate candidates and wire writes through memory_write_jobs
   - complexity: 🔴
   - files: `internal/application/memory_usecase/durable_memory_pipeline.go`、`write_adapters.go` 或新 `extraction_write_adapter.go`、`memory_write_pipeline.go`（extraction 去重键策略）、`cmd/worker/main.go` 与 `internal/bootstrap/app.go`（注入）、测试
   - RED:

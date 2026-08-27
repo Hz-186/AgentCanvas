@@ -60,7 +60,11 @@ func (c *scriptedExtractionChatClient) prompt(call int) string {
 }
 
 func newCandidateExtractionWorker(chat llm.ChatClient, jobs memory.ExtractionJobRepository, messages DreamMessageRepository) *DurableMemoryWorker {
-	return NewDurableMemoryWorker(chat, messages, jobs, nil, DurableMemoryConfig{Enabled: true, Model: "test-extraction-model"}, "test-worker")
+	// Production workers always have the unified write pipeline injected
+	// (Task 6 wiring); extraction tests drain nothing, they only need the
+	// enqueue seam configured.
+	pipeline := NewMemoryWritePipeline("test-worker", newFakeWriteJobRepo(), nil, nil)
+	return NewDurableMemoryWorker(chat, messages, jobs, nil, DurableMemoryConfig{Enabled: true, Model: "test-extraction-model"}, "test-worker", WithExtractionWrites(pipeline))
 }
 
 func seedExtractionJob(id, through int64) *memory.ExtractionJob {

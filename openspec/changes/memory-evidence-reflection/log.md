@@ -171,3 +171,34 @@ Should Improve 处理：Decision 10 扩至全部倾倒点（:426-428/:599-601/:6
 - 门禁复跑：`GOOS=linux build`/`vet` exit 0；全包 `-count=1` ok；8 个候选提取子测试全绿。
 - 剩余 Should Improve（非阻塞，记录）：① 缺窗口"扩张"方向专项测试（由相等语义+收缩场景覆盖）；② 作废后旧部分块在下次成功持久化前暂存 `result_json`（无害，每次重试重校验）；③ 刀锋带宽 `budget=1`（外壳恰低于 `cap-markerMax` 时）理论仍退化——需元数据调至距上限数字节内，极低概率，记录备查。
 - `reverse_sync_required: false`，无阻断。进入关闭。
+
+### Task 6 — 实现者返回：DONE（4 项披露偏差，3 项已裁定接受）
+
+- 交付：候选门禁（`gateExtractionCandidates` 纯函数，`>=` 阈值、NaN/Inf 显式拒、脱敏后非空、拒因入 `result_json.rejections`）；写接线（`extraction_write_adapter.go`，键 `extraction:<job>:<idx>`，source=extraction）；`SQLMemoryWriter` 仅 extraction 分支算内容哈希（`sha256(type+"\n"+normalize)`，normalize=trim+`strings.Fields` 折叠）；归并侧两个 `summarizeDurableText` 兜底改错（grep 恰剩 2 行达成）；`cmd/worker/main.go` 注入 `WithExtractionWrites`。
+- 偏差裁定：a) `bootstrap/app.go` 零改动——核实属实（app.go 只建 trigger 与 enqueue-only 管线；`NewDurableMemoryWorker` 唯建于 cmd/worker/main.go:233）；b) 场景 10/12 为既有行为的接线/回归锁——核实有牙（断言具体可观测量，回归即失败）；c) extraction 分支无条件覆盖请求侧去重键——spec 钦定语义；d) 提取行 archival+会话域、候选溯源入 metadata_json——披露且无 spec 冲突。
+
+### Review Evidence Task 6 — spec-compliance reviewer
+
+- Verdict: **PASS**（Must Fix 0）。12/12 场景逐字存在且断言匹配（`>=` 边界、64-hex 正则、键逐值、双通道 DueAt 容错不重叠）；ASSERT 全锁定（哈希仅 extraction 分支@:278、唯一索引 `uq_memories_owner_deduplication_key` varchar(191) 容 64 字符、grep 2 行、门禁为可复用纯函数供 Task 7）；范围 = 9 文件，bootstrap/app.go 零 diff 与偏差 a 一致。
+- Should Improve 2 条（非阻塞）：① `result_json.rejections` 持久化内容无端到端断言；② 报告行号漂移（外观）。
+
+### Review Evidence Task 6 — code-quality reviewer（首轮）
+
+- Verdict: **FAIL（1 Must Fix）**。MF-1：入队失败静默丢候选——`finalizeExtractionOutcome` 先置终端 outcome（:398）→ result_json 带终端态落盘（:400/:335-344）→ 重试被 :368 条件挡在门禁+入队块外 → 任务以 0 个 write job 完成，候选永久丢失（窗口起点保证后续任务不会重提取）；部分入队失败更糟（k..n-1 丢失）。与 :404-407 注释及报告 ASSERT #5 自相矛盾；`fakeWriteJobRepo.failCreate` 存在但无测试使用。
+- 核验确认：主会话复读 :330-429 控制流，缺陷成立。
+- Should Improve 3 条：① 缺失败重试测试（随 MF-1 补）；② phase2 通道无尝试上限（既有机制，本改动使"无模型"持续失败转入该通道后无限重试——记录，不属本任务范围）；③ 拒因记录未脱敏标题（理论面，模型只见脱敏证据）。
+
+### Task 6 修复轮（主会话裁定：MF-1 即改）
+
+- 派发原实现者：终端 outcome 改为入队成功后才落盘（拆分 `finalizeExtractionOutcome`）；影子窗 no_output 直置分支保留；入队失败后 result_json 保留块而 outcome 为空 → 重试重新门禁（纯函数幂等）+ 重入队（唯一键保恰一次）；终端 updateJob 失败路径仍需安全（重试见 outcome 直接完成、不重入队）。新场景 `shouldReenqueueCandidatesAfterTransientEnqueueFailure` + 影子窗守卫。
+- phase2 无上限重试记入 known_issues（既有机制，另议）。
+
+### Task 6 修复轮 — MF-1 增量复审 PASS（2026-08-28）
+
+- 修复核验：`finalizeExtractionOutcome` 拆为 `gateExtractionResult`（仅门禁+拒因，不碰 outcome）；`extractChunks` 不再置 `extracted`（空窗 `no_output` 保留）；Handle 顺序 = 空 outcome 门禁 → 空 outcome 落盘 → 入队 → 成功后才置终端态并重新落盘；延迟失败处理器在入队失败时持久化的是"块在、outcome 空"的可续跑状态。
+- 重试恰一次机制实证：键确定性（`extraction:<job>:<idx>` + 排序展平纯门禁）+ 生产 `Create` 的 `OnConflict(owner_id, idempotency_key) DO NOTHING`+重读（memory_schema_repos.go:60-66，唯一索引 `uq_memory_write_jobs_owner_idempotency`）。
+- 不变式 4 机制更正（评审指出）：终端 updateJob 失败时 outcome 并未落盘（延迟处理器因内存态 completed 早退），重试见"块在+空 outcome"重入 → 0 模型调用重门禁重入队 → 唯一键去重保恰一次。安全性来自唯一键而非块跳过，净效果一致。
+- 影子窗分支完好（门禁跳过、入队 no-op、:418 守卫保住 outcome），新场景 `shouldKeepNoOutputOutcomeForShadowWindow` 锁定。
+- 回归：15/15 场景绿（12 指令场景逐字在列）；`GOOS=linux` build/vet 0；grep 恰 2 行；新测试确能捕获原缺陷（旧代码在失败入队后持久化 "extracted"，新断言直接 Fatalf）。
+- 剩余 Should Improve（非阻塞，记录）：① 部分入队后重试的直接测试缺口（去重已由生产代码+假件双验证）；② 低概率合流：入队失败 + 兄弟任务推进边界 → 窗口作废重提取时旧键可能保留旧窗口行（双低概率事件叠加，影响受内容哈希去重封顶；如需绝对严密可将窗口代际折入写键）；③ 影子遗留写任务语义为既有行为。
+- `reverse_sync_required: false`。进入关闭。

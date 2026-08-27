@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -114,6 +115,7 @@ type durablePhase2RetryReader interface {
 type DurableMemoryWorkerOptions struct {
 	Projection *ConsolidationProjection
 	Sources    ConsolidationSourceReader
+	Writes     ExtractionWriteEnqueuer
 }
 
 // ConsolidationSourceReader lists durable evidence memory rows so Phase-2
@@ -124,12 +126,23 @@ type ConsolidationSourceReader interface {
 	ListBySources(ctx context.Context, ownerID int64, sources []string, limit int) ([]memory.Memory, error)
 }
 
+// ExtractionWriteEnqueuer enqueues gated extraction candidates as unified
+// memory write jobs (design Decision 9). *MemoryWritePipeline satisfies it;
+// the durable worker never writes memory rows itself.
+type ExtractionWriteEnqueuer interface {
+	Enqueue(ctx context.Context, req WriteJobRequest) error
+}
+
 func WithConsolidationProjection(projection *ConsolidationProjection) func(*DurableMemoryWorkerOptions) {
 	return func(options *DurableMemoryWorkerOptions) { options.Projection = projection }
 }
 
 func WithConsolidationSources(reader ConsolidationSourceReader) func(*DurableMemoryWorkerOptions) {
 	return func(options *DurableMemoryWorkerOptions) { options.Sources = reader }
+}
+
+func WithExtractionWrites(enqueuer ExtractionWriteEnqueuer) func(*DurableMemoryWorkerOptions) {
+	return func(options *DurableMemoryWorkerOptions) { options.Writes = enqueuer }
 }
 
 type DurableMemoryWorker struct {
@@ -142,6 +155,7 @@ type DurableMemoryWorker struct {
 
 	projection *ConsolidationProjection
 	sources    ConsolidationSourceReader
+	writes     ExtractionWriteEnqueuer
 }
 
 func NewDurableMemoryWorker(chatClient llm.ChatClient, messages DreamMessageRepository, jobs memory.ExtractionJobRepository, redisClient *redis.Client, cfg DurableMemoryConfig, workerID string, optionFns ...func(*DurableMemoryWorkerOptions)) *DurableMemoryWorker {
@@ -151,7 +165,7 @@ func NewDurableMemoryWorker(chatClient llm.ChatClient, messages DreamMessageRepo
 			apply(options)
 		}
 	}
-	return &DurableMemoryWorker{chatClient: chatClient, messages: messages, jobs: jobs, redis: redisClient, cfg: cfg, workerID: workerID, projection: options.Projection, sources: options.Sources}
+	return &DurableMemoryWorker{chatClient: chatClient, messages: messages, jobs: jobs, redis: redisClient, cfg: cfg, workerID: workerID, projection: options.Projection, sources: options.Sources, writes: options.Writes}
 }
 
 // durableBoundaryScheduler is the atomic, transactional debounce implemented by
@@ -349,6 +363,7 @@ func (w *DurableMemoryWorker) Handle(ctx context.Context, payload DurableMemoryP
 	// call the extraction model a second time. The one exception is a PARTIAL
 	// chunked result (design Decision 8): completed chunks are skipped and
 	// only the missing chunks are re-sent.
+	var accepted []ExtractionCandidate
 	result, resumable := decodeDurableExtractionResult(job.ResultJSON)
 	if len(bytes.TrimSpace(job.ResultJSON)) == 0 || (resumable && result.Outcome == "") {
 		previousThrough := w.previousBoundary(ctx, job)
@@ -377,10 +392,38 @@ func (w *DurableMemoryWorker) Handle(ctx context.Context, payload DurableMemoryP
 			if extractErr := w.extractChunks(ctx, job, &result, chunks, leaseOwner); extractErr != nil {
 				return extractErr
 			}
+			if result.Outcome == "" {
+				// Quality gates run on the merged-or-single-chunk candidate
+				// stream (design Decision 7); a job whose evidence yields
+				// nothing completes as no_output and writes nothing. The
+				// terminal outcome stays OUT of result_json until the write
+				// jobs below are durably enqueued.
+				accepted = gateExtractionResult(&result)
+			}
 		}
 		job.ResultJSON, err = json.Marshal(result)
 		if err != nil {
 			return err
+		}
+		// Gated candidates flow through the unified write jobs (design
+		// Decision 9). The terminal outcome is persisted ONLY after this
+		// enqueue succeeds: an enqueue failure keeps the stored result
+		// resumable (chunks present, empty outcome), so the retry re-enters
+		// this block, skips the completed chunks with zero model calls,
+		// re-gates and re-enqueues. The (owner_id, idempotency_key) unique
+		// key with ON CONFLICT DO NOTHING makes the re-enqueue exactly-once.
+		if enqueueErr := w.enqueueExtractionWrites(ctx, job, accepted); enqueueErr != nil {
+			return enqueueErr
+		}
+		if result.Outcome == "" {
+			if len(accepted) == 0 {
+				result.Outcome = durableExtractionOutcomeNoOutput
+			} else {
+				result.Outcome = durableExtractionOutcomeExtracted
+			}
+			if job.ResultJSON, err = json.Marshal(result); err != nil {
+				return err
+			}
 		}
 	}
 	job.Status = string(memory.ExtractionCompleted)
@@ -489,6 +532,44 @@ type durableExtractionResult struct {
 	Outcome       string                        `json:"outcome"`
 	WindowAfter   int64                         `json:"window_after"`
 	WindowThrough int64                         `json:"window_through"`
+	// Rejections records the candidates the quality gate dropped, each with
+	// its reason (design Decision 7). Additive: pre-gate payloads omit it.
+	Rejections []candidateGateRejection `json:"rejections,omitempty"`
+}
+
+// gateCandidates returns the candidate stream the quality gate consumes: the
+// merge-pass output when the merge slot is filled (Task 7), otherwise the
+// per-chunk candidates flattened in ascending chunk-index order. A single
+// chunk therefore goes straight through the gate without a merge call.
+func (r durableExtractionResult) gateCandidates() []ExtractionCandidate {
+	if len(r.Merge) > 0 {
+		return r.Merge
+	}
+	if len(r.Chunks) == 0 {
+		return nil
+	}
+	indices := make([]int, 0, len(r.Chunks))
+	for index := range r.Chunks {
+		indices = append(indices, index)
+	}
+	sort.Ints(indices)
+	var candidates []ExtractionCandidate
+	for _, index := range indices {
+		candidates = append(candidates, r.Chunks[index]...)
+	}
+	return candidates
+}
+
+// gateExtractionResult gates the merged-or-single-chunk candidate stream and
+// records every rejection in the result (design Decision 7). It deliberately
+// does NOT touch the outcome: the terminal outcome is persisted only after
+// the accepted candidates have been enqueued, so an enqueue failure leaves
+// the stored result resumable (chunks present, outcome empty) and the retry
+// re-gates and re-enqueues instead of skipping straight to completed.
+func gateExtractionResult(result *durableExtractionResult) []ExtractionCandidate {
+	accepted, rejections := gateExtractionCandidates(result.gateCandidates())
+	result.Rejections = rejections
+	return accepted
 }
 
 // decodeDurableExtractionResult classifies a stored result_json. resumable is
@@ -549,7 +630,9 @@ func (w *DurableMemoryWorker) extractChunks(ctx context.Context, job *memory.Ext
 			return updateErr
 		}
 	}
-	result.Outcome = durableExtractionOutcomeExtracted
+	// The terminal extracted outcome is NOT set here: Handle persists it only
+	// after the accepted candidates have been enqueued, so an enqueue failure
+	// keeps the stored result resumable and no candidates are ever lost.
 	return nil
 }
 
@@ -631,6 +714,95 @@ func materializeExtractionCandidate(raw rawExtractionCandidate) (ExtractionCandi
 	candidate.Importance = *raw.Importance
 	candidate.EvidenceRefs = *raw.EvidenceRefs
 	return candidate, nil
+}
+
+// Deterministic quality gates for extraction candidates (design Decision 7).
+// The thresholds use >= semantics; the gate is a pure function so the merge
+// pass (Task 7) re-gates merged output through the same path.
+const (
+	durableGateMinConfidence = 0.7
+	durableGateMinImportance = 0.5
+)
+
+// candidateGateRejection records one dropped candidate in result_json so the
+// gate decision stays observable: every rejection carries a reason.
+type candidateGateRejection struct {
+	Index  int    `json:"index"`
+	Title  string `json:"title"`
+	Reason string `json:"reason"`
+}
+
+// gateExtractionCandidates applies the deterministic quality gates to a
+// candidate stream and returns the accepted candidates plus one recorded
+// reason per dropped candidate.
+func gateExtractionCandidates(candidates []ExtractionCandidate) ([]ExtractionCandidate, []candidateGateRejection) {
+	accepted := make([]ExtractionCandidate, 0, len(candidates))
+	var rejections []candidateGateRejection
+	for index, candidate := range candidates {
+		if reason := gateExtractionCandidate(candidate); reason != "" {
+			rejections = append(rejections, candidateGateRejection{Index: index, Title: candidate.Title, Reason: reason})
+			continue
+		}
+		accepted = append(accepted, candidate)
+	}
+	return accepted, rejections
+}
+
+func gateExtractionCandidate(candidate ExtractionCandidate) string {
+	if reason := gateExtractionScore("confidence", candidate.Confidence); reason != "" {
+		return reason
+	}
+	if reason := gateExtractionScore("importance", candidate.Importance); reason != "" {
+		return reason
+	}
+	if candidate.Confidence < durableGateMinConfidence {
+		return fmt.Sprintf("confidence %.2f below minimum %.2f", candidate.Confidence, durableGateMinConfidence)
+	}
+	if candidate.Importance < durableGateMinImportance {
+		return fmt.Sprintf("importance %.2f below minimum %.2f", candidate.Importance, durableGateMinImportance)
+	}
+	if strings.TrimSpace(candidate.Title) == "" {
+		return "title is blank"
+	}
+	if strings.TrimSpace(candidate.Content) == "" {
+		return "content is blank"
+	}
+	if !hasEvidenceRef(candidate.EvidenceRefs) {
+		return "evidence references are missing"
+	}
+	if redactedCandidateContent(candidate.Content) == "" {
+		return "content is empty after secret redaction"
+	}
+	return ""
+}
+
+func gateExtractionScore(name string, value float64) string {
+	if math.IsNaN(value) || math.IsInf(value, 0) || value < 0 || value > 1 {
+		return fmt.Sprintf("%s is not a finite score in [0,1]", name)
+	}
+	return ""
+}
+
+func hasEvidenceRef(refs []string) bool {
+	for _, ref := range refs {
+		if strings.TrimSpace(ref) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// durableRedactionPlaceholder matches every placeholder redactDurableSecrets
+// can emit; removing them leaves the durable content a redacted candidate
+// still carries.
+var durableRedactionPlaceholder = regexp.MustCompile(`\[REDACTED(?: PRIVATE KEY)?\]`)
+
+// redactedCandidateContent is the usable content remaining after secret
+// redaction: a candidate whose content is entirely secret material leaves
+// nothing durable and fails the gate.
+func redactedCandidateContent(content string) string {
+	redacted := redactDurableSecrets(content)
+	return strings.TrimSpace(durableRedactionPlaceholder.ReplaceAllString(redacted, " "))
 }
 
 // previousBoundary is the window start: the through of the conversation's
@@ -784,8 +956,8 @@ func consolidationSourceAt(item memory.Memory) time.Time {
 // Consolidate implements ConsolidationAgent. The version diff is always
 // presented before the existing artifacts and the new raw input.
 func (w *DurableMemoryWorker) Consolidate(ctx context.Context, ownerID int64, diff ConsolidationDiff, currentMemory, currentSummary, raw string) (string, string, error) {
-	if w.chatClient == nil || w.cfg.Model == "" {
-		return raw, summarizeDurableText(raw), nil
+	if w.chatClient == nil || strings.TrimSpace(w.cfg.Model) == "" {
+		return "", "", errors.New("durable memory consolidation requires a configured model")
 	}
 	prompt := "You are the single internal memory consolidation agent. Read the workspace diff first. Consolidate into one durable, non-duplicated handbook. Preserve supported facts, merge duplicates, remove stale contradictions, and keep provenance from rollout evidence. Return JSON only: {\"memory\":\"MEMORY.md markdown\",\"summary\":\"compact routing summary\"}. Do not include v1 in summary and do not emit taxonomy, scopes, tiers, or promotion instructions.\n\nWORKSPACE DIFF (read first):\n" + diff.RenderDiff() + "\nEXISTING MEMORY:\n" + currentMemory + "\n\nEXISTING SUMMARY:\n" + currentSummary + "\n\nNEW RAW INPUT:\n" + raw
 	response, err := w.chatClient.Chat(ctx, w.cfg.Provider, llm.ChatRequest{Model: w.cfg.Model, Messages: []llm.ChatMessage{{Role: conversation.RoleUser, Content: prompt}}})
@@ -802,7 +974,7 @@ func (w *DurableMemoryWorker) Consolidate(ctx context.Context, ownerID int64, di
 		result.Memory = raw
 	}
 	if result.Summary == "" {
-		result.Summary = summarizeDurableText(result.Memory)
+		return "", "", errors.New("durable memory consolidation returned an empty summary")
 	}
 	return result.Memory, result.Summary, nil
 }
