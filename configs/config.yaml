@@ -31,10 +31,9 @@ resource_cache:
   key_prefix: agentcanvas
   ttl_seconds: 60
 
-memory_dream:
+codex_memory:
   enabled: false
-  trigger_every_n_turns: 5
-  idle_timeout_seconds: 180
+  idle_timeout_seconds: 21600
   llm_provider_type: openai_compatible
   llm_base_url: ""
   llm_api_key: ""
@@ -80,6 +79,8 @@ tools:
   update_plan:
     enabled: true
   request_user_input:
+    enabled: false
+  default_mode_request_user_input:
     enabled: false
 
 goals:

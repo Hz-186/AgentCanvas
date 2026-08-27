@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 
 	agentdomain "agentcanvas/internal/domain/agent"
 	"agentcanvas/internal/domain/conversation"
+	"agentcanvas/internal/domain/goal"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -115,34 +117,88 @@ func (r *AgentTurnRepository) Create(ctx context.Context, item *agentdomain.Turn
 
 func (r *AgentTurnRepository) CreateWithArtifacts(ctx context.Context, item *agentdomain.Turn, userMessage *conversation.Message, run *agentdomain.Run) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		now := time.Now().UTC()
-		userMessage.CreatedAt = now
-		if err := tx.Create(userMessage).Error; err != nil {
-			return err
-		}
-		if err := touchConversationLastMessage(ctx, tx, userMessage.OwnerID, userMessage.ConversationID, now); err != nil {
-			return err
-		}
-		run.CreatedAt, run.UpdatedAt = now, now
-		if run.StartedAt.IsZero() {
-			run.StartedAt = now
-		}
-		if err := tx.Create(run).Error; err != nil {
-			return err
-		}
-		item.RunID, item.UserMessageID = &run.ID, userMessage.ID
-		item.CreatedAt, item.UpdatedAt = now, now
-		if item.Status == "" {
-			item.Status = agentdomain.TurnStatusQueued
-		}
-		if item.MaxAttempts <= 0 {
-			item.MaxAttempts = 3
-		}
-		if len(item.InputJSON) == 0 {
-			item.InputJSON = json.RawMessage(`{}`)
-		}
-		return tx.Create(item).Error
+		return createTurnArtifacts(ctx, tx, item, userMessage, run)
 	})
+}
+
+// CreateGoalContinuationWithArtifacts performs the Goal idle check and turn
+// creation under one Goal row lock. A process-local mutex cannot protect two
+// API/worker instances, while this transaction makes the active-run check and
+// insert one serialized decision in MySQL.
+func (r *AgentTurnRepository) CreateGoalContinuationWithArtifacts(ctx context.Context, goalID string, item *agentdomain.Turn, userMessage *conversation.Message, run *agentdomain.Run) (bool, error) {
+	if item == nil || userMessage == nil || run == nil || run.ConversationID == nil || strings.TrimSpace(goalID) == "" {
+		return false, gorm.ErrInvalidData
+	}
+	created := false
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var current goal.ThreadGoal
+		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("owner_id = ? AND conversation_id = ? AND goal_id = ?", run.OwnerID, *run.ConversationID, goalID).First(&current).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if current.Status != goal.StatusActive {
+			return nil
+		}
+		var deferred int64
+		if err := tx.Model(&goal.ContinuationDeferral{}).Where("owner_id = ? AND conversation_id = ?", run.OwnerID, *run.ConversationID).Count(&deferred).Error; err != nil {
+			return err
+		}
+		if deferred > 0 {
+			return nil
+		}
+		var activeRuns int64
+		if err := tx.Model(&agentdomain.Run{}).Where("owner_id = ? AND conversation_id = ? AND status IN ?", run.OwnerID, *run.ConversationID, []string{
+			agentdomain.RunStatusQueued, agentdomain.RunStatusRunning, agentdomain.RunStatusResuming,
+			agentdomain.RunStatusWaitingHuman, agentdomain.RunStatusPaused,
+		}).Count(&activeRuns).Error; err != nil {
+			return err
+		}
+		if activeRuns > 0 {
+			return nil
+		}
+		if err := createTurnArtifacts(ctx, tx, item, userMessage, run); err != nil {
+			return err
+		}
+		created = true
+		return nil
+	})
+	return created, err
+}
+
+func createTurnArtifacts(ctx context.Context, tx *gorm.DB, item *agentdomain.Turn, userMessage *conversation.Message, run *agentdomain.Run) error {
+	if item == nil || userMessage == nil || run == nil {
+		return gorm.ErrInvalidData
+	}
+	now := time.Now().UTC()
+	userMessage.CreatedAt = now
+	if err := tx.Create(userMessage).Error; err != nil {
+		return err
+	}
+	if err := touchConversationLastMessage(ctx, tx, userMessage.OwnerID, userMessage.ConversationID, now); err != nil {
+		return err
+	}
+	run.CreatedAt, run.UpdatedAt = now, now
+	if run.StartedAt.IsZero() {
+		run.StartedAt = now
+	}
+	if err := tx.Create(run).Error; err != nil {
+		return err
+	}
+	item.RunID, item.UserMessageID = &run.ID, userMessage.ID
+	item.CreatedAt, item.UpdatedAt = now, now
+	if item.Status == "" {
+		item.Status = agentdomain.TurnStatusQueued
+	}
+	if item.MaxAttempts <= 0 {
+		item.MaxAttempts = 3
+	}
+	if len(item.InputJSON) == 0 {
+		item.InputJSON = json.RawMessage(`{}`)
+	}
+	return tx.Create(item).Error
 }
 
 func (r *AgentTurnRepository) CompleteWithMessage(ctx context.Context, item *agentdomain.Turn, assistantMessage *conversation.Message, run *agentdomain.Run) error {

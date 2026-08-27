@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"agentcanvas/internal/domain/conversation"
+	"agentcanvas/internal/infrastructure/llm"
 	"agentcanvas/internal/runtime/compaction"
 )
 
@@ -101,5 +102,18 @@ func TestMessageSinkSkipsMalformedToolEntries(t *testing.T) {
 	}
 	if len(writer.rows) != 0 {
 		t.Fatalf("no rows expected: %+v", writer.rows)
+	}
+}
+
+func TestMessageSinkCarriesStableTranscriptIdentity(t *testing.T) {
+	writer := &recordingMessageWriter{}
+	conversationID := int64(7)
+	sink := (&runtimeCore{coreRepositories: coreRepositories{MessageWriter: writer}}).messageSinkForRun(&RunContext{OwnerID: 1, ConversationID: &conversationID, RunID: 42})
+	entry := compaction.FromChatAt([]llm.ChatMessage{{Role: conversation.RoleAssistant, Content: "done"}}, 3)[0]
+	if _, err := sink.PersistEntries(context.Background(), []compaction.Entry{entry}); err != nil {
+		t.Fatal(err)
+	}
+	if len(writer.rows) != 1 || writer.rows[0].TranscriptEntryID == nil || *writer.rows[0].TranscriptEntryID != "3:0" {
+		t.Fatalf("row must retain stable transcript identity: %+v", writer.rows)
 	}
 }

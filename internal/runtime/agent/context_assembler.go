@@ -192,12 +192,12 @@ func (a ContextAssembler) Build(req RunRequest) ([]llm.ChatMessage, ContextTrace
 	return messages, trace
 }
 
-const contextPrecedenceInstruction = "Context precedence: the current user request and the latest conversation messages are authoritative. Conversation snapshots, working memory, retrieved memories, and search results are advisory and may be stale or contradictory. When they conflict, follow the latest explicit user instruction and state uncertainty instead of silently merging incompatible facts."
+const contextPrecedenceInstruction = "Context precedence: the current user request and the latest conversation messages are authoritative. Conversation snapshots, durable memories, and search results are advisory and may be stale or contradictory. When they conflict, follow the latest explicit user instruction and state uncertainty instead of silently merging incompatible facts."
 
 func hasAdvisoryContext(blocks []ContextBlock) bool {
 	for _, block := range blocks {
 		switch tokenAuditCategory(block.Name) {
-		case "history", "working_memory", "memory", "retrieval", "reflection_memory":
+		case "history", "memory", "retrieval", "reflection_memory":
 			if strings.TrimSpace(block.Content) != "" {
 				return true
 			}
@@ -218,7 +218,7 @@ func blockSortPriority(name string) int {
 		return 1
 	case "memory":
 		return 2
-	case "history", "working_memory":
+	case "history":
 		return 3
 	case "retrieval":
 		return 4
@@ -251,7 +251,7 @@ func compressContextBlocks(blocks []ContextBlock) ([]ContextBlock, []ContextBloc
 }
 
 // Context sources are intentionally layered: current conversation history is
-// authoritative, while memory and working-memory blocks are advisory. Exact
+// authoritative, while durable-memory blocks are advisory. Exact
 // duplicates must be removed before token budgeting so a snapshot plus its
 // live tail cannot occupy the window twice.
 func dedupeContextBlocks(blocks []ContextBlock) ([]ContextBlock, []ContextBlockTrace) {
@@ -261,7 +261,7 @@ func dedupeContextBlocks(blocks []ContextBlock) ([]ContextBlock, []ContextBlockT
 	for _, block := range blocks {
 		content := strings.TrimSpace(block.Content)
 		category := tokenAuditCategory(block.Name)
-		if content == "" || (category != "retrieval" && category != "history" && category != "working_memory" && category != "memory") {
+		if content == "" || (category != "retrieval" && category != "history" && category != "memory") {
 			result = append(result, block)
 			continue
 		}
@@ -295,8 +295,6 @@ func (a *TokenAudit) add(name string, tokens int) {
 		a.ToolSchema += tokens
 	case "history":
 		a.History += tokens
-	case "working_memory":
-		a.WorkingMemory += tokens
 	case "memory":
 		a.Memory += tokens
 	case "reflection_memory":
@@ -323,8 +321,6 @@ func tokenAuditCategory(name string) string {
 		return "tool_schema"
 	case strings.Contains(name, "history") || strings.Contains(name, "conversation"):
 		return "history"
-	case strings.Contains(name, "working_memory"):
-		return "working_memory"
 	case strings.Contains(name, "skills"):
 		return "profile"
 	case strings.Contains(name, "reflection_memory"):

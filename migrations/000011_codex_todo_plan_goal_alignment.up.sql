@@ -37,17 +37,3 @@ CREATE TABLE `agent_thread_goal_deferrals` (
   UNIQUE KEY `ux_goal_deferral` (`owner_id`,`conversation_id`),
   CONSTRAINT `fk_agent_goal_deferrals_conversation` FOREIGN KEY (`conversation_id`) REFERENCES `conversations` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
-CREATE TABLE `agent_thread_goal_claims` (
-  `id` bigint NOT NULL AUTO_INCREMENT,
-  `owner_id` bigint NOT NULL,
-  `conversation_id` bigint NOT NULL,
-  `goal_id` varchar(64) NOT NULL,
-  `claimed_at` datetime(6) NOT NULL,
-  `created_at` datetime(6) NOT NULL,
-  `updated_at` datetime(6) NOT NULL,
-  PRIMARY KEY (`id`),
-  UNIQUE KEY `ux_goal_continuation_claim` (`owner_id`,`conversation_id`),
-  KEY `idx_goal_continuation_claim_expiry` (`claimed_at`),
-  CONSTRAINT `fk_agent_goal_claims_conversation` FOREIGN KEY (`conversation_id`) REFERENCES `conversations` (`id`) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

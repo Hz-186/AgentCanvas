@@ -38,6 +38,14 @@ type TurnRepository interface {
 	RecoverExpired(ctx context.Context, item *Turn, run *Run) error
 }
 
+// GoalContinuationStarter atomically checks the persisted Goal/deferral and
+// conversation idle state before creating continuation artifacts. It is
+// optional so lightweight test repositories can retain the base contract;
+// production MySQL uses it to make multi-instance continuation single-shot.
+type GoalContinuationStarter interface {
+	CreateGoalContinuationWithArtifacts(ctx context.Context, goalID string, item *Turn, userMessage *conversation.Message, run *Run) (bool, error)
+}
+
 type RunRepository interface {
 	Create(context.Context, *Run) error
 	FindByID(context.Context, int64, int64) (*Run, error)

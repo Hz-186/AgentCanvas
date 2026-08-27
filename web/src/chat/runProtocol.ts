@@ -10,6 +10,7 @@ const eventKinds = new Set([
   'status.update',
   'workspace.update',
   'approval.required',
+  'request_user_input',
   'usage.update',
 ]);
 
@@ -77,6 +78,11 @@ export function parseRunStreamEvent(input: string | unknown): RunStreamEvent {
   } else if (envelope.kind === 'approval.required') {
     requireNumber(data, 'request_id');
     for (const key of ['call_id', 'tool_name', 'reason']) requireString(data, key);
+    if (data.is_blocking != null) requireBoolean(data, 'is_blocking');
+  } else if (envelope.kind === 'request_user_input') {
+    for (const key of ['call_id', 'tool_name', 'reason']) requireString(data, key);
+    requireBoolean(data, 'is_blocking');
+    if (data.is_blocking !== false) throw new RunStreamProtocolError('data.is_blocking must be false');
   } else if (envelope.kind === 'usage.update') {
     validateUsage(data);
   } else if (envelope.kind === 'workspace.update') {

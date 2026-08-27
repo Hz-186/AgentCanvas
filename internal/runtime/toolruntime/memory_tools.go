@@ -68,6 +68,10 @@ func (t SessionSearchTool) Execute(ctx context.Context, rc ToolRunContext, input
 }
 
 type MemoryReadTool struct {
+	// Files is the Codex-style durable memory reader. When configured it is the
+	// only Agent-facing memory surface; the SQL repository fields below exist
+	// solely for old maintenance/test integrations.
+	Files        memory.CodexReader
 	Memories     memory.Repository
 	RecallLogs   memory.RecallLogRepository
 	Retriever    memory.SemanticRetriever
@@ -82,19 +86,24 @@ type MemoryReadTool struct {
 }
 
 type memoryReadInput struct {
-	MemoryTypes []string `json:"memory_types"`
-	Limit       int      `json:"limit"`
-	Query       string   `json:"query"`
+	Limit int    `json:"limit"`
+	Query string `json:"query"`
 }
 
 func (MemoryReadTool) Name() string { return "read_memory" }
 
-func (MemoryReadTool) Description() string {
-	return "Semantically retrieve only memories relevant to the current task. Reads both short-term and long-term memory without loading a recent-memory list."
+func (t MemoryReadTool) Description() string {
+	if t.Files != nil {
+		return "Search durable memory files on demand. Use the query to find relevant entries in MEMORY.md, rollout summaries, or reusable skills."
+	}
+	return "Search durable memory on demand. The legacy repository is retained only for migration and is not the production memory surface."
 }
 
-func (MemoryReadTool) Parameters() json.RawMessage {
-	return json.RawMessage(`{"type":"object","properties":{"memory_types":{"type":"array","items":{"type":"string"},"description":"Memory types to read: profile, episodic, task, archival."},"limit":{"type":"number","description":"Maximum memories to read. Default 5, maximum 20."},"query":{"type":"string","description":"Semantic search query to find relevant memories. When provided, results are ranked by relevance to this query."}},"additionalProperties":false}`)
+func (t MemoryReadTool) Parameters() json.RawMessage {
+	// One Agent-facing schema for both the file reader and migration fallback.
+	// Storage taxonomy (profile/episodic/task/archival, short/long) is never a
+	// model-selectable dimension.
+	return json.RawMessage(`{"type":"object","properties":{"query":{"type":"string","description":"Search query for durable memory."},"limit":{"type":"number","description":"Maximum entries to return. Default 5, maximum 20."}},"required":["query"],"additionalProperties":false}`)
 }
 
 func (MemoryReadTool) Metadata() ToolMetadata {
@@ -102,6 +111,31 @@ func (MemoryReadTool) Metadata() ToolMetadata {
 }
 
 func (t MemoryReadTool) Execute(ctx context.Context, rc ToolRunContext, input json.RawMessage) (*ToolResult, error) {
+	if t.Files != nil {
+		var parsed struct {
+			Query string `json:"query"`
+			Limit int    `json:"limit"`
+		}
+		if len(input) > 0 {
+			decoder := json.NewDecoder(strings.NewReader(string(input)))
+			decoder.DisallowUnknownFields()
+			if err := decoder.Decode(&parsed); err != nil {
+				return &ToolResult{ContentText: err.Error(), IsError: true}, err
+			}
+		}
+		query := strings.TrimSpace(parsed.Query)
+		if query == "" {
+			query = strings.TrimSpace(rc.Task)
+		}
+		if query == "" {
+			return nil, fmt.Errorf("durable memory search query is required")
+		}
+		items, err := t.Files.Search(ctx, rc.OwnerID, query, parsed.Limit)
+		if err != nil {
+			return &ToolResult{ContentText: err.Error(), IsError: true}, err
+		}
+		return ResultFromValue(map[string]any{"query": query, "count": len(items), "files": items})
+	}
 	if t.Memories == nil {
 		return nil, fmt.Errorf("memory repository is not configured")
 	}
@@ -126,7 +160,7 @@ func (t MemoryReadTool) Execute(ctx context.Context, rc ToolRunContext, input js
 	}
 	projectID := projectIDFromToolRunContext(rc)
 	result, err := (memory.RuntimeService{Memories: t.Memories, RecallLogs: t.RecallLogs, Retriever: t.Retriever, Archival: t.Archival, ContextIndex: t.ContextIndex, AgentID: agentID, Profile: t.Profile}).Read(ctx, memory.ReadRequest{
-		OwnerID: rc.OwnerID, ConversationID: rc.ConversationID, ProjectID: projectID, AgentID: agentID, RunID: rc.RunID, MemoryTypes: parsed.MemoryTypes, Query: query, Limit: parsed.Limit, TokenBudget: t.TokenBudget, SemanticOnly: semanticOnly, AllowLegacyListFallback: allowLegacyFallback,
+		OwnerID: rc.OwnerID, ConversationID: rc.ConversationID, ProjectID: projectID, AgentID: agentID, RunID: rc.RunID, Query: query, Limit: parsed.Limit, TokenBudget: t.TokenBudget, SemanticOnly: semanticOnly, AllowLegacyListFallback: allowLegacyFallback,
 	})
 	if err != nil {
 		return &ToolResult{ContentText: err.Error(), IsError: true}, err
@@ -158,11 +192,11 @@ type memoryWriteInput struct {
 func (MemoryWriteTool) Name() string { return "write_memory" }
 
 func (MemoryWriteTool) Description() string {
-	return "Create or update a long-term memory when the user gives stable preferences, durable facts, task summaries, or reusable context."
+	return "Retired. Durable memory is written only by the asynchronous Codex consolidation pipeline."
 }
 
 func (MemoryWriteTool) Parameters() json.RawMessage {
-	return json.RawMessage(`{"type":"object","properties":{"memory_id":{"type":"number","description":"Existing memory ID to update. Omit or use 0 to create."},"memory_type":{"type":"string","enum":["profile","episodic","task","archival"]},"title":{"type":"string"},"content":{"type":"string","description":"Durable memory content to propose for review."},"importance":{"type":"number","description":"0 to 1. Defaults to 0.5."},"reason":{"type":"string","description":"Why this memory should be stored."},"scope":{"type":"string","enum":["user","agent","project","conversation"],"description":"Optional memory scope. Defaults by memory type and current project or conversation."}},"required":["memory_type","content"],"additionalProperties":false}`)
+	return json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`)
 }
 
 func (MemoryWriteTool) Metadata() ToolMetadata {

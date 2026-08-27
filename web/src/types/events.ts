@@ -88,7 +88,16 @@ export interface ApprovalPayload {
 	call_id: string;
 	tool_name: string;
 	reason: string;
+	is_blocking?: boolean;
 	options?: ApprovalOptionPayload[];
+}
+
+export interface RequestUserInputPayload {
+	call_id: string;
+	tool_name: string;
+	reason: string;
+	is_blocking: false;
+	questions?: Array<Record<string, unknown>>;
 }
 
 export interface UsagePayload {
@@ -130,5 +139,6 @@ export type RunStreamEvent =
 	| RunStreamEnvelope<'workspace.update', WorkspaceUpdatePayload>
 	| RunStreamEnvelope<'tool.start' | 'tool.progress' | 'tool.complete' | 'tool.error', ToolPayload>
 	| RunStreamEnvelope<'approval.required', ApprovalPayload>
+	| RunStreamEnvelope<'request_user_input', RequestUserInputPayload>
 	| RunStreamEnvelope<'usage.update', UsagePayload>
 	| RunStreamEnvelope<'stream.snapshot' | 'run.complete' | 'run.failed' | 'run.paused' | 'run.waiting' | 'run.cancelled', TerminalSnapshotPayload>;

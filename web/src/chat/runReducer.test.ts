@@ -44,6 +44,16 @@ describe('runReducer', () => {
     expect(state.segments).toContainEqual(expect.objectContaining({ id: 'workspace:1', kind: 'status' }));
   });
 
+	 it('keeps non-blocking request_user_input in the running loop', () => {
+		let state = emptyRunState(7, 1);
+		state = runReducer(state, { type: 'event', event: event(7, 1, 'request_user_input', {
+			call_id: 'call-1', tool_name: 'request_user_input', reason: '补充上下文', is_blocking: false,
+		}) });
+		expect(state.lifecycle).toBe('running');
+		expect(state.approval).toBeNull();
+		expect(state.segments[0]).toEqual(expect.objectContaining({ kind: 'status', text: '补充上下文' }));
+	 });
+
   it('isolates runs and lets the terminal snapshot replace the temporary view', () => {
     let state = emptyRunState(7, 2);
     state = runReducer(state, { type: 'event', event: event(8, 1, 'assistant.delta', { segment_id: 'other', text: 'leak' }) });

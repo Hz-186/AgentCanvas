@@ -9,7 +9,10 @@ import (
 
 const (
 	WriteModeSuggest = "suggest"
-	WriteModeDirect  = "direct"
+	// WriteModeDirect is retained only so old persisted configs decode. Direct
+	// Agent writes are retired; the Codex consolidation worker is the sole
+	// durable-memory writer.
+	WriteModeDirect = "direct"
 )
 
 type Policy struct {
@@ -48,7 +51,7 @@ func (p Policy) Normalize() (Policy, error) {
 	if p.WriteMode == "" {
 		p.WriteMode = WriteModeSuggest
 	}
-	if p.WriteMode != WriteModeSuggest && p.WriteMode != WriteModeDirect {
+	if p.WriteMode != WriteModeSuggest {
 		return Policy{}, fmt.Errorf("unsupported memory write_mode %q", p.WriteMode)
 	}
 	if p.TopK == 0 {

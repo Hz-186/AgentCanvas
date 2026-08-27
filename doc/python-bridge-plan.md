@@ -9,7 +9,7 @@
 - `internal/infrastructure/chunker.Registry`：文档切片注册表。
 - 当前链路为 `Parser → Go Chunker → MySQL Chunks → Embedding → Elasticsearch`。
 
-已确定方向：Go 保留主控、持久化、安全、审批和 Agent Loop；Python 作为独立常驻侧车；两者通过 gRPC + Protobuf v1 通信；首期实现 Python 工具、LangChain PDF 解析与文档切片，不迁移 Go Agent Loop；LangGraph 只按基准收益准入。
+已确定方向：Go 保留主控、持久化、安全、审批和 Agent Loop；Python 作为独立常驻侧车；两者通过 gRPC + Protobuf v1 通信；Python 只负责 LangChain PDF 解析与文档切片，不参与 Agent 工具调用或 Go Agent Loop；LangGraph 只按基准收益准入。
 
 本阶段新增的 LangChain 能力为 `python:langchain_pdf` 与 `python:langchain_recursive`。PDF 使用按页的 `PyMuPDFLoader`，扫描件和复杂版式继续回到 Go DeepDoc/OCR；切片使用带中文分隔符和现有 token 估算器的 `RecursiveCharacterTextSplitter`。解析通过新增 `ParseDocument` RPC 返回现有 `ParsedDocument` DTO，不让 LangChain 类型跨越进程边界。解析路由采用全局配置，不增加数据库字段。
 
@@ -21,19 +21,19 @@
 | Python 主循环 + Go Gateway | Python/LangGraph 迭代快 | 需要迁移状态、审批、Memory、Reflection 和 Checkpoint | 暂不采用 |
 | Go/Python 双运行时可选 | 长期灵活 | 两套循环、状态和测试成本高 | 后续再评估 |
 
-Hermes 的 RPC 工具调用、令牌校验、工具白名单、调用上限和超时作为安全参考；OpenClaw 的握手、能力声明、作用域、版本协商、事件和等待语义作为协议参考，不复制完整 Gateway。
+令牌校验、调用上限和超时作为 Bridge 安全参考；OpenClaw 的握手、能力声明、作用域、版本协商、事件和等待语义作为协议参考，不复制完整 Gateway。
 
 ## 实施阶段
 
 ### 1. gRPC/Protobuf v1
 
-定义版本化 `PythonBridge` 服务，包含 `Health`、`GetCapabilities`、`ParseDocument`、`ChunkDocument`、`ListTools` 和 `ExecuteTool`。协议只允许向后兼容的字段追加。
+定义版本化 `PythonBridge` 服务，包含 `Health`、`GetCapabilities`、`ParseDocument` 和 `ChunkDocument`。协议只允许向后兼容的字段追加；已删除工具发现和执行 RPC。
 
-`ChunkDocument` 传输现有 `ParsedDocument` 的文本、Block、页码和元数据，返回 Chunk 的索引、内容、token 数、字符数、章节、页码、元数据和算法版本。`ExecuteTool` 只传工具名、JSON 参数和清洗后的运行上下文。
+`ChunkDocument` 传输现有 `ParsedDocument` 的文本、Block、页码和元数据，返回 Chunk 的索引、内容、token 数、字符数、章节、页码、元数据和算法版本。
 
 统一使用 gRPC metadata 传递请求 ID、trace ID 和进程级随机认证令牌；启用 deadline、取消、最大消息大小、并发限制和结构化错误码。侧车只绑定回环地址或受限容器网络，首期使用共享令牌，跨主机部署时再增加 mTLS。
 
-错误处理约定：`UNAVAILABLE` 和 `DEADLINE_EXCEEDED` 由 Go `pythonbridge.IsRetryable` 标记为可重试，但客户端不自动重试，避免未来带副作用工具被重复执行；`INVALID_ARGUMENT`、`UNAUTHENTICATED`、`RESOURCE_EXHAUSTED` 和 `CANCELED` 必须由调用方修正请求或结束任务。
+错误处理约定：`UNAVAILABLE` 和 `DEADLINE_EXCEEDED` 由 Go `pythonbridge.IsRetryable` 标记为可重试；`INVALID_ARGUMENT`、`UNAUTHENTICATED`、`RESOURCE_EXHAUSTED` 和 `CANCELED` 必须由调用方修正请求或结束任务。
 
 ### 2. Go 适配层
 
@@ -42,15 +42,13 @@ Hermes 的 RPC 工具调用、令牌校验、工具白名单、调用上限和�
 - PDF 解析通过 `python_bridge.document_parser` 全局配置选择，不新增数据库字段；txt/md 继续使用 Go Parser。
 - Go Worker 负责解析、调用 Python、校验结果、持久化 Chunk、生成 Embedding 和写入 Elasticsearch。
 - Python 返回非法索引、超出预算或字段缺失时，任务明确失败，不静默切换算法。
-- `PythonRuntimeTool` 实现 `toolruntime.RuntimeTool`，Go 继续执行白名单、风险、审批、超时、输出截断、审计和事件持久化。
-- Agent Runtime 配置增加 `python_tool_names`，不增加数据库表。
-- 首期 Python 工具只允许纯计算、文本处理和结构化转换；文件、Shell、Git、网络和数据库操作继续使用 Go 工具和沙箱。
+- Agent Runtime 不加载 Python 工具；文件、Shell、Git、网络和数据库操作继续使用 Go 工具和沙箱。
 - 增加 `python_bridge` 配置段，默认关闭；关闭时现有 Go-only 路径不变。
 - `shadow_enabled` 与 `shadow_document_parser` 默认关闭；开启后 Worker 保留 Go 主结果并记录 Python 对比指标。`allow_experimental_chunking` 与 `allow_experimental_parsing` 默认关闭，只有固定基准达到门槛并完成审阅后才允许使用 Python 切片或 PDF 解析。
 
 ### 3. Python 常驻侧车
 
-由 `make dev` 或 Docker Compose 启动独立 Python 服务，API 与 Worker 连接同一个 Bridge。首期提供 gRPC Server、健康检查、能力发现、Python Chunker 和低风险 Python Tool Registry。Python 不持有 AgentCanvas 数据库连接和用户密钥。
+由 `make dev` 或 Docker Compose 启动独立 Python 服务，Worker 连接 Bridge。首期提供 gRPC Server、健康检查、能力发现、Python Chunker 和文档解析。Python 不持有 AgentCanvas 数据库连接和用户密钥。
 
 当前依赖包括 `grpcio`、`protobuf`、`langchain-core`、`langchain-community`、`langchain-text-splitters` 和 `pymupdf`。LangChain 类型只在 Python 侧车内部使用；LangGraph、Unstructured、Docling 和 OCR 运行时不进入首期主流程。
 

@@ -2,12 +2,12 @@
 
 AgentCanvas 是一个以 Agent 为唯一执行单元的开源运行平台，面向类似 Codex CLI、OpenCode、Hermes 与 OpenClaw 的产品形态。后端使用 Go，前端使用 React；核心能力包括持久化 Agent Loop、会话与事件流、动态子 Agent、RAG、Memory、Reflection、Tools、MCP、Skills、审批和检查点恢复。
 
-项目当前只维护 Agent Runtime。发布后的 Agent Release 会直接转换为强类型运行请求，由 Agent Loop 统一调度工具、Memory、RAG、Skills 和动态 Subagent。
+项目当前只维护 Agent Runtime。每次运行会从 Agent 当前配置生成不可变 Run 快照，再由 Agent Loop 统一调度工具、Memory、RAG、Skills 和动态 Subagent。
 
 ## 核心能力
 
-- Agent：草稿配置、不可变 Release、会话、Turn、Run 和运行步骤。
-- Agent Loop：支持 `react` 与 `plan_execute`，统一处理上下文、工具调用、停止条件和结构化输出。
+- Agent：当前配置、会话、Turn、不可变 Run 快照和运行步骤。
+- Agent Loop：支持 `plan` 与 `goal`，统一处理上下文、工具调用、停止条件和结构化输出。
 - Dynamic Subagents：模型通过 `run_subagent` 动态委派任务，使用 `parent_run_id`、`run_type` 和 `delegation_depth` 记录父子关系。
 - RAG：知识库、文档解析、Keyword/Vector/Hybrid 检索、Rerank 与引用。
 - Context Index：将 Reflection、Memory、Skill、Tool 和 Conversation Message 统一写入语义索引。
@@ -48,7 +48,7 @@ HTTP / SPA / future Gateway
 
 | 表 | 用途 |
 | --- | --- |
-| `agent_runs` | 运行状态、Agent、Release、会话、父运行、类型与委派深度 |
+| `agent_runs` | 运行状态、Agent 配置快照、会话、父运行、类型与委派深度 |
 | `agent_run_events` | 可重连 SSE 事件 |
 | `agent_run_steps` | LLM、Tool、Approval、Reflection 与 Final Answer 步骤 |
 | `agent_run_checkpoints` | 完整运行快照、消息、交互、工具和规则哈希 |
@@ -78,7 +78,7 @@ HTTP / SPA / future Gateway
                     └──── Next Turn ────┘
 ```
 
-规则随 Agent Release 固化为不可变快照，并通过 `rule_hash` 校验。平台强制规则始终加载；Agent 自定义规则按激活条件、优先级和 token 预算选择。工具 Hook 在模型之外执行危险参数拦截、风险审批、主机限制、超时、输出截断和敏感字段脱敏。
+规则随 Run 固化为不可变快照，并通过 `rule_hash` 校验。平台强制规则始终加载；Agent 自定义规则按激活条件、优先级和 token 预算选择。工具 Hook 在模型之外执行危险参数拦截、风险审批、主机限制、超时、输出截断和敏感字段脱敏。
 
 ### 审批与恢复
 
@@ -149,7 +149,7 @@ internal/
   bootstrap/              依赖装配与 Worker 启动
   domain/                 Agent、Conversation、Memory、Reflection 等领域模型
   infrastructure/         MySQL、Redis、ES、Milvus、MinIO、Queue、LLM
-    pythonbridge/          Python Bridge gRPC 客户端与 Chunker/Tool 适配
+    pythonbridge/          Python Bridge gRPC 客户端与 RAG 解析/Chunker 适配
   interface/http/         Handler、Middleware、SSE 与 Router
   runtime/
     agent/                Runner、Planner、Resumer、Context Assembler
@@ -160,7 +160,7 @@ internal/
     conversationcontext/  会话压缩与滚动快照
 migrations/               基线、生成版本与模型清理迁移
 proto/                    Python Bridge Protobuf v1 合约
-python/                   Python 常驻侧车、工具与切片实现
+python/                   Python 常驻侧车、文档解析与切片实现
 web/                      React SPA
 ```
 
@@ -186,14 +186,14 @@ docker compose -f deployments/docker-compose.yml -f deployments/docker-compose.d
 
 Docker 内的 Project 路径应填写为 `/workspaces/<repo>`；不要把用户仓库放入临时 Sandbox。AgentCanvas 不会自动 commit、push 或 merge，worktree branch 默认保留供人工审查。
 
-Python Bridge 默认关闭。需要试用 Python 工具、LangChain PDF 解析或切片时，在启动 Compose 前设置同一进程级令牌，并将 `configs/config.local.yaml` 的 `python_bridge.enabled` 改为 `true`。Python 切片和 PDF 解析还必须在 shadow 基准达标并人工审阅后分别显式打开 `allow_experimental_chunking` 与 `allow_experimental_parsing`：
+Python Bridge 默认关闭。需要试用 LangChain PDF 解析或切片时，在启动 Compose 前设置同一进程级令牌，并将 `configs/config.local.yaml` 的 `python_bridge.enabled` 改为 `true`。Python 切片和 PDF 解析还必须在 shadow 基准达标并人工审阅后分别显式打开 `allow_experimental_chunking` 与 `allow_experimental_parsing`：
 
 ```bash
 export AGENTCANVAS_PYTHON_BRIDGE_TOKEN="$(openssl rand -hex 32)"
 make docker-up
 ```
 
-本地 Go 进程使用 `127.0.0.1:50051`；Compose 内 API/Worker 使用 `python-bridge:50051`。知识库可显式选择 `python:recursive`、`python:fixed_token` 或实验性的 `python:langchain_recursive`。将 `python_bridge.document_parser` 设为 `python:langchain_pdf` 后，PDF 会由 LangChain `PyMuPDFLoader` 按页解析；扫描件可通过 `fallback_to_go_ocr` 回到现有 Go DeepDoc/OCR。txt/md 仍使用 Go Parser。Agent 设置通过 `python_tool_names` 选择全局 `allowed_tools` 白名单内的 Python 工具。
+本地 Go Worker 使用 `127.0.0.1:50051`；Compose 内 Worker 使用 `python-bridge:50051`。知识库可显式选择 `python:recursive`、`python:fixed_token` 或实验性的 `python:langchain_recursive`。将 `python_bridge.document_parser` 设为 `python:langchain_pdf` 后，PDF 会由 LangChain `PyMuPDFLoader` 按页解析；扫描件可通过 `fallback_to_go_ocr` 回到现有 Go DeepDoc/OCR。txt/md 仍使用 Go Parser。Python Bridge 只用于 RAG 文档解析和切片，不暴露模型工具调用。
 
 本地运行 Python 测试前可创建独立虚拟环境：
 
@@ -271,9 +271,9 @@ GET    /api/v1/agents/:id/conversations
 PATCH  /api/v1/agents/:id/conversations/:conversation_id/mode
 GET    /api/v1/agents/:id/conversations/:conversation_id/messages
 POST   /api/v1/agents/:id/conversations/:conversation_id/turns
+POST   /api/v1/agents/:id/conversations/:conversation_id/compact
 GET    /api/v1/agents/:id/conversations/:conversation_id/turns/latest
 POST   /api/v1/agents/:id/conversations/:conversation_id/fork
-POST   /api/v1/agents/:id/conversations/:conversation_id/upgrade
 DELETE /api/v1/agents/:id/conversations/:conversation_id
 GET    /api/v1/agent-turns/:id
 ```
@@ -332,9 +332,6 @@ POST   /api/v1/knowledge-bases/:id/reindex
 GET    /api/v1/documents/:id/chunks
 
 GET    /api/v1/memories
-GET    /api/v1/memory-candidates
-POST   /api/v1/memory-candidates/:id/approve
-POST   /api/v1/memory-candidates/:id/reject
 GET    /api/v1/memory-recall-logs
 
 GET    /api/v1/tool-definitions
@@ -359,15 +356,15 @@ export AGENTCANVAS_CONFIG_PATH="/absolute/path/to/config.yaml"
 - `agent_runtime`：Turn Worker、lease、自改进与 Review Model。
 - `mysql`、`redis`、`queue`、`nats`：持久化、缓存与异步任务。
 - `retrieval.backend`：全局选择 `elasticsearch` 或 `milvus`；`elasticsearch`、`milvus`、`context_index`：RAG 与统一上下文索引。
-- `memory_dream`、`working_memory`：记忆提取与运行缓存。
+- `codex_memory`：Codex 风格异步记忆提取与 consolidation；旧 `memory_dream`、`working_memory` 仅作迁移期兼容解析，不参与运行。
 - `reflection_queue`：Reflection Outbox、JetStream、lease 与 DLQ。
 - `minio`、`ocr`：文档存储与解析。
-- `python_bridge`：侧车开关、gRPC target、令牌环境变量、超时、消息/并发限制、LangChain PDF 解析开关、解析/切片白名单以及工具白名单。
+- `python_bridge`：侧车开关、gRPC target、令牌环境变量、超时、消息/并发限制、LangChain PDF 解析开关和解析/切片白名单。
 - `security`、`oauth`：密钥、Token 与 GitHub OAuth。
 - `git_workspace`：允许的绝对仓库根目录、worktree 目录、Git/fetch 超时、输出与文件读取上限、prune TTL、自动初始化和 Git identity。API、Worker 与 Pruner 必须使用完全相同的 `allowed_roots` 与挂载。
 
 ## 多语言扩展边界
 
-当前由 Go `agentruntime.AgentRuntime` 保留运行、审批、事件、Memory、Reflection 与 Checkpoint 的权威状态；Python Bridge 只提供窄领域文档解析、Chunker 和低风险 Tool。Python 不直接访问 AgentCanvas 数据库、对象存储、宿主机文件或用户密钥。首期使用 LangChain 文档组件和 PyMuPDF，不引入 LangGraph Agent Loop、Retriever 或第二套向量存储。
+当前由 Go `agentruntime.AgentRuntime` 保留运行、审批、事件、Memory、Reflection 与 Checkpoint 的权威状态；Python Bridge 只提供窄领域文档解析和 Chunker。Python 不直接访问 AgentCanvas 数据库、对象存储、宿主机文件或用户密钥。首期使用 LangChain 文档组件和 PyMuPDF，不引入 LangGraph Agent Loop、Retriever 或第二套向量存储。
 
 未来若引入 Python Agent Loop 或 LangGraph，应作为可选 Workflow Runtime 或远程子 Agent，继续复用 Go 的 Run/Event/Approval/Checkpoint 契约，不建立第二套持久化模型。详细计划见 `doc/python-bridge-plan.md`。

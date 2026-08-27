@@ -2,19 +2,17 @@ package memory_usecase
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
-	"fmt"
+	"errors"
 	"regexp"
 	"strings"
-	"time"
 
-	"agentcanvas/internal/domain"
 	agentdomain "agentcanvas/internal/domain/agent"
 	"agentcanvas/internal/domain/memory"
-	"agentcanvas/internal/observability"
 )
+
+// ErrDurableMemoryWritesDisabled marks the retired candidate path. Durable
+// memory is now produced only by the Codex extraction/consolidation pipeline.
+var ErrDurableMemoryWritesDisabled = errors.New("durable memory candidate writes are disabled; use the Codex consolidation pipeline")
 
 // CandidateService is shared by Agent tools, Dream, extraction and review
 // APIs. It writes proposals only; applying one requires an explicit approval.
@@ -27,54 +25,9 @@ func NewCandidateService(repository agentdomain.ImprovementRepository) *Candidat
 }
 
 func (s *CandidateService) Suggest(ctx context.Context, request memory.CandidateRequest) (int64, error) {
-	started := time.Now()
-	defer func() { observability.MemoryRuntimeMetrics.RecordCandidateWrite(time.Since(started).Milliseconds()) }()
-	if s == nil || s.repository == nil {
-		return 0, fmt.Errorf("memory candidate repository is not configured")
-	}
-	content := strings.TrimSpace(request.Content)
-	if request.OwnerID <= 0 || content == "" {
-		return 0, fmt.Errorf("memory candidate owner_id and content are required")
-	}
-	memoryType := strings.TrimSpace(request.MemoryType)
-	if memoryType == "" {
-		memoryType = memory.TypeProfile
-	}
-	action := strings.TrimSpace(request.Action)
-	if action == "" {
-		action = "create"
-	}
-	scopeType, scopeID, err := memory.ResolveScope(memoryType, request.OwnerID, request.AgentID, request.ProjectID, request.ConversationID, request.ScopeType, request.ScopeID)
-	if err != nil {
-		return 0, err
-	}
-	payload, _ := json.Marshal(map[string]any{
-		"memory_id": request.MemoryID, "memory_type": memoryType, "retention_tier": memory.TierLongTerm,
-		"action": action, "source_conversation_id": request.SourceConversationID, "scope_type": scopeType,
-		"scope_id": scopeID, "source_project_id": request.SourceProjectID, "source": strings.TrimSpace(request.Source), "source_id": request.SourceID,
-	})
-	evidence, _ := json.Marshal(request.Evidence)
-	sum := sha256.Sum256([]byte(fmt.Sprintf("%d\x00%d\x00%s\x00%s\x00%s\x00%s", request.OwnerID, request.AgentID, request.SourceID, action, memoryType, content)))
-	confidence := request.Importance
-	if confidence <= 0 {
-		confidence = .8
-	}
-	if confidence > 1 {
-		confidence = 1
-	}
-	securityStatus, securityReason := memoryCandidateSecurity(content + "\n" + string(payload))
-	status := agentdomain.ProposalStatusPending
-	if securityStatus != "passed" {
-		status = agentdomain.ProposalStatusRejectedSecurity
-	}
-	item := &agentdomain.ChangeProposal{BaseModel: domain.BaseModel{OwnerID: request.OwnerID}, AgentID: request.AgentID, RunID: request.RunID,
-		Kind: agentdomain.ProposalKindMemory, Title: strings.TrimSpace(request.Title), Content: content,
-		PayloadJSON: payload, EvidenceJSON: evidence, DiffJSON: json.RawMessage(`{}`), Confidence: confidence,
-		Checksum: hex.EncodeToString(sum[:]), SecurityStatus: securityStatus, SecurityReason: securityReason, Status: status}
-	if err := s.repository.CreateProposal(ctx, item); err != nil {
-		return 0, err
-	}
-	return item.ID, nil
+	// Keep the method for source compatibility, but make the retired writer an
+	// unconditional hard stop so accidental re-wiring cannot create proposals.
+	return 0, ErrDurableMemoryWritesDisabled
 }
 
 func (s *CandidateService) List(ctx context.Context, ownerID int64, status string, limit int) ([]agentdomain.ChangeProposal, error) {

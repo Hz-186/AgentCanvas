@@ -143,6 +143,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 	if req.ResumePersistedMessageCount > 0 {
 		persistedCount = req.ResumePersistedMessageCount
 	}
+	transcriptCursor := req.ResumeTranscriptCursor
 	previousRuleIDs := make([]string, 0)
 	result.Context = contextTrace
 	if len(req.ResumeMessages) == 0 && len(req.RecalledReflectionIDs) > 0 {
@@ -162,13 +163,21 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 	needsFollowUp := false
 	if len(req.ResumeMessages) > 0 {
 		transcript = append([]llm.ChatMessage(nil), req.ResumeTranscript...)
+		if transcriptCursor < len(transcript) {
+			// Legacy checkpoints did not carry a cursor. The visible transcript
+			// is the only safe lower bound; newer checkpoints preserve a larger
+			// monotonic value across compaction.
+			transcriptCursor = len(transcript)
+		}
 		// Entries the resumer appended past the persisted cursor (approval
 		// answers, rejection notes) still need rows so tool pairings stay
 		// complete; legacy checkpoints with a zero cursor replay everything.
 		if persistedCount > len(transcript) {
 			persistedCount = len(transcript)
 		}
-		persistedCount, _ = r.persistTranscriptEntries(ctx, result, req, transcript[persistedCount:], persistedCount)
+		newEntries := transcript[persistedCount:]
+		persistedCount, _ = r.persistTranscriptEntries(ctx, result, req, newEntries, persistedCount, transcriptCursor)
+		transcriptCursor += len(newEntries)
 		messages = assembleRoundMessages(baseMessages, nil, transcript)
 		startIteration = req.ResumeIteration
 		startToolCalls = req.ResumeToolCalls
@@ -185,18 +194,21 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 			stop, updatedMessages := r.executeToolBatch(ctx, req, result, messages, unresolved, toolHooks, contextTrace, toolNames, req.ResumeApprovedToolCallIDs, persistedCount)
 			messages = updatedMessages
 			if len(updatedMessages) > messageCountBeforeTools {
-				transcript = append(transcript, updatedMessages[messageCountBeforeTools:]...)
-				persistedCount, _ = r.persistTranscriptEntries(ctx, result, req, updatedMessages[messageCountBeforeTools:], persistedCount)
+				newEntries := updatedMessages[messageCountBeforeTools:]
+				transcript = append(transcript, newEntries...)
+				persistedCount, _ = r.persistTranscriptEntries(ctx, result, req, newEntries, persistedCount, transcriptCursor)
+				transcriptCursor += len(newEntries)
 			}
 			if !stop {
 				if feedback := r.maybeReflect(ctx, req, result, result.Steps[stepStart:]); feedback != nil {
 					messages = append(messages, *feedback)
 					transcript = append(transcript, *feedback)
-					persistedCount, _ = r.persistTranscriptEntries(ctx, result, req, []llm.ChatMessage{*feedback}, persistedCount)
+					persistedCount, _ = r.persistTranscriptEntries(ctx, result, req, []llm.ChatMessage{*feedback}, persistedCount, transcriptCursor)
+					transcriptCursor++
 				}
 			}
 			if stop {
-				hydrateCheckpoint(result.Checkpoint, baseMessages, transcript, result.Steps, messages, persistedCount)
+				hydrateCheckpoint(result.Checkpoint, baseMessages, transcript, result.Steps, messages, persistedCount, transcriptCursor)
 				return finish(result, r.now()), nil
 			}
 		}
@@ -212,6 +224,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 				messages = append(messages, message)
 				transcript = append(transcript, message)
 				persistedCount++
+				transcriptCursor++
 			}
 		}
 		if err := ctx.Err(); err != nil {
@@ -221,7 +234,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 				result.Checkpoint = checkpointFromMessages(
 					req, messages, contextTrace, toolNames, nil,
 					result.StopReason, result.Iterations, result.ToolCalls)
-				hydrateCheckpoint(result.Checkpoint, baseMessages, transcript, result.Steps, messages, persistedCount)
+				hydrateCheckpoint(result.Checkpoint, baseMessages, transcript, result.Steps, messages, persistedCount, transcriptCursor)
 			}
 			return result, nil
 		}
@@ -324,7 +337,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 						req, messages, contextTrace, toolNames, nil,
 						result.StopReason, result.Iterations, result.ToolCalls,
 					)
-					hydrateCheckpoint(result.Checkpoint, baseMessages, transcript, result.Steps, messages, persistedCount)
+					hydrateCheckpoint(result.Checkpoint, baseMessages, transcript, result.Steps, messages, persistedCount, transcriptCursor)
 				}
 				return result, nil
 			}
@@ -376,7 +389,8 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 			// A final model response ends a guided plan without claiming verification.
 			result.FinalAnswer = assistant.Content
 			result.StopReason = StopReasonFinalAnswer
-			_, result.AssistantMessageID = r.persistTranscriptEntries(ctx, result, req, []llm.ChatMessage{assistant}, persistedCount)
+			_, result.AssistantMessageID = r.persistTranscriptEntries(ctx, result, req, []llm.ChatMessage{assistant}, persistedCount, transcriptCursor)
+			transcriptCursor++
 			finalStep := r.appendStep(result,
 				RunStep{
 					Type:       StepTypeFinalAnswer,
@@ -395,20 +409,24 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 		stop, updatedMessages := r.executeToolBatch(ctx, req, result, messages, assistant.ToolCalls, toolHooks, contextTrace, toolNames, nil, persistedCount)
 		messages = updatedMessages
 		transcript = append(transcript, assistant)
-		persistedCount, _ = r.persistTranscriptEntries(ctx, result, req, []llm.ChatMessage{assistant}, persistedCount)
+		persistedCount, _ = r.persistTranscriptEntries(ctx, result, req, []llm.ChatMessage{assistant}, persistedCount, transcriptCursor)
+		transcriptCursor++
 		if len(updatedMessages) > messageCountBeforeTools {
-			transcript = append(transcript, updatedMessages[messageCountBeforeTools:]...)
-			persistedCount, _ = r.persistTranscriptEntries(ctx, result, req, updatedMessages[messageCountBeforeTools:], persistedCount)
+			newEntries := updatedMessages[messageCountBeforeTools:]
+			transcript = append(transcript, newEntries...)
+			persistedCount, _ = r.persistTranscriptEntries(ctx, result, req, newEntries, persistedCount, transcriptCursor)
+			transcriptCursor += len(newEntries)
 		}
 		if !stop {
 			if feedback := r.maybeReflect(ctx, req, result, result.Steps[stepStart:]); feedback != nil {
 				messages = append(messages, *feedback)
 				transcript = append(transcript, *feedback)
-				persistedCount, _ = r.persistTranscriptEntries(ctx, result, req, []llm.ChatMessage{*feedback}, persistedCount)
+				persistedCount, _ = r.persistTranscriptEntries(ctx, result, req, []llm.ChatMessage{*feedback}, persistedCount, transcriptCursor)
+				transcriptCursor++
 			}
 		}
 		if stop {
-			hydrateCheckpoint(result.Checkpoint, baseMessages, transcript, result.Steps, messages, persistedCount)
+			hydrateCheckpoint(result.Checkpoint, baseMessages, transcript, result.Steps, messages, persistedCount, transcriptCursor)
 			return finish(result, r.now()), nil
 		}
 		needsFollowUp = true
@@ -810,12 +828,13 @@ func checkpointFromMessages(
 	}
 }
 
-func hydrateCheckpoint(checkpoint *Checkpoint, baseMessages, transcript []llm.ChatMessage, steps []RunStep, messages []llm.ChatMessage, persistedCount int) {
+func hydrateCheckpoint(checkpoint *Checkpoint, baseMessages, transcript []llm.ChatMessage, steps []RunStep, messages []llm.ChatMessage, persistedCount, transcriptCursor int) {
 	if checkpoint == nil {
 		return
 	}
 	checkpoint.SnapshotVersion = 2
 	checkpoint.PersistedMessageCount = persistedCount
+	checkpoint.TranscriptCursor = transcriptCursor
 	checkpoint.BaseMessages = append([]llm.ChatMessage(nil), baseMessages...)
 	checkpoint.Transcript = append([]llm.ChatMessage(nil), transcript...)
 	checkpoint.Steps = append([]RunStep(nil), steps...)
@@ -828,14 +847,14 @@ func hydrateCheckpoint(checkpoint *Checkpoint, baseMessages, transcript []llm.Ch
 // ID (0 when nothing was written). Sink failures degrade to the pre-sink
 // behavior: the cursor still advances (entries stay visible within the run)
 // and the error is surfaced once as an error step.
-func (r *Runner) persistTranscriptEntries(ctx context.Context, result *RunResult, req RunRequest, entries []llm.ChatMessage, persistedCount int) (int, int64) {
+func (r *Runner) persistTranscriptEntries(ctx context.Context, result *RunResult, req RunRequest, entries []llm.ChatMessage, persistedCount, transcriptStart int) (int, int64) {
 	if len(entries) == 0 {
 		return persistedCount, 0
 	}
 	if req.MessageSink == nil {
 		return persistedCount + len(entries), 0
 	}
-	firstID, err := req.MessageSink.PersistEntries(ctx, compaction.FromChat(entries))
+	firstID, err := req.MessageSink.PersistEntries(ctx, compaction.FromChatAt(entries, transcriptStart))
 	if err != nil {
 		step := r.appendStep(result, RunStep{
 			Type:       StepTypeError,

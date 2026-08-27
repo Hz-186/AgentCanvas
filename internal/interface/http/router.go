@@ -137,10 +137,12 @@ func NewRouter(deps RouterDeps) *gin.Engine {
 
 			protected.GET("/audit-logs", deps.AuditHandler.List)
 
-			registerCRUD(protected, "/memories", ":id", deps.MemoryHandler.Create, deps.MemoryHandler.List, deps.MemoryHandler.Get, deps.MemoryHandler.Update, deps.MemoryHandler.Delete)
-			protected.GET("/memory-candidates", deps.MemoryHandler.ListCandidates)
-			protected.POST("/memory-candidates/:id/approve", deps.MemoryHandler.ApproveCandidate)
-			protected.POST("/memory-candidates/:id/reject", deps.MemoryHandler.RejectCandidate)
+			// Durable memory is owned by the asynchronous Codex consolidation
+			// pipeline. Keep legacy SQL memory endpoints read-only for migration
+			// and audit visibility; no HTTP route may mutate durable memory or
+			// approve a memory proposal.
+			protected.GET("/memories", deps.MemoryHandler.List)
+			protected.GET("/memories/:id", deps.MemoryHandler.Get)
 			protected.GET("/memory-recall-logs", deps.MemoryHandler.ListRecallLogs)
 			protected.POST("/memory-recall-logs/:id/feedback", deps.MemoryHandler.SetRecallFeedback)
 

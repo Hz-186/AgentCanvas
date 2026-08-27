@@ -260,7 +260,6 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 	providerService := providerusecase.NewService(providerRepo, auditRepo, secretBox, llm.NewHTTPProviderTester())
 	auditService := auditusecase.NewService(auditRepo)
 	memoryService := memoryusecase.NewServiceWithCacheAndRetriever(memoryRepo, memoryCache, memoryRetrievalStore)
-	memoryCandidateService := memoryusecase.NewCandidateService(agentImprovementRepo)
 	memoryCommandService := memoryusecase.NewMemoryCommandService(memoryRepo, memoryWriteLogRepo)
 	memoryService.ConfigureCommands(memoryCommandService)
 	memoryService.ConfigureRecallLogs(memoryRecallLogRepo)
@@ -289,11 +288,12 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 	knowledgeService.ConfigureRetrievalBackends(applicationRetrievers, retrievalIndexers)
 	knowledgeService.ConfigurePythonChunking(cfg.PythonBridge.AllowExperimentalChunking, cfg.PythonBridge.AllowedChunkMethods...)
 	jobQueue := infraDeps.JobQueue
-	dreamQueue := jobQueue
+	codexMemoryQueue := jobQueue
 	if cfg.Queue.Backend == "mysql" {
-		dreamQueue = nil
+		codexMemoryQueue = nil
 	}
-	dreamCfg := memoryusecase.NewDreamConfig(cfg.MemoryDream)
+	codexMemoryCfg := memoryusecase.NewCodexMemoryConfig(cfg.EffectiveCodexMemory())
+	codexFileStore := memoryusecase.NewCodexFileStore(codexMemoryCfg.Root)
 	if jobQueue != nil {
 		knowledgeService.WithJobQueue(jobQueue)
 	}
@@ -314,7 +314,7 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 		Repositories: agentruntime.Repositories{
 			Retriever: retrievalService, Providers: providerLoader, MessageHistory: messageRepo, MessageWriter: messageRepo, Compactions: compactionRepo,
 			SessionSearch: sessionSearch, Memories: memoryRepo, MemoryReader: memoryService, MemoryWriteLogs: memoryWriteLogRepo,
-			MemoryRecallLogs: memoryRecallLogRepo, MemoryCandidates: memoryCandidateService, MemoryRetriever: memoryRetrievalStore,
+			MemoryRecallLogs: memoryRecallLogRepo, MemoryRetriever: memoryRetrievalStore, MemoryFiles: codexFileStore, AdHocNotes: codexFileStore,
 			ToolPacks: toolPackRepo, Skills: skillRepo, MCPServers: mcpRepo,
 			ContextIndex: contextIndex,
 		},
@@ -328,12 +328,13 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 			}),
 		},
 		Tooling: agentruntime.Tooling{ToolRegistry: toolRegistry, Goals: goalRepo, GoalTokenBudgetCeiling: cfg.Goals.MaxTokenBudget,
-			DefaultModeRequestUserInput: cfg.Tools.RequestUserInput.Enabled != nil && *cfg.Tools.RequestUserInput.Enabled,
+			DefaultModeRequestUserInput: cfg.Tools.DefaultModeRequestUserInput.Enabled != nil && *cfg.Tools.DefaultModeRequestUserInput.Enabled,
 			DisableUpdatePlan:           cfg.Tools.UpdatePlan.Enabled != nil && !*cfg.Tools.UpdatePlan.Enabled},
 		Workspace:     agentruntime.Workspace{Sandbox: sandbox.NewDockerRunner(), Git: gitService},
 		Observability: agentruntime.Observability{Audits: auditRepo, Reflections: reflectionService},
 		Policies: agentruntime.Policies{
-			MemoryExtractionTrigger: memoryusecase.NewDreamTrigger(dreamQueue, redisClient, dreamCfg, extractionJobRepo),
+			MemoryExtractionTrigger: memoryusecase.NewCodexMemoryTrigger(codexMemoryQueue, redisClient, codexMemoryCfg, extractionJobRepo, messageRepo),
+			AdHocMemoryNoteWriter:   codexFileStore,
 			FileReadMaxChars:        cfg.GitWorkspace.FileReadMaxChars, MaxOutputBytes: cfg.GitWorkspace.MaxOutputBytes,
 			WorkspaceTimeout: time.Duration(cfg.GitWorkspace.GitCommandTimeoutSeconds) * time.Second,
 		},
@@ -355,17 +356,10 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 	agentService.ConfigureGoalRepository(goalRepo)
 	agentService.ConfigureGoalTokenBudgetCeiling(cfg.Goals.MaxTokenBudget)
 	agentRuntime.ConfigureSubagentDispatcher(agentService)
-	agentRuntime.ConfigureMemoryReader(memoryService)
-	agentRuntime.ConfigureMemoryCandidates(memoryCandidateService)
 	agentRuntime.ConfigureSessionSearch(sessionSearch)
-	memoryReviewMode := cfg.AgentRuntime.MemoryReviewMode
-	if cfg.MemoryDream.Enabled {
-		memoryReviewMode = independentagentusecase.MemoryReviewOff
-		log.Warn("Dream memory extraction is enabled; duplicate self-improvement memory proposals are disabled")
-	}
+	memoryReviewMode := independentagentusecase.MemoryReviewOff
 	improvementService := independentagentusecase.NewImprovementService(agentImprovementRepo, agentRepo, agentTurnRepo, runRepo, conversationRepo, messageRepo,
 		runStepRepo, memoryRepo, reflectionRepo, skillRepo, providerLoader, toolCallingClient, memoryReviewMode)
-	improvementService.ConfigureMemoryCommands(memoryCommandService)
 	improvementService.ConfigureReviewModel(cfg.AgentRuntime.ReviewProviderID, cfg.AgentRuntime.ReviewModel)
 	if cfg.AgentRuntime.SelfImprovementEnabled {
 		agentService.ConfigureImprovement(improvementService)
@@ -385,7 +379,6 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 	providerHandler := handler.NewProviderHandler(providerService, providerCatalog)
 	auditHandler := handler.NewAuditHandler(auditService)
 	memoryHandler := handler.NewMemoryHandler(memoryService)
-	memoryHandler.ConfigureCandidates(memoryCandidateService, improvementService)
 	toolHandler := handler.NewToolHandler(toolService, toolPackRepo, mcpRepo)
 	skillHandler := handler.NewSkillHandler(skillService, auditRepo)
 	knowledgeHandler := handler.NewKnowledgeHandler(knowledgeService)

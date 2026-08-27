@@ -110,11 +110,15 @@ type RunRequest struct {
 	ResumeBaseMessages              []llm.ChatMessage
 	ResumeTranscript                []llm.ChatMessage
 	ResumePersistedMessageCount     int
-	ResumeSteps                     []RunStep
-	ResumeContext                   ContextTrace
-	ResumeIteration                 int
-	ResumeToolCalls                 int
-	ResumeApprovedToolCallIDs       []string
+	// ResumeTranscriptCursor is the next monotonic source-message index used
+	// to derive transcript_entry_id values. It survives mid-run compaction,
+	// where the visible transcript slice can shrink.
+	ResumeTranscriptCursor    int
+	ResumeSteps               []RunStep
+	ResumeContext             ContextTrace
+	ResumeIteration           int
+	ResumeToolCalls           int
+	ResumeApprovedToolCallIDs []string
 }
 
 type RunResult struct {
@@ -207,6 +211,7 @@ type Interaction struct {
 type Checkpoint struct {
 	SnapshotVersion       int               `json:"snapshot_version,omitempty"`
 	PersistedMessageCount int               `json:"persisted_message_count,omitempty"`
+	TranscriptCursor      int               `json:"transcript_cursor,omitempty"`
 	BaseMessages          []llm.ChatMessage `json:"base_messages,omitempty"`
 	Transcript            []llm.ChatMessage `json:"transcript,omitempty"`
 	Steps                 []RunStep         `json:"steps,omitempty"`
@@ -295,7 +300,6 @@ type TokenAudit struct {
 	History          int `json:"history,omitempty"`
 	Memory           int `json:"memory,omitempty"`
 	ReflectionMemory int `json:"reflection_memory,omitempty"`
-	WorkingMemory    int `json:"working_memory,omitempty"`
 	Retrieval        int `json:"retrieval,omitempty"`
 	Task             int `json:"task,omitempty"`
 	Total            int `json:"total,omitempty"`

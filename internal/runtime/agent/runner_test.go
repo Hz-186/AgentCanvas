@@ -225,6 +225,36 @@ func (t *fakeRuntimeTool) Execute(ctx context.Context, rc toolruntime.ToolRunCon
 	return &toolruntime.ToolResult{ContentText: t.output, ContentJSON: outputJSON}, nil
 }
 
+type requestUserInputRuntimeTool struct{}
+
+func (requestUserInputRuntimeTool) Name() string        { return "request_user_input" }
+func (requestUserInputRuntimeTool) Description() string { return "request input" }
+func (requestUserInputRuntimeTool) Parameters() json.RawMessage {
+	return json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`)
+}
+func (requestUserInputRuntimeTool) Execute(context.Context, toolruntime.ToolRunContext, json.RawMessage) (*toolruntime.ToolResult, error) {
+	return &toolruntime.ToolResult{ContentText: "Waiting for user input", Approval: &toolruntime.ToolApproval{
+		Kind: "request_user_input", Reason: "need context", IsBlocking: false,
+	}}, nil
+}
+
+func TestRunnerKeepsDefaultNonBlockingUserInputAwaitable(t *testing.T) {
+	client := &fakeToolClient{responses: []llm.ToolChatResponse{
+		{Message: llm.ChatMessage{Role: conversation.RoleAssistant, ToolCalls: []llm.ToolCall{{ID: "call_input", Name: "request_user_input", Arguments: json.RawMessage(`{}`)}}}},
+		{Message: llm.ChatMessage{Role: conversation.RoleAssistant, Content: "done"}},
+	}}
+	result, err := NewRunner(client).Run(context.Background(), RunRequest{
+		Model: "test-model", Task: "clarify", Mode: "default", MaxIterations: 3, MaxToolCalls: 2,
+		Tools: []toolruntime.RuntimeTool{requestUserInputRuntimeTool{}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.StopReason != StopReasonWaitingHuman || result.Approval == nil || result.Approval.IsBlocking || result.Checkpoint == nil || len(client.requests) != 1 {
+		t.Fatalf("request_user_input must await an answer without changing its is_blocking flag: result=%+v requests=%d", result, len(client.requests))
+	}
+}
+
 func TestRunnerPassesImmutableWorkspaceContextToTools(t *testing.T) {
 	client := &fakeToolClient{responses: []llm.ToolChatResponse{
 		{Message: llm.ChatMessage{Role: conversation.RoleAssistant, ToolCalls: []llm.ToolCall{{ID: "call_workspace", Name: "read_workspace", Arguments: json.RawMessage(`{}`)}}}},
@@ -1674,8 +1704,8 @@ func TestSinkFailureDegradesWithoutAbortingRun(t *testing.T) {
 func TestSinkCursorSkipsPersistedEntriesOnResume(t *testing.T) {
 	client := &fakeToolClient{responses: []llm.ToolChatResponse{{Message: llm.ChatMessage{Role: conversation.RoleAssistant, Content: "done"}}}}
 	sink := &recordingMessageSink{}
-	// 5-entry checkpoint transcript fully covered by the cursor: nothing
-	// may hit the sink, not even the resumer's own reconstruction.
+	// The five checkpoint entries are fully covered by the cursor. Resume may
+	// persist only its new final response, never reconstruct the old entries.
 	transcript := make([]llm.ChatMessage, 0, 8)
 	transcript = append(transcript, llm.ChatMessage{Role: conversation.RoleUser, Content: "task"})
 	transcript = append(transcript, llm.ChatMessage{Role: conversation.RoleAssistant, ToolCalls: []llm.ToolCall{{ID: "call_1", Name: "lookup", Arguments: json.RawMessage(`{}`)}}})
@@ -1703,8 +1733,8 @@ func TestSinkCursorSkipsPersistedEntriesOnResume(t *testing.T) {
 		t.Fatal(err)
 	}
 	entries := sink.entries()
-	if len(entries) != 0 {
-		t.Fatalf("already-persisted transcript entries must not be re-written, got %d: %+v", len(entries), entries)
+	if len(entries) != 1 || entries[0].Content != "done" || entries[0].TranscriptEntryID != "5:0" {
+		t.Fatalf("resume must write only its new final entry with the next identity, got %+v", entries)
 	}
 }
 
@@ -1754,6 +1784,37 @@ func TestCompactionResetsSinkCursorForRetainedEntries(t *testing.T) {
 		if strings.HasPrefix(entry.Content, conversation.CompactionSummaryPrefix) {
 			t.Fatalf("SUMMARY entries must never be persisted: %+v", entry)
 		}
+	}
+	seen := map[string]bool{}
+	for _, entry := range sink.entries() {
+		if entry.TranscriptEntryID == "" || seen[entry.TranscriptEntryID] {
+			t.Fatalf("compaction must not recycle transcript identities: %+v", sink.entries())
+		}
+		seen[entry.TranscriptEntryID] = true
+	}
+}
+
+func TestResumeUsesCheckpointTranscriptCursorAfterCompaction(t *testing.T) {
+	client := &fakeToolClient{responses: []llm.ToolChatResponse{{Message: llm.ChatMessage{Role: conversation.RoleAssistant, Content: "done"}}}}
+	sink := &recordingMessageSink{}
+	checkpoint := &Checkpoint{
+		SnapshotVersion:       2,
+		PersistedMessageCount: 1,
+		TranscriptCursor:      12,
+		Messages:              []llm.ChatMessage{{Role: conversation.RoleUser, Content: conversation.CompactionSummaryPrefix + "old"}},
+		BaseMessages:          []llm.ChatMessage{{Role: conversation.RoleSystem, Content: "system"}},
+		Transcript:            []llm.ChatMessage{{Role: conversation.RoleUser, Content: conversation.CompactionSummaryPrefix + "old"}},
+	}
+	resume, err := BuildResumeRequest(ResumeRequest{RunRequest: RunRequest{Model: "m", Task: "task", MessageSink: sink}, Checkpoint: checkpoint, Approved: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewRunner(client).Run(context.Background(), *resume); err != nil {
+		t.Fatal(err)
+	}
+	entries := sink.entries()
+	if len(entries) != 1 || entries[0].TranscriptEntryID != "12:0" {
+		t.Fatalf("resume must continue the monotonic transcript identity, got %+v", entries)
 	}
 }
 

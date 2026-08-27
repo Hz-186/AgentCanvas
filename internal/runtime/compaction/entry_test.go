@@ -126,6 +126,11 @@ func TestFromChatSplitsAssistantToolCalls(t *testing.T) {
 	if entries[2].ToolName != "search" || string(entries[2].Arguments) != `{"q":"x"}` {
 		t.Errorf("first call metadata wrong: %+v", entries[2])
 	}
+	for index, want := range []string{"0:0", "1:0", "1:1", "1:2"} {
+		if entries[index].TranscriptEntryID != want {
+			t.Errorf("entries[%d].TranscriptEntryID = %q, want %q", index, entries[index].TranscriptEntryID, want)
+		}
+	}
 }
 
 func TestToChatMergesConsecutiveCalls(t *testing.T) {

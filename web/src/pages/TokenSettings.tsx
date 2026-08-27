@@ -9,7 +9,7 @@ const scopeOptions = [
   ['agent:read', '读取 Agent 与 Run'], ['agent:write', '创建和控制 Agent Run'],
   ['run:read', '读取 Run 与事件'], ['run:write', '取消、恢复和审批 Run'],
   ['resource:read', '读取 Provider、Tool、Skill、知识库'], ['resource:write', '修改 Provider、Tool、Skill、知识库'],
-  ['memory:read', '读取 Memory'], ['memory:write', '修改 Memory'],
+  ['memory:read', '读取 Memory 审计信息'],
 ] as const;
 
 function maskSecret(value: string) {

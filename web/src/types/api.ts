@@ -149,7 +149,8 @@ export interface Memory {
 	scope_id: number;
 	status: 'active' | 'superseded' | 'revoked';
 	supersedes_id?: number | null;
-	memory_type: string;
+	/** Legacy SQL provenance; Codex file memory has no cognitive taxonomy. */
+	memory_type?: string;
 	retention_tier?: 'short_term' | 'long_term';
   title: string;
   content: string;

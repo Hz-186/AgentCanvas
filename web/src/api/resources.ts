@@ -203,16 +203,10 @@ export const settingsApi = {
     list: (limit = 30, offset = 0) => api.get<AuditLog[]>('/audit-logs', { limit, offset }),
   },
 	memories: {
-	list: (params?: { memory_type?: string; status?: string; scope_type?: string; scope_id?: number; source?: string; source_conversation_id?: number; source_project_id?: number }) => api.get<Memory[]>('/memories', params),
-	create: (body: { memory_type: string; source_conversation_id?: number | null; source_project_id?: number | null; scope_type?: Memory['scope_type']; scope_id?: number; title?: string; content: string; importance?: number; source?: string }) =>
-	  api.post<Memory>('/memories', body),
-	update: (id: number, body: Partial<Pick<Memory, 'memory_type' | 'source_conversation_id' | 'source_project_id' | 'scope_type' | 'scope_id' | 'title' | 'content' | 'importance' | 'source' | 'metadata_json'>>) => api.patch<Memory>(`/memories/${id}`, body),
-    remove: (id: number) => api.delete<{ success: boolean }>(`/memories/${id}`),
-	listCandidates: (status?: ChangeProposal['status']) => api.get<ChangeProposal[]>('/memory-candidates', status ? { status } : undefined),
-	approveCandidate: (id: number, note = '') => api.post<ChangeProposal>(`/memory-candidates/${id}/approve`, { note }),
-	rejectCandidate: (id: number, note = '') => api.post<ChangeProposal>(`/memory-candidates/${id}/reject`, { note }),
-	listRecallLogs: (memoryId?: number) => api.get<MemoryRecallLog[]>('/memory-recall-logs', memoryId ? { memory_id: memoryId } : undefined),
-	setRecallFeedback: (id: number, feedback: MemoryRecallLog['feedback']) => api.post<{ success: boolean }>(`/memory-recall-logs/${id}/feedback`, { feedback }),
+	  // Read-only audit view. The Codex consolidation worker owns all writes.
+	  list: (params?: { status?: string; source?: string; source_conversation_id?: number; source_project_id?: number }) => api.get<Memory[]>('/memories', params),
+	  listRecallLogs: (memoryId?: number) => api.get<MemoryRecallLog[]>('/memory-recall-logs', memoryId ? { memory_id: memoryId } : undefined),
+	  setRecallFeedback: (id: number, feedback: MemoryRecallLog['feedback']) => api.post<{ success: boolean }>(`/memory-recall-logs/${id}/feedback`, { feedback }),
   },
   tools: {
     list: () => api.get<ToolDefinition[]>('/tool-definitions'),

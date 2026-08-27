@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"time"
 
 	"agentcanvas/internal/domain"
 	agentdomain "agentcanvas/internal/domain/agent"
@@ -18,7 +17,12 @@ import (
 )
 
 type goalUsageState struct {
-	GoalID           string
+	GoalID string
+	// Provider usage events are cumulative for one model call. Keep the last
+	// cumulative report so reconnect/repeated terminal chunks charge only the
+	// residual delta.
+	LastUsage        llm.Usage
+	HasUsage         bool
 	TokensAccounted  int64
 	SecondsAccounted int64
 }
@@ -174,32 +178,46 @@ func (s *Service) accountGoalUsageEvent(ctx context.Context, ownerID, runID int6
 	if err != nil || current == nil || current.Status == goal.StatusComplete {
 		return
 	}
-	tokens := goalTokenDelta(usage)
+	state := goalUsageState{}
 	s.goalUsageMu.Lock()
-	state := s.goalUsageByRun[runID]
+	state = s.goalUsageByRun[runID]
 	if state.GoalID != current.GoalID {
 		state = goalUsageState{GoalID: current.GoalID}
 	}
-	elapsed := int64(time.Since(run.StartedAt).Seconds())
-	if elapsed < 0 {
-		elapsed = 0
+	previous := state.LastUsage
+	state.LastUsage = usage
+	state.HasUsage = true
+	s.goalUsageByRun[runID] = state
+	s.goalUsageMu.Unlock()
+	// Providers may emit cumulative usage more than once. Account only the
+	// monotonic residual within the current run; a reset is treated as a new
+	// baseline and never produces a negative charge.
+	if state.HasUsage && (usage.PromptTokens < previous.PromptTokens || usage.CompletionTokens < previous.CompletionTokens || usage.TotalTokens < previous.TotalTokens) {
+		previous = llm.Usage{}
 	}
-	timeDelta := elapsed - state.SecondsAccounted
-	if timeDelta < 0 {
-		timeDelta = 0
+	tokens := goalTokenDelta(llm.Usage{
+		PromptTokens:      usage.PromptTokens - previous.PromptTokens,
+		CompletionTokens:  usage.CompletionTokens - previous.CompletionTokens,
+		CachedInputTokens: usage.CachedInputTokens - previous.CachedInputTokens,
+	})
+	if tokens < 0 {
+		tokens = 0
 	}
+	// Wall-clock progress is settled once at turn stop from the runtime's
+	// active execution latency. Usage callbacks are token checkpoints only;
+	// charging since Run.StartedAt here would include human-wait time after a
+	// resume and double-count the final latency.
+	timeDelta := int64(0)
 	if tokens <= 0 && timeDelta <= 0 {
-		s.goalUsageMu.Unlock()
 		return
 	}
 	updated, accountErr := s.accountGoal(ctx, ownerID, *run.ConversationID, timeDelta, tokens, "active_only", current.GoalID)
 	if accountErr != nil {
-		s.goalUsageMu.Unlock()
 		return
 	}
-	state.GoalID = current.GoalID
 	state.TokensAccounted += tokens
 	state.SecondsAccounted += timeDelta
+	s.goalUsageMu.Lock()
 	s.goalUsageByRun[runID] = state
 	s.goalUsageMu.Unlock()
 	if updated != nil && updated.Status == goal.StatusBudgetLimited {
@@ -284,17 +302,8 @@ Budget:
 - Tokens remaining: %s
 
 	Before deciding the goal is complete, inspect the current worktree and verify the requested end state. If complete, call update_goal with status complete. Do not call blocked for a temporary difficulty; only call it after the same true impasse has repeated for at least three consecutive goal turns and meaningful progress requires external change.`, objective, item.TokensUsed, budgetText(item.TokenBudget), remaining)
-	continuationRepo, ok := s.goals.(goal.ContinuationRepository)
-	if ok {
-		claimed, claimErr := continuationRepo.ClaimContinuation(ctx, run.OwnerID, *run.ConversationID, item.GoalID)
-		if claimErr != nil || !claimed {
-			return
-		}
-		defer func() {
-			_ = continuationRepo.ReleaseContinuation(context.Background(), run.OwnerID, *run.ConversationID, item.GoalID)
-		}()
-	}
-	_, _ = s.StartTurn(ctx, run.OwnerID, run.AgentID, *run.ConversationID, fmt.Sprintf("goal-continuation-%d", time.Now().UnixNano()), CreateTurnRequest{Content: content, GoalContinuation: true})
+	key := fmt.Sprintf("goal-continuation-%s-after-%d", item.GoalID, run.ID)
+	_, _ = s.StartTurn(ctx, run.OwnerID, run.AgentID, *run.ConversationID, key, CreateTurnRequest{Content: content, GoalContinuation: true, GoalID: item.GoalID})
 }
 
 func budgetText(value *int64) string {

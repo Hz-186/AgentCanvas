@@ -698,6 +698,7 @@ type CreateTurnRequest struct {
 	Content          string `json:"content" binding:"required"`
 	ManualCompaction bool   `json:"manual_compaction,omitempty"`
 	GoalContinuation bool   `json:"goal_continuation,omitempty"`
+	GoalID           string `json:"-"`
 }
 
 type TurnAccepted struct {
@@ -804,7 +805,18 @@ func (s *Service) StartTurn(ctx context.Context, ownerID, agentID, conversationI
 		Status:         agentdomain.TurnStatusQueued,
 		InputJSON:      inputJSON,
 	}
-	if err := s.turns.CreateWithArtifacts(ctx, turn, userMessage, run); err != nil {
+	created := true
+	var createErr error
+	if req.GoalContinuation && strings.TrimSpace(req.GoalID) != "" {
+		if starter, ok := s.turns.(agentdomain.GoalContinuationStarter); ok {
+			created, createErr = starter.CreateGoalContinuationWithArtifacts(ctx, strings.TrimSpace(req.GoalID), turn, userMessage, run)
+		} else {
+			createErr = s.turns.CreateWithArtifacts(ctx, turn, userMessage, run)
+		}
+	} else {
+		createErr = s.turns.CreateWithArtifacts(ctx, turn, userMessage, run)
+	}
+	if createErr != nil {
 		if existing, existingErr := s.turns.FindByIdempotencyKey(ctx, ownerID, conversationID, key); existingErr == nil {
 			var existingRun *agentdomain.Run
 			if existing.RunID != nil {
@@ -816,7 +828,10 @@ func (s *Service) StartTurn(ctx context.Context, ownerID, agentID, conversationI
 				UserMessage: s.userMessageForTurn(ctx, ownerID, existing),
 			}, nil
 		}
-		return nil, err
+		return nil, createErr
+	}
+	if !created {
+		return nil, agenterrors.ErrConflict
 	}
 	if s.sessionSearch != nil && userMessage.ContentType == conversation.ContentTypeText {
 		_ = s.sessionSearch.IndexMessage(ctx, ownerID, agentID, userMessage)

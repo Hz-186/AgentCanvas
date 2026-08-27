@@ -66,6 +66,8 @@ type Repositories struct {
 	MemoryRecallLogs memory.RecallLogRepository
 	MemoryCandidates memory.CandidateWriter
 	MemoryRetriever  memory.SemanticRetriever
+	MemoryFiles      memory.CodexReader
+	AdHocNotes       memory.AdHocWriter
 	ToolPacks        tool.PackRepository
 	Skills           skill.Repository
 	MCPServers       tool.MCPRepository
@@ -100,6 +102,7 @@ type Observability struct {
 
 type Policies struct {
 	MemoryExtractionTrigger func(ctx context.Context, ownerID int64, conversationID int64, roundNumber int)
+	AdHocMemoryNoteWriter   memory.AdHocWriter
 	FileReadMaxChars        int
 	MaxOutputBytes          int
 	WorkspaceTimeout        time.Duration
@@ -121,6 +124,7 @@ func buildRuntimeCore(deps Deps) runtimeCore {
 			Providers: deps.Providers, ToolPacks: deps.ToolPacks, Skills: deps.Skills, MCPServers: deps.MCPServers,
 			Retriever: deps.Retriever, MemoryRetriever: deps.MemoryRetriever, Memories: deps.Memories, MemoryReader: deps.MemoryReader,
 			MemoryLogs: deps.MemoryWriteLogs, MemoryRecallLogs: deps.MemoryRecallLogs, MemoryCandidates: deps.MemoryCandidates,
+			MemoryFiles: deps.MemoryFiles, AdHocNotes: deps.AdHocNotes,
 			MessageHistory: deps.MessageHistory, MessageWriter: deps.MessageWriter, Compactions: deps.Compactions, SessionSearch: deps.SessionSearch,
 			ContextIndex: deps.ContextIndex,
 		},
@@ -129,7 +133,7 @@ func buildRuntimeCore(deps Deps) runtimeCore {
 		coreWorkspace: coreWorkspace{Sandbox: deps.Sandbox, Coordinator: conversationCoordinator(deps), Git: deps.Git,
 			FileReadMaxChars: deps.FileReadMaxChars, MaxOutputBytes: deps.MaxOutputBytes, WorkspaceTimeout: deps.WorkspaceTimeout, SkillRoot: workspaceRoot},
 		coreObservability: coreObservability{Audits: deps.Audits, Reflections: deps.Reflections},
-		corePolicies:      corePolicies{OnExtractTrigger: deps.MemoryExtractionTrigger},
+		corePolicies:      corePolicies{OnExtractTrigger: deps.MemoryExtractionTrigger, AdHocMemoryNoteWriter: deps.AdHocMemoryNoteWriter},
 	}
 }
 

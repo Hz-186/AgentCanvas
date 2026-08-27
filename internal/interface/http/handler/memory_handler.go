@@ -33,10 +33,13 @@ func (h *MemoryHandler) List(c *gin.Context) {
 		response.Error(c, http.StatusUnauthorized, agenterrors.CodeUnauthorized, agenterrors.ErrUnauthorized.Error())
 		return
 	}
+	// The file-backed Codex store is the production source of truth. This
+	// endpoint remains a read-only migration/audit view over SQL and accepts
+	// provenance/status filters only; memory taxonomy and scope selectors are
+	// intentionally not part of the Agent-facing API.
 	items, err := h.service.ListFiltered(c.Request.Context(), ownerID, memoryusecase.ListMemoryFilter{
-		MemoryTypes: splitQuery(c.Query("memory_type")), SourceConversationID: optionalInt64Query(c, "source_conversation_id"), SourceProjectID: optionalInt64Query(c, "source_project_id"),
-		Statuses: splitQuery(c.Query("status")), ScopeTypes: splitQuery(c.Query("scope_type")), ScopeID: optionalInt64Query(c, "scope_id"),
-		Sources: splitQuery(c.Query("source")), Limit: intQuery(c, "limit", 50), Offset: intQuery(c, "offset", 0),
+		SourceConversationID: optionalInt64Query(c, "source_conversation_id"), SourceProjectID: optionalInt64Query(c, "source_project_id"),
+		Statuses: splitQuery(c.Query("status")), Sources: splitQuery(c.Query("source")), Limit: intQuery(c, "limit", 50), Offset: intQuery(c, "offset", 0),
 	})
 	if err != nil {
 		writeAppError(c, err)
@@ -46,21 +49,13 @@ func (h *MemoryHandler) List(c *gin.Context) {
 }
 
 func (h *MemoryHandler) ListCandidates(c *gin.Context) {
-	ownerID, ok := currentUserID(c)
+	_, ok := currentUserID(c)
 	if !ok {
 		response.Error(c, http.StatusUnauthorized, agenterrors.CodeUnauthorized, agenterrors.ErrUnauthorized.Error())
 		return
 	}
-	if h.candidates == nil {
-		response.Error(c, http.StatusInternalServerError, agenterrors.CodeInternal, "memory candidate service is not configured")
-		return
-	}
-	items, err := h.candidates.List(c.Request.Context(), ownerID, strings.TrimSpace(c.Query("status")), intQuery(c, "limit", 100))
-	if err != nil {
-		writeAppError(c, err)
-		return
-	}
-	response.OK(c, items)
+	// Candidate APIs are retired together with the old durable-memory writer.
+	memoryWritesDisabled(c)
 }
 
 func (h *MemoryHandler) ApproveCandidate(c *gin.Context) { h.decideCandidate(c, true) }
@@ -103,51 +98,24 @@ func (h *MemoryHandler) SetRecallFeedback(c *gin.Context) {
 	response.OK(c, gin.H{"success": true})
 }
 
-func (h *MemoryHandler) decideCandidate(c *gin.Context, approved bool) {
-	ownerID, ok := currentUserID(c)
+func (h *MemoryHandler) decideCandidate(c *gin.Context, _ bool) {
+	_, ok := currentUserID(c)
 	if !ok {
 		response.Error(c, http.StatusUnauthorized, agenterrors.CodeUnauthorized, agenterrors.ErrUnauthorized.Error())
 		return
 	}
-	proposalID, err := parseInt64Param(c, "id")
-	if err != nil || h.improvement == nil {
-		writeAppError(c, agenterrors.ErrInvalidInput)
-		return
-	}
-	var request struct {
-		Note string `json:"note"`
-	}
-	if c.Request.ContentLength > 0 {
-		if err := c.ShouldBindJSON(&request); err != nil {
-			writeAppError(c, err)
-			return
-		}
-	}
-	item, err := h.improvement.DecideMemoryProposal(c.Request.Context(), ownerID, proposalID, approved, request.Note)
-	if err != nil {
-		writeAppError(c, err)
-		return
-	}
-	response.OK(c, item)
+	// Memory proposals are no longer an effective write path. Durable memory
+	// changes are exclusively produced by the Codex consolidation worker.
+	memoryWritesDisabled(c)
 }
 
 func (h *MemoryHandler) Create(c *gin.Context) {
-	ownerID, ok := currentUserID(c)
+	_, ok := currentUserID(c)
 	if !ok {
 		response.Error(c, http.StatusUnauthorized, agenterrors.CodeUnauthorized, agenterrors.ErrUnauthorized.Error())
 		return
 	}
-	var req memoryusecase.CreateMemoryRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		writeAppError(c, err)
-		return
-	}
-	item, err := h.service.Create(c.Request.Context(), ownerID, req)
-	if err != nil {
-		writeAppError(c, err)
-		return
-	}
-	response.OK(c, item)
+	memoryWritesDisabled(c)
 }
 
 func (h *MemoryHandler) Get(c *gin.Context) {
@@ -164,33 +132,25 @@ func (h *MemoryHandler) Get(c *gin.Context) {
 }
 
 func (h *MemoryHandler) Update(c *gin.Context) {
-	ownerID, id, ok := ownerAndID(c, "id")
+	_, ok := currentUserID(c)
 	if !ok {
+		response.Error(c, http.StatusUnauthorized, agenterrors.CodeUnauthorized, agenterrors.ErrUnauthorized.Error())
 		return
 	}
-	var req memoryusecase.UpdateMemoryRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		writeAppError(c, err)
-		return
-	}
-	item, err := h.service.Update(c.Request.Context(), ownerID, id, req)
-	if err != nil {
-		writeAppError(c, err)
-		return
-	}
-	response.OK(c, item)
+	memoryWritesDisabled(c)
 }
 
 func (h *MemoryHandler) Delete(c *gin.Context) {
-	ownerID, id, ok := ownerAndID(c, "id")
+	_, ok := currentUserID(c)
 	if !ok {
+		response.Error(c, http.StatusUnauthorized, agenterrors.CodeUnauthorized, agenterrors.ErrUnauthorized.Error())
 		return
 	}
-	if err := h.service.Delete(c.Request.Context(), ownerID, id); err != nil {
-		writeAppError(c, err)
-		return
-	}
-	response.OK(c, gin.H{"success": true})
+	memoryWritesDisabled(c)
+}
+
+func memoryWritesDisabled(c *gin.Context) {
+	response.Error(c, http.StatusForbidden, agenterrors.CodeForbidden, "durable memory writes are disabled; use the Codex consolidation pipeline")
 }
 
 func intQuery(c *gin.Context, name string, fallback int) int {
