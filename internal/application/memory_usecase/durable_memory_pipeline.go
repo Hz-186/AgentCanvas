@@ -154,9 +154,17 @@ func NewDurableMemoryWorker(chatClient llm.ChatClient, messages DreamMessageRepo
 	return &DurableMemoryWorker{chatClient: chatClient, messages: messages, jobs: jobs, redis: redisClient, cfg: cfg, workerID: workerID, projection: options.Projection, sources: options.Sources}
 }
 
-// NewDurableMemoryTrigger schedules one job per stable conversation boundary.
-// Redis only coalesces bursts; the extraction idempotency key is the durable
-// exactly-once guard.
+// durableBoundaryScheduler is the atomic, transactional debounce implemented by
+// the SQL repository (SELECT ... FOR UPDATE on the conversation's latest
+// durable row, then refresh/successor/create inside the same transaction).
+type durableBoundaryScheduler interface {
+	ScheduleDurableBoundary(ctx context.Context, ownerID, conversationID, throughMessageID int64, dueAt time.Time) (*memory.ExtractionJob, bool, error)
+}
+
+// NewDurableMemoryTrigger debounces durable extraction per conversation: the
+// conversation keeps at most one pending job row, refreshed in place while it
+// waits, succeeded exactly once while it runs. The queue wakeup is published
+// only when a new row is created, never on a refresh.
 func NewDurableMemoryTrigger(jobQueue queueinfra.JobQueue, redisClient *redis.Client, cfg DurableMemoryConfig, jobs memory.ExtractionJobRepository, messages DreamMessageRepository) func(context.Context, int64, int64, int) {
 	if !cfg.Enabled || jobs == nil || messages == nil {
 		return nil
@@ -169,56 +177,85 @@ func NewDurableMemoryTrigger(jobQueue queueinfra.JobQueue, redisClient *redis.Cl
 		if err != nil || through <= 0 {
 			return
 		}
-		// Scope burst coalescing to this exact source boundary. A conversation
-		// level key would suppress a later boundary and lose messages.
-		pendingKey := fmt.Sprintf("durable:pending:%d:%d:%d", ownerID, conversationID, through)
-		if redisClient != nil {
-			ttl := cfg.IdleTimeout
-			if ttl <= 0 {
-				ttl = time.Minute
-			}
-			if ok, setErr := redisClient.SetNX(ctx, pendingKey, 1, ttl).Result(); setErr != nil || !ok {
-				return
-			}
+		idle := cfg.IdleTimeout
+		if idle <= 0 {
+			idle = time.Minute
 		}
-		key := fmt.Sprintf("durable:%d:%d:%d", ownerID, conversationID, through)
-		// Check before creating so a repeated terminal event does not enqueue the
-		// same durable extraction row again. The unique database key remains the
-		// final race-safe guard when two callers arrive concurrently.
-		if existing, findErr := jobs.FindByIdempotencyKey(ctx, ownerID, key); findErr == nil && existing != nil {
+		dueAt := time.Now().UTC().Add(idle)
+		job, created, err := scheduleDurableBoundary(ctx, jobs, ownerID, conversationID, through, dueAt)
+		if err != nil || job == nil || !created || jobQueue == nil {
 			return
 		}
-		job := &memory.ExtractionJob{
-			BaseModel:        domain.BaseModel{OwnerID: ownerID},
-			ConversationID:   conversationID,
-			ThroughMessageID: through,
-			IdempotencyKey:   key,
-			TriggerReason:    "durable",
-			Status:           string(memory.ExtractionPending),
-			DueAt:            durablePtrTime(time.Now().UTC().Add(cfg.IdleTimeout)),
-		}
-		created := true
-		if err := jobs.Create(ctx, job); err != nil {
-			created = false
-			job, err = jobs.FindByIdempotencyKey(ctx, ownerID, key)
-			if err != nil {
-				if redisClient != nil {
-					_, _ = redisClient.Del(context.Background(), pendingKey).Result()
-				}
-				return
-			}
-		}
-		if jobQueue == nil {
-			return
-		}
-		if !created {
+		if job.DueAt == nil {
 			return
 		}
 		queueJob := queueinfra.Job{SchemaVersion: queueinfra.JobSchemaVersion, ID: fmt.Sprintf("durable-job-%d", job.ID), Type: DurableMemoryJobType, Payload: map[string]any{"job_id": job.ID, "owner_id": ownerID, "conversation_id": conversationID}, AvailableAt: *job.DueAt}
-		if err := jobQueue.Publish(ctx, queueJob); err != nil && redisClient != nil {
-			_, _ = redisClient.Del(context.Background(), pendingKey).Result()
-		}
+		_ = jobQueue.Publish(ctx, queueJob)
 	}
+}
+
+// scheduleDurableBoundary routes the debounce decision: repositories with the
+// transactional scheduler take the FOR UPDATE path; anything else (in-memory
+// fakes, future stores) composes the same semantics from the targeted
+// primitives, including the defensive zero-row-refresh fallback.
+func scheduleDurableBoundary(ctx context.Context, jobs memory.ExtractionJobRepository, ownerID, conversationID, throughMessageID int64, dueAt time.Time) (*memory.ExtractionJob, bool, error) {
+	if scheduler, ok := jobs.(durableBoundaryScheduler); ok {
+		return scheduler.ScheduleDurableBoundary(ctx, ownerID, conversationID, throughMessageID, dueAt)
+	}
+	return scheduleDurableBoundaryStepwise(ctx, jobs, ownerID, conversationID, throughMessageID, dueAt)
+}
+
+// scheduleDurableBoundaryStepwise is the primitive-composed debounce used when
+// the repository does not provide the single-transaction scheduler. The
+// conditional refresh reports the concurrent-claim race as refreshed=false and
+// falls back to a successor; the unique (owner_id, idempotency_key) key is the
+// final guard against duplicate successors, resolved by re-reading the winner.
+func scheduleDurableBoundaryStepwise(ctx context.Context, jobs memory.ExtractionJobRepository, ownerID, conversationID, throughMessageID int64, dueAt time.Time) (*memory.ExtractionJob, bool, error) {
+	latest, err := jobs.LatestDurableJob(ctx, ownerID, conversationID)
+	if err != nil {
+		return nil, false, err
+	}
+	if latest != nil && latest.Status == string(memory.ExtractionPending) {
+		refreshed, refreshErr := jobs.RefreshPendingBoundary(ctx, ownerID, latest.ID, throughMessageID, dueAt)
+		if refreshErr != nil {
+			return nil, false, refreshErr
+		}
+		if refreshed {
+			latest.ThroughMessageID = throughMessageID
+			due := dueAt
+			latest.DueAt = &due
+			return latest, false, nil
+		}
+		// Zero rows affected: the pending row was claimed concurrently. Fall
+		// through and create its successor.
+	}
+	row := &memory.ExtractionJob{
+		BaseModel:        domain.BaseModel{OwnerID: ownerID},
+		ConversationID:   conversationID,
+		IdempotencyKey:   durableBoundaryKey(ownerID, conversationID, latest),
+		TriggerReason:    "durable",
+		ThroughMessageID: throughMessageID,
+		Status:           string(memory.ExtractionPending),
+		DueAt:            durablePtrTime(dueAt),
+	}
+	if err := jobs.Create(ctx, row); err != nil {
+		existing, findErr := jobs.FindByIdempotencyKey(ctx, ownerID, row.IdempotencyKey)
+		if findErr != nil || existing == nil {
+			return nil, false, err
+		}
+		return existing, false, nil
+	}
+	return row, true, nil
+}
+
+// durableBoundaryKey encodes the generation in the idempotency key: the
+// conversation's first job is :initial; every later job is the successor of
+// the latest job observed at schedule time.
+func durableBoundaryKey(ownerID, conversationID int64, latest *memory.ExtractionJob) string {
+	if latest == nil {
+		return fmt.Sprintf("durable:%d:%d:initial", ownerID, conversationID)
+	}
+	return fmt.Sprintf("durable:%d:%d:after-job:%d", ownerID, conversationID, latest.ID)
 }
 
 func (w *DurableMemoryWorker) ProcessNext(ctx context.Context) (bool, error) {
@@ -441,28 +478,18 @@ func (w *DurableMemoryWorker) extract(ctx context.Context, messages []conversati
 	return result, nil
 }
 
+// previousBoundary is the window start: the through of the conversation's
+// latest completed durable job (MAX(id), not MAX(through)). Completion order
+// is not message order — a newer boundary may finish before an older job — so
+// the caller still treats any returned boundary at or beyond the current
+// through as already covered (the out-of-order shadow rule).
 func (w *DurableMemoryWorker) previousBoundary(ctx context.Context, current *memory.ExtractionJob) int64 {
 	if current == nil || current.ThroughMessageID <= 0 {
 		return 0
 	}
-	items, err := w.jobs.ListByStatus(ctx, current.OwnerID, string(memory.ExtractionCompleted), 200)
+	boundary, err := w.jobs.LatestCompletedDurableThrough(ctx, current.OwnerID, current.ConversationID)
 	if err != nil {
 		return 0
-	}
-	var boundary int64
-	for _, item := range items {
-		if item.TriggerReason != "durable" || item.ID == current.ID || item.ConversationID != current.ConversationID {
-			continue
-		}
-		// Completion order is not message order: a newer boundary may finish
-		// before an older job. Treat any completed boundary at or beyond this
-		// one as already covered, independent of database IDs.
-		if item.ThroughMessageID >= current.ThroughMessageID {
-			return item.ThroughMessageID
-		}
-		if item.ThroughMessageID > boundary {
-			boundary = item.ThroughMessageID
-		}
 	}
 	return boundary
 }

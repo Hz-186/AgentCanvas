@@ -367,10 +367,23 @@ func truncateString(s string, maxLen int) string {
 	return string(runes[:maxLen]) + "..."
 }
 
+// durableTriggerStopReasons is the explicit whitelist of stop reasons that
+// schedule durable memory extraction: the run answered finally or exhausted a
+// budget. Every other stop reason (cancellation, pause, waiting for a human,
+// errors, clarification, ...) leaves the conversation open and must not
+// schedule. Extending the runtime's StopReason enum forces an explicit
+// whitelist decision here.
+var durableTriggerStopReasons = map[string]bool{
+	runtimeagent.StopReasonFinalAnswer:   true,
+	runtimeagent.StopReasonMaxIterations: true,
+	runtimeagent.StopReasonMaxToolCalls:  true,
+	runtimeagent.StopReasonTimeout:       true,
+}
+
 func (n runtimeCore) checkExtractionTrigger(ctx context.Context, rc *RunContext, result *runtimeagent.RunResult, roundNumber int, memoryEnabled bool) {
 	if !memoryEnabled || n.OnExtractTrigger == nil || rc == nil ||
 		rc.ParentRunID != nil || rc.DelegationDepth != 0 ||
-		rc.ConversationID == nil || result == nil || result.StopReason != runtimeagent.StopReasonFinalAnswer {
+		rc.ConversationID == nil || result == nil || !durableTriggerStopReasons[result.StopReason] {
 		return
 	}
 	n.OnExtractTrigger(ctx, rc.OwnerID, *rc.ConversationID, roundNumber)

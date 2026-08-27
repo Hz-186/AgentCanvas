@@ -93,7 +93,7 @@ Wave4(与 Wave2/3 文件不重叠，可并行):  T8(反思信号+窗口)   T9(�
   - DoD:
     - 上述测试全部转绿 + `GOOS=linux go build ./...` exit 0。
 
-- [ ] Task 4: Replace per-boundary jobs with session-level debounce scheduling
+- [x] Task 4: Replace per-boundary jobs with session-level debounce scheduling
   - complexity: 🔴
   - files: `internal/domain/memory/extraction.go`（接口）、`internal/infrastructure/mysql/extraction_repo.go`、`internal/application/memory_usecase/durable_memory_pipeline.go`（触发器与 `previousBoundary` 区段）、`internal/runtime/agentruntime/assembly.go`（白名单）、集成测试
   - RED:

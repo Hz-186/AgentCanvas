@@ -63,6 +63,19 @@ type ExtractionJobRepository interface {
 	FindByIdempotencyKey(ctx context.Context, ownerID int64, key string) (*ExtractionJob, error)
 	ListByStatus(ctx context.Context, ownerID int64, status string, limit int) ([]ExtractionJob, error)
 	ListPending(ctx context.Context, limit int) ([]ExtractionJob, error)
+	// LatestDurableJob returns the conversation's newest durable extraction
+	// job (MAX(id), any status, any idempotency-key generation) so the
+	// scheduler can decide between refresh, successor, and initial creation.
+	// It returns (nil, nil) when the conversation has no durable job yet.
+	LatestDurableJob(ctx context.Context, ownerID, conversationID int64) (*ExtractionJob, error)
+	// RefreshPendingBoundary updates a still-pending job's boundary in place
+	// and reports whether the row was refreshed. A false result means the row
+	// was concurrently claimed and the caller must fall back to a successor.
+	RefreshPendingBoundary(ctx context.Context, ownerID, jobID, throughMessageID int64, dueAt time.Time) (bool, error)
+	// LatestCompletedDurableThrough returns the through_message_id of the
+	// conversation's latest (MAX(id)) completed durable job, or 0 when none
+	// exists. It is the extraction window-start lookup.
+	LatestCompletedDurableThrough(ctx context.Context, ownerID, conversationID int64) (int64, error)
 }
 
 type ExtractionLeaseRepository interface {

@@ -123,3 +123,22 @@ Should Improve 处理：Decision 10 扩至全部倾倒点（:426-428/:599-601/:6
 - 变异探针三项全捕获（默认 success、按 tool_name 配对、漏脱敏 arguments）。
 - 门禁复跑：build/全包回归/vet/gofmt 全绿（gofmt 标记的 5 个既有文件非本任务触碰）。
 - Should Improve 2 条（非阻塞）：① 4 个边界子测试可补（输出 id<调用 id、重复 tool_call_id、orphan 含密、异参成功穿插连击中）——代码已正确处理，仅测试未锁；② orphan 按工具名归组连击的语义建议一行注释。
+
+### Task 4 — 实现者返回：DONE（事故已恢复）
+
+- 交付：会话级去抖调度替换按边界建任务——`ExtractionJobRepository` 增 `LatestDurableJob`/`RefreshPendingBoundary`/`LatestCompletedDurableThrough`；事务内 `FOR UPDATE`（conversation+source+durable、`ORDER BY id DESC LIMIT 1`）→ 条件刷新 / 单 successor / 新建，唯一键冲突重读；键格式 `durable:<o>:<c>:initial` 与 `after-job:<id>`；Redis `durable:pending:` 突发键移除（grep 空）；`previousBoundary` 200 行扫描改 MAX(id) 定向查询（影子规则保留）；白名单 4 常量显式化。
+- 事故披露（已恢复，主会话复验范围干净）：实现者误跑 `go fmt` 波及 59 个范围外文件（仅行尾），`git checkout` 恢复，最终工作区 = 8 个 Task 4 文件。
+- 披露偏差（接受）：场景 9 断言 `boundary==500` 而非字面 ">500"——窗口读 `(500, 600]` 严格在 500 之后，语义等价不弱化。
+
+### Review Evidence Task 4 — spec-compliance reviewer
+
+- Verdict: **PASS**（Must Fix 0）。9/9 场景逐字存在且断言匹配（含伴生测试：legacy 行识别、影子规则、idle 忽略）；ASSERT 全锁定（创建恰 1 次发布 `AvailableAt=DueAt`、刷新 0 次；`durable:pending` 全仓空；`ListByStatus` 生产调用归零；FOR UPDATE 精确 SQL 被 sqlmock 钉死）；DoD 额外项：旧格式行经会话查询可识别（fake+集成双测）；键格式仅 4 个生产站点；既有唯一索引 `uq_memory_extraction_idempotency` 复用，无新迁移。
+- 设计符合：Decision 3 事务形状与"竞态=锁读见 running→successor、0 行为防御"逐字落实；Decision 5 MAX(id)+影子、`LatestCompletedThrough` 零 diff（文件纯增量）。
+- 门禁复跑：build exit 0；memory_usecase 10/10 子测试绿；domain/memory 绿；agentruntime overlay 重建后白名单 2/2 + 全包绿；mysql overlay 扩展后 sqlmock 7/7 + 集成 DSN-skip；四包 vet 干净。
+- Should Improve 4 条（非阻塞）：① `ListByStatus` 零调用残留（后续清理候选）；② `NewDurableMemoryTrigger` 保留未用 `redisClient` 形参（签名稳定，后续清理）；③ 队列发布错误被吞（2s 轮询兜底，建议加 warn 日志）；④ `allStopReasons()` 手工维护清单受语言限制（注释约定）。
+
+### Review Evidence Task 4 — code-quality reviewer
+
+- Verdict: **PASS**（Must Fix 0），并发专项无缺陷。单事务覆盖锁读→分支→刷新/插入→冲突重读；发布在提交之后（回滚不泄漏唤醒）；FOR UPDATE 锁集被 `idx_conversation_id` 有界化；0 行回退为设计钦定防御且双路径有测；唯一键冲突仅吞重复错误、其余原样返回（1062 有真例测试）；`roundNumber` 忽略语义未变；3 处 SQL 修正为终态非残留（`through_message_id NOT NULL DEFAULT 0` 佐证去 COALESCE 正确）；sqlmock 7/7 `ExpectationsWereMet`，UPDATE 参数序 `-count=5` 稳定。
+- Should Improve 5 条（非阻塞）：① 刷新非前向单调——design Decision 3 钦定形状，非偏差；可选 `GREATEST` 变体强化（注意朴素 `< ?` 守卫会误入 successor 路径，不可用）；② 发布错误无日志；③/④ 同上的清理候选；⑤ 注释"uses idx_conversation_id"表述为优化器选择非保证。
+- 记录待办（verify 阶段裁定）：发布错误 warn 日志与 `GREATEST` 强化均列为可选改进，不阻塞当前任务。
