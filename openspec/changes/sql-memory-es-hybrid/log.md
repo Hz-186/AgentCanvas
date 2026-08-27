@@ -20,3 +20,5 @@
 | Design review round 1 | PASS；按 reviewer 建议补充 design.md 的 memory_id tie-break 与 citation warning 语义 |
 | Design review round 2 | PASS；proposal/specs/design/tasks 一致，无 Must Fix；standard 门禁满足 |
 | Verification | `openspec validate sql-memory-es-hybrid --type change --strict --json` PASS；8 tasks / 40 RED entries / dependency section verified；`git diff --check` clean |
+| Design review correction | Round 2 targeted review found `manual` source omitted from unified producer contract；回写 proposal/spec/design/tasks，补充 `manual` RED/ASSERT/DoD，等待定向复核 |
+| Design review targeted re-review | PASS；`manual` 已在 proposal/spec/design/tasks 闭合为第六类 `memory_write_jobs` producer，全部一致 |

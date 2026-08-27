@@ -33,14 +33,15 @@
     - `MemoryWritePipelineTest#shouldKeepRunSuccessfulWhenEnqueueFails`（mock queue returns an error → assert final run remains successful and warning event is emitted）
     - `MemoryWritePipelineTest#shouldRetrySqlFailure`（mock SQL transaction fails once then succeeds → assert lease retry/backoff and exactly one successful memory row）
     - `MemoryWritePipelineTest#shouldEnqueueContextOutboxAfterCommit`（mock SQL commit succeeds and outbox insert is observed → assert outbox receives exact owner/resource/content version once, and no outbox call occurs on rollback）
+    - `MemoryWritePipelineTest#shouldRouteManualWriteThroughUnifiedJob`（mock manual/interface write submits source `manual` → assert one idempotent `memory_write_jobs` row, leased SQL write and post-commit context outbox event）
   - GREEN:
     - `go test ./internal/application/memory_usecase ./internal/runtime/agentruntime ./internal/application/agent_usecase ./cmd/worker`
   - ASSERT:
     - Verify finalization performs no synchronous file write or LLM consolidation call.
     - Verify queue failure is fail-open, SQL failure is retried under lease, and SQL rollback emits no ES outbox event.
-    - Verify all five producers use the same job envelope and source values.
+    - Verify all six producers (`ad_hoc`, `extraction`, `consolidation`, `proposal`, `reflection`, `manual`) use the same job envelope, idempotency, lease/retry, fail-open and post-commit outbox semantics.
   - DoD:
-    - All producer tests pass; worker claims/retries/DLQ are wired; successful runs never wait on memory writes; old direct ad-hoc file write path is unreachable.
+    - All six producer tests pass; worker claims/retries/DLQ are wired; successful runs never wait on memory writes; old direct ad-hoc file write path is unreachable.
 
 - [ ] Task 3: Persist consolidation projections and remove file authority
   - complexity: 🔴

@@ -8,7 +8,7 @@ AgentCanvas 当前的 Agent-facing durable memory 仍以 owner 目录中的 Mark
 - **BREAKING** 原子记忆按条写入 `memories`，一条记忆一行；`MEMORY.md`、`memory_summary.md`、raw input、rollout summary 使用 `memory_artifacts` 及抽取记录承载。
 - **BREAKING** `read_memory` 改为统一 ES 关键词检索（永久 `vector_weight=0`）+ SQL hydration；ES `_score` 降序，保留 owner/agent/project/conversation 范围、默认 5/最大 20 条和单条 6000 字符上限。
 - **BREAKING** 开局摘要直接读取 SQL `summary` projection，保留顶层运行限定、advisory 文案、1200 token budget，并提示何时调用 `read_memory` 及摘要可能过期。
-- 新增 `memory_write_jobs`，统一承载 ad-hoc、extraction、consolidation、proposal、reflection 写入；主运行不等待写入，不传导队列/SQL/LLM/ES 失败。
+- 新增 `memory_write_jobs`，统一承载 `ad_hoc`、`extraction`、`consolidation`、`proposal`、`reflection` 和 `manual` 六类写入；主运行不等待写入，不传导队列/SQL/LLM/ES 失败。
 - 保留 `memory_extraction_jobs` 作为抽取阶段证据和状态；SQL 提交后继续使用 context outbox 异步更新 ES，目标 p95 可检索延迟不超过 5 秒。
 - 新增 Codex 兼容的 `<oai-mem-citation>` 解析和 usage 记账；使用 `usage_count` / `last_used_at`，解析前剥离展示文本、逐行容错并校验 owner。
 - 将 Reflection 的内联反馈、终端 worker、批准 proposal、向量索引和 validated/disputed 状态吸收到普通 `memories`、统一抽取/写入 job 和统一 Context 索引；迁移校验通过后删除 `agent_reflections`、独立 API/index/worker。

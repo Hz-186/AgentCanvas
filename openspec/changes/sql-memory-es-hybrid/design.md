@@ -40,7 +40,7 @@ Automatic context reads the versioned SQL summary artifact directly, bounded to 
 
 ### 4. Asynchronous write topology
 
-Runtime finalization creates an idempotent `memory_write_jobs` row or enqueue envelope and returns. A worker claims jobs with lease/retry/DLQ semantics, runs Phase 1 no-op extraction where applicable, writes SQL in a transaction, and emits the existing context resource outbox. Context workers update ES independently. SQL commit is the only success boundary for facts; ES is eventually consistent.
+Runtime finalization and every manual/interface entry point create an idempotent `memory_write_jobs` row or enqueue envelope and return. A worker claims jobs with lease/retry/DLQ semantics, runs Phase 1 no-op extraction where applicable, writes SQL in a transaction, and emits the existing context resource outbox. Context workers update ES independently. SQL commit is the only success boundary for facts; ES is eventually consistent. The six producers are `ad_hoc`, `extraction`, `consolidation`, `proposal`, `reflection` and `manual`; `manual` follows the same idempotency, lease, failure and outbox rules as every other source.
 
 ### 5. Citation and usage
 

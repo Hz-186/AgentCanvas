@@ -82,7 +82,7 @@ The system MUST read the automatic top-level summary from the SQL `summary` proj
 
 ### Requirement: Memory writes are unified and non-blocking
 
-The system MUST enqueue ad-hoc, extraction, consolidation, proposal and reflection-derived writes through `memory_write_jobs`. The main Agent run MUST NOT synchronously write files, wait for LLM consolidation, wait for SQL/ES indexing, or fail because enqueue, worker, SQL, LLM or ES processing failed. A successful SQL commit MUST enqueue context index work for eventual ES projection.
+The system MUST enqueue `ad_hoc`, `extraction`, `consolidation`, `proposal`, `reflection` and `manual` writes through `memory_write_jobs`. The main Agent run MUST NOT synchronously write files, wait for LLM consolidation, wait for SQL/ES indexing, or fail because enqueue, worker, SQL, LLM or ES processing failed. A successful SQL commit MUST enqueue context index work for eventual ES projection.
 
 #### Scenario: Successful run enqueues without waiting
 
