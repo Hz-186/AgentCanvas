@@ -214,7 +214,8 @@ func TestCandidateExtraction(t *testing.T) {
 
 	t.Run("shouldPersistChunkCandidatesIncrementallyAndSkipOnRetry", func(t *testing.T) {
 		// Three ~50000-byte units chunk into [u1,u2] and [u1,u2,u3] (overlap),
-		// forcing exactly two model calls per full extraction pass.
+		// forcing exactly two per-chunk extraction calls per pass plus one
+		// merge call (Task 7) once both chunks are complete.
 		jobs := &fakeExtractionRepo{jobs: map[int64]*memory.ExtractionJob{1: seedExtractionJob(1, 3)}}
 		jobs.nextID = 1
 		messages := &fakeDreamMessages{items: []conversation.Message{
@@ -271,12 +272,17 @@ func TestCandidateExtraction(t *testing.T) {
 			t.Fatalf("retry handle: %v", err)
 		}
 
-		if chat.calls() != 3 {
-			t.Fatalf("total model calls = %d, want 3: chunk 0 must not be re-sent on retry", chat.calls())
+		if chat.calls() != 4 {
+			t.Fatalf("total model calls = %d, want 4: chunk 0 must not be re-sent on retry, and the completed chunks run exactly one merge pass", chat.calls())
 		}
 		retryPrompt := chat.prompt(2)
 		if !strings.Contains(retryPrompt, strings.Repeat("c", 100)) {
 			t.Fatalf("retry did not re-send chunk 1 evidence (message 3 missing)")
+		}
+		// The fourth call is the Task-7 merge pass over both chunks.
+		mergePrompt := chat.prompt(3)
+		if !strings.Contains(mergePrompt, "CHUNK SUMMARIES") || !strings.Contains(mergePrompt, "Chunk zero lesson") || !strings.Contains(mergePrompt, "Chunk one lesson") {
+			t.Fatalf("merge pass did not receive both chunks' candidates: %q", mergePrompt)
 		}
 		final := jobs.jobs[1]
 		if final.Status != string(memory.ExtractionCompleted) {

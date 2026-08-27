@@ -392,6 +392,9 @@ func (w *DurableMemoryWorker) Handle(ctx context.Context, payload DurableMemoryP
 			if extractErr := w.extractChunks(ctx, job, &result, chunks, leaseOwner); extractErr != nil {
 				return extractErr
 			}
+			if mergeErr := w.mergeExtractionChunks(ctx, job, &result, chunks, leaseOwner); mergeErr != nil {
+				return mergeErr
+			}
 			if result.Outcome == "" {
 				// Quality gates run on the merged-or-single-chunk candidate
 				// stream (design Decision 7); a job whose evidence yields
@@ -436,14 +439,21 @@ func (w *DurableMemoryWorker) Handle(ctx context.Context, payload DurableMemoryP
 	// The Phase 1 lease is released by the terminal UpdateOwned above. Phase 2
 	// retry bookkeeping is deliberately a normal update on the completed row.
 	leaseOwner = ""
-	if err := w.consolidate(ctx, job.OwnerID); err != nil {
-		// Phase 1 is already durably complete. Keep ResultJSON and the completed
-		// status so a consolidation retry never re-runs extraction.
-		job.ErrorMessage = "phase2:" + err.Error()
-		job.Phase2AttemptCount++
-		job.DueAt = durablePtrTime(time.Now().UTC().Add(durablePhase2RetryDelay(job.Phase2AttemptCount)))
-		_ = w.updateJob(context.WithoutCancel(ctx), job, leaseOwner)
-		return err
+	// A no_output job carried no new evidence into this owner's memory, so it
+	// must not trigger the owner-scoped Phase-2 consolidation pass: the lock,
+	// the evidence gather and the consolidation agent all stay untouched, and
+	// no phase2 bookkeeping moves. The next job with actual output
+	// re-triggers consolidation for the owner.
+	if result.Outcome != durableExtractionOutcomeNoOutput {
+		if err := w.consolidate(ctx, job.OwnerID); err != nil {
+			// Phase 1 is already durably complete. Keep ResultJSON and the completed
+			// status so a consolidation retry never re-runs extraction.
+			job.ErrorMessage = "phase2:" + err.Error()
+			job.Phase2AttemptCount++
+			job.DueAt = durablePtrTime(time.Now().UTC().Add(durablePhase2RetryDelay(job.Phase2AttemptCount)))
+			_ = w.updateJob(context.WithoutCancel(ctx), job, leaseOwner)
+			return err
+		}
 	}
 	job.ErrorMessage = ""
 	return nil
@@ -540,9 +550,13 @@ type durableExtractionResult struct {
 // gateCandidates returns the candidate stream the quality gate consumes: the
 // merge-pass output when the merge slot is filled (Task 7), otherwise the
 // per-chunk candidates flattened in ascending chunk-index order. A single
-// chunk therefore goes straight through the gate without a merge call.
+// chunk therefore goes straight through the gate without a merge call. The
+// nil check is deliberate: a nil merge slot means the merge never ran, while
+// an empty non-nil slice means the merge ran and produced nothing — the gate
+// must honor that verdict instead of falling back to the per-chunk candidates
+// behind the merge's back.
 func (r durableExtractionResult) gateCandidates() []ExtractionCandidate {
-	if len(r.Merge) > 0 {
+	if r.Merge != nil {
 		return r.Merge
 	}
 	if len(r.Chunks) == 0 {
@@ -652,6 +666,91 @@ func (w *DurableMemoryWorker) extractChunkCandidates(ctx context.Context, chunk 
 		return nil, err
 	}
 	return parseExtractionCandidates(extractDurableJSON(response.Content))
+}
+
+// durableMergeSummaryRunes bounds each chunk's evidence digest inside the
+// merge prompt (design Decision 6): the merge stays lightweight regardless
+// of chunk count while still seeing boundary context from every chunk.
+const durableMergeSummaryRunes = 1200
+
+// mergeExtractionChunks runs the single lightweight merge pass for
+// multi-chunk jobs (design Decision 6): ONE model call over all per-chunk
+// candidates plus one bounded redacted evidence digest per chunk, on the
+// same extraction model. Single-chunk jobs skip the merge entirely, and a
+// filled merge slot is never re-run: an enqueue-failure retry re-gates the
+// stored merge output with zero model calls. The merged list lands in the
+// merge slot and is persisted immediately so it survives a later failure.
+// A merge failure leaves the per-chunk candidates intact (Merge stays nil)
+// and returns the error as-is, so the caller's deferred persist retries the
+// job through the LINEAR Phase-1 channel and the retry re-sends only the
+// merge with zero extraction calls.
+func (w *DurableMemoryWorker) mergeExtractionChunks(ctx context.Context, job *memory.ExtractionJob, result *durableExtractionResult, chunks []EvidenceChunk, leaseOwner string) error {
+	if result.Outcome != "" || len(chunks) <= 1 || result.Merge != nil {
+		return nil
+	}
+	merged, err := w.mergeChunkCandidates(ctx, result, chunks)
+	if err != nil {
+		return err
+	}
+	result.Merge = merged
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		return err
+	}
+	job.ResultJSON = encoded
+	return w.updateJob(ctx, job, leaseOwner)
+}
+
+// mergeChunkCandidates sends the one merge request through the same chat
+// client seam as per-chunk extraction, reusing the extraction provider and
+// model configuration verbatim: no separate merge model configuration
+// exists.
+func (w *DurableMemoryWorker) mergeChunkCandidates(ctx context.Context, result *durableExtractionResult, chunks []EvidenceChunk) ([]ExtractionCandidate, error) {
+	response, err := w.chatClient.Chat(ctx, w.cfg.Provider, llm.ChatRequest{Model: w.cfg.Model, Messages: []llm.ChatMessage{{Role: conversation.RoleUser, Content: buildMergePrompt(result, chunks)}}})
+	if err != nil {
+		return nil, err
+	}
+	return parseExtractionCandidates(extractDurableJSON(response.Content))
+}
+
+// buildMergePrompt assembles the merge request from the per-chunk candidates
+// and one bounded, redacted evidence digest per chunk. Candidate payloads are
+// marshaled verbatim; unit payloads were redacted by the renderer and the
+// digests are redacted again as defense in depth, so no raw secret reaches
+// the merge model.
+func buildMergePrompt(result *durableExtractionResult, chunks []EvidenceChunk) string {
+	var builder strings.Builder
+	fmt.Fprintf(&builder, "Merge the memory candidates extracted from %d evidence chunks of the SAME conversation window into one deduplicated list. Prefer candidates supported by multiple chunks, merge their evidence refs, and drop near-duplicates. Do not invent facts beyond the supplied candidates. Return JSON only: {\"candidates\":[{\"title\":\"...\",\"content\":\"...\",\"type\":\"lesson|preference|fact|constraint\",\"confidence\":0.0,\"importance\":0.0,\"evidence_refs\":[\"messages:<from>-<to>\",\"tool_call:<id>\"]}]}. Return an empty candidates array when nothing survives.\n\nCHUNK SUMMARIES:\n", len(chunks))
+	for _, chunk := range chunks {
+		fmt.Fprintf(&builder, "[chunk %d] %s\n", chunk.Index, mergeChunkSummary(chunk))
+	}
+	builder.WriteString("\nCANDIDATES:\n")
+	for _, chunk := range chunks {
+		for _, candidate := range result.Chunks[chunk.Index] {
+			encoded, err := json.Marshal(candidate)
+			if err != nil {
+				continue
+			}
+			fmt.Fprintf(&builder, "[chunk %d] %s\n", chunk.Index, encoded)
+		}
+	}
+	return builder.String()
+}
+
+// mergeChunkSummary renders one chunk's evidence into a bounded, redacted,
+// whitespace-collapsed digest for the merge prompt.
+func mergeChunkSummary(chunk EvidenceChunk) string {
+	var builder strings.Builder
+	for _, unit := range chunk.Units {
+		builder.WriteString(evidenceChunkedText(unit))
+		builder.WriteByte('\n')
+	}
+	summary := strings.Join(strings.Fields(redactDurableSecrets(builder.String())), " ")
+	runes := []rune(summary)
+	if len(runes) > durableMergeSummaryRunes {
+		return string(runes[:durableMergeSummaryRunes]) + "..."
+	}
+	return summary
 }
 
 // rawExtractionCandidate uses pointer fields so a missing key is

@@ -202,3 +202,31 @@ Should Improve 处理：Decision 10 扩至全部倾倒点（:426-428/:599-601/:6
 - 回归：15/15 场景绿（12 指令场景逐字在列）；`GOOS=linux` build/vet 0；grep 恰 2 行；新测试确能捕获原缺陷（旧代码在失败入队后持久化 "extracted"，新断言直接 Fatalf）。
 - 剩余 Should Improve（非阻塞，记录）：① 部分入队后重试的直接测试缺口（去重已由生产代码+假件双验证）；② 低概率合流：入队失败 + 兄弟任务推进边界 → 窗口作废重提取时旧键可能保留旧窗口行（双低概率事件叠加，影响受内容哈希去重封顶；如需绝对严密可将窗口代际折入写键）；③ 影子遗留写任务语义为既有行为。
 - `reverse_sync_required: false`。进入关闭。
+
+### Task 7 — 实现者返回：DONE（5 项披露偏差）
+
+- 交付：多块归并（`mergeExtractionChunks`/`mergeChunkCandidates`/`buildMergePrompt`/`mergeChunkSummary`，N>1 时恰 1 次归并调用、与提取同一 chat seam 与模型配置、归并槽入队前落盘、归并输出过同一门禁）；`gateCandidates` 判据 `len(r.Merge)>0` → `r.Merge!=nil`（区分"归并未跑"与"归并产出空裁决"）；Handle 对 `no_output` 终态跳过归并（outcome 门禁，:447 区）。
+- 偏差披露：a) 命名沿用 Tasks 1–6 惯例（`TestMergePass`/`TestConsolidationInput` 子测试承载指令场景名）；b) 2 个指令场景（单块跳过归并、归并输入含 extraction 源）RED 即过——为既有行为的回归锁；c) 2 个伴随场景（空归并裁决判 no_output、入队失败重试不重跑归并）；d) 影子窗 no_output 亦跳过归并（任务指令场景 6 语义覆盖）；e) 2 个既有测试随行为更新（`candidate_extraction_test` 多块重试 3→4 次调用 + 归并提示词断言；`no_model_consolidate_test` 空摘要测试改种 1 条过门禁候选、write jobs 0→1——因 no_output 不再进归并）。
+- 报告：task-7-report.md；评审包 /tmp/task7-review.diff（841 行，5 文件：+731/-17）。
+
+### Review Evidence Task 7 — spec-compliance reviewer
+
+- Verdict: **PASS**（Must Fix 0）。6/6 指令场景逐字存在且断言匹配（`merge_pass_test.go:95/197/233/339`、`consolidation_input_test.go:32/73`）：恰 1 次归并调用（3 提取+1 归并=4）、单块 0 归并、归并失败保留全部块候选且重试 0 提取仅重发归并（无 `phase2:` 前缀）、低置信归并输出被门禁拒、4 条输入来源标记正确（extraction→rollout / ad_hoc→ad_hoc）、no_output 不入队且归并锁 0 次获取。
+- ASSERT 双锁定：提取（:664）与归并（:709）调用点字节级同源（`w.cfg.Provider`/`w.cfg.Model`），无新配置项（`DurableMemoryConfig`/`NewDurableMemoryConfig`/`DurableMemoryWorker` 零 diff，逐调用 provider/model 断言锁定）；归并失败重试走线性 Phase-1 退避（`DueAt=now+(AttemptCount+1)min`、`Phase2AttemptCount` 不动、无 `phase2:` 前缀泄漏），与 phase2 指数通道（:451/:1160/:1141）语义区分。
+- Task 6 顺序不变式在归并槽下保持：槽入队前落盘（:687-701）、门禁不置 outcome（:583-587）、入队（:418）成功后才置终端态并重落盘（:421-429）；伴随场景 `shouldNotReRunMergeAfterEnqueueFailure` 锁定入队失败重试 0 模型调用。
+- 范围核验：恰 5 文件 + openspec 工件；`consolidation_projection.go` 零 diff；`go.mod` 零 diff；`grep -rn summarizeDurableText internal/` 恰 2 行。
+- 偏差裁定：a) 命名接受；b) 接受——评审以 `-overlay` 变异测试证实两锁非空洞（守卫改 `<1` → 单块测试失败；`ListBySources` 删 extraction 源 → 4 条变 2 条失败）；c) 接受（两伴随场景均在 RED 失败，驱动了 `!=nil` 修复与槽持久化锁定）；d) 接受（归并输入为 owner 域全量行 :1009，跳过 no_output 触发不丢证据；phase2 重试环 :289-308 不受门禁；legacy 空 outcome 仍进归并——`TestNoModelConsolidate` 等既有测试绿证明）；e) 接受（变异证实更新后断言仍锁原不变式：删块跳过 → 5 次调用失败；空摘要兜底回归 → `:115` "summary" 断言失败）。
+- 门禁复跑：`GOOS=linux go build ./...` exit 0；`go test ./internal/application/memory_usecase -count=1` ok；`-run 'TestMergePass|TestConsolidationInput' -v` 6+2 场景全绿；vet 0。
+- Should Improve（非阻塞）：① 两处 `.vsdd-state.yaml.runtime` 未跟踪工件建议 gitignore（含无关的 sql-memory-es-hybrid 目录）；② 归并提示词候选逐值无上限（摘要限 1200 rune），随候选数线性增长——在 120k 窗口上限与去抖约束下可接受，观察项。
+
+### Review Evidence Task 7 — code-quality reviewer
+
+- Verdict: **PASS**（Must Fix 0）。
+- 归并正确性：恰一次守卫三分句（:688 `Outcome!="" || len(chunks)<=1 || Merge!=nil`）；N=0 不可达（`extractChunks` 空窗先置 no_output :621）；空归并裁决被遵守且不回退块候选（`parseExtractionCandidates` 对 `{"candidates":[]}` 返回非 nil 空切片 :778、JSON 往返保形、`Merge!=nil` 守卫幂等）——由伴随场景 `shouldGateEmptyMergeOutputAsNoOutput` 锁定；提示词全脱敏链路（渲染器 :194/:211/:225 + 构建时再脱敏 :748，测试锁定无原秘密且 `[REDACTED]` 在场）；摘要 1200 rune 截断带 `"..."` 标记（:749-752）；解析复用 Task 5/6 严格路径（缺字段报错 :789-816）。
+- 失败/重试：归并错误先于触槽返回（:691-693）、块候选完整、线性退避、无 `phase2:` 前缀；重试 0 提取仅重发归并；陈旧归并五路排查无缺陷（失败留 nil / 窗口移动整体替换清槽 :382 / 影子窗全新 result :371 / 入队失败重门禁存储槽 0 调用 / 归并后 updateJob 失败的槽为当前块合法归并、跳过即恰一次语义）；`AttemptCount` 每次 claim +1（:477），场景 3 锁定首次后 =1。
+- 归并门禁：位于终态 updateJob（:436）与租约释放（:441）之后；`extracted`+0 accepted 不可能（:421-426 要求 accepted 非空）；legacy/终态存储结果 outcome 空仍进归并（两条既有测试绿）。饥荒边界（owner 全部任务 no_output 时 ad_hoc 行延迟归并）裁定 Should Improve——门禁为任务指令钦定（`shouldNotEnqueueConsolidationOnNoOutput`）、输入永不丢失（行持久、下次 extracted 全量重归并）、改动前 no_output 触发归并本系意外副产品；已记入 known_issues 待 archive。
+- 既有测试更新强度不降：`candidate_extraction_test.go:215` 原断言全保留（部分块检查 :252-267、重试提示词 :278-281、终态 :287-303），3→4 + 归并提示词断言为增强（块 0 不重发现在双锁定：重发则 5 次调用）；`no_model_consolidate_test.go:90` 种子变更系必要（旧种子在新门禁下到不了归并、场景不可测），原意图断言逐字保留（"summary" :115、phase2 计数 :119、0 artifact :122），write jobs 0→1 同时锁定入队先于归并的顺序。
+- 门禁复跑：`GOOS=linux go build ./...` exit 0；全包 `-count=1` ok；vet 0；8/8 场景名逐字在场全绿；5 个触碰文件 `gofmt -l` 干净。
+- 透明披露：评审期间误跑 `go fmt` 波及 5 个未触碰文件（仅 CRLF），已 `git checkout` 复原并复核工作树与评审包字节一致。
+- 主会话复核：工作树 5 文件 +731/-17 与评审包一致；报告偏差 #4 引用误述（"spec sentence" 实为 tasks.md 场景）已按评审意见修正。
+- `reverse_sync_required: false`。双 PASS，Task 7 关闭。

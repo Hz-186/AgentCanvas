@@ -167,7 +167,7 @@ Wave4(与 Wave2/3 文件不重叠，可并行):  T8(反思信号+窗口)   T9(�
   - DoD:
     - 上述测试全部转绿 + `GOOS=linux go build ./...` exit 0 + grep 断言通过。
 
-- [ ] Task 7: Merge multi-chunk candidates and verify consolidation inputs
+- [x] Task 7: Merge multi-chunk candidates and verify consolidation inputs
   - complexity: 🟡
   - files: `internal/application/memory_usecase/durable_memory_pipeline.go`（merge 区段）、`consolidation_projection.go` 相关测试
   - RED:

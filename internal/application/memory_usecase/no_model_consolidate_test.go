@@ -90,7 +90,9 @@ func TestNoModelConsolidate(t *testing.T) {
 	t.Run("shouldFailOnEmptySummaryInsteadOfFallback", func(t *testing.T) {
 		// Model configured but returning an empty summary: the retired
 		// truncation fallback must not trigger; consolidation fails and no
-		// artifact is written.
+		// artifact is written. Phase 1 must yield an accepted candidate: a
+		// no_output job never triggers consolidation (Task 7), so an empty
+		// extraction would never reach the consolidation agent at all.
 		jobsRepo := &fakeExtractionRepo{jobs: map[int64]*memory.ExtractionJob{1: seedExtractionJob(1, 1)}}
 		jobsRepo.nextID = 1
 		messages := &fakeDreamMessages{items: []conversation.Message{extractionMessageRow(1, "consolidation evidence")}}
@@ -100,7 +102,7 @@ func TestNoModelConsolidate(t *testing.T) {
 		)
 		chat := &scriptedExtractionChatClient{respond: func(call int, _ llm.ChatRequest) (string, error) {
 			if call == 0 {
-				return `{"candidates":[]}`, nil
+				return `{"candidates":[{"title":"Deploy freeze","content":"Remember the deploy freeze window.","type":"fact","confidence":0.8,"importance":0.6,"evidence_refs":["messages:1"]}]}`, nil
 			}
 			return `{"memory":"# handbook","summary":""}`, nil
 		}}
@@ -120,8 +122,10 @@ func TestNoModelConsolidate(t *testing.T) {
 		if artifacts.count() != 0 {
 			t.Fatalf("empty-summary consolidation wrote %d artifact row(s), want zero", artifacts.count())
 		}
-		if len(listWriteJobs(t, writeJobs)) != 0 {
-			t.Fatal("empty-summary consolidation enqueued write jobs, want zero")
+		// The accepted Phase-1 candidate was enqueued before consolidation
+		// failed; the consolidation failure itself enqueues nothing.
+		if len(listWriteJobs(t, writeJobs)) != 1 {
+			t.Fatalf("write jobs = %d, want the single accepted extraction candidate", len(listWriteJobs(t, writeJobs)))
 		}
 	})
 }
