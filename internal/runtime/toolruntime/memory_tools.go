@@ -170,68 +170,6 @@ func (t MemoryReadTool) Execute(ctx context.Context, rc ToolRunContext, input js
 	})
 }
 
-type MemoryWriteTool struct {
-	Memories   memory.Repository
-	Logs       memory.WriteLogRepository
-	Retriever  memory.SemanticRetriever
-	Archival   memory.ArchivalIndex
-	Candidates memory.CandidateWriter
-}
-
-type memoryWriteInput struct {
-	MemoryID           int64   `json:"memory_id"`
-	MemoryType         string  `json:"memory_type"`
-	Title              string  `json:"title"`
-	Content            string  `json:"content"`
-	Importance         float64 `json:"importance"`
-	Reason             string  `json:"reason"`
-	ConflictResolution string  `json:"conflict_resolution"`
-	Scope              string  `json:"scope"`
-}
-
-func (MemoryWriteTool) Name() string { return "write_memory" }
-
-func (MemoryWriteTool) Description() string {
-	return "Retired. Durable memory is written only by the asynchronous durable-memory consolidation pipeline."
-}
-
-func (MemoryWriteTool) Parameters() json.RawMessage {
-	return json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`)
-}
-
-func (MemoryWriteTool) Metadata() ToolMetadata {
-	return ToolMetadata{RiskLevel: RiskMedium, SideEffect: SideEffectWrite}
-}
-
-func (t MemoryWriteTool) Execute(ctx context.Context, rc ToolRunContext, input json.RawMessage) (*ToolResult, error) {
-	if t.Candidates == nil {
-		return nil, fmt.Errorf("memory candidate service is not configured")
-	}
-	var parsed memoryWriteInput
-	if err := json.Unmarshal(input, &parsed); err != nil {
-		return &ToolResult{ContentText: err.Error(), IsError: true}, err
-	}
-	conversationID := int64(0)
-	if rc.ConversationID != nil {
-		conversationID = *rc.ConversationID
-	}
-	projectID := projectIDFromToolRunContext(rc)
-	action := "create"
-	if parsed.MemoryID > 0 {
-		action = "update"
-	}
-	proposalID, err := t.Candidates.Suggest(ctx, memory.CandidateRequest{OwnerID: rc.OwnerID, AgentID: rc.AgentID,
-		ConversationID: conversationID, ProjectID: projectID, SourceConversationID: conversationID, SourceProjectID: projectID, RunID: rc.RunID, ScopeType: strings.TrimSpace(parsed.Scope), SourceID: fmt.Sprintf("agent-tool:%d:%s", rc.RunID, strings.TrimSpace(parsed.Content)),
-		MemoryID: parsed.MemoryID, MemoryType: parsed.MemoryType, Title: parsed.Title, Content: parsed.Content,
-		Action: action, Importance: parsed.Importance, Evidence: []string{strings.TrimSpace(parsed.Reason)}, Source: "agent_tool"})
-	if err != nil {
-		return &ToolResult{ContentText: err.Error(), IsError: true}, err
-	}
-	return ResultFromValue(map[string]any{
-		"proposal_id": proposalID, "status": "pending", "action": "suggest", "content": strings.TrimSpace(parsed.Content),
-	})
-}
-
 func projectIDFromToolRunContext(rc ToolRunContext) int64 {
 	if rc.ProjectID > 0 {
 		return rc.ProjectID

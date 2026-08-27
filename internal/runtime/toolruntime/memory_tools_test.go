@@ -157,19 +157,6 @@ type fakeMemoryLogRepo struct {
 	items []memory.WriteLog
 }
 
-type fakeMemoryCandidateWriter struct {
-	request memory.CandidateRequest
-	id      int64
-}
-
-func (f *fakeMemoryCandidateWriter) Suggest(_ context.Context, request memory.CandidateRequest) (int64, error) {
-	f.request = request
-	if f.id == 0 {
-		f.id = 11
-	}
-	return f.id, nil
-}
-
 func (r *fakeMemoryLogRepo) Create(ctx context.Context, item *memory.WriteLog) error {
 	r.items = append(r.items, *item)
 	return nil
@@ -219,31 +206,6 @@ func TestMemoryReadToolRequiresUnifiedVectorIndexByDefault(t *testing.T) {
 	}
 	if repo.readReq.limit != 0 {
 		t.Fatalf("memory list fallback must not be used: %+v", repo.readReq)
-	}
-}
-
-func TestMemoryWriteToolCreatesReviewCandidate(t *testing.T) {
-	candidates := &fakeMemoryCandidateWriter{}
-	tool := MemoryWriteTool{Candidates: candidates}
-	result, err := tool.Execute(context.Background(), ToolRunContext{OwnerID: 1, RunID: 2}, json.RawMessage(`{
-		"memory_type":"task",
-		"title":"Preference",
-		"content":"User prefers concise answers",
-		"importance":0.8,
-		"reason":"User stated preference"
-	}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if candidates.request.Content != "User prefers concise answers" || candidates.request.RunID != 2 {
-		t.Fatalf("unexpected candidate: %+v", candidates.request)
-	}
-	var output map[string]any
-	if err := json.Unmarshal(result.ContentJSON, &output); err != nil {
-		t.Fatal(err)
-	}
-	if output["action"] != "suggest" || output["status"] != "pending" {
-		t.Fatalf("unexpected output: %+v", output)
 	}
 }
 
@@ -321,20 +283,3 @@ func TestMemoryReadToolFallsBackWhenSearchFails(t *testing.T) {
 	}
 }
 
-func TestMemoryWriteToolNeverSelfApprovesConflictingFact(t *testing.T) {
-	candidates := &fakeMemoryCandidateWriter{}
-	tool := MemoryWriteTool{Candidates: candidates}
-	result, err := tool.Execute(context.Background(), ToolRunContext{OwnerID: 1, RunID: 2}, json.RawMessage(`{"memory_type":"profile","title":"response style","content":"User prefers detailed answers"}`))
-	if err != nil || result == nil || result.Approval != nil || candidates.request.Content == "" {
-		t.Fatalf("expected pending proposal without direct memory approval, result=%+v candidate=%+v err=%v", result, candidates.request, err)
-	}
-}
-
-func TestMemoryWriteToolCarriesExplicitProjectScopeWithoutWorkspace(t *testing.T) {
-	candidates := &fakeMemoryCandidateWriter{}
-	tool := MemoryWriteTool{Candidates: candidates}
-	_, err := tool.Execute(context.Background(), ToolRunContext{OwnerID: 1, AgentID: 7, RunID: 2, ProjectID: 42}, json.RawMessage(`{"memory_type":"task","content":"project fact","scope":"project"}`))
-	if err != nil || candidates.request.ScopeType != memory.ScopeProject || candidates.request.SourceProjectID != 42 || candidates.request.AgentID != 7 {
-		t.Fatalf("project scope was not carried to pending candidate: request=%+v err=%v", candidates.request, err)
-	}
-}

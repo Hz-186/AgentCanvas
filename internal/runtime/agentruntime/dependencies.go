@@ -64,7 +64,6 @@ type Repositories struct {
 	MemoryReader     MemoryBatchReader
 	MemoryWriteLogs  memory.WriteLogRepository
 	MemoryRecallLogs memory.RecallLogRepository
-	MemoryCandidates memory.CandidateWriter
 	MemoryRetriever  memory.SemanticRetriever
 	MemoryFiles      memory.DurableReader
 	AdHocNotes       memory.AdHocWriter
@@ -123,7 +122,7 @@ func buildRuntimeCore(deps Deps) runtimeCore {
 		coreRepositories: coreRepositories{
 			Providers: deps.Providers, ToolPacks: deps.ToolPacks, Skills: deps.Skills, MCPServers: deps.MCPServers,
 			Retriever: deps.Retriever, MemoryRetriever: deps.MemoryRetriever, Memories: deps.Memories, MemoryReader: deps.MemoryReader,
-			MemoryLogs: deps.MemoryWriteLogs, MemoryRecallLogs: deps.MemoryRecallLogs, MemoryCandidates: deps.MemoryCandidates,
+			MemoryLogs: deps.MemoryWriteLogs, MemoryRecallLogs: deps.MemoryRecallLogs,
 			MemoryFiles: deps.MemoryFiles, AdHocNotes: deps.AdHocNotes,
 			MessageHistory: deps.MessageHistory, MessageWriter: deps.MessageWriter, Compactions: deps.Compactions, SessionSearch: deps.SessionSearch,
 			ContextIndex: deps.ContextIndex,

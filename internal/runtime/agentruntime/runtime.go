@@ -37,7 +37,6 @@ type coreRepositories struct {
 	Memories         memory.Repository
 	MemoryLogs       memory.WriteLogRepository
 	MemoryRecallLogs memory.RecallLogRepository
-	MemoryCandidates memory.CandidateWriter
 	MemoryFiles      memory.DurableReader
 	AdHocNotes       memory.AdHocWriter
 	MessageHistory   MessageHistoryReader

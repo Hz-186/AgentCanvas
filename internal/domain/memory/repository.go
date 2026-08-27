@@ -2,31 +2,6 @@ package memory
 
 import "context"
 
-type CandidateRequest struct {
-	OwnerID              int64
-	AgentID              int64
-	ConversationID       int64
-	ProjectID            int64
-	SourceConversationID int64
-	SourceProjectID      int64
-	RunID                int64
-	SourceID             string
-	MemoryID             int64
-	MemoryType           string
-	Title                string
-	Content              string
-	Action               string
-	Importance           float64
-	Evidence             []string
-	Source               string
-	ScopeType            string
-	ScopeID              int64
-}
-
-type CandidateWriter interface {
-	Suggest(ctx context.Context, request CandidateRequest) (int64, error)
-}
-
 type Commander interface {
 	Execute(ctx context.Context, request WriteRequest) (WriteResult, error)
 	Revoke(ctx context.Context, ownerID, memoryID int64, reason string) error
