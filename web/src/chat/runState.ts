@@ -228,6 +228,13 @@ export function runReducer(state: RunState, action: RunAction): RunState {
 		next.approval = incoming.data;
 		next.lifecycle = 'waiting';
 		break;
+	case 'request_user_input':
+		beginActivity(next);
+		next.segments = upsertSegment(next.segments, {
+			id: `request_user_input:${seq}`, kind: 'status',
+			text: incoming.data.reason || 'Agent 请求补充信息',
+		});
+		break;
 	case 'usage.update':
 		next.usage = incoming.data;
 		break;
