@@ -10,7 +10,7 @@ import (
 const (
 	WriteModeSuggest = "suggest"
 	// WriteModeDirect is retained only so old persisted configs decode. Direct
-	// Agent writes are retired; the Codex consolidation worker is the sole
+	// Agent writes are retired; the asynchronous consolidation worker is the sole
 	// durable-memory writer.
 	WriteModeDirect = "direct"
 )

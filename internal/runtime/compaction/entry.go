@@ -1,6 +1,5 @@
 // Package compaction holds the single context-compaction algorithm shared by
-// cross-turn (conversationcontext) and mid-run (agent) triggers, mirroring the
-// Codex single-algorithm/multi-trigger design.
+// cross-turn (conversationcontext) and mid-run (agent) triggers.
 package compaction
 
 import (

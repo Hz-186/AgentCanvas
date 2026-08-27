@@ -33,7 +33,7 @@ func (h *MemoryHandler) List(c *gin.Context) {
 		response.Error(c, http.StatusUnauthorized, agenterrors.CodeUnauthorized, agenterrors.ErrUnauthorized.Error())
 		return
 	}
-	// The file-backed Codex store is the production source of truth. This
+	// The file-backed durable memory store is the production source of truth. This
 	// endpoint remains a read-only migration/audit view over SQL and accepts
 	// provenance/status filters only; memory taxonomy and scope selectors are
 	// intentionally not part of the Agent-facing API.
@@ -105,7 +105,7 @@ func (h *MemoryHandler) decideCandidate(c *gin.Context, _ bool) {
 		return
 	}
 	// Memory proposals are no longer an effective write path. Durable memory
-	// changes are exclusively produced by the Codex consolidation worker.
+	// changes are exclusively produced by the durable-memory consolidation worker.
 	memoryWritesDisabled(c)
 }
 
@@ -150,7 +150,7 @@ func (h *MemoryHandler) Delete(c *gin.Context) {
 }
 
 func memoryWritesDisabled(c *gin.Context) {
-	response.Error(c, http.StatusForbidden, agenterrors.CodeForbidden, "durable memory writes are disabled; use the Codex consolidation pipeline")
+	response.Error(c, http.StatusForbidden, agenterrors.CodeForbidden, "durable memory writes are disabled; use the durable-memory consolidation pipeline")
 }
 
 func intQuery(c *gin.Context, name string, fallback int) int {

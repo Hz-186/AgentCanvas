@@ -23,7 +23,7 @@ queue:
   redis_group: agentcanvas-workers
   redis_consumer: worker
 
-codex_memory:
+durable_memory:
   enabled: false
   # Six hours of inactivity is the default extraction boundary.
   idle_timeout_seconds: 21600

@@ -356,7 +356,7 @@ export AGENTCANVAS_CONFIG_PATH="/absolute/path/to/config.yaml"
 - `agent_runtime`：Turn Worker、lease、自改进与 Review Model。
 - `mysql`、`redis`、`queue`、`nats`：持久化、缓存与异步任务。
 - `retrieval.backend`：全局选择 `elasticsearch` 或 `milvus`；`elasticsearch`、`milvus`、`context_index`：RAG 与统一上下文索引。
-- `codex_memory`：Codex 风格异步记忆提取与 consolidation；旧 `memory_dream`、`working_memory` 仅作迁移期兼容解析，不参与运行。
+- `durable_memory`：异步记忆提取与 consolidation（持久记忆管线）；旧 `codex_memory`、`memory_dream`、`working_memory` 仅作迁移期兼容解析，不参与运行。
 - `reflection_queue`：Reflection Outbox、JetStream、lease 与 DLQ。
 - `minio`、`ocr`：文档存储与解析。
 - `python_bridge`：侧车开关、gRPC target、令牌环境变量、超时、消息/并发限制、LangChain PDF 解析开关和解析/切片白名单。

@@ -16,14 +16,14 @@ import (
 	"agentcanvas/internal/infrastructure/llm"
 )
 
-type recordingCodexChatClient struct {
+type recordingDurableChatClient struct {
 	mu       sync.Mutex
 	content  string
 	err      error
 	requests []llm.ChatRequest
 }
 
-func (c *recordingCodexChatClient) Chat(_ context.Context, _ llm.ChatProviderConfig, request llm.ChatRequest) (*llm.ChatResponse, error) {
+func (c *recordingDurableChatClient) Chat(_ context.Context, _ llm.ChatProviderConfig, request llm.ChatRequest) (*llm.ChatResponse, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.requests = append(c.requests, request)
@@ -33,18 +33,18 @@ func (c *recordingCodexChatClient) Chat(_ context.Context, _ llm.ChatProviderCon
 	return &llm.ChatResponse{Content: c.content}, nil
 }
 
-func (*recordingCodexChatClient) StreamChat(context.Context, llm.ChatProviderConfig, llm.ChatRequest, func(llm.StreamEvent) error) error {
+func (*recordingDurableChatClient) StreamChat(context.Context, llm.ChatProviderConfig, llm.ChatRequest, func(llm.StreamEvent) error) error {
 	return nil
 }
 
-func (c *recordingCodexChatClient) calls() int {
+func (c *recordingDurableChatClient) calls() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return len(c.requests)
 }
 
-func codexTestWorker(root string, chat llm.ChatClient, jobs memory.ExtractionJobRepository, messages DreamMessageRepository) *CodexMemoryWorker {
-	return NewCodexMemoryWorker(chat, messages, jobs, nil, CodexMemoryConfig{Enabled: true, Model: "test", Root: root}, "test-worker")
+func durableTestWorker(root string, chat llm.ChatClient, jobs memory.ExtractionJobRepository, messages DreamMessageRepository) *DurableMemoryWorker {
+	return NewDurableMemoryWorker(chat, messages, jobs, nil, DurableMemoryConfig{Enabled: true, Model: "test", Root: root}, "test-worker")
 }
 
 type recordingExtractionLeaseRepo struct {
@@ -85,13 +85,13 @@ func (r *recordingExtractionLeaseRepo) Update(ctx context.Context, job *memory.E
 	return r.fakeExtractionRepo.Update(ctx, job)
 }
 
-func TestCodexHandleUsesOwnedUpdateAfterClearingLeaseFields(t *testing.T) {
+func TestDurableHandleUsesOwnedUpdateAfterClearingLeaseFields(t *testing.T) {
 	jobs := &recordingExtractionLeaseRepo{fakeExtractionRepo: &fakeExtractionRepo{jobs: map[int64]*memory.ExtractionJob{1: {
 		BaseModel: domain.BaseModel{ID: 1, OwnerID: 7}, ConversationID: 3, ThroughMessageID: 1,
-		TriggerReason: "codex", Status: string(memory.ExtractionPending), ResultJSON: []byte(`{"raw_memory":"stored","rollout_summary":"summary"}`),
+		TriggerReason: "durable", Status: string(memory.ExtractionPending), ResultJSON: []byte(`{"raw_memory":"stored","rollout_summary":"summary"}`),
 	}}}}
-	worker := NewCodexMemoryWorker(nil, &fakeDreamMessages{}, jobs, nil, CodexMemoryConfig{Enabled: true, Root: t.TempDir()}, "test-worker")
-	if err := worker.Handle(context.Background(), CodexMemoryPayload{JobID: 1, OwnerID: 7, ConversationID: 3}); err != nil {
+	worker := NewDurableMemoryWorker(nil, &fakeDreamMessages{}, jobs, nil, DurableMemoryConfig{Enabled: true, Root: t.TempDir()}, "test-worker")
+	if err := worker.Handle(context.Background(), DurableMemoryPayload{JobID: 1, OwnerID: 7, ConversationID: 3}); err != nil {
 		t.Fatal(err)
 	}
 	if jobs.ownedUpdates != 1 || jobs.plainUpdates != 0 {
@@ -99,10 +99,10 @@ func TestCodexHandleUsesOwnedUpdateAfterClearingLeaseFields(t *testing.T) {
 	}
 }
 
-func TestCodexConsolidateEmptyInputInitializesWithoutModel(t *testing.T) {
+func TestDurableConsolidateEmptyInputInitializesWithoutModel(t *testing.T) {
 	root := t.TempDir()
-	chat := &recordingCodexChatClient{content: `{"memory":"unexpected","summary":"unexpected"}`}
-	worker := codexTestWorker(root, chat, &fakeExtractionRepo{}, &fakeDreamMessages{})
+	chat := &recordingDurableChatClient{content: `{"memory":"unexpected","summary":"unexpected"}`}
+	worker := durableTestWorker(root, chat, &fakeExtractionRepo{}, &fakeDreamMessages{})
 	if err := worker.consolidate(context.Background(), 7); err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +117,7 @@ func TestCodexConsolidateEmptyInputInitializesWithoutModel(t *testing.T) {
 	}
 }
 
-func TestCodexConsolidateConsumesAdHocNotesExactlyOnce(t *testing.T) {
+func TestDurableConsolidateConsumesAdHocNotesExactlyOnce(t *testing.T) {
 	root := t.TempDir()
 	ownerRoot := filepath.Join(root, "owner-7", "extensions", "ad_hoc", "notes")
 	if err := os.MkdirAll(ownerRoot, 0o700); err != nil {
@@ -127,8 +127,8 @@ func TestCodexConsolidateConsumesAdHocNotesExactlyOnce(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(ownerRoot, "20260101T000000.000000000Z-note.md"), []byte(note), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	chat := &recordingCodexChatClient{content: `{"memory":"# Memory\n\nconcise Chinese replies","summary":"concise replies"}`}
-	worker := codexTestWorker(root, chat, &fakeExtractionRepo{}, &fakeDreamMessages{})
+	chat := &recordingDurableChatClient{content: `{"memory":"# Memory\n\nconcise Chinese replies","summary":"concise replies"}`}
+	worker := durableTestWorker(root, chat, &fakeExtractionRepo{}, &fakeDreamMessages{})
 	if err := worker.consolidate(context.Background(), 7); err != nil {
 		t.Fatal(err)
 	}
@@ -143,7 +143,7 @@ func TestCodexConsolidateConsumesAdHocNotesExactlyOnce(t *testing.T) {
 	}
 }
 
-func TestCodexConsolidateFailurePreservesPreviousBaseline(t *testing.T) {
+func TestDurableConsolidateFailurePreservesPreviousBaseline(t *testing.T) {
 	root := t.TempDir()
 	ownerRoot := filepath.Join(root, "owner-7")
 	if err := os.MkdirAll(ownerRoot, 0o700); err != nil {
@@ -156,10 +156,10 @@ func TestCodexConsolidateFailurePreservesPreviousBaseline(t *testing.T) {
 		t.Fatal(err)
 	}
 	jobs := &fakeExtractionRepo{jobs: map[int64]*memory.ExtractionJob{1: {
-		BaseModel: domain.BaseModel{ID: 1, OwnerID: 7}, ConversationID: 3, TriggerReason: "codex", Status: string(memory.ExtractionCompleted),
+		BaseModel: domain.BaseModel{ID: 1, OwnerID: 7}, ConversationID: 3, TriggerReason: "durable", Status: string(memory.ExtractionCompleted),
 		ResultJSON: []byte(`{"raw_memory":"new fact","rollout_summary":"new rollout"}`),
 	}}}
-	worker := codexTestWorker(root, &recordingCodexChatClient{err: errors.New("model unavailable")}, jobs, &fakeDreamMessages{})
+	worker := durableTestWorker(root, &recordingDurableChatClient{err: errors.New("model unavailable")}, jobs, &fakeDreamMessages{})
 	if err := worker.consolidate(context.Background(), 7); err == nil {
 		t.Fatal("expected consolidation error")
 	}
@@ -170,15 +170,15 @@ func TestCodexConsolidateFailurePreservesPreviousBaseline(t *testing.T) {
 	}
 }
 
-func TestCodexHandleRetryUsesStoredStageOneResult(t *testing.T) {
+func TestDurableHandleRetryUsesStoredStageOneResult(t *testing.T) {
 	root := t.TempDir()
-	chat := &recordingCodexChatClient{err: errors.New("phase2 unavailable")}
+	chat := &recordingDurableChatClient{err: errors.New("phase2 unavailable")}
 	jobs := &fakeExtractionRepo{jobs: map[int64]*memory.ExtractionJob{1: {
-		BaseModel: domain.BaseModel{ID: 1, OwnerID: 7}, ConversationID: 3, ThroughMessageID: 1, TriggerReason: "codex", Status: string(memory.ExtractionPending),
+		BaseModel: domain.BaseModel{ID: 1, OwnerID: 7}, ConversationID: 3, ThroughMessageID: 1, TriggerReason: "durable", Status: string(memory.ExtractionPending),
 		ResultJSON: []byte(`{"raw_memory":"already extracted","rollout_summary":"summary"}`),
 	}}}
-	worker := codexTestWorker(root, chat, jobs, &fakeDreamMessages{items: []conversation.Message{{ImmutableModel: domain.ImmutableModel{ID: 1}, Content: "must not re-extract"}}})
-	if err := worker.Handle(context.Background(), CodexMemoryPayload{JobID: 1, OwnerID: 7, ConversationID: 3}); err == nil {
+	worker := durableTestWorker(root, chat, jobs, &fakeDreamMessages{items: []conversation.Message{{ImmutableModel: domain.ImmutableModel{ID: 1}, Content: "must not re-extract"}}})
+	if err := worker.Handle(context.Background(), DurableMemoryPayload{JobID: 1, OwnerID: 7, ConversationID: 3}); err == nil {
 		t.Fatal("expected phase2 error")
 	}
 	job := jobs.jobs[1]
@@ -190,9 +190,9 @@ func TestCodexHandleRetryUsesStoredStageOneResult(t *testing.T) {
 	}
 }
 
-func TestCodexPhase2FallbackLockRejectsConcurrentWorker(t *testing.T) {
-	first := &CodexMemoryWorker{}
-	second := &CodexMemoryWorker{}
+func TestDurablePhase2FallbackLockRejectsConcurrentWorker(t *testing.T) {
+	first := &DurableMemoryWorker{}
+	second := &DurableMemoryWorker{}
 	unlock, err := first.phase2Lock(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -203,11 +203,11 @@ func TestCodexPhase2FallbackLockRejectsConcurrentWorker(t *testing.T) {
 	}
 }
 
-func TestCodexPhase2RetryDelayBacksOff(t *testing.T) {
-	if got, want := codexPhase2RetryDelay(1), time.Minute; got != want {
+func TestDurablePhase2RetryDelayBacksOff(t *testing.T) {
+	if got, want := durablePhase2RetryDelay(1), time.Minute; got != want {
 		t.Fatalf("first retry delay=%s want=%s", got, want)
 	}
-	if got, want := codexPhase2RetryDelay(4), 8*time.Minute; got != want {
+	if got, want := durablePhase2RetryDelay(4), 8*time.Minute; got != want {
 		t.Fatalf("fourth retry delay=%s want=%s", got, want)
 	}
 }

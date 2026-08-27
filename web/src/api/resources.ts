@@ -203,7 +203,7 @@ export const settingsApi = {
     list: (limit = 30, offset = 0) => api.get<AuditLog[]>('/audit-logs', { limit, offset }),
   },
 	memories: {
-	  // Read-only audit view. The Codex consolidation worker owns all writes.
+	  // Read-only audit view. The Durable consolidation worker owns all writes.
 	  list: (params?: { status?: string; source?: string; source_conversation_id?: number; source_project_id?: number }) => api.get<Memory[]>('/memories', params),
 	  listRecallLogs: (memoryId?: number) => api.get<MemoryRecallLog[]>('/memory-recall-logs', memoryId ? { memory_id: memoryId } : undefined),
 	  setRecallFeedback: (id: number, feedback: MemoryRecallLog['feedback']) => api.post<{ success: boolean }>(`/memory-recall-logs/${id}/feedback`, { feedback }),

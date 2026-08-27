@@ -8,15 +8,15 @@ import (
 	"testing"
 )
 
-func TestCodexFileStoreAdHocNoteIsIdempotentAcrossInstances(t *testing.T) {
+func TestDurableFileStoreAdHocNoteIsIdempotentAcrossInstances(t *testing.T) {
 	root := t.TempDir()
-	stores := []*CodexFileStore{NewCodexFileStore(root), NewCodexFileStore(root)}
+	stores := []*DurableFileStore{NewDurableFileStore(root), NewDurableFileStore(root)}
 	paths := make([]string, len(stores))
 	errs := make([]error, len(stores))
 	var wg sync.WaitGroup
 	for i, store := range stores {
 		wg.Add(1)
-		go func(index int, fileStore *CodexFileStore) {
+		go func(index int, fileStore *DurableFileStore) {
 			defer wg.Done()
 			paths[index], errs[index] = fileStore.AppendAdHocNote(context.Background(), 7, 3, 42, "请记住我偏好简洁回答", "已记录")
 		}(i, store)
@@ -45,7 +45,7 @@ func TestCodexFileStoreAdHocNoteIsIdempotentAcrossInstances(t *testing.T) {
 	}
 }
 
-func TestCodexFileStoreResumesReservedAdHocClaim(t *testing.T) {
+func TestDurableFileStoreResumesReservedAdHocClaim(t *testing.T) {
 	root := t.TempDir()
 	claims := filepath.Join(root, "owner-7", "extensions", "ad_hoc", "notes", ".claims")
 	if err := os.MkdirAll(claims, 0o700); err != nil {
@@ -56,7 +56,7 @@ func TestCodexFileStoreResumesReservedAdHocClaim(t *testing.T) {
 	if err := os.WriteFile(claimPath, []byte(reserved+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	path, err := NewCodexFileStore(root).AppendAdHocNote(context.Background(), 7, 3, 42, "请记住这个偏好", "已记录")
+	path, err := NewDurableFileStore(root).AppendAdHocNote(context.Background(), 7, 3, 42, "请记住这个偏好", "已记录")
 	if err != nil {
 		t.Fatal(err)
 	}

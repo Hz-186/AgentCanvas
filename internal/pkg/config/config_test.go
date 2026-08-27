@@ -14,8 +14,8 @@ func TestQueueConfigDefaults(t *testing.T) {
 	if cfg.ResourceCache.KeyPrefix != "agentcanvas" || cfg.ResourceCache.TTLSeconds != 60 {
 		t.Fatalf("unexpected resource cache defaults: %+v", cfg.ResourceCache)
 	}
-	if cfg.CodexMemory.IdleTimeoutSeconds != 6*60*60 || cfg.CodexMemory.TriggerEveryNTurns != 0 {
-		t.Fatalf("unexpected Codex memory defaults: %+v", cfg.CodexMemory)
+	if cfg.DurableMemory.IdleTimeoutSeconds != 6*60*60 || cfg.DurableMemory.TriggerEveryNTurns != 0 {
+		t.Fatalf("unexpected durable memory defaults: %+v", cfg.DurableMemory)
 	}
 	if cfg.WorkingMemory.TTLSeconds != 0 || cfg.WorkingMemory.LockTTLMS != 0 || cfg.WorkingMemory.LockWaitMS != 0 {
 		t.Fatalf("deprecated working memory config must remain inert: %+v", cfg.WorkingMemory)
@@ -266,42 +266,74 @@ func TestProductionConfigRejectsPlaceholderSecretsAndWildcardCORS(t *testing.T) 
 	}
 }
 
-func TestCodexMemoryRequiresUsableProviderConfiguration(t *testing.T) {
+func TestDurableMemoryRequiresUsableProviderConfiguration(t *testing.T) {
 	cfg := Config{
-		MySQL:       MySQLConfig{DSN: "dsn"},
-		Security:    SecurityConfig{JWTSecret: "jwt", RefreshTokenPepper: "pepper", SecretEncryptKey: "secret"},
-		CodexMemory: CodexMemoryConfig{Enabled: true},
+		MySQL:         MySQLConfig{DSN: "dsn"},
+		Security:      SecurityConfig{JWTSecret: "jwt", RefreshTokenPepper: "pepper", SecretEncryptKey: "secret"},
+		DurableMemory: DurableMemoryConfig{Enabled: true},
 	}
 	cfg.setDefaults()
 	if err := cfg.Validate(); err == nil {
-		t.Fatal("enabled Codex memory without providers was accepted")
+		t.Fatal("enabled durable memory without providers was accepted")
 	}
 
-	cfg.CodexMemory = CodexMemoryConfig{
+	cfg.DurableMemory = DurableMemoryConfig{
 		Enabled: true, LLMProviderType: "openai", LLMBaseURL: "https://api.example/v1", LLMAPIKey: "key", LLMModel: "chat",
 		EmbeddingProviderType: "openai", EmbeddingBaseURL: "https://api.example/v1", EmbeddingModel: "embedding",
 	}
 	if err := cfg.Validate(); err != nil {
-		t.Fatalf("usable Codex memory config rejected: %v", err)
+		t.Fatalf("usable durable memory config rejected: %v", err)
 	}
 }
 
 func TestLegacyMemoryDreamConfigMigratesOnce(t *testing.T) {
 	cfg := Config{MemoryDream: MemoryDreamConfig{Enabled: true, LLMProviderType: "openai", LLMBaseURL: "https://api.example/v1", LLMAPIKey: "key", LLMModel: "chat"}}
 	cfg.setDefaults()
-	if !cfg.CodexMemory.Enabled || cfg.EffectiveCodexMemory().LLMModel != "chat" {
+	if !cfg.DurableMemory.Enabled || cfg.EffectiveDurableMemory().LLMModel != "chat" {
 		t.Fatalf("legacy memory_dream was not migrated: %+v", cfg)
 	}
 }
 
-func TestCodexMemoryDoesNotRequireEmbeddingProvider(t *testing.T) {
+func TestLegacyCodexMemoryConfigMigratesOnce(t *testing.T) {
+	cfg := Config{CodexMemoryLegacy: DurableMemoryConfig{Enabled: true, LLMProviderType: "openai", LLMBaseURL: "https://api.example/v1", LLMAPIKey: "key", LLMModel: "chat"}}
+	cfg.setDefaults()
+	if !cfg.DurableMemory.Enabled || cfg.EffectiveDurableMemory().LLMModel != "chat" {
+		t.Fatalf("legacy codex_memory was not migrated: %+v", cfg)
+	}
+}
+
+func TestCodexMemoryLegacyWinsOverMemoryDream(t *testing.T) {
 	cfg := Config{
-		MySQL:       MySQLConfig{DSN: "dsn"},
-		Security:    SecurityConfig{JWTSecret: "jwt", RefreshTokenPepper: "pepper", SecretEncryptKey: "secret"},
-		CodexMemory: CodexMemoryConfig{Enabled: true, LLMProviderType: "openai", LLMBaseURL: "https://api.example/v1", LLMAPIKey: "key", LLMModel: "chat"},
+		CodexMemoryLegacy: DurableMemoryConfig{Enabled: true, LLMModel: "legacy"},
+		MemoryDream:       MemoryDreamConfig{Enabled: true, LLMModel: "dream"},
+	}
+	cfg.setDefaults()
+	if cfg.DurableMemory.LLMModel != "legacy" {
+		t.Fatalf("codex_memory alias did not outrank memory_dream: %+v", cfg)
+	}
+}
+
+func TestExplicitDurableMemoryWinsOverLegacyAliases(t *testing.T) {
+	cfg := Config{
+		durableMemoryConfigured: true,
+		DurableMemory:           DurableMemoryConfig{},
+		CodexMemoryLegacy:       DurableMemoryConfig{Enabled: true, LLMModel: "legacy"},
+		MemoryDream:             MemoryDreamConfig{Enabled: true, LLMModel: "dream"},
+	}
+	cfg.setDefaults()
+	if cfg.DurableMemory.Enabled || cfg.DurableMemory.LLMModel != "" {
+		t.Fatalf("explicit durable_memory section was overridden by aliases: %+v", cfg)
+	}
+}
+
+func TestDurableMemoryDoesNotRequireEmbeddingProvider(t *testing.T) {
+	cfg := Config{
+		MySQL:         MySQLConfig{DSN: "dsn"},
+		Security:      SecurityConfig{JWTSecret: "jwt", RefreshTokenPepper: "pepper", SecretEncryptKey: "secret"},
+		DurableMemory: DurableMemoryConfig{Enabled: true, LLMProviderType: "openai", LLMBaseURL: "https://api.example/v1", LLMAPIKey: "key", LLMModel: "chat"},
 	}
 	cfg.setDefaults()
 	if err := cfg.Validate(); err != nil {
-		t.Fatalf("Codex memory config unexpectedly requires embedding: %v", err)
+		t.Fatalf("durable memory config unexpectedly requires embedding: %v", err)
 	}
 }
