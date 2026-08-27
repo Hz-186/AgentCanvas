@@ -27,6 +27,21 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+type DreamMessageRepository interface {
+	ListActiveByConversation(ctx context.Context, ownerID, conversationID int64) ([]conversation.Message, error)
+	ListActiveThrough(ctx context.Context, ownerID, conversationID, throughMessageID int64) ([]conversation.Message, error)
+}
+
+// Optional range readers keep the old message repository contract working while
+// allowing Dream to avoid loading the whole conversation for every extraction.
+type dreamMessageBoundaryReader interface {
+	LatestActiveMessageID(ctx context.Context, ownerID, conversationID int64) (int64, error)
+}
+
+type dreamMessageRangeReader interface {
+	ListActiveAfterThrough(ctx context.Context, ownerID, conversationID, afterMessageID, throughMessageID int64) ([]conversation.Message, error)
+}
+
 // DurableMemoryJobType is the only production memory-generation job. Candidate
 // proposals and retention-tier schedulers are deliberately not part of this
 // pipeline: a rollout is extracted once, then one consolidation writer owns

@@ -16,6 +16,114 @@ import (
 	"agentcanvas/internal/infrastructure/llm"
 )
 
+var errNotFound = errors.New("record not found")
+
+type fakeExtractionRepo struct {
+	jobs    map[int64]*memory.ExtractionJob
+	nextID  int64
+	created []*memory.ExtractionJob
+}
+
+func (r *fakeExtractionRepo) Create(ctx context.Context, job *memory.ExtractionJob) error {
+	r.nextID++
+	job.ID = r.nextID
+	if r.jobs == nil {
+		r.jobs = map[int64]*memory.ExtractionJob{}
+	}
+	clone := *job
+	r.jobs[job.ID] = &clone
+	r.created = append(r.created, &clone)
+	return nil
+}
+
+func (r *fakeExtractionRepo) Update(ctx context.Context, job *memory.ExtractionJob) error {
+	if r.jobs == nil {
+		r.jobs = map[int64]*memory.ExtractionJob{}
+	}
+	clone := *job
+	r.jobs[job.ID] = &clone
+	return nil
+}
+
+func (r *fakeExtractionRepo) FindByID(ctx context.Context, ownerID, id int64) (*memory.ExtractionJob, error) {
+	if r.jobs == nil {
+		return nil, errNotFound
+	}
+	job, ok := r.jobs[id]
+	if !ok {
+		return nil, errNotFound
+	}
+	clone := *job
+	return &clone, nil
+}
+
+func (r *fakeExtractionRepo) FindByIdempotencyKey(ctx context.Context, ownerID int64, key string) (*memory.ExtractionJob, error) {
+	for _, job := range r.jobs {
+		if job.OwnerID == ownerID && job.IdempotencyKey == key {
+			clone := *job
+			return &clone, nil
+		}
+	}
+	return nil, errNotFound
+}
+
+func (r *fakeExtractionRepo) ListByStatus(ctx context.Context, ownerID int64, status string, limit int) ([]memory.ExtractionJob, error) {
+	var result []memory.ExtractionJob
+	for _, j := range r.jobs {
+		if j.OwnerID == ownerID && j.Status == status {
+			result = append(result, *j)
+		}
+	}
+	return result, nil
+}
+
+func (r *fakeExtractionRepo) ListPending(ctx context.Context, limit int) ([]memory.ExtractionJob, error) {
+	var result []memory.ExtractionJob
+	for _, j := range r.jobs {
+		if j.Status == string(memory.ExtractionPending) {
+			result = append(result, *j)
+		}
+	}
+	return result, nil
+}
+
+var _ memory.ExtractionJobRepository = (*fakeExtractionRepo)(nil)
+
+type fakeDreamMessages struct {
+	items []conversation.Message
+}
+
+func (f *fakeDreamMessages) ListActiveByConversation(context.Context, int64, int64) ([]conversation.Message, error) {
+	return append([]conversation.Message(nil), f.items...), nil
+}
+
+func (f *fakeDreamMessages) ListActiveThrough(_ context.Context, _, _, throughMessageID int64) ([]conversation.Message, error) {
+	items := make([]conversation.Message, 0, len(f.items))
+	for _, item := range f.items {
+		if item.ID <= throughMessageID {
+			items = append(items, item)
+		}
+	}
+	return items, nil
+}
+
+func (f *fakeDreamMessages) LatestActiveMessageID(_ context.Context, _, _ int64) (int64, error) {
+	if len(f.items) == 0 {
+		return 0, nil
+	}
+	return f.items[len(f.items)-1].ID, nil
+}
+
+func (f *fakeDreamMessages) ListActiveAfterThrough(_ context.Context, _, _, afterMessageID, throughMessageID int64) ([]conversation.Message, error) {
+	items := make([]conversation.Message, 0, len(f.items))
+	for _, item := range f.items {
+		if item.ID > afterMessageID && item.ID <= throughMessageID {
+			items = append(items, item)
+		}
+	}
+	return items, nil
+}
+
 type recordingDurableChatClient struct {
 	mu       sync.Mutex
 	content  string
