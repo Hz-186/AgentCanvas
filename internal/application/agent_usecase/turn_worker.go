@@ -132,7 +132,7 @@ func (w turnWorker) execute(ctx context.Context, turn *agentdomain.Turn) {
 	}
 	result, execErr := s.runtime.Execute(ctx,
 		agentruntime.RunRequest{
-			RunIdentity:         agentruntime.RunIdentity{OwnerID: turn.OwnerID, AgentID: turn.AgentID, RunID: run.ID, UserMessageID: turn.UserMessageID},
+			RunIdentity:         agentruntime.RunIdentity{OwnerID: turn.OwnerID, AgentID: turn.AgentID, RunID: run.ID, UserMessageID: turn.UserMessageID, ParentRunID: run.ParentRunID},
 			ConversationContext: agentruntime.ConversationContext{ConversationID: &turn.ConversationID, ProjectID: projectID},
 			ExecutionTask:       agentruntime.ExecutionTask{Task: task, ManualCompaction: manualCompaction},
 			RuntimeResources:    agentruntime.RuntimeResources{Definition: definition},
@@ -649,6 +649,7 @@ func (s *Service) completeTurn(ctx context.Context, turn *agentdomain.Turn, run 
 		Content:        content,
 		RunID:          &run.ID,
 		TokenCount:     totalTokens,
+		ContentType:    conversation.ContentTypeText,
 	}
 	manualCompaction := false
 	if manualInput, manualErr := decodeInputJSON(run.InputJSON); manualErr == nil {
@@ -713,10 +714,11 @@ func (s *Service) accountGoalRun(ctx context.Context, run *agentdomain.Run, resu
 	tokens := goalTokenDelta(usage)
 	seconds := int64(0)
 	latencyMS, _ := result.Output["latency_ms"].(int)
+	if latencyMS <= 0 {
+		latencyMS = run.LatencyMS
+	}
 	if latencyMS > 0 {
 		seconds = int64(latencyMS / 1000)
-	} else if !run.StartedAt.IsZero() {
-		seconds = int64(time.Since(run.StartedAt).Seconds())
 	}
 	if seconds < 0 {
 		seconds = 0

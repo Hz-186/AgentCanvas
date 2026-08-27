@@ -23,6 +23,11 @@ queue:
   redis_group: agentcanvas-workers
   redis_consumer: worker
 
+codex_memory:
+  enabled: false
+  # Six hours of inactivity is the default extraction boundary.
+  idle_timeout_seconds: 21600
+
 nats:
   url: nats://localhost:4222
   stream: AGENTCANVAS_INGESTION
@@ -63,6 +68,8 @@ tools:
   update_plan:
     enabled: true
   request_user_input:
+    enabled: false
+  default_mode_request_user_input:
     enabled: false
 
 goals:

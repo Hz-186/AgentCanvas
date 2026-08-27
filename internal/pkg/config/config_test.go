@@ -14,11 +14,11 @@ func TestQueueConfigDefaults(t *testing.T) {
 	if cfg.ResourceCache.KeyPrefix != "agentcanvas" || cfg.ResourceCache.TTLSeconds != 60 {
 		t.Fatalf("unexpected resource cache defaults: %+v", cfg.ResourceCache)
 	}
-	if cfg.MemoryDream.TriggerEveryNTurns != 5 || cfg.MemoryDream.IdleTimeoutSeconds != 180 {
-		t.Fatalf("unexpected memory dream defaults: %+v", cfg.MemoryDream)
+	if cfg.CodexMemory.IdleTimeoutSeconds != 6*60*60 || cfg.CodexMemory.TriggerEveryNTurns != 0 {
+		t.Fatalf("unexpected Codex memory defaults: %+v", cfg.CodexMemory)
 	}
-	if cfg.WorkingMemory.TTLSeconds != 86400 || cfg.WorkingMemory.LockTTLMS != 5000 || cfg.WorkingMemory.LockWaitMS != 500 {
-		t.Fatalf("unexpected working memory defaults: %+v", cfg.WorkingMemory)
+	if cfg.WorkingMemory.TTLSeconds != 0 || cfg.WorkingMemory.LockTTLMS != 0 || cfg.WorkingMemory.LockWaitMS != 0 {
+		t.Fatalf("deprecated working memory config must remain inert: %+v", cfg.WorkingMemory)
 	}
 	if cfg.NATS.URL == "" || cfg.NATS.Stream == "" || cfg.NATS.Subject == "" || cfg.NATS.Durable == "" || cfg.NATS.AckWaitSeconds == 0 {
 		t.Fatalf("unexpected nats defaults: %+v", cfg.NATS)
@@ -266,22 +266,42 @@ func TestProductionConfigRejectsPlaceholderSecretsAndWildcardCORS(t *testing.T) 
 	}
 }
 
-func TestMemoryDreamRequiresUsableProviderConfiguration(t *testing.T) {
+func TestCodexMemoryRequiresUsableProviderConfiguration(t *testing.T) {
 	cfg := Config{
 		MySQL:       MySQLConfig{DSN: "dsn"},
 		Security:    SecurityConfig{JWTSecret: "jwt", RefreshTokenPepper: "pepper", SecretEncryptKey: "secret"},
-		MemoryDream: MemoryDreamConfig{Enabled: true},
+		CodexMemory: CodexMemoryConfig{Enabled: true},
 	}
 	cfg.setDefaults()
 	if err := cfg.Validate(); err == nil {
-		t.Fatal("enabled memory dream without providers was accepted")
+		t.Fatal("enabled Codex memory without providers was accepted")
 	}
 
-	cfg.MemoryDream = MemoryDreamConfig{
+	cfg.CodexMemory = CodexMemoryConfig{
 		Enabled: true, LLMProviderType: "openai", LLMBaseURL: "https://api.example/v1", LLMAPIKey: "key", LLMModel: "chat",
 		EmbeddingProviderType: "openai", EmbeddingBaseURL: "https://api.example/v1", EmbeddingModel: "embedding",
 	}
 	if err := cfg.Validate(); err != nil {
-		t.Fatalf("usable memory dream config rejected: %v", err)
+		t.Fatalf("usable Codex memory config rejected: %v", err)
+	}
+}
+
+func TestLegacyMemoryDreamConfigMigratesOnce(t *testing.T) {
+	cfg := Config{MemoryDream: MemoryDreamConfig{Enabled: true, LLMProviderType: "openai", LLMBaseURL: "https://api.example/v1", LLMAPIKey: "key", LLMModel: "chat"}}
+	cfg.setDefaults()
+	if !cfg.CodexMemory.Enabled || cfg.EffectiveCodexMemory().LLMModel != "chat" {
+		t.Fatalf("legacy memory_dream was not migrated: %+v", cfg)
+	}
+}
+
+func TestCodexMemoryDoesNotRequireEmbeddingProvider(t *testing.T) {
+	cfg := Config{
+		MySQL:       MySQLConfig{DSN: "dsn"},
+		Security:    SecurityConfig{JWTSecret: "jwt", RefreshTokenPepper: "pepper", SecretEncryptKey: "secret"},
+		CodexMemory: CodexMemoryConfig{Enabled: true, LLMProviderType: "openai", LLMBaseURL: "https://api.example/v1", LLMAPIKey: "key", LLMModel: "chat"},
+	}
+	cfg.setDefaults()
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Codex memory config unexpectedly requires embedding: %v", err)
 	}
 }

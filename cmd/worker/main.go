@@ -28,7 +28,6 @@ import (
 	pythonbridgeinfra "agentcanvas/internal/infrastructure/pythonbridge"
 	"agentcanvas/internal/infrastructure/queue"
 	redisinfra "agentcanvas/internal/infrastructure/redis"
-	"agentcanvas/internal/infrastructure/vectorstore"
 	"agentcanvas/internal/pkg/config"
 	"agentcanvas/internal/pkg/logger"
 )
@@ -95,16 +94,12 @@ func main() {
 		retryingInvalidator.Start(ctx)
 		resourceInvalidator = retryingInvalidator
 	}
-	memoryCache := redisinfra.NewMemoryCache(infraDeps.Redis)
 	knowledgeRepo := cacheinfra.NewKnowledgeRepository(mysqlinfra.NewKnowledgeBaseRepository(db), resourceInvalidator)
 	documentRepo := mysqlinfra.NewDocumentRepository(db)
 	chunkRepo := mysqlinfra.NewChunkRepository(db)
 	ingestionJobRepo := mysqlinfra.NewIngestionJobRepository(db)
 	providerRepo := mysqlinfra.NewProviderRepository(db)
-	memoryRepo := cacheinfra.NewMemoryRepository(mysqlinfra.NewMemoryRepository(db), resourceInvalidator, memoryCache)
-	memoryLogRepo := mysqlinfra.NewMemoryWriteLogRepository(db)
 	messageRepo := mysqlinfra.NewMessageRepository(db)
-	conversationRepo := mysqlinfra.NewConversationRepository(db)
 	fileStorage := infraDeps.FileStorage
 	secretBox := infraDeps.SecretBox
 	var ocrClient parserinfra.OCRClient
@@ -227,24 +222,17 @@ func main() {
 		// repository once instead of wrapping the same row as a transport job.
 		jobQueue = nil
 	}
-	var archivalVecStore vectorstore.Store
-	if cfg.Retrieval.Backend == "milvus" {
-		archivalVecStore = vectorstore.NewMilvusStore(cfg.Milvus.Address, cfg.Milvus.Token, vectorstore.HNSWConfig{M: cfg.Milvus.M, EFConstruction: cfg.Milvus.EFConstruction, EFSearch: cfg.Milvus.EFSearch, MetricType: cfg.Milvus.MetricType})
-	} else {
-		archivalVecStore = vectorstore.NewElasticsearchStore(infraDeps.ElasticsearchClient)
-	}
-
 	hostname, _ := os.Hostname()
 	workerID := fmt.Sprintf("%s-%d", hostname, os.Getpid())
 	extractionJobRepo := mysqlinfra.NewExtractionJobRepository(db)
-	dreamWorker := memoryusecase.NewDreamWorker(baseChatClient(), llm.NewOpenAICompatibleEmbeddingClient(), memoryRepo, memoryLogRepo, messageRepo, archivalVecStore, infraDeps.Redis, memoryusecase.NewDreamConfig(cfg.MemoryDream), workerID, extractionJobRepo)
-	dreamWorker.ConfigureConversations(conversationRepo)
-	memoryCandidates := memoryusecase.NewCandidateService(mysqlinfra.NewAgentImprovementRepository(db))
-	go memoryusecase.NewScheduler(memoryRepo, infraDeps.Redis, time.Hour, appLogger).Run(ctx)
-	dreamWorker.ConfigureCandidates(memoryCandidates)
-	extractionCompatibility := memoryusecase.NewExtractionService(memoryRepo, extractionJobRepo, messageRepo)
-	extractionCompatibility.ConfigureConversations(conversationRepo)
-	extractionCompatibility.ConfigureCandidates(memoryCandidates)
+	codexMemoryWorker := memoryusecase.NewCodexMemoryWorker(
+		baseChatClient(),
+		messageRepo,
+		extractionJobRepo,
+		infraDeps.Redis,
+		memoryusecase.NewCodexMemoryConfig(cfg.EffectiveCodexMemory()),
+		workerID,
+	)
 	reflectionRepo := mysqlinfra.NewReflectionRepository(db)
 	reflectionJobRepo := mysqlinfra.NewReflectionJobRepository(db)
 	reflectionRecallRepo := mysqlinfra.NewReflectionRecallLogRepository(db)
@@ -293,7 +281,7 @@ func main() {
 		var processed bool
 		var err error
 		if jobQueue != nil {
-			processed, err = processNextJob(ctx, jobQueue, workerID, service, dreamWorker)
+			processed, err = processNextJob(ctx, jobQueue, workerID, service, codexMemoryWorker)
 			if !processed && err == nil {
 				processed, err = service.ProcessNext(ctx, workerID)
 			}
@@ -306,8 +294,8 @@ func main() {
 		if processed {
 			continue
 		}
-		if drained, drainErr := extractionCompatibility.ProcessNextDream(ctx, dreamWorker); drainErr != nil {
-			appLogger.Error("drain legacy memory extraction job failed", "error", drainErr)
+		if drained, drainErr := codexMemoryWorker.ProcessNext(ctx); drainErr != nil {
+			appLogger.Error("process Codex memory job failed", "error", drainErr)
 		} else if drained {
 			continue
 		}
@@ -343,25 +331,29 @@ func baseChatClient() llm.ChatClient {
 	return llm.NewOpenAICompatibleChatClient()
 }
 
-func processNextJob(ctx context.Context, jobQueue queue.JobQueue, workerID string, ingestion *ingestionusecase.Service, dreamWorker *memoryusecase.DreamWorker) (bool, error) {
+func processNextJob(ctx context.Context, jobQueue queue.JobQueue, workerID string, ingestion *ingestionusecase.Service, codexMemoryWorker *memoryusecase.CodexMemoryWorker) (bool, error) {
 	claimed, err := jobQueue.Claim(ctx, queue.ClaimOptions{WorkerID: workerID, Limit: 1})
 	if err != nil || len(claimed) == 0 {
 		return false, err
 	}
 	job := claimed[0]
 	switch job.Type {
-	case memoryusecase.DreamJobType:
-		payload := memoryusecase.DreamPayload{JobID: payloadInt64(job.Payload, "job_id"), OwnerID: payloadInt64(job.Payload, "owner_id"), ConversationID: payloadInt64(job.Payload, "conversation_id")}
-		if err := dreamWorker.HandleDreamJob(ctx, payload); err != nil {
+	case memoryusecase.CodexMemoryJobType:
+		payload := memoryusecase.CodexMemoryPayload{JobID: payloadInt64(job.Payload, "job_id"), OwnerID: payloadInt64(job.Payload, "owner_id"), ConversationID: payloadInt64(job.Payload, "conversation_id")}
+		if err := codexMemoryWorker.Handle(ctx, payload); err != nil {
 			attemptCount := job.AttemptCount
 			if attemptCount < 1 {
 				attemptCount = 1
 			}
 			if nackErr := jobQueue.Nack(ctx, job.ID, time.Now().Add(time.Duration(attemptCount)*time.Minute)); nackErr != nil {
-				return true, fmt.Errorf("dream job failed: %v; nack: %w", err, nackErr)
+				return true, fmt.Errorf("Codex memory job failed: %v; nack: %w", err, nackErr)
 			}
 			return true, err
 		}
+		return true, jobQueue.Ack(ctx, job.ID)
+	case memoryusecase.DreamJobType:
+		// Drain legacy transport jobs without routing them through the retired
+		// Dream writer. New jobs are emitted only as memory:codex.
 		return true, jobQueue.Ack(ctx, job.ID)
 	default:
 		processed, err := ingestion.ProcessNextFromQueue(ctx, singleJobQueue{jobQueue: jobQueue, claimed: job}, workerID)

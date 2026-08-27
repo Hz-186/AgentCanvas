@@ -10,7 +10,6 @@ import (
 
 	"agentcanvas/internal/domain/agent"
 	"agentcanvas/internal/domain/conversation"
-	"agentcanvas/internal/domain/memory"
 	runtimeagent "agentcanvas/internal/runtime/agent"
 	"agentcanvas/internal/runtime/agentruntime"
 )
@@ -24,15 +23,12 @@ func TestImprovementProposalSecurityRejectsInjectionAndSecrets(t *testing.T) {
 	}
 }
 
-func TestNormalizeImprovementProposalsPreservesEvidenceAndAuditHash(t *testing.T) {
+func TestNormalizeImprovementProposalsDropsMemory(t *testing.T) {
 	service := &ImprovementService{}
 	review := &agent.ImprovementReview{BaseModel: domain.BaseModel{ID: 2, OwnerID: 3}, AgentID: 4, TurnID: 5, RunID: 6}
 	items := service.normalizeProposals(review, []proposedChange{{Kind: agent.ProposalKindMemory, Title: "Preferred language", Content: "The user prefers Chinese.", Payload: json.RawMessage(`{"memory_type":"profile"}`), Evidence: []string{"User explicitly requested Chinese"}, Confidence: 0.95, Diff: json.RawMessage(`{"add":true}`)}})
-	if len(items) != 1 || items[0].Status != agent.ProposalStatusPending || items[0].Checksum == "" {
-		t.Fatalf("unexpected normalized proposal: %+v", items)
-	}
-	if string(items[0].EvidenceJSON) == "[]" || items[0].ReviewID != review.ID {
-		t.Fatalf("missing evidence provenance: %+v", items[0])
+	if len(items) != 0 {
+		t.Fatalf("self-improvement must never produce durable memory proposals: %+v", items)
 	}
 }
 
@@ -54,28 +50,15 @@ func TestImprovementReviewSpecOmitsMemoryWhenDedicatedExtractionIsActive(t *test
 		t.Fatalf("memory-disabled reviewer still asks for duplicate memory proposals: schema=%s guidance=%q", schema, guidance)
 	}
 	schema, _ = improvementReviewSpec(true)
-	if !strings.Contains(string(schema), `"memory"`) {
-		t.Fatalf("memory-enabled reviewer lost memory proposal kind: %s", schema)
+	if strings.Contains(string(schema), `"memory"`) {
+		t.Fatalf("self-improvement must never expose a memory proposal kind: %s", schema)
 	}
 }
 
 func TestMemoryReviewAutoMapsToSuggestWithoutAutoApply(t *testing.T) {
 	service := NewImprovementService(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, MemoryReviewAuto)
-	if service.memoryMode != MemoryReviewSuggest {
-		t.Fatalf("auto compatibility mode = %q, want suggest", service.memoryMode)
-	}
-}
-
-func TestDefaultProjectMemoryPayloadScopesTaskFactsToProject(t *testing.T) {
-	items := defaultProjectMemoryPayload([]proposedChange{
-		{Kind: agent.ProposalKindMemory, Payload: json.RawMessage(`{"memory_type":"task"}`)},
-		{Kind: agent.ProposalKindMemory, Payload: json.RawMessage(`{"memory_type":"archival","scope_type":"project","scope_id":99,"source_project_id":99}`)},
-	}, 42)
-	var payload map[string]any
-	var explicit map[string]any
-	if len(items) != 2 || json.Unmarshal(items[0].Payload, &payload) != nil || json.Unmarshal(items[1].Payload, &explicit) != nil ||
-		payload["scope_type"] != memory.ScopeProject || payload["source_project_id"] != float64(42) || explicit["scope_id"] != float64(42) || explicit["source_project_id"] != float64(42) {
-		t.Fatalf("project memory payload = %+v", items)
+	if service.memoryMode != MemoryReviewAuto {
+		t.Fatalf("memory review configuration should remain metadata only, got %q", service.memoryMode)
 	}
 }
 
