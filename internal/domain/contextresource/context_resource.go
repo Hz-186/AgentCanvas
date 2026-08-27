@@ -12,7 +12,6 @@ import (
 )
 
 const (
-	TypeReflection          = "reflection"
 	TypeLongTermMemory      = "long_term_memory"
 	TypeSkill               = "skill"
 	TypeTool                = "tool"
@@ -28,7 +27,6 @@ const (
 )
 
 var AllResourceTypes = []string{
-	TypeReflection,
 	TypeLongTermMemory,
 	TypeSkill,
 	TypeTool,

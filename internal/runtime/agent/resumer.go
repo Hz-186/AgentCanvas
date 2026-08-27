@@ -96,10 +96,8 @@ func BuildResumeRequest(req ResumeRequest) (*RunRequest, error) {
 		}
 	}
 	reflectionPolicy := req.ReflectionPolicy
-	recalledReflectionIDs := append([]int64(nil), req.RecalledReflectionIDs...)
 	if req.Checkpoint.ReflectionPolicy.RuntimeMode != "" {
 		reflectionPolicy = req.Checkpoint.ReflectionPolicy
-		recalledReflectionIDs = append([]int64(nil), req.Checkpoint.RecalledReflectionIDs...)
 	}
 	return &RunRequest{
 		OwnerID: req.OwnerID, AgentID: req.AgentID, RunID: req.RunID, InitialUserMessageID: req.InitialUserMessageID,
@@ -107,7 +105,7 @@ func BuildResumeRequest(req ResumeRequest) (*RunRequest, error) {
 		MessageSink: req.MessageSink,
 		Provider:    req.Provider, Model: req.Model, CompactionProvider: req.CompactionProvider, CompactionModel: req.CompactionModel, CompactionProviderID: req.CompactionProviderID,
 		Mode: req.Mode, SystemPrompt: req.SystemPrompt, Task: req.Task,
-		ReflectionEnabled: req.ReflectionEnabled, ReflectionPolicy: reflectionPolicy, RecalledReflectionIDs: recalledReflectionIDs,
+		ReflectionEnabled: req.ReflectionEnabled, ReflectionPolicy: reflectionPolicy,
 		Temperature: req.Temperature, MaxIterations: req.MaxIterations, MaxToolCalls: req.MaxToolCalls,
 		MaxExecutionTimeMS: req.MaxExecutionTimeMS, MaxParallelTools: req.MaxParallelTools, MaxInputChars: req.MaxInputChars,
 		MaxInputTokens: req.MaxInputTokens, ContextWindowTokens: req.ContextWindowTokens, ReservedOutputTokens: req.ReservedOutputTokens,

@@ -5,21 +5,6 @@ import (
 	"strings"
 )
 
-// FileSearchResult is the minimal detail payload exposed to an Agent. The
-// filesystem is the source of truth; callers do not need the legacy SQL
-// memory taxonomy or retention fields.
-type FileSearchResult struct {
-	Path    string `json:"path"`
-	Content string `json:"content"`
-}
-
-// DurableReader provides the single progressive-read path for durable memory.
-// Summary is used once during run assembly; Search is used only on demand.
-type DurableReader interface {
-	ReadSummary(ctx context.Context, ownerID int64, tokenBudget int) (string, error)
-	Search(ctx context.Context, ownerID int64, query string, limit int) ([]FileSearchResult, error)
-}
-
 // AdHocWriter is intentionally separate from ordinary memory writes. A
 // caller must pass an explicit user-intent marker; implementations append a
 // new note and never edit MEMORY.md directly.

@@ -43,59 +43,6 @@ func (c *Checker) Check(ctx context.Context, component string) error {
 	}
 }
 
-func (c *Checker) ReflectionSystem(ctx context.Context) (map[string]any, error) {
-	const (
-		jobBacklogAlertThreshold = int64(100)
-		jobAgeAlertSeconds       = int64(300)
-	)
-	type databaseMetrics struct {
-		PendingJobs          int64 `json:"pending_jobs"`
-		RunningJobs          int64 `json:"running_jobs"`
-		FailedJobs           int64 `json:"failed_jobs"`
-		RetryAttempts        int64 `json:"retry_attempts"`
-		OldestPendingSeconds int64 `json:"oldest_pending_seconds"`
-		ActiveReflections    int64 `json:"active_reflections"`
-		ValidatedReflections int64 `json:"validated_reflections"`
-		DisputedReflections  int64 `json:"disputed_reflections"`
-		HelpfulFeedback      int64 `json:"helpful_feedback"`
-		HarmfulFeedback      int64 `json:"harmful_feedback"`
-		OutboxPending        int64 `json:"outbox_pending"`
-		OldestOutboxSeconds  int64 `json:"oldest_outbox_seconds"`
-		StaleRunningJobs     int64 `json:"stale_running_jobs"`
-		DLQJobs              int64 `json:"dlq_jobs"`
-	}
-	var metrics databaseMetrics
-	queries := []string{
-		`SELECT COALESCE(SUM(status = 'pending'), 0) AS pending_jobs, COALESCE(SUM(status = 'running'), 0) AS running_jobs,
-		COALESCE(SUM(status = 'failed'), 0) AS failed_jobs, COALESCE(SUM(GREATEST(attempt_count - 1, 0)), 0) AS retry_attempts,
-		COALESCE(TIMESTAMPDIFF(SECOND, MIN(CASE WHEN status = 'pending' THEN created_at END), UTC_TIMESTAMP()), 0) AS oldest_pending_seconds,
-		COALESCE(SUM(status = 'running' AND lease_expires_at IS NOT NULL AND lease_expires_at < UTC_TIMESTAMP()), 0) AS stale_running_jobs,
-		COALESCE(SUM(status = 'failed' AND failure_type IN ('permanent','exhausted')), 0) AS dlq_jobs FROM agent_reflection_jobs`,
-		`SELECT COALESCE(SUM(status IN ('pending','publishing')), 0) AS outbox_pending,
-		COALESCE(TIMESTAMPDIFF(SECOND, MIN(CASE WHEN status IN ('pending','publishing') THEN created_at END), UTC_TIMESTAMP()), 0) AS oldest_outbox_seconds
-		FROM agent_reflection_job_outbox`,
-		`SELECT COALESCE(SUM(status = 'active' AND deleted_at IS NULL), 0) AS active_reflections,
-		COALESCE(SUM(status = 'validated' AND deleted_at IS NULL), 0) AS validated_reflections,
-		COALESCE(SUM(status = 'disputed' AND deleted_at IS NULL), 0) AS disputed_reflections FROM agent_reflections`,
-		`SELECT COALESCE(SUM(verdict = 'helpful'), 0) AS helpful_feedback,
-		COALESCE(SUM(verdict = 'harmful'), 0) AS harmful_feedback FROM agent_reflection_recall_logs`,
-	}
-	for _, query := range queries {
-		if err := c.db.WithContext(ctx).Raw(query).Scan(&metrics).Error; err != nil {
-			return nil, err
-		}
-	}
-	process := observability.ReflectionSystemMetrics.Snapshot()
-	return map[string]any{
-		"component": "reflection_system", "database": metrics, "process": process,
-		"alerts": map[string]any{
-			"job_backlog": metrics.PendingJobs >= jobBacklogAlertThreshold, "job_queue_stalled": metrics.OldestPendingSeconds >= jobAgeAlertSeconds,
-			"failed_jobs": metrics.FailedJobs > 0, "outbox_stalled": metrics.OldestOutboxSeconds >= 60,
-			"stale_running_jobs": metrics.StaleRunningJobs > 0, "dlq_jobs": metrics.DLQJobs > 0,
-		},
-	}, nil
-}
-
 func (c *Checker) ContextSystem(ctx context.Context) (map[string]any, error) {
 	type databaseMetrics struct {
 		PendingOutbox        int64 `json:"pending_outbox"`

@@ -2,9 +2,11 @@ package agentruntime
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math"
 	"sort"
+	"strconv"
 	"strings"
 
 	"agentcanvas/internal/domain/conversation"
@@ -12,6 +14,7 @@ import (
 	"agentcanvas/internal/domain/retrieval"
 	"agentcanvas/internal/domain/skill"
 	"agentcanvas/internal/domain/tool"
+	"agentcanvas/internal/pkg/tokencounter"
 	runtimeagent "agentcanvas/internal/runtime/agent"
 	"agentcanvas/internal/runtime/toolruntime"
 
@@ -178,7 +181,13 @@ func (n runtimeCore) loadTools(ctx context.Context, ownerID int64, cfg agentRunt
 			MaxContentBytes: cfg.MaxToolOutputBytes,
 		})
 		if strings.TrimSpace(cfg.SkillLoadingMode) == "search" || len(loadedSkills) > 10 {
-			tools = append(tools, toolruntime.SkillSearchTool{Skills: loadedSkills, Audits: n.Audits, Limit: 3})
+			tools = append(tools, toolruntime.SkillSearchTool{
+				Retriever:       n.SkillRetriever,
+				Skills:          loadedSkills,
+				AllowedSkillIDs: skillIDsFromItems(loadedSkills),
+				Audits:          n.Audits,
+				Limit:           3,
+			})
 		}
 	}
 	if len(cfg.KnowledgeBaseIDs) > 0 {
@@ -217,14 +226,18 @@ func (n runtimeCore) loadTools(ctx context.Context, ownerID int64, cfg agentRunt
 		tools = append(tools, toolruntime.PythonSandboxTool{Runner: n.Sandbox})
 	}
 	if cfg.MemoryEnabled {
-		// File-backed durable memory is mandatory. Keeping a SQL/vector fallback here
-		// would reintroduce a second recall path and expose retired taxonomy.
-		if n.MemoryFiles == nil {
-			// Preserve the established configuration error text for callers that
-			// still map it to a deployment diagnostic.
-			return nil, fmt.Errorf("agent runtime unified context index is not configured: durable memory file store is required")
+		// read_memory is keyword-only: the unified context index selects and
+		// SQL hydrates. The retired durable file reader is no longer an Agent
+		// read path and skills are never searched here.
+		if n.Memories == nil || n.ContextIndex == nil {
+			return nil, fmt.Errorf("agent runtime unified context index is not configured: SQL memory repository and keyword index are required")
 		}
-		tools = append(tools, toolruntime.MemoryReadTool{Files: n.MemoryFiles, TokenBudget: cfg.MemoryPolicy.TokenBudget})
+		tools = append(tools, toolruntime.MemoryReadTool{
+			Memories:     n.Memories,
+			RecallLogs:   n.MemoryRecallLogs,
+			ContextIndex: n.ContextIndex,
+			TokenBudget:  cfg.MemoryPolicy.TokenBudget,
+		})
 		if n.SessionSearch != nil {
 			tools = append(tools, toolruntime.SessionSearchTool{Index: n.SessionSearch})
 		}
@@ -398,27 +411,124 @@ func coreContextTool(name string) bool {
 	}
 }
 
+const (
+	// automaticSummaryBlockName is the stable context-block ID of the injected
+	// automatic summary; budget and compaction logic rely on its stability.
+	automaticSummaryBlockName = "memory_summary"
+	// automaticSummaryAdvisory marks the injected block as advisory and points
+	// the model at read_memory for verified details. It appears exactly once.
+	automaticSummaryAdvisory = "DURABLE MEMORY SUMMARY (advisory; verify details with read_memory when needed):"
+	// automaticSummaryFreshnessNote warns that a consolidated summary may lag
+	// behind recent memories and must be verified through read_memory. It
+	// appears exactly once when the artifact carries memory IDs.
+	automaticSummaryFreshnessNote = "may be stale; call read_memory to verify current details"
+)
+
+// automaticSummaryTokenBudget is the injected summary block's token bound.
+const automaticSummaryTokenBudget = 1200
+
 // buildAutomaticMemoryBlock is the single automatic durable-memory read. It
-// injects only the bounded summary; detailed files are available through the
-// read_memory tool and are never recalled in parallel.
+// injects the bounded advisory summary from the SQL summary artifact for
+// top-level, non-delegated runs only; detailed memories stay available through
+// the keyword read_memory tool. A summary artifact read failure yields no
+// block and never falls back to legacy files.
 func (n runtimeCore) buildAutomaticMemoryBlock(ctx context.Context, rc *RunContext, cfg agentRuntimeConfig) *runtimeagent.ContextBlock {
-	if n.MemoryFiles == nil || rc == nil || rc.ParentRunID != nil || rc.DelegationDepth != 0 || !cfg.MemoryEnabled {
+	if n.MemoryArtifacts == nil || rc == nil || rc.ParentRunID != nil || rc.DelegationDepth != 0 || !cfg.MemoryEnabled {
 		return nil
 	}
 	policy, err := cfg.MemoryPolicy.Normalize()
 	if err != nil {
 		policy = memory.DefaultPolicy()
 	}
-	summary, err := n.MemoryFiles.ReadSummary(ctx, rc.OwnerID, policy.TokenBudget)
-	if err != nil || strings.TrimSpace(summary) == "" {
+	budget := policy.TokenBudget
+	if budget <= 0 {
+		budget = automaticSummaryTokenBudget
+	}
+	artifact, err := n.MemoryArtifacts.Latest(ctx, rc.OwnerID, memory.ArtifactKindSummary)
+	if err != nil || artifact == nil {
 		return nil
 	}
+	content := strings.TrimSpace(artifact.Content)
+	if content == "" {
+		return nil
+	}
+	memoryIDs := summarySourceRefIDs(artifact.SourceRefsJSON)
+	footer := ""
+	if len(memoryIDs) > 0 {
+		footer = fmt.Sprintf("Memory IDs: %s\nThis summary (version %d) %s", strings.Join(memoryIDs, ", "), artifact.Version, automaticSummaryFreshnessNote)
+	}
+	overheadTokens := tokencounter.Count("", "", automaticSummaryAdvisory).Tokens + tokencounter.Count("", "", footer).Tokens + 2
+	contentBudget := budget - overheadTokens
+	if contentBudget < 1 {
+		contentBudget = 1
+	}
+	content = truncateToTokenBudget(content, contentBudget)
+	var builder strings.Builder
+	builder.WriteString(automaticSummaryAdvisory)
+	builder.WriteString("\n")
+	builder.WriteString(content)
+	if footer != "" {
+		builder.WriteString("\n")
+		builder.WriteString(footer)
+	}
 	return &runtimeagent.ContextBlock{
-		Name:    "memory_summary",
+		Name:    automaticSummaryBlockName,
 		Role:    conversation.RoleSystem,
-		Content: "DURABLE MEMORY SUMMARY (advisory; verify details with read_memory when needed):\n" + strings.TrimSpace(summary),
+		Content: builder.String(),
 		Pinned:  false,
 	}
+}
+
+// summarySourceRefIDs extracts the stable memory IDs represented by a summary
+// artifact's source references, sorted ascending without duplicates.
+func summarySourceRefIDs(raw json.RawMessage) []string {
+	if len(raw) == 0 {
+		return nil
+	}
+	var refs []struct {
+		SourceID int64 `json:"source_id"`
+	}
+	if err := json.Unmarshal(raw, &refs); err != nil || len(refs) == 0 {
+		return nil
+	}
+	seen := map[int64]bool{}
+	ids := make([]int64, 0, len(refs))
+	for _, ref := range refs {
+		if ref.SourceID <= 0 || seen[ref.SourceID] {
+			continue
+		}
+		seen[ref.SourceID] = true
+		ids = append(ids, ref.SourceID)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	formatted := make([]string, len(ids))
+	for i, id := range ids {
+		formatted[i] = strconv.FormatInt(id, 10)
+	}
+	return formatted
+}
+
+// truncateToTokenBudget returns the longest rune prefix of value whose
+// conservative token count fits the budget.
+func truncateToTokenBudget(value string, budget int) string {
+	value = strings.TrimSpace(value)
+	if budget <= 0 || tokencounter.Count("", "", value).Tokens <= budget {
+		return value
+	}
+	runes := []rune(value)
+	low, high := 0, len(runes)
+	for low < high {
+		mid := (low + high + 1) / 2
+		if tokencounter.Count("", "", string(runes[:mid])).Tokens <= budget {
+			low = mid
+		} else {
+			high = mid - 1
+		}
+	}
+	if low == 0 {
+		return ""
+	}
+	return string(runes[:low])
 }
 
 func projectIDFromRunContext(rc *RunContext) int64 {

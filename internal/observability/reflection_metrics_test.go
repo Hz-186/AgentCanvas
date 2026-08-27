@@ -2,44 +2,17 @@ package observability
 
 import (
 	"testing"
-	"time"
 )
 
-func TestReflectionMetricsRecordsLifecycle(t *testing.T) {
+func TestReflectionMetricsRecordsInlineLifecycle(t *testing.T) {
 	metrics := &ReflectionMetrics{}
-	metrics.RecordRecall(true, 2, 40, true)
-	metrics.RecordRecallFailure()
-	metrics.RecordStored(false)
-	metrics.RecordStored(true)
-	metrics.RecordJobEnqueued()
-	metrics.RecordJobEnqueueFailure()
-	metrics.RecordJobCompleted()
-	metrics.RecordJobFailure(true)
-	metrics.RecordJobFailure(false)
-	metrics.RecordHeartbeatFailure()
-	metrics.RecordLeaseConflict()
-	metrics.RecordOutboxPublished()
-	metrics.RecordOutboxPublishFailure()
-	metrics.RecordDLQJob()
-	metrics.RecordRedelivery()
-	metrics.RecordProcessingLatency(12 * time.Millisecond)
-	metrics.RecordPublishLatency(4 * time.Millisecond)
+	metrics.RecordInlineTriggered()
 	metrics.RecordInlineTriggered()
 	metrics.RecordInlineCompleted()
 	metrics.RecordInlineFailed()
-	metrics.RecordFeedback("helpful")
-	metrics.RecordFeedback("harmful")
 
 	snapshot := metrics.Snapshot()
-	if snapshot.RecallRequests != 1 || snapshot.RecallHits != 1 || snapshot.ShadowRecallRequests != 1 ||
-		snapshot.RecalledLessons != 2 || snapshot.RecalledTokens != 40 || snapshot.RecallFailures != 1 ||
-		snapshot.Stored != 1 || snapshot.Deduplicated != 1 || snapshot.JobsEnqueued != 1 ||
-		snapshot.JobsCompleted != 1 || snapshot.JobsRetried != 1 || snapshot.JobsFailed != 1 ||
-		snapshot.JobsEnqueueFailed != 1 || snapshot.HeartbeatFailures != 1 || snapshot.LeaseConflicts != 1 ||
-		snapshot.OutboxPublished != 1 || snapshot.OutboxPublishFailed != 1 || snapshot.DLQJobs != 1 ||
-		snapshot.MessagesRedelivered != 1 || snapshot.ProcessingLatencyMS != 12 || snapshot.PublishLatencyMS != 4 ||
-		snapshot.InlineTriggered != 1 || snapshot.InlineCompleted != 1 || snapshot.InlineFailed != 1 ||
-		snapshot.FeedbackHelpful != 1 || snapshot.FeedbackHarmful != 1 {
-		t.Fatalf("unexpected snapshot: %+v", snapshot)
+	if snapshot.InlineTriggered != 2 || snapshot.InlineCompleted != 1 || snapshot.InlineFailed != 1 {
+		t.Fatalf("unexpected inline reflection snapshot: %+v", snapshot)
 	}
 }

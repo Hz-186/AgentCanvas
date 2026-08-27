@@ -11,7 +11,6 @@ import (
 	mysqlinfra "agentcanvas/internal/infrastructure/mysql"
 	queueinfra "agentcanvas/internal/infrastructure/queue"
 	redisinfra "agentcanvas/internal/infrastructure/redis"
-	memoryretrievalinfra "agentcanvas/internal/infrastructure/retrieval"
 	esretrieval "agentcanvas/internal/infrastructure/retrieval/elasticsearch"
 	milvusretrieval "agentcanvas/internal/infrastructure/retrieval/milvus"
 	"agentcanvas/internal/infrastructure/vectorstore"
@@ -27,23 +26,20 @@ import (
 type RetrievalStore = domainretrieval.Backend
 
 type InitOptions struct {
-	IncludeMemoryRetrieval bool
-	InitializeQueue        bool
-	PingRedisQueue         bool
+	InitializeQueue bool
+	PingRedisQueue  bool
 }
 
 type InfraDeps struct {
-	DB                      *gorm.DB
-	Redis                   *goredis.Client
-	MinIOClient             *minio.Client
-	ElasticsearchClient     *elasticsearch.Client
-	RetrievalStore          RetrievalStore
-	RetrievalStores         map[string]RetrievalStore
-	MemoryRetrievalStore    *memoryretrievalinfra.MemoryStore
-	MemoryRetrievalIndexErr error
-	JobQueue                queueinfra.JobQueue
-	SecretBox               *cryptoinfra.SecretBox
-	FileStorage             *minioinfra.FileStorage
+	DB                  *gorm.DB
+	Redis               *goredis.Client
+	MinIOClient         *minio.Client
+	ElasticsearchClient *elasticsearch.Client
+	RetrievalStore      RetrievalStore
+	RetrievalStores     map[string]RetrievalStore
+	JobQueue            queueinfra.JobQueue
+	SecretBox           *cryptoinfra.SecretBox
+	FileStorage         *minioinfra.FileStorage
 }
 
 func InitInfrastructure(ctx context.Context, cfg *config.Config, opts InitOptions) (*InfraDeps, error) {
@@ -93,10 +89,6 @@ func InitInfrastructure(ctx context.Context, cfg *config.Config, opts InitOption
 		RetrievalStores:     retrievalStores,
 		SecretBox:           secretBox,
 		FileStorage:         minioinfra.NewFileStorage(minioClient, cfg.MinIO.Bucket),
-	}
-	if opts.IncludeMemoryRetrieval {
-		deps.MemoryRetrievalStore = memoryretrievalinfra.NewMemoryStore(esClient)
-		deps.MemoryRetrievalIndexErr = deps.MemoryRetrievalStore.EnsureIndex(ctx)
 	}
 	if opts.InitializeQueue {
 		if opts.PingRedisQueue && cfg.Queue.Backend == "redis_stream" {

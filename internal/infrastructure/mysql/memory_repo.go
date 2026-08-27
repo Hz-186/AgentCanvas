@@ -185,6 +185,27 @@ func (r *MemoryRepository) ListFiltered(ctx context.Context, ownerID int64, filt
 	return items, err
 }
 
+// ListBySources implements memory.Repository: active, non-conflicted,
+// non-expired rows for the given production sources ordered by id ASC.
+// Consolidation evidence is sourced from these rows so artifact source refs
+// always carry memories.id values, never job ids.
+func (r *MemoryRepository) ListBySources(ctx context.Context, ownerID int64, sources []string, limit int) ([]memory.Memory, error) {
+	items := make([]memory.Memory, 0)
+	if len(sources) == 0 {
+		return items, nil
+	}
+	query := r.db.WithContext(ctx).
+		Where("owner_id = ? AND deleted_at IS NULL", ownerID).
+		Where("status = ? AND has_conflict = ?", memory.StatusActive, false).
+		Where("(expires_at IS NULL OR expires_at > ?)", time.Now().UTC()).
+		Where("source IN ?", sources)
+	if limit <= 0 || limit > 256 {
+		limit = 256
+	}
+	err := query.Order("id ASC").Limit(limit).Find(&items).Error
+	return items, err
+}
+
 func (r *MemoryRepository) ListForRead(ctx context.Context, ownerID int64, memoryTypes []string, conversationID *int64, limit int) ([]memory.Memory, error) {
 	return r.listForRead(ctx, ownerID, 0, memoryTypes, conversationID, nil, limit)
 }
@@ -260,7 +281,7 @@ func (r *MemoryRepository) MarkUsed(ctx context.Context, ownerID int64, ids []in
 	now := time.Now().UTC()
 	return r.db.WithContext(ctx).Model(&memory.Memory{}).
 		Where("owner_id = ? AND id IN ? AND deleted_at IS NULL AND status = ?", ownerID, ids, memory.StatusActive).
-		Updates(map[string]any{"last_recalled_at": now, "updated_at": now, "recall_count": gorm.Expr("recall_count + 1")}).Error
+		Updates(map[string]any{"last_used_at": now, "updated_at": now, "usage_count": gorm.Expr("usage_count + 1")}).Error
 }
 
 func (r *MemoryRepository) ListByLevel(ctx context.Context, ownerID int64, level string, memoryTypes []string, limit int) ([]memory.Memory, error) {
@@ -278,7 +299,7 @@ func (r *MemoryRepository) ListByLevel(ctx context.Context, ownerID int64, level
 	if limit <= 0 || limit > 50 {
 		limit = 20
 	}
-	err := query.Order("importance DESC, recall_count DESC, updated_at DESC").Limit(limit).Find(&items).Error
+	err := query.Order("importance DESC, usage_count DESC, updated_at DESC").Limit(limit).Find(&items).Error
 	return items, err
 }
 
@@ -298,10 +319,10 @@ func (r *MemoryRepository) ListActiveOwnerIDs(ctx context.Context, limit int) ([
 	return ownerIDs, err
 }
 
-func (r *MemoryRepository) IncrementRecallCount(ctx context.Context, ownerID int64, id int64) error {
+func (r *MemoryRepository) IncrementUsageCount(ctx context.Context, ownerID int64, id int64) error {
 	return r.db.WithContext(ctx).Model(&memory.Memory{}).
 		Where("owner_id = ? AND id = ? AND deleted_at IS NULL", ownerID, id).
-		UpdateColumn("recall_count", gorm.Expr("recall_count + 1")).Error
+		UpdateColumn("usage_count", gorm.Expr("usage_count + 1")).Error
 }
 
 func (r *MemoryRepository) IncrementPromotionCount(ctx context.Context, ownerID int64, id int64) error {
@@ -344,7 +365,7 @@ func (r *MemoryRepository) MarkExpired(ctx context.Context, ownerID int64, maxAg
 func (r *MemoryRepository) UpdateDecayedImportance(ctx context.Context, ownerID int64, decayRate float64) (int64, error) {
 	now := time.Now().UTC()
 	cutoff := now.Add(-23 * time.Hour)
-	decayBase := "GREATEST(COALESCE(last_decay_at, created_at), COALESCE(last_recalled_at, created_at))"
+	decayBase := "GREATEST(COALESCE(last_decay_at, created_at), COALESCE(last_used_at, created_at))"
 	result := r.db.WithContext(ctx).Model(&memory.Memory{}).
 		Where("owner_id = ? AND deleted_at IS NULL AND status = ? AND retention_tier = ?", ownerID, memory.StatusActive, memory.TierLongTerm).
 		Where(decayBase+" <= ?", cutoff).
@@ -359,6 +380,85 @@ func (r *MemoryRepository) UpdateDecayedImportance(ctx context.Context, ownerID 
 	}
 	count = result.RowsAffected
 	return count, nil
+}
+
+// lifecycleRecencySQL is the recency fallback used by lifecycle SQL: the
+// spec's source_updated_at has no current column, so updated_at is the
+// source-updated fallback (COALESCE(last_used_at, updated_at)).
+const lifecycleRecencySQL = "COALESCE(last_used_at, updated_at)"
+
+// SelectLifecycleCandidates implements memory.LifecycleRepository with one
+// deterministic SQL query: active recallable rows ordered by
+// usage_count DESC, COALESCE(last_used_at, updated_at) DESC, id ASC, with the
+// cold-window and consolidated-protection filters pushed down and capped at
+// limit. The lifecycle service re-applies the identical predicate.
+func (r *MemoryRepository) SelectLifecycleCandidates(ctx context.Context, ownerID int64, cutoff time.Time, protectedIDs []int64, limit int) ([]memory.Memory, error) {
+	if limit <= 0 || limit > 256 {
+		limit = 256
+	}
+	var items []memory.Memory
+	query := r.db.WithContext(ctx).
+		Where("owner_id = ? AND deleted_at IS NULL AND status = ? AND has_conflict = ?", ownerID, memory.StatusActive, false).
+		Where("(expires_at IS NULL OR expires_at > ?)", time.Now().UTC())
+	warmClause := lifecycleRecencySQL + " >= ?"
+	warmArgs := []any{cutoff}
+	if len(protectedIDs) > 0 {
+		warmClause = "(" + warmClause + " OR id IN ?)"
+		warmArgs = append(warmArgs, protectedIDs)
+	}
+	err := query.Where(warmClause, warmArgs...).
+		Order("usage_count DESC, " + lifecycleRecencySQL + " DESC, id ASC").
+		Limit(limit).
+		Find(&items).Error
+	return items, err
+}
+
+// ListColdRows implements memory.LifecycleRepository: active rows whose
+// recency falls before cutoff, protected IDs pushed down as SQL, ordered by id
+// ASC. The lifecycle service re-checks protection before deleting.
+func (r *MemoryRepository) ListColdRows(ctx context.Context, ownerID int64, cutoff time.Time, protectedIDs []int64) ([]memory.Memory, error) {
+	var items []memory.Memory
+	query := r.db.WithContext(ctx).
+		Where("owner_id = ? AND deleted_at IS NULL AND status = ? AND has_conflict = ?", ownerID, memory.StatusActive, false).
+		Where("(expires_at IS NULL OR expires_at > ?)", time.Now().UTC()).
+		Where(lifecycleRecencySQL+" < ?", cutoff)
+	if len(protectedIDs) > 0 {
+		query = query.Where("id NOT IN ?", protectedIDs)
+	}
+	err := query.Order("id ASC").Find(&items).Error
+	return items, err
+}
+
+// PruneMemories implements memory.LifecycleRepository: soft-deletes the given
+// active rows, enqueues the context index deletion work and returns the IDs
+// actually deleted.
+func (r *MemoryRepository) PruneMemories(ctx context.Context, ownerID int64, ids []int64) ([]int64, error) {
+	deleted := make([]int64, 0, len(ids))
+	if len(ids) == 0 {
+		return deleted, nil
+	}
+	now := time.Now().UTC()
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		result := tx.Model(&memory.Memory{}).
+			Where("owner_id = ? AND id IN ? AND deleted_at IS NULL AND status = ?", ownerID, ids, memory.StatusActive).
+			Updates(map[string]any{"deleted_at": now, "updated_at": now})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return nil
+		}
+		// The caller derived the ID set from the cold query moments earlier;
+		// report the requested set and keep the outbox delete work per ID.
+		for _, id := range ids {
+			deleted = append(deleted, id)
+			if err := enqueueContextResource(ctx, tx, ownerID, 0, 0, contextresource.TypeLongTermMemory, id, contextresource.OperationDelete, ""); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	return deleted, err
 }
 
 const decayMinImportance = 0.05
@@ -410,26 +510,9 @@ func memoryIndexScope(item *memory.Memory) (agentID, conversationID, projectID i
 	return agentID, conversationID, projectID
 }
 
-type MemoryWriteLogRepository struct{ db *gorm.DB }
-
-func NewMemoryWriteLogRepository(db *gorm.DB) *MemoryWriteLogRepository {
-	return &MemoryWriteLogRepository{db: db}
-}
-
-func (r *MemoryWriteLogRepository) Create(ctx context.Context, item *memory.WriteLog) error {
-	if item.CreatedAt.IsZero() {
-		item.CreatedAt = time.Now().UTC()
-	}
-	return r.db.WithContext(ctx).Create(item).Error
-}
-
-func (r *MemoryWriteLogRepository) ListByRun(ctx context.Context, ownerID, runID int64) ([]memory.WriteLog, error) {
-	var items []memory.WriteLog
-	err := r.db.WithContext(ctx).Where("owner_id = ? AND run_id = ?", ownerID, runID).Order("id ASC").Find(&items).Error
-	return items, err
-}
-
 type MemoryRecallLogRepository struct{ db *gorm.DB }
+
+var _ memory.LifecycleRepository = (*MemoryRepository)(nil)
 
 func NewMemoryRecallLogRepository(db *gorm.DB) *MemoryRecallLogRepository {
 	return &MemoryRecallLogRepository{db: db}

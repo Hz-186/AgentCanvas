@@ -17,16 +17,14 @@ func TestQueueConfigDefaults(t *testing.T) {
 	if cfg.DurableMemory.IdleTimeoutSeconds != 6*60*60 || cfg.DurableMemory.TriggerEveryNTurns != 0 {
 		t.Fatalf("unexpected durable memory defaults: %+v", cfg.DurableMemory)
 	}
+	if cfg.DurableMemory.LifecycleColdWindowDays != 30 || cfg.DurableMemory.LifecycleSelectionCap != 256 {
+		t.Fatalf("unexpected lifecycle defaults (want 30 days / 256 cap): %+v", cfg.DurableMemory)
+	}
 	if cfg.WorkingMemory.TTLSeconds != 0 || cfg.WorkingMemory.LockTTLMS != 0 || cfg.WorkingMemory.LockWaitMS != 0 {
 		t.Fatalf("deprecated working memory config must remain inert: %+v", cfg.WorkingMemory)
 	}
 	if cfg.NATS.URL == "" || cfg.NATS.Stream == "" || cfg.NATS.Subject == "" || cfg.NATS.Durable == "" || cfg.NATS.AckWaitSeconds == 0 {
 		t.Fatalf("unexpected nats defaults: %+v", cfg.NATS)
-	}
-	if cfg.ReflectionQueue.Backend != "mysql" || cfg.ReflectionQueue.Stream != "AGENTCANVAS_REFLECTION" ||
-		cfg.ReflectionQueue.HeartbeatSeconds != 30 || cfg.ReflectionQueue.AckWaitSeconds != 120 ||
-		cfg.ReflectionQueue.LeaseSeconds != 180 || cfg.ReflectionQueue.MaxAckPending != cfg.ReflectionQueue.Concurrency {
-		t.Fatalf("unexpected reflection queue defaults: %+v", cfg.ReflectionQueue)
 	}
 	if cfg.Milvus.Collection != "agentcanvas_chunks_v2" || cfg.Milvus.M == 0 || cfg.Milvus.MetricType != "COSINE" {
 		t.Fatalf("unexpected milvus defaults: %+v", cfg.Milvus)
@@ -114,27 +112,6 @@ func TestGitWorkspaceConfigRequiresSafeAbsoluteRootAndDirectoryName(t *testing.T
 	escapingDirectory.GitWorkspace.WorktreeDirName = "../worktrees"
 	if err := escapingDirectory.Validate(); err == nil {
 		t.Fatal("escaping worktree directory name was accepted")
-	}
-}
-
-func TestReflectionQueueConfigValidation(t *testing.T) {
-	base := Config{MySQL: MySQLConfig{DSN: "dsn"}, Security: SecurityConfig{JWTSecret: "jwt", RefreshTokenPepper: "pepper", SecretEncryptKey: "secret"}}
-	base.setDefaults()
-	base.ReflectionQueue.Backend = "nats"
-	if err := base.Validate(); err != nil {
-		t.Fatalf("valid reflection queue config rejected: %v", err)
-	}
-
-	invalidHeartbeat := base
-	invalidHeartbeat.ReflectionQueue.HeartbeatSeconds = invalidHeartbeat.ReflectionQueue.AckWaitSeconds / 2
-	if err := invalidHeartbeat.Validate(); err == nil {
-		t.Fatal("expected invalid reflection heartbeat to be rejected")
-	}
-
-	invalidLease := base
-	invalidLease.ReflectionQueue.LeaseSeconds = invalidLease.ReflectionQueue.AckWaitSeconds - 1
-	if err := invalidLease.Validate(); err == nil {
-		t.Fatal("expected short reflection lease to be rejected")
 	}
 }
 

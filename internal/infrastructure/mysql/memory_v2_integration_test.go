@@ -52,7 +52,7 @@ func TestMemoryV2RepositoryIntegration(t *testing.T) {
 	t.Cleanup(cleanup)
 	oldSourceKey := "memory-v2-integration:old"
 	old := &memory.Memory{SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{OwnerID: ownerID}}, MemoryType: memory.TypeProfile, RetentionTier: memory.TierLongTerm,
-		Title: "response style", Content: "User prefers concise answers", Importance: 1, Source: "integration_test",
+		Title: "response style", Content: "User prefers concise answers", Importance: 1, Source: "manual",
 		DeduplicationKey: &oldSourceKey, ScopeType: memory.ScopeAgent, ScopeID: 7, Status: memory.StatusActive}
 	if err := repository.Create(ctx, old); err != nil {
 		t.Fatal(err)
@@ -60,7 +60,7 @@ func TestMemoryV2RepositoryIntegration(t *testing.T) {
 
 	replacementSourceKey := "memory-v2-integration:replacement"
 	replacement := &memory.Memory{SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{OwnerID: ownerID}}, MemoryType: memory.TypeProfile, RetentionTier: memory.TierLongTerm,
-		Title: "response style", Content: "User prefers detailed answers", Importance: 1, Source: "approved_memory_proposal",
+		Title: "response style", Content: "User prefers detailed answers", Importance: 1, Source: "proposal",
 		DeduplicationKey: &replacementSourceKey, ScopeType: memory.ScopeAgent, ScopeID: 7, Status: memory.StatusActive}
 	if err := repository.Replace(ctx, ownerID, old.ID, replacement); err != nil {
 		t.Fatal(err)
@@ -91,13 +91,13 @@ func TestMemoryV2RepositoryIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	used, err := repository.FindByID(ctx, ownerID, replacement.ID)
-	if err != nil || used.RecallCount != 1 || used.LastRecalledAt == nil {
+	if err != nil || used.UsageCount != 1 || used.LastUsedAt == nil {
 		t.Fatalf("actual recall must atomically update lifecycle counters: memory=%+v err=%v", used, err)
 	}
 
 	decayBase := time.Now().UTC().Add(-72 * time.Hour)
 	if err := db.Model(&memory.Memory{}).Where("owner_id = ? AND id = ?", ownerID, replacement.ID).
-		Updates(map[string]any{"importance": 1.0, "created_at": decayBase, "last_recalled_at": decayBase, "last_decay_at": nil}).Error; err != nil {
+		Updates(map[string]any{"importance": 1.0, "created_at": decayBase, "last_used_at": decayBase, "last_decay_at": nil}).Error; err != nil {
 		t.Fatal(err)
 	}
 	if count, err := repository.UpdateDecayedImportance(ctx, ownerID, 0.1); err != nil || count != 1 {

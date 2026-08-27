@@ -12,7 +12,6 @@ import (
 	"agentcanvas/internal/domain/contextresource"
 	"agentcanvas/internal/domain/conversation"
 	"agentcanvas/internal/domain/memory"
-	"agentcanvas/internal/domain/reflection"
 	"agentcanvas/internal/domain/skill"
 	"agentcanvas/internal/domain/tool"
 
@@ -50,14 +49,6 @@ func (r *ContextResourceRepository) Backfill(ctx context.Context, resourceType s
 	}
 	candidates := make([]candidate, 0, limit)
 	switch resourceType {
-	case contextresource.TypeReflection:
-		var items []reflection.Reflection
-		if err := r.db.WithContext(ctx).Where("id > ? AND deleted_at IS NULL AND status IN ?", afterID, []string{reflection.StatusActive, reflection.StatusValidated}).Order("id ASC").Limit(limit).Find(&items).Error; err != nil {
-			return result, err
-		}
-		for i := range items {
-			candidates = append(candidates, candidate{ID: items[i].ID, OwnerID: items[i].OwnerID, AgentID: items[i].AgentID, Content: reflectionContextText(items[i])})
-		}
 	case contextresource.TypeLongTermMemory:
 		var items []memory.Memory
 		if err := r.db.WithContext(ctx).Where("id > ? AND deleted_at IS NULL AND status = ? AND has_conflict = ? AND (expires_at IS NULL OR expires_at > ?) AND retention_tier IN ?", afterID, memory.StatusActive, false, time.Now().UTC(), []string{memory.TierShortTerm, memory.TierLongTerm}).Order("id ASC").Limit(limit).Find(&items).Error; err != nil {
@@ -240,12 +231,6 @@ func (r *ContextResourceRepository) LoadDocument(ctx context.Context, item conte
 		return nil, fmt.Errorf("invalid %s resource id %q", item.ResourceType, item.ResourceID)
 	}
 	switch item.ResourceType {
-	case contextresource.TypeReflection:
-		var value reflection.Reflection
-		if err := r.db.WithContext(ctx).Where("owner_id = ? AND id = ? AND deleted_at IS NULL", item.OwnerID, id).First(&value).Error; err != nil {
-			return nilOrLoadError(err)
-		}
-		return document(item, reflectionContextText(value), 0, 0, map[string]any{"status": value.Status, "scope": value.Scope, "mode": value.Mode}), nil
 	case contextresource.TypeLongTermMemory:
 		var value memory.Memory
 		if err := r.db.WithContext(ctx).Where("owner_id = ? AND id = ? AND deleted_at IS NULL", item.OwnerID, id).First(&value).Error; err != nil {
@@ -294,10 +279,6 @@ func nilOrLoadError(err error) (*contextresource.Document, error) {
 func document(item contextresource.OutboxItem, content string, conversationID, projectID int64, metadata map[string]any) *contextresource.Document {
 	return &contextresource.Document{OwnerID: item.OwnerID, AgentID: item.AgentID, ProjectID: projectID, ResourceType: item.ResourceType,
 		ResourceID: item.ResourceID, Content: content, ContentHash: contextresource.HashContent(content), ConversationID: conversationID, Metadata: metadata}
-}
-
-func reflectionContextText(item reflection.Reflection) string {
-	return strings.Join([]string{item.TaskSummary, item.RootCauseCategory, item.RootCause, item.Lesson, item.CorrectiveAction, item.Applicability}, "\n")
 }
 
 func memoryContextText(item memory.Memory) string {

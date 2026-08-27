@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -54,14 +55,145 @@ type Memory struct {
 	Title                string          `json:"title" gorm:"column:title"`
 	Content              string          `json:"content" gorm:"column:content"`
 	Importance           float64         `json:"importance" gorm:"column:importance"`
-	RecallCount          int             `json:"recall_count" gorm:"column:recall_count;default:0"`
+	UsageCount           int             `json:"usage_count" gorm:"column:usage_count;default:0"`
 	PromotionCount       int             `json:"promotion_count" gorm:"column:promotion_count;default:0"`
 	Source               string          `json:"source" gorm:"column:source"`
 	DeduplicationKey     *string         `json:"deduplication_key,omitempty" gorm:"column:deduplication_key"`
 	MetadataJSON         json.RawMessage `json:"metadata_json" gorm:"column:metadata_json"`
-	LastRecalledAt       *time.Time      `json:"last_recalled_at" gorm:"column:last_recalled_at"`
+	LastUsedAt           *time.Time      `json:"last_used_at" gorm:"column:last_used_at"`
 	LastDecayAt          *time.Time      `json:"last_decay_at" gorm:"column:last_decay_at"`
 	ExpiresAt            *time.Time      `json:"expires_at" gorm:"column:expires_at"`
+}
+
+const (
+	ArtifactKindHandbook = "handbook"
+	ArtifactKindSummary  = "summary"
+	ArtifactKindRawInput = "raw_input"
+	ArtifactKindRollout  = "rollout_summary"
+	ArtifactKindAdHoc    = "ad_hoc"
+)
+
+var ArtifactKinds = []string{ArtifactKindHandbook, ArtifactKindSummary, ArtifactKindRawInput, ArtifactKindRollout, ArtifactKindAdHoc}
+
+type MemoryArtifact struct {
+	domain.BaseModel
+	Kind           string          `json:"kind" gorm:"column:kind"`
+	Version        int             `json:"version" gorm:"column:version"`
+	Content        string          `json:"content" gorm:"column:content"`
+	Source         string          `json:"source" gorm:"column:source"`
+	SourceRefsJSON json.RawMessage `json:"source_refs_json" gorm:"column:source_refs_json"`
+	Checksum       string          `json:"checksum" gorm:"column:checksum"`
+	ProtectedAt    *time.Time      `json:"protected_at,omitempty" gorm:"column:protected_at"`
+	ConsolidatedAt *time.Time      `json:"consolidated_at,omitempty" gorm:"column:consolidated_at"`
+}
+
+func (MemoryArtifact) TableName() string { return "memory_artifacts" }
+func (a MemoryArtifact) ValidKind() bool {
+	for _, k := range ArtifactKinds {
+		if a.Kind == k {
+			return true
+		}
+	}
+	return false
+}
+
+func (a MemoryArtifact) Validate() error {
+	if a.OwnerID <= 0 {
+		return fmt.Errorf("artifact owner is required")
+	}
+	if !a.ValidKind() {
+		return fmt.Errorf("unsupported artifact kind %q", a.Kind)
+	}
+	if a.Version <= 0 {
+		return fmt.Errorf("artifact version must be positive")
+	}
+	if strings.TrimSpace(a.Checksum) == "" {
+		return fmt.Errorf("artifact checksum is required")
+	}
+	return nil
+}
+
+const (
+	WriteJobStatusPending    = "pending"
+	WriteJobStatusRunning    = "running"
+	WriteJobStatusCompleted  = "completed"
+	WriteJobStatusFailed     = "failed"
+	WriteJobStatusDeadLetter = "dead_letter"
+)
+
+var WriteJobSources = []string{"extraction", "ad_hoc", "proposal", "consolidation", "reflection", "manual"}
+
+// ValidSources is the canonical source vocabulary shared by memories and jobs.
+var ValidSources = WriteJobSources
+
+func ValidateSource(source string) error { return ValidateWriteJobSource(source) }
+
+func ValidateWriteJobSource(source string) error {
+	for _, allowed := range WriteJobSources {
+		if source == allowed {
+			return nil
+		}
+	}
+	return fmt.Errorf("unsupported memory write source %q", source)
+}
+
+func CanonicalSource(source string) string {
+	switch strings.TrimSpace(source) {
+	case "extraction", "ad_hoc", "proposal", "consolidation", "reflection", "manual":
+		return strings.TrimSpace(source)
+	default:
+		return "manual"
+	}
+}
+
+type MemoryWriteJob struct {
+	domain.BaseModel
+	IdempotencyKey string          `json:"idempotency_key" gorm:"column:idempotency_key"`
+	Source         string          `json:"source" gorm:"column:source"`
+	PayloadJSON    json.RawMessage `json:"payload_json" gorm:"column:payload_json"`
+	Status         string          `json:"status" gorm:"column:status"`
+	AttemptCount   int             `json:"attempt_count" gorm:"column:attempt_count"`
+	DueAt          *time.Time      `json:"due_at,omitempty" gorm:"column:due_at"`
+	LockedBy       string          `json:"locked_by" gorm:"column:locked_by"`
+	LockedAt       *time.Time      `json:"locked_at,omitempty" gorm:"column:locked_at"`
+	LeaseExpiresAt *time.Time      `json:"lease_expires_at,omitempty" gorm:"column:lease_expires_at"`
+	ErrorMessage   string          `json:"error_message" gorm:"column:error_message"`
+	CompletedAt    *time.Time      `json:"completed_at,omitempty" gorm:"column:completed_at"`
+}
+
+func (MemoryWriteJob) TableName() string { return "memory_write_jobs" }
+func (j MemoryWriteJob) Validate() error {
+	if j.OwnerID <= 0 {
+		return fmt.Errorf("job owner is required")
+	}
+	if err := ValidateWriteJobSource(j.Source); err != nil {
+		return err
+	}
+	if strings.TrimSpace(j.IdempotencyKey) == "" {
+		return fmt.Errorf("idempotency key is required")
+	}
+	return nil
+}
+
+// CanClaimAt is shared eligibility logic for leased workers. Repository claim
+// queries must still lock and order eligible rows by due_at then id.
+func (j MemoryWriteJob) CanClaimAt(now time.Time) bool {
+	if j.Status == WriteJobStatusPending {
+		return j.DueAt == nil || !j.DueAt.After(now)
+	}
+	return j.Status == WriteJobStatusRunning && j.LeaseExpiresAt != nil && !j.LeaseExpiresAt.After(now)
+}
+
+type MemoryArtifactRepository interface {
+	Create(ctx context.Context, artifact *MemoryArtifact) error
+	Latest(ctx context.Context, ownerID int64, kind string) (*MemoryArtifact, error)
+}
+
+type MemoryWriteJobRepository interface {
+	Create(ctx context.Context, job *MemoryWriteJob) error
+	FindByIdempotencyKey(ctx context.Context, ownerID int64, key string) (*MemoryWriteJob, error)
+	ClaimPending(ctx context.Context, workerID string, now time.Time, leaseUntil time.Time, limit int) ([]MemoryWriteJob, error)
+	Update(ctx context.Context, job *MemoryWriteJob) error
 }
 
 func (Memory) TableName() string { return "memories" }
@@ -144,18 +276,6 @@ func (m Memory) IsRecallable(now time.Time) bool {
 	return status == StatusActive && m.DeletedAt == nil && !m.HasConflict &&
 		(m.ExpiresAt == nil || m.ExpiresAt.After(now))
 }
-
-type WriteLog struct {
-	domain.ImmutableModel
-	MemoryID   int64           `json:"memory_id" gorm:"column:memory_id"`
-	RunID      int64           `json:"run_id" gorm:"column:run_id"`
-	Action     string          `json:"action" gorm:"column:action"`
-	BeforeJSON json.RawMessage `json:"before_json" gorm:"column:before_json"`
-	AfterJSON  json.RawMessage `json:"after_json" gorm:"column:after_json"`
-	Reason     string          `json:"reason" gorm:"column:reason"`
-}
-
-func (WriteLog) TableName() string { return "memory_write_logs" }
 
 type RecallLog struct {
 	domain.ImmutableModel

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -20,7 +21,6 @@ type ArchivalIndex interface {
 
 type RuntimeService struct {
 	Memories     Repository
-	Logs         WriteLogRepository
 	Retriever    SemanticRetriever
 	Archival     ArchivalIndex
 	ContextIndex contextresource.Index
@@ -39,8 +39,8 @@ type ReadRequest struct {
 	Query          string
 	Limit          int
 	TokenBudget    int
-	// SemanticOnly prevents the legacy "latest N" fallback. Agent runtime
-	// reads set this flag so only query-relevant memories enter context.
+	// SemanticOnly is retained for legacy callers. Keyword memory reads never
+	// fall back to a "latest N" list regardless of this flag.
 	SemanticOnly bool
 	// AllowLegacyListFallback is reserved for maintenance/import callers. It
 	// is intentionally false for all Agent-facing reads.
@@ -125,48 +125,8 @@ func (s RuntimeService) Read(ctx context.Context, req ReadRequest) (ReadResult, 
 	if query == "" && !req.AllowLegacyListFallback {
 		return ReadResult{}, fmt.Errorf("semantic memory query is required")
 	}
-	var ids []int64
-	scores := map[int64]float64{}
-	reason := "legacy_list"
 	if query != "" {
-		var err error
-		if s.ContextIndex != nil {
-			conversationID := int64(0)
-			if req.ConversationID != nil {
-				conversationID = *req.ConversationID
-			}
-			agentID := req.AgentID
-			if agentID <= 0 {
-				agentID = s.AgentID
-			}
-			hits, searchErr := s.ContextIndex.Search(ctx, contextresource.SearchRequest{OwnerID: req.OwnerID, AgentID: agentID,
-				ProjectID: req.ProjectID, ConversationID: conversationID, ResourceTypes: []string{contextresource.TypeLongTermMemory}, Query: query,
-				Mode: "hybrid", TopK: limit * 2, Profile: s.Profile})
-			err = searchErr
-			for _, hit := range hits {
-				id, parseErr := strconv.ParseInt(hit.ResourceID, 10, 64)
-				if parseErr == nil && id > 0 {
-					ids = append(ids, id)
-					scores[id] = hit.Score
-				}
-			}
-			reason = "unified_context_index"
-		} else if onlyArchival(req.MemoryTypes) && s.Archival != nil {
-			ids, err = s.Archival.Search(ctx, req.OwnerID, query, limit)
-		}
-		if s.ContextIndex == nil && (err != nil || len(ids) == 0) && s.Retriever != nil {
-			ids, err = s.Retriever.Search(ctx, req.OwnerID, query, req.MemoryTypes, limit)
-		}
-		if err == nil && len(ids) > 0 {
-			items := trimMemoriesToTokenBudget(s.fetchValid(ctx, req, ids, limit), req.TokenBudget)
-			return s.readResult(ctx, req, items, query, scores, reason)
-		}
-		if req.SemanticOnly || !req.AllowLegacyListFallback {
-			if err != nil {
-				return ReadResult{}, fmt.Errorf("semantic memory retrieval failed: %w", err)
-			}
-			return s.readResult(ctx, req, nil, query, scores, reason)
-		}
+		return s.readKeywordMemory(ctx, req, query, limit)
 	}
 	var items []Memory
 	var err error
@@ -180,7 +140,141 @@ func (s RuntimeService) Read(ctx context.Context, req ReadRequest) (ReadResult, 
 		return ReadResult{}, err
 	}
 	items = filterReadableMemories(items, req)
-	return s.readResult(ctx, req, trimMemoriesToTokenBudget(items, req.TokenBudget), query, scores, reason)
+	return s.readResult(ctx, req, trimMemoriesToTokenBudget(items, req.TokenBudget), query, nil, "legacy_list")
+}
+
+// readKeywordMemory is the sole Agent-facing memory detail read path. It
+// searches the unified context ES keyword index, ranks hits by ES _score
+// descending with an ascending memory ID tie-break, and hydrates the survivors
+// from SQL. The vector leg is never invoked and an index failure is returned
+// to the caller instead of degrading into a full-table scan.
+func (s RuntimeService) readKeywordMemory(ctx context.Context, req ReadRequest, query string, limit int) (ReadResult, error) {
+	if s.ContextIndex == nil {
+		return ReadResult{}, fmt.Errorf("unified keyword memory index is not configured")
+	}
+	conversationID := int64(0)
+	if req.ConversationID != nil {
+		conversationID = *req.ConversationID
+	}
+	agentID := req.AgentID
+	if agentID <= 0 {
+		agentID = s.AgentID
+	}
+	hits, err := s.ContextIndex.Search(ctx, contextresource.SearchRequest{
+		OwnerID:        req.OwnerID,
+		AgentID:        agentID,
+		ProjectID:      req.ProjectID,
+		ConversationID: conversationID,
+		ResourceTypes:  []string{contextresource.TypeLongTermMemory},
+		Query:          query,
+		Mode:           "keyword",
+		TopK:           limit * 2,
+		Profile:        s.Profile,
+	})
+	if err != nil {
+		return ReadResult{}, fmt.Errorf("keyword memory retrieval failed: %w", err)
+	}
+	ranked := rankKeywordMemoryHits(hits)
+	scores := make(map[int64]float64, len(ranked))
+	for _, hit := range ranked {
+		scores[hit.id] = hit.score
+	}
+	items, err := s.hydrateKeywordMemories(ctx, req, ranked, limit)
+	if err != nil {
+		return ReadResult{}, fmt.Errorf("hydrate keyword memory hits: %w", err)
+	}
+	return s.readResult(ctx, req, items, query, scores, "unified_context_index")
+}
+
+const maxMemoryContentChars = 6000
+
+type keywordMemoryHit struct {
+	id    int64
+	score float64
+}
+
+// rankKeywordMemoryHits converts context index results into memory IDs ranked
+// by ES _score descending with a deterministic ascending memory ID tie-break.
+func rankKeywordMemoryHits(hits []contextresource.SearchResult) []keywordMemoryHit {
+	ranked := make([]keywordMemoryHit, 0, len(hits))
+	for _, hit := range hits {
+		id, err := strconv.ParseInt(strings.TrimSpace(hit.ResourceID), 10, 64)
+		if err != nil || id <= 0 {
+			continue
+		}
+		ranked = append(ranked, keywordMemoryHit{id: id, score: hit.Score})
+	}
+	sort.Slice(ranked, func(i, j int) bool {
+		if ranked[i].score != ranked[j].score {
+			return ranked[i].score > ranked[j].score
+		}
+		return ranked[i].id < ranked[j].id
+	})
+	return ranked
+}
+
+// hydrateKeywordMemories re-fetches ranked ES hits from SQL and rechecks owner,
+// scope, lifecycle and deduplication. The ES score order is preserved no
+// matter which order the SQL rows arrive in; foreign-owner hits and stale rows
+// are omitted and per-entry content is truncated without padding missing rows.
+func (s RuntimeService) hydrateKeywordMemories(ctx context.Context, req ReadRequest, ranked []keywordMemoryHit, limit int) ([]Memory, error) {
+	ids := make([]int64, 0, len(ranked))
+	for _, hit := range ranked {
+		ids = append(ids, hit.id)
+	}
+	rows, err := s.Memories.FindByIDs(ctx, req.OwnerID, ids)
+	if err != nil {
+		return nil, err
+	}
+	byID := make(map[int64]Memory, len(rows))
+	for _, row := range rows {
+		byID[row.ID] = row
+	}
+	now := time.Now()
+	items := make([]Memory, 0, limit)
+	seenIDs := map[int64]bool{}
+	seenContent := map[string]bool{}
+	seenSources := map[string]bool{}
+	for _, hit := range ranked {
+		if seenIDs[hit.id] {
+			continue
+		}
+		item, ok := byID[hit.id]
+		if !ok || item.OwnerID != req.OwnerID {
+			continue
+		}
+		if !item.IsRecallable(now) || !matchesLevel(item.RetentionTier) || !matchesType(item.MemoryType, req.MemoryTypes) || !matchesScope(item, req) {
+			continue
+		}
+		contentKey := normalizeMemoryText(item.Content)
+		sourceKey := ""
+		if item.DeduplicationKey != nil {
+			sourceKey = strings.TrimSpace(*item.DeduplicationKey)
+		}
+		if seenContent[contentKey] || (sourceKey != "" && seenSources[sourceKey]) {
+			continue
+		}
+		seenIDs[hit.id], seenContent[contentKey] = true, true
+		if sourceKey != "" {
+			seenSources[sourceKey] = true
+		}
+		item.Content = truncateMemoryContent(item.Content)
+		items = append(items, item)
+		if len(items) == limit {
+			break
+		}
+	}
+	return items, nil
+}
+
+// truncateMemoryContent enforces the 6000-character per-entry bound shared by
+// the keyword memory read contract.
+func truncateMemoryContent(content string) string {
+	runes := []rune(content)
+	if len(runes) <= maxMemoryContentChars {
+		return content
+	}
+	return string(runes[:maxMemoryContentChars])
 }
 
 func (s RuntimeService) Write(ctx context.Context, req WriteRequest) (WriteResult, error) {
@@ -249,7 +343,6 @@ func (s RuntimeService) Write(ctx context.Context, req WriteRequest) (WriteResul
 		}
 	}
 	action := WriteActionCreate
-	var beforeJSON json.RawMessage
 	item := &Memory{SourceConversationID: req.SourceConversationID, SourceProjectID: req.SourceProjectID}
 	item.OwnerID = req.OwnerID
 	item.ConflictWithID = conflictParent
@@ -273,10 +366,6 @@ func (s RuntimeService) Write(ctx context.Context, req WriteRequest) (WriteResul
 		if err != nil {
 			return WriteResult{}, err
 		}
-		beforeJSON, err = json.Marshal(existing)
-		if err != nil {
-			return WriteResult{}, err
-		}
 		item = existing
 		action = WriteActionUpdate
 	}
@@ -291,7 +380,7 @@ func (s RuntimeService) Write(ctx context.Context, req WriteRequest) (WriteResul
 	if item.Importance > 1 {
 		item.Importance = 1
 	}
-	item.Source = strings.TrimSpace(req.Source)
+	item.Source = CanonicalSource(req.Source)
 	item.DeduplicationKey = req.DeduplicationKey
 	if len(req.MetadataJSON) > 0 {
 		item.MetadataJSON = req.MetadataJSON
@@ -301,9 +390,6 @@ func (s RuntimeService) Write(ctx context.Context, req WriteRequest) (WriteResul
 		item.Status = strings.TrimSpace(req.Status)
 	}
 	item.SupersedesID = req.SupersedesID
-	if item.Source == "" {
-		item.Source = "agent_tool"
-	}
 	replacementApplied := false
 	if action == WriteActionCreate && item.SupersedesID != nil {
 		if replacements, ok := s.Memories.(AtomicReplacementRepository); ok {
@@ -319,15 +405,6 @@ func (s RuntimeService) Write(ctx context.Context, req WriteRequest) (WriteResul
 	}
 	if err != nil {
 		return WriteResult{}, err
-	}
-	afterJSON, err := json.Marshal(item)
-	if err != nil {
-		return WriteResult{}, err
-	}
-	if s.Logs != nil {
-		if err := s.Logs.Create(ctx, &WriteLog{ImmutableModel: domain.ImmutableModel{OwnerID: req.OwnerID}, MemoryID: item.ID, RunID: req.RunID, Action: action, BeforeJSON: beforeJSON, AfterJSON: afterJSON, Reason: strings.TrimSpace(req.Reason)}); err != nil {
-			return WriteResult{}, err
-		}
 	}
 	return WriteResult{Memory: *item, Action: action, ReplacementApplied: replacementApplied}, nil
 }
@@ -537,10 +614,6 @@ func trimMemoriesToTokenBudget(items []Memory, budget int) []Memory {
 		result = append(result, items[i])
 	}
 	return result
-}
-
-func onlyArchival(types []string) bool {
-	return len(types) == 1 && strings.TrimSpace(types[0]) == TypeArchival
 }
 
 func matchesType(value string, types []string) bool {

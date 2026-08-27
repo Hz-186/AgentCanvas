@@ -24,9 +24,17 @@ type SkillLoadTool struct {
 }
 
 type SkillSearchTool struct {
+	// Retriever is the skill subsystem's query reader. When configured, skill
+	// queries route there (exactly once per query); the in-memory Skills list
+	// remains the fallback for old wiring without a retriever.
+	Retriever skill.Retriever
+	// Skills is the in-memory fallback search surface (attached skills only).
 	Skills []skill.Skill
-	Audits audit.Repository
-	Limit  int
+	// AllowedSkillIDs restricts retriever results to the attached skills.
+	// A nil slice disables the restriction (legacy wiring).
+	AllowedSkillIDs []int64
+	Audits          audit.Repository
+	Limit           int
 }
 
 func (SkillLoadTool) Name() string { return "load_skill" }
@@ -118,6 +126,33 @@ func (t SkillSearchTool) Execute(ctx context.Context, rc ToolRunContext, input j
 	if limit > 5 {
 		limit = 5
 	}
+	matches, err := t.searchMatches(ctx, rc.OwnerID, goal, limit)
+	if err != nil {
+		return &ToolResult{ContentText: err.Error(), IsError: true}, err
+	}
+	t.audit(rc.OwnerID, "skill.search", strconv.Itoa(len(matches)), map[string]any{"goal": args.Goal, "match_count": len(matches)})
+	output := make([]map[string]any, 0, len(matches))
+	for _, item := range matches {
+		output = append(output, map[string]any{
+			"skill_id":    item.ID,
+			"name":        item.Name,
+			"description": item.Description,
+		})
+	}
+	return ResultFromValue(map[string]any{"matches": output})
+}
+
+// searchMatches routes the skill query to the skill subsystem retriever when
+// one is configured; memory is never consulted for skills. The in-memory
+// attached-skill scoring remains the fallback for legacy wiring.
+func (t SkillSearchTool) searchMatches(ctx context.Context, ownerID int64, goal string, limit int) ([]skill.Skill, error) {
+	if t.Retriever != nil {
+		items, err := t.Retriever.Search(ctx, ownerID, goal, limit)
+		if err != nil {
+			return nil, err
+		}
+		return filterAllowedSkills(items, t.AllowedSkillIDs), nil
+	}
 	tokens := strings.Fields(goal)
 	type skillMatch struct {
 		Skill skill.Skill
@@ -140,17 +175,30 @@ func (t SkillSearchTool) Execute(ctx context.Context, rc ToolRunContext, input j
 	if len(matches) > limit {
 		matches = matches[:limit]
 	}
-	output := make([]map[string]any, 0, len(matches))
+	skills := make([]skill.Skill, 0, len(matches))
 	for _, item := range matches {
-		output = append(output, map[string]any{
-			"skill_id":    item.Skill.ID,
-			"name":        item.Skill.Name,
-			"description": item.Skill.Description,
-			"score":       item.Score,
-		})
+		skills = append(skills, item.Skill)
 	}
-	t.audit(rc.OwnerID, "skill.search", strconv.Itoa(len(output)), map[string]any{"goal": args.Goal, "match_count": len(output)})
-	return ResultFromValue(map[string]any{"matches": output})
+	return skills, nil
+}
+
+// filterAllowedSkills restricts retriever results to the attached skill IDs.
+// A nil allowed list disables the restriction (legacy wiring).
+func filterAllowedSkills(items []skill.Skill, allowed []int64) []skill.Skill {
+	if allowed == nil {
+		return items
+	}
+	allowedSet := make(map[int64]bool, len(allowed))
+	for _, id := range allowed {
+		allowedSet[id] = true
+	}
+	filtered := make([]skill.Skill, 0, len(items))
+	for _, item := range items {
+		if allowedSet[item.ID] {
+			filtered = append(filtered, item)
+		}
+	}
+	return filtered
 }
 
 func (t SkillLoadTool) audit(ownerID int64, action, resourceID string, detail map[string]any) {

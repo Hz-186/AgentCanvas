@@ -11,7 +11,6 @@ import (
 
 	"agentcanvas/internal/domain/conversation"
 	"agentcanvas/internal/domain/memory"
-	"agentcanvas/internal/domain/reflection"
 	"agentcanvas/internal/domain/retrieval"
 	"agentcanvas/internal/observability"
 	runtimeagent "agentcanvas/internal/runtime/agent"
@@ -69,10 +68,6 @@ func (n runtimeCore) runAgent(
 			copyProvider.EmbeddingModel = strings.TrimSpace(cfg.RetrievalPolicy.EmbeddingModel)
 			semanticProvider = &copyProvider
 		}
-	}
-	embeddingProviderID, embeddingModel := int64(0), ""
-	if semanticProvider != nil {
-		embeddingProviderID, embeddingModel = semanticProvider.ProviderID, semanticProvider.EmbeddingModel
 	}
 	tools, err := n.loadTools(ctx, rc.OwnerID, cfg, semanticProvider, rc.Workspace)
 	if err != nil {
@@ -204,27 +199,6 @@ func (n runtimeCore) runAgent(
 	if mode == "plan" {
 		reflectionPolicy.Enabled = false
 	}
-	var reflectionRecall reflection.RecallResult
-	if resume == nil && n.Reflections != nil && reflectionPolicy.Active() {
-		reflectionRecall, _ = n.Reflections.Recall(ctx, reflection.RecallRequest{
-			OwnerID:             rc.OwnerID,
-			AgentID:             rc.AgentID,
-			RunID:               rc.RunID,
-			Mode:                mode,
-			Task:                recallTask,
-			Policy:              reflectionPolicy,
-			EmbeddingProviderID: embeddingProviderID,
-			EmbeddingModel:      embeddingModel,
-		})
-		if reflectionAffectsExecution(reflectionPolicy) && strings.TrimSpace(reflectionRecall.Context) != "" {
-			contextBlocks = append(contextBlocks, runtimeagent.ContextBlock{
-				Name:    "reflection_memory",
-				Role:    "system",
-				Content: reflectionRecall.Context,
-				Pinned:  false,
-			})
-		}
-	}
 	emitRuntimeEvent(ctx, rc, runtimeevent.Event{
 		Type:  runtimeevent.AgentStarted,
 		RunID: rc.RunID,
@@ -284,7 +258,6 @@ func (n runtimeCore) runAgent(
 		EnforceContextPrecedence:        true,
 		ReflectionEnabled:               cfg.ReflectionEnabled,
 		ReflectionPolicy:                reflectionPolicy,
-		RecalledReflectionIDs:           reflectionLessonIDs(reflectionRecall.Lessons),
 		Temperature:                     cfg.Temperature,
 		MaxIterations:                   cfg.MaxIterations,
 		MaxToolCalls:                    cfg.MaxToolCalls,
@@ -350,7 +323,7 @@ func (n runtimeCore) runAgent(
 	}
 	result, err := runner.Run(ctx, runRequest)
 	if err != nil {
-		n.finalizeReflection(ctx, rc, cfg, loaded, task, result, reflectionPolicy)
+		n.finalizeReflection(ctx, rc, task, result, reflectionPolicy)
 		emitAgentResultEvent(ctx, rc, result, err)
 		return nil, err
 	}
@@ -359,6 +332,11 @@ func (n runtimeCore) runAgent(
 		emitAgentResultEvent(ctx, rc, nil, err)
 		return nil, err
 	}
+	// Strip the citation block from the user-visible answer and record
+	// owner-validated usage for cited memories before any downstream
+	// consumer (output, schema validation, ad-hoc note, result event) sees
+	// the final text.
+	n.finalizeCitations(ctx, rc, result)
 	output := RunOutput{
 		"content":              result.FinalAnswer,
 		"final_answer":         result.FinalAnswer,
@@ -407,7 +385,7 @@ func (n runtimeCore) runAgent(
 		}
 		if schemaErr != nil {
 			result.StopReason = runtimeagent.StopReasonReflectionFailed
-			n.finalizeReflection(ctx, rc, cfg, loaded, task, result, reflectionPolicy)
+			n.finalizeReflection(ctx, rc, task, result, reflectionPolicy)
 			err = fmt.Errorf("%w: agent runtime final_answer does not match output_schema_json: %v", agenterrors.ErrInvalidInput, schemaErr)
 			emitAgentResultEvent(ctx, rc, result, err)
 			return nil, err
@@ -459,7 +437,7 @@ func (n runtimeCore) runAgent(
 		output["steps"] = runtimeagent.CompactSteps(result.Steps, 8192)
 	}
 	n.checkExtractionTrigger(ctx, rc, result, result.Iterations, cfg.MemoryEnabled)
-	n.finalizeReflection(ctx, rc, cfg, loaded, task, result, reflectionPolicy)
+	n.finalizeReflection(ctx, rc, task, result, reflectionPolicy)
 	emitAgentResultEvent(ctx, rc, result, nil)
 	return output, nil
 }
@@ -488,4 +466,34 @@ func emitAgentResultEvent(ctx context.Context, rc *RunContext, result *runtimeag
 		payload["error"] = runErr.Error()
 	}
 	emitRuntimeEvent(ctx, rc, runtimeevent.Event{Type: eventType, RunID: rc.RunID, Payload: payload})
+}
+
+// finalizeCitations strips the Codex-compatible <oai-mem-citation> block from
+// the final answer before user-visible emission and records owner-validated,
+// per-run deduplicated usage (usage_count / last_used_at) for the cited
+// memories. Malformed lines, missing IDs and foreign-owner IDs are dropped
+// individually and surfaced as runtime warning events; nothing here fails the
+// run. RecallLog stays the returned-candidate audit and is never touched.
+func (n runtimeCore) finalizeCitations(ctx context.Context, rc *RunContext, result *runtimeagent.RunResult) {
+	if rc == nil || result == nil {
+		return
+	}
+	outcome := memory.AccountCitations(ctx, rc.OwnerID, result.FinalAnswer, n.Memories)
+	for _, warning := range outcome.Warnings {
+		emitRuntimeEvent(ctx, rc, runtimeevent.Event{Type: runtimeevent.AgentStep, RunID: rc.RunID,
+			Payload: map[string]any{"type": runtimeagent.StepTypeError, "error": warning}})
+	}
+	result.FinalAnswer = outcome.VisibleText
+	// Full-output modes re-emit the recorded steps; align the final answer
+	// step with the stripped text and strip any citation lines from stored
+	// llm_response steps so the citation block never reaches the user-visible
+	// step payload either. The raw text was already captured for accounting.
+	for i := range result.Steps {
+		switch result.Steps[i].Type {
+		case runtimeagent.StepTypeFinalAnswer:
+			result.Steps[i].Content = outcome.VisibleText
+		case runtimeagent.StepTypeLLMResponse:
+			result.Steps[i].Content = memory.StripCitations(result.Steps[i].Content)
+		}
+	}
 }

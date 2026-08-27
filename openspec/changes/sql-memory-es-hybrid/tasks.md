@@ -4,7 +4,7 @@
 
 ## Wave 1 — Canonical SQL model and migration primitives
 
-- [ ] Task 1: Add SQL canonical memory schema and Go contracts
+- [x] Task 1: Add SQL canonical memory schema and Go contracts
   - complexity: 🔴
   - files: `migrations/*memory*.sql`, new `memory_artifacts`/`memory_write_jobs` migrations, `internal/domain/memory/memory.go`, new artifact/job models and repositories, config/state wiring
   - RED:
@@ -24,7 +24,7 @@
 
 ## Wave 2 — Unified asynchronous write pipeline
 
-- [ ] Task 2: Route every memory producer through memory write jobs
+- [x] Task 2: Route every memory producer through memory write jobs
   - complexity: 🔴
   - files: `internal/application/memory_usecase/*`, `internal/runtime/agentruntime/execution.go`, `internal/runtime/agentruntime/assembly.go`, `internal/application/agent_usecase/improvement.go`, worker bootstrap/dispatch/config
   - RED:
@@ -43,7 +43,7 @@
   - DoD:
     - All six producer tests pass; worker claims/retries/DLQ are wired; successful runs never wait on memory writes; old direct ad-hoc file write path is unreachable.
 
-- [ ] Task 3: Persist consolidation projections and remove file authority
+- [x] Task 3: Persist consolidation projections and remove file authority
   - complexity: 🔴
   - files: `internal/application/memory_usecase/durable_memory_pipeline.go`, new artifact projection service, `internal/application/memory_usecase/durable_memory_files.go`, runtime dependency wiring
   - RED:
@@ -63,7 +63,7 @@
 
 ## Wave 3 — Keyword retrieval and read parity
 
-- [ ] Task 4: Implement keyword-ranked ES memory retrieval with SQL hydration
+- [x] Task 4: Implement keyword-ranked ES memory retrieval with SQL hydration
   - complexity: 🔴
   - files: `internal/infrastructure/retrieval/context_backend.go`, keyword/context resource adapters, `internal/domain/memory/runtime_service.go`, `internal/runtime/toolruntime/memory_tools.go`, index configuration/tests
   - RED:
@@ -81,7 +81,7 @@
   - DoD:
     - Keyword-only retrieval is the sole Agent-facing detail path; ranking, tenancy, limits and no-vector behavior are tested.
 
-- [ ] Task 5: Move automatic summary and skill reads to their owning SQL subsystems
+- [x] Task 5: Move automatic summary and skill reads to their owning SQL subsystems
   - complexity: 🔴
   - files: `internal/runtime/agentruntime/tools.go`, runtime dependency structs/bootstrap, skill retrieval wiring, API/tool descriptions/tests
   - RED:
@@ -100,7 +100,7 @@
 
 ## Wave 4 — Citation, usage lifecycle, Reflection and cleanup
 
-- [ ] Task 6: Add citation stripping and owner-validated usage accounting
+- [x] Task 6: Add citation stripping and owner-validated usage accounting
   - complexity: 🔴
   - files: citation parser/finalization stream utilities, `internal/domain/memory` usage repository, runtime result finalizer, recall/usage tests
   - RED:
@@ -116,7 +116,7 @@
   - DoD:
     - Citation parsing/strip/usage tests pass with `usage_count` and `last_used_at`; no adoption logic references `recall_count`.
 
-- [ ] Task 7: Implement usage-driven lifecycle and source-aware pruning
+- [x] Task 7: Implement usage-driven lifecycle and source-aware pruning
   - complexity: 🔴
   - files: lifecycle selection/pruning services, SQL migrations/repositories, consolidation cleanup, config defaults and tests
   - RED:
@@ -133,7 +133,7 @@
   - DoD:
     - Lifecycle tests pass and production configuration exposes the agreed defaults without static quality scoring.
 
-- [ ] Task 8: Migrate Reflection/files and retire duplicate storage surfaces
+- [x] Task 8: Migrate Reflection/files and retire duplicate storage surfaces
   - complexity: 🔴
   - files: migration importer/checksum tooling, Reflection usecase/worker/repository/API/bootstrap/config, `memory_write_logs` migrations/model/repository, cleanup verification tests/docs
   - RED:

@@ -16,7 +16,6 @@ import (
 	agentdomain "agentcanvas/internal/domain/agent"
 	"agentcanvas/internal/domain/conversation"
 	"agentcanvas/internal/domain/memory"
-	"agentcanvas/internal/domain/reflection"
 	"agentcanvas/internal/domain/skill"
 	"agentcanvas/internal/infrastructure/llm"
 	"agentcanvas/internal/observability"
@@ -37,6 +36,17 @@ type ImprovementProviderLoader interface {
 	LoadChatProviderConfig(ctx context.Context, ownerID, providerID int64, model string) (*agentruntime.LoadedProvider, error)
 }
 
+// ProposalMemoryWriter routes approved reflection proposals into the unified
+// memory write pipeline (source proposal). It replaced the retired reflection
+// repository: proposals are ordinary memory write jobs, not reflection rows.
+// The envelope types live in domain/memory so the implementing adapter does
+// not depend on this package.
+type ProposalMemoryWriter = memory.ProposalMemoryWriter
+
+// ProposalWriteJobRequest is the proposal memory write envelope. The
+// implementing adapter derives the idempotency key from ProposalID.
+type ProposalWriteJobRequest = memory.ProposalWriteJobRequest
+
 type ImprovementService struct {
 	repository    agentdomain.ImprovementRepository
 	agents        agentdomain.Repository
@@ -45,7 +55,7 @@ type ImprovementService struct {
 	conversations conversation.Repository
 	messages      conversation.MessageRepository
 	steps         agentdomain.RunStepRepository
-	reflections   reflection.Repository
+	proposals     ProposalMemoryWriter
 	skills        skill.Repository
 	providers     ImprovementProviderLoader
 	client        llm.ToolCallingClient
@@ -69,7 +79,7 @@ func (s *ImprovementService) ConfigureMemoryCommands(commands memory.Commander) 
 }
 
 func NewImprovementService(repository agentdomain.ImprovementRepository, agents agentdomain.Repository, turns agentdomain.TurnRepository, runs agentdomain.RunRepository,
-	conversations conversation.Repository, messages conversation.MessageRepository, steps agentdomain.RunStepRepository, memories memory.Repository, reflections reflection.Repository,
+	conversations conversation.Repository, messages conversation.MessageRepository, steps agentdomain.RunStepRepository, memories memory.Repository, proposals ProposalMemoryWriter,
 	skills skill.Repository, providers ImprovementProviderLoader, client llm.ToolCallingClient, memoryMode string) *ImprovementService {
 	// memories is retained only to avoid breaking older bootstrap call sites.
 	// It is intentionally ignored: self-improvement cannot create, approve, or
@@ -83,7 +93,7 @@ func NewImprovementService(repository agentdomain.ImprovementRepository, agents 
 		mode = MemoryReviewSuggest
 	}
 	return &ImprovementService{repository: repository, agents: agents, turns: turns, runs: runs, conversations: conversations, messages: messages, steps: steps,
-		reflections: reflections, skills: skills, providers: providers, client: client, memoryMode: mode, lease: 2 * time.Minute}
+		proposals: proposals, skills: skills, providers: providers, client: client, memoryMode: mode, lease: 2 * time.Minute}
 }
 
 func (s *ImprovementService) EnqueueTurnReview(ctx context.Context, turn *agentdomain.Turn, definition agentruntime.Definition) error {
@@ -335,12 +345,20 @@ func (s *ImprovementService) DecideMemoryProposal(ctx context.Context, ownerID, 
 func (s *ImprovementService) applyProposal(ctx context.Context, proposal *agentdomain.ChangeProposal) error {
 	switch proposal.Kind {
 	case agentdomain.ProposalKindReflection:
-		agentID := proposal.AgentID
-		return s.reflections.Create(ctx, &reflection.Reflection{SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{OwnerID: proposal.OwnerID}}, AgentID: agentID,
-			SourceRunID: proposal.RunID, Scope: reflection.ScopeAgent, Kind: reflection.KindImportantStrategy,
-			Status: reflection.StatusCandidate, Mode: conversation.ModeDefault, TriggerType: "self_improvement_review", TaskSummary: proposal.Title,
-			CorrectiveAction: proposal.Content, Lesson: proposal.Content, Applicability: "agent", EvidenceJSON: proposal.EvidenceJSON,
-			Importance: proposal.Confidence, Confidence: proposal.Confidence, ContentHash: proposal.Checksum})
+		if s.proposals == nil {
+			return fmt.Errorf("proposal memory writer is not configured")
+		}
+		return s.proposals.EnqueueProposalWriteJob(ctx, ProposalWriteJobRequest{
+			OwnerID:    proposal.OwnerID,
+			AgentID:    proposal.AgentID,
+			RunID:      proposal.RunID,
+			ProposalID: proposal.ID,
+			Title:      proposal.Title,
+			Content:    proposal.Content,
+			Evidence:   string(proposal.EvidenceJSON),
+			Confidence: proposal.Confidence,
+			Checksum:   proposal.Checksum,
+		})
 	case agentdomain.ProposalKindSkill:
 		return s.skills.Create(ctx, &skill.Skill{SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{OwnerID: proposal.OwnerID}}, Name: proposal.Title, Description: "Generated from an approved self-improvement proposal",
 			SkillType: skill.TypeInstruction, SourceType: skill.SourceInline, EntryFile: "SKILL.md", ContentMarkdown: proposal.Content,

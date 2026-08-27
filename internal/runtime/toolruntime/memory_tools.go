@@ -68,20 +68,17 @@ func (t SessionSearchTool) Execute(ctx context.Context, rc ToolRunContext, input
 }
 
 type MemoryReadTool struct {
-	// Files is the file-backed durable memory reader. When configured it is the
-	// only Agent-facing memory surface; the SQL repository fields below exist
-	// solely for old maintenance/test integrations.
-	Files        memory.DurableReader
-	Memories     memory.Repository
-	RecallLogs   memory.RecallLogRepository
-	Retriever    memory.SemanticRetriever
-	Archival     memory.ArchivalIndex
+	// Memories is the SQL hydration authority for keyword index hits.
+	Memories   memory.Repository
+	RecallLogs memory.RecallLogRepository
+	Archival   memory.ArchivalIndex
+	// ContextIndex is the unified keyword index required for every read.
 	ContextIndex contextresource.Index
 	AgentID      int64
 	Profile      contextresource.EmbeddingProfile
 	TokenBudget  int
 	// AllowLegacyListFallback is only for old integrations. New Agent Runtime
-	// wiring leaves it false so memory reads remain semantic-only.
+	// wiring leaves it false so memory reads remain keyword-only.
 	AllowLegacyListFallback bool
 }
 
@@ -92,16 +89,13 @@ type memoryReadInput struct {
 
 func (MemoryReadTool) Name() string { return "read_memory" }
 
-func (t MemoryReadTool) Description() string {
-	if t.Files != nil {
-		return "Search durable memory files on demand. Use the query to find relevant entries in MEMORY.md, rollout summaries, or reusable skills."
-	}
-	return "Search durable memory on demand. The legacy repository is retained only for migration and is not the production memory surface."
+func (MemoryReadTool) Description() string {
+	return "Search durable memory on demand through the unified keyword index. Skills are not memories; use skill_search for reusable skills and workflows."
 }
 
 func (t MemoryReadTool) Parameters() json.RawMessage {
-	// One Agent-facing schema for both the file reader and migration fallback.
-	// Storage taxonomy (profile/episodic/task/archival, short/long) is never a
+	// One Agent-facing schema for the keyword read path. Storage taxonomy
+	// (profile/episodic/task/archival, short/long) is never a
 	// model-selectable dimension.
 	return json.RawMessage(`{"type":"object","properties":{"query":{"type":"string","description":"Search query for durable memory."},"limit":{"type":"number","description":"Maximum entries to return. Default 5, maximum 20."}},"required":["query"],"additionalProperties":false}`)
 }
@@ -111,36 +105,11 @@ func (MemoryReadTool) Metadata() ToolMetadata {
 }
 
 func (t MemoryReadTool) Execute(ctx context.Context, rc ToolRunContext, input json.RawMessage) (*ToolResult, error) {
-	if t.Files != nil {
-		var parsed struct {
-			Query string `json:"query"`
-			Limit int    `json:"limit"`
-		}
-		if len(input) > 0 {
-			decoder := json.NewDecoder(strings.NewReader(string(input)))
-			decoder.DisallowUnknownFields()
-			if err := decoder.Decode(&parsed); err != nil {
-				return &ToolResult{ContentText: err.Error(), IsError: true}, err
-			}
-		}
-		query := strings.TrimSpace(parsed.Query)
-		if query == "" {
-			query = strings.TrimSpace(rc.Task)
-		}
-		if query == "" {
-			return nil, fmt.Errorf("durable memory search query is required")
-		}
-		items, err := t.Files.Search(ctx, rc.OwnerID, query, parsed.Limit)
-		if err != nil {
-			return &ToolResult{ContentText: err.Error(), IsError: true}, err
-		}
-		return ResultFromValue(map[string]any{"query": query, "count": len(items), "files": items})
-	}
 	if t.Memories == nil {
 		return nil, fmt.Errorf("memory repository is not configured")
 	}
-	if t.ContextIndex == nil && t.Retriever == nil && !t.AllowLegacyListFallback {
-		return nil, fmt.Errorf("unified vector memory index is not configured")
+	if t.ContextIndex == nil && !t.AllowLegacyListFallback {
+		return nil, fmt.Errorf("unified keyword memory index is not configured")
 	}
 	var parsed memoryReadInput
 	if len(input) > 0 {
@@ -159,7 +128,7 @@ func (t MemoryReadTool) Execute(ctx context.Context, rc ToolRunContext, input js
 		agentID = rc.AgentID
 	}
 	projectID := projectIDFromToolRunContext(rc)
-	result, err := (memory.RuntimeService{Memories: t.Memories, RecallLogs: t.RecallLogs, Retriever: t.Retriever, Archival: t.Archival, ContextIndex: t.ContextIndex, AgentID: agentID, Profile: t.Profile}).Read(ctx, memory.ReadRequest{
+	result, err := (memory.RuntimeService{Memories: t.Memories, RecallLogs: t.RecallLogs, Archival: t.Archival, ContextIndex: t.ContextIndex, AgentID: agentID, Profile: t.Profile}).Read(ctx, memory.ReadRequest{
 		OwnerID: rc.OwnerID, ConversationID: rc.ConversationID, ProjectID: projectID, AgentID: agentID, RunID: rc.RunID, Query: query, Limit: parsed.Limit, TokenBudget: t.TokenBudget, SemanticOnly: semanticOnly, AllowLegacyListFallback: allowLegacyFallback,
 	})
 	if err != nil {

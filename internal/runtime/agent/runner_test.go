@@ -402,20 +402,17 @@ func TestRunnerReflectsOnToolFailureAndFeedsNextRound(t *testing.T) {
 	}
 }
 
-func TestRunnerResumeDoesNotDuplicateRecallTraceSteps(t *testing.T) {
+func TestRunnerResumeDoesNotDuplicateTraceSteps(t *testing.T) {
 	client := &fakeToolClient{responses: []llm.ToolChatResponse{{Message: llm.ChatMessage{Role: conversation.RoleAssistant, Content: "done"}}}}
 	result, err := NewRunner(client).Run(context.Background(), RunRequest{Model: "m", Task: "task", MaxIterations: 2,
-		RecalledReflectionIDs: []int64{7}, ResumeMessages: []llm.ChatMessage{{Role: conversation.RoleUser, Content: "task"}}, ResumeIteration: 1})
+		ResumeMessages: []llm.ChatMessage{{Role: conversation.RoleUser, Content: "task"}}, ResumeIteration: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, step := range result.Steps {
-		if step.Type == StepTypeReflectionRecall {
-			t.Fatalf("resume must not duplicate historical recall trace steps: %+v", result.Steps)
+		if step.Type == StepTypeReflection {
+			t.Fatalf("resume must not duplicate historical reflection steps: %+v", result.Steps)
 		}
-	}
-	if len(result.Reflection.RecalledIDs) != 1 {
-		t.Fatalf("resume still needs the checkpoint state in its result: %+v", result)
 	}
 	if len(result.Context.RuleRounds) == 0 {
 		t.Fatalf("resume must re-run per-round rule planning and compaction: %+v", result.Context)

@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -10,6 +9,7 @@ import (
 	"time"
 
 	"agentcanvas/internal/domain/conversation"
+	"agentcanvas/internal/domain/memory"
 	"agentcanvas/internal/infrastructure/llm"
 	"agentcanvas/internal/observability"
 	"agentcanvas/internal/pkg/strutil"
@@ -55,11 +55,9 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 	req.Task = task
 	started := r.now()
 	result := &RunResult{
-		StartedAt: started,
-		Steps:     append([]RunStep(nil), req.ResumeSteps...),
-		Reflection: ReflectionTrace{
-			RecalledIDs: append([]int64(nil), req.RecalledReflectionIDs...),
-		},
+		StartedAt:  started,
+		Steps:      append([]RunStep(nil), req.ResumeSteps...),
+		Reflection: ReflectionTrace{},
 	}
 	if req.MaxIterations <= 0 {
 		req.MaxIterations = 8
@@ -146,18 +144,6 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 	transcriptCursor := req.ResumeTranscriptCursor
 	previousRuleIDs := make([]string, 0)
 	result.Context = contextTrace
-	if len(req.ResumeMessages) == 0 && len(req.RecalledReflectionIDs) > 0 {
-		recalledJSON, _ := json.Marshal(req.RecalledReflectionIDs)
-		step := r.appendStep(result, RunStep{
-			Type: StepTypeReflectionRecall,
-			Content: fmt.Sprintf("Recalled %d prior reflection(s).",
-				len(req.RecalledReflectionIDs)),
-			OutputJSON: recalledJSON,
-			ProviderID: r.ProviderID,
-			Model:      r.ModelName,
-		})
-		_ = r.emit(ctx, step)
-	}
 	startIteration := 0
 	startToolCalls := 0
 	needsFollowUp := false
@@ -387,15 +373,20 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 		}
 		if len(assistant.ToolCalls) == 0 {
 			// A final model response ends a guided plan without claiming verification.
+			// result.FinalAnswer keeps the RAW text so finalization can still parse
+			// the citation block for owner-validated usage accounting. The emitted
+			// and stored final step carries the stripped text instead; the
+			// persisted transcript row is sanitized inside persistTranscriptEntries.
 			result.FinalAnswer = assistant.Content
 			result.StopReason = StopReasonFinalAnswer
+			visible := memory.StripCitations(assistant.Content)
 			_, result.AssistantMessageID = r.persistTranscriptEntries(ctx, result, req, []llm.ChatMessage{assistant}, persistedCount, transcriptCursor)
 			transcriptCursor++
 			finalStep := r.appendStep(result,
 				RunStep{
 					Type:       StepTypeFinalAnswer,
 					Role:       conversation.RoleAssistant,
-					Content:    assistant.Content,
+					Content:    visible,
 					ProviderID: r.ProviderID,
 					Model:      r.ModelName,
 				},
@@ -805,15 +796,14 @@ func checkpointFromMessages(
 	toolCalls int,
 ) *Checkpoint {
 	return &Checkpoint{
-		SnapshotVersion:       2,
-		Messages:              append([]llm.ChatMessage(nil), messages...),
-		MessagesSummary:       summarizeMessages(messages),
-		PendingToolCall:       pending,
-		Context:               contextTrace,
-		ToolPolicy:            req.ToolPolicy,
-		ToolNames:             append([]string(nil), toolNames...),
-		ReflectionPolicy:      req.ReflectionPolicy,
-		RecalledReflectionIDs: append([]int64(nil), req.RecalledReflectionIDs...),
+		SnapshotVersion:  2,
+		Messages:         append([]llm.ChatMessage(nil), messages...),
+		MessagesSummary:  summarizeMessages(messages),
+		PendingToolCall:  pending,
+		Context:          contextTrace,
+		ToolPolicy:       req.ToolPolicy,
+		ToolNames:        append([]string(nil), toolNames...),
+		ReflectionPolicy: req.ReflectionPolicy,
 		Metadata: map[string]any{
 			"run_id":           req.RunID,
 			"agent_id":         req.AgentID,
@@ -854,7 +844,7 @@ func (r *Runner) persistTranscriptEntries(ctx context.Context, result *RunResult
 	if req.MessageSink == nil {
 		return persistedCount + len(entries), 0
 	}
-	firstID, err := req.MessageSink.PersistEntries(ctx, compaction.FromChatAt(entries, transcriptStart))
+	firstID, err := req.MessageSink.PersistEntries(ctx, compaction.FromChatAt(sanitizePersistedEntries(entries), transcriptStart))
 	if err != nil {
 		step := r.appendStep(result, RunStep{
 			Type:       StepTypeError,
@@ -865,6 +855,22 @@ func (r *Runner) persistTranscriptEntries(ctx context.Context, result *RunResult
 		_ = r.emit(ctx, step)
 	}
 	return persistedCount + len(entries), firstID
+}
+
+// sanitizePersistedEntries copies entries and strips citation block lines from
+// assistant text content. Persisted transcript rows are user-visible display
+// artifacts, so citation markup must never reach them, regardless of which
+// call site (final answer, tool-batch assistant message, resume replay) is
+// persisting. The in-memory transcript and messages keep the raw content so
+// model context and finalization usage accounting stay intact.
+func sanitizePersistedEntries(entries []llm.ChatMessage) []llm.ChatMessage {
+	sanitized := append([]llm.ChatMessage(nil), entries...)
+	for i := range sanitized {
+		if sanitized[i].Role == conversation.RoleAssistant && sanitized[i].Content != "" {
+			sanitized[i].Content = memory.StripCitations(sanitized[i].Content)
+		}
+	}
+	return sanitized
 }
 
 func toolMessage(toolCallID, content string) llm.ChatMessage {

@@ -1,12 +1,12 @@
 change: sql-memory-es-hybrid
-stage: propose
-current_phase: propose
+stage: apply
+current_phase: apply
 base_commit: bf3c53143a029c44ca518775a6f849c8d10f8739
 complexity_mode: standard
 execution_mode: serial
-active_task: user_confirm_apply
-active_review_stage: design_review
-last_verified_task: ""
+active_task: Task 8
+active_review_stage: verify
+last_verified_task: Task 8
 reverse_sync_required: false
 exploration_handoff_path: openspec/changes/sql-memory-es-hybrid/exploration-handoff.md
 design_review_rounds: 2
@@ -14,5 +14,5 @@ design_review_passed: true
 design_review_path: design-reviewer
 design_review_verdict: PASS
 propose_artifacts_complete: true
-user_confirm_apply: false
+user_confirm_apply: true
 known_issues: []

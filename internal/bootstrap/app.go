@@ -15,7 +15,6 @@ import (
 	knowledgeusecase "agentcanvas/internal/application/knowledge_usecase"
 	memoryusecase "agentcanvas/internal/application/memory_usecase"
 	providerusecase "agentcanvas/internal/application/provider_usecase"
-	reflectionusecase "agentcanvas/internal/application/reflection_usecase"
 	resourceusecase "agentcanvas/internal/application/resource_usecase"
 	retrievalusecase "agentcanvas/internal/application/retrieval_usecase"
 	skillusecase "agentcanvas/internal/application/skill_usecase"
@@ -62,13 +61,10 @@ type App struct {
 func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, error) {
 	infraDeps, err := infrastructure.InitInfrastructure(
 		ctx, cfg, infrastructure.InitOptions{
-			IncludeMemoryRetrieval: true, InitializeQueue: true,
+			InitializeQueue: true,
 		})
 	if err != nil {
 		return nil, err
-	}
-	if infraDeps.MemoryRetrievalIndexErr != nil {
-		log.Warn("memory elasticsearch index initialization failed", "error", infraDeps.MemoryRetrievalIndexErr)
 	}
 	db := infraDeps.DB
 	redisClient := infraDeps.Redis
@@ -87,7 +83,6 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 		retrievalBackends[name] = backend
 		retrievalIndexers[name] = backend
 	}
-	memoryRetrievalStore := infraDeps.MemoryRetrievalStore
 	secretBox := infraDeps.SecretBox
 	fileStorage := infraDeps.FileStorage
 
@@ -135,12 +130,8 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 	messageRepo := mysqlinfra.NewMessageRepository(db)
 	extractionJobRepo := mysqlinfra.NewExtractionJobRepository(db)
 	compactionRepo := mysqlinfra.NewConversationCompactionRepository(db)
-	reflectionRepo := mysqlinfra.NewReflectionRepository(db)
-	reflectionJobRepo := mysqlinfra.NewReflectionJobRepository(db)
-	reflectionRecallLogRepo := mysqlinfra.NewReflectionRecallLogRepository(db)
 	runRepo := mysqlinfra.NewRunRepository(db)
 	runEventRepo := mysqlinfra.NewRunEventRepository(db)
-	reflectionEventSink := mysqlinfra.NewReflectionEventSink(runEventRepo)
 	runStepRepo := mysqlinfra.NewRunStepRepository(db)
 	approvalRepo := mysqlinfra.NewApprovalRepository(db)
 	goalRepo := mysqlinfra.NewGoalRepository(db)
@@ -172,7 +163,6 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 		}
 	}
 	memoryRepo := cacheinfra.NewMemoryRepository(mysqlinfra.NewMemoryRepository(db), resourceInvalidator, memoryCache)
-	memoryWriteLogRepo := mysqlinfra.NewMemoryWriteLogRepository(db)
 	memoryRecallLogRepo := mysqlinfra.NewMemoryRecallLogRepository(db)
 	toolDefinitionRepo := cacheinfra.NewToolDefinitionRepository(mysqlinfra.NewToolDefinitionRepository(db), resourceInvalidator)
 	toolInvocationRepo := mysqlinfra.NewToolInvocationRepository(db)
@@ -291,16 +281,16 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 		durableMemoryQueue = nil
 	}
 	durableMemoryCfg := memoryusecase.NewDurableMemoryConfig(cfg.EffectiveDurableMemory())
-	durableFileStore := memoryusecase.NewDurableFileStore(durableMemoryCfg.Root)
+	// Ad-hoc notes are routed through the unified asynchronous memory write
+	// pipeline (source ad_hoc). Finalization enqueues an idempotent job row and
+	// never waits on the SQL write; the write-job worker drains it elsewhere.
+	writeJobRepo := mysqlinfra.NewMemoryWriteJobRepository(db)
+	adHocWritePipeline := memoryusecase.NewMemoryWritePipeline("memory-write-api", writeJobRepo, nil, memoryusecase.SlogWriteWarnings{Logger: log})
+	adHocNoteWriter := memoryusecase.NewAdHocWriteJobAdapter(adHocWritePipeline)
+	terminalReflectionWriter := memoryusecase.NewTerminalReflectionWriteAdapter(adHocWritePipeline)
+	proposalMemoryWriter := memoryusecase.NewProposalWriteJobAdapter(adHocWritePipeline)
 	if jobQueue != nil {
 		knowledgeService.WithJobQueue(jobQueue)
-	}
-	reflectionService := reflectionusecase.Service{Reflections: reflectionRepo, Jobs: reflectionJobRepo, RecallLogs: reflectionRecallLogRepo, Events: reflectionEventSink,
-		DispatchEnabled: cfg.ReflectionQueue.Backend == "nats"}
-	if archivalVecStore != nil {
-		reflectionService.Index = contextretrieval.NewReflectionSemanticIndex(archivalVecStore, embeddingClient, providerRepo, secretBox, reflectionRepo, vectorstore.HNSWConfig{
-			M: cfg.Milvus.M, EFConstruction: cfg.Milvus.EFConstruction, EFSearch: cfg.Milvus.EFSearch, MetricType: cfg.Milvus.MetricType,
-		})
 	}
 	toolCallingClient, ok := chatClient.(llm.ToolCallingClient)
 	if !ok {
@@ -311,10 +301,11 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 	agentRuntime, err := agentruntime.New(agentruntime.Deps{
 		Repositories: agentruntime.Repositories{
 			Retriever: retrievalService, Providers: providerLoader, MessageHistory: messageRepo, MessageWriter: messageRepo, Compactions: compactionRepo,
-			SessionSearch: sessionSearch, Memories: memoryRepo, MemoryReader: memoryService, MemoryWriteLogs: memoryWriteLogRepo,
-			MemoryRecallLogs: memoryRecallLogRepo, MemoryRetriever: memoryRetrievalStore, MemoryFiles: durableFileStore, AdHocNotes: durableFileStore,
-			ToolPacks: toolPackRepo, Skills: skillRepo, MCPServers: mcpRepo,
-			ContextIndex: contextIndex,
+			SessionSearch: sessionSearch, Memories: memoryRepo, MemoryReader: memoryService,
+			MemoryRecallLogs: memoryRecallLogRepo, MemoryArtifacts: mysqlinfra.NewMemoryArtifactRepository(db), AdHocNotes: adHocNoteWriter,
+			ToolPacks: toolPackRepo, Skills: skillRepo, SkillRetriever: skillusecase.NewRetriever(skillRepo), MCPServers: mcpRepo,
+			ContextIndex:             contextIndex,
+			TerminalReflectionWriter: terminalReflectionWriter,
 		},
 		RuntimeClients: agentruntime.RuntimeClients{
 			LLM: chatClient, ToolCalling: toolCallingClient, Embedder: embeddingClient,
@@ -329,10 +320,10 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 			DefaultModeRequestUserInput: cfg.Tools.DefaultModeRequestUserInput.Enabled != nil && *cfg.Tools.DefaultModeRequestUserInput.Enabled,
 			DisableUpdatePlan:           cfg.Tools.UpdatePlan.Enabled != nil && !*cfg.Tools.UpdatePlan.Enabled},
 		Workspace:     agentruntime.Workspace{Sandbox: sandbox.NewDockerRunner(), Git: gitService},
-		Observability: agentruntime.Observability{Audits: auditRepo, Reflections: reflectionService},
+		Observability: agentruntime.Observability{Audits: auditRepo},
 		Policies: agentruntime.Policies{
 			MemoryExtractionTrigger: memoryusecase.NewDurableMemoryTrigger(durableMemoryQueue, redisClient, durableMemoryCfg, extractionJobRepo, messageRepo),
-			AdHocMemoryNoteWriter:   durableFileStore,
+			AdHocMemoryNoteWriter:   adHocNoteWriter,
 			FileReadMaxChars:        cfg.GitWorkspace.FileReadMaxChars, MaxOutputBytes: cfg.GitWorkspace.MaxOutputBytes,
 			WorkspaceTimeout: time.Duration(cfg.GitWorkspace.GitCommandTimeoutSeconds) * time.Second,
 		},
@@ -357,7 +348,7 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 	agentRuntime.ConfigureSessionSearch(sessionSearch)
 	memoryReviewMode := independentagentusecase.MemoryReviewOff
 	improvementService := independentagentusecase.NewImprovementService(agentImprovementRepo, agentRepo, agentTurnRepo, runRepo, conversationRepo, messageRepo,
-		runStepRepo, memoryRepo, reflectionRepo, skillRepo, providerLoader, toolCallingClient, memoryReviewMode)
+		runStepRepo, memoryRepo, proposalMemoryWriter, skillRepo, providerLoader, toolCallingClient, memoryReviewMode)
 	improvementService.ConfigureReviewModel(cfg.AgentRuntime.ReviewProviderID, cfg.AgentRuntime.ReviewModel)
 	if cfg.AgentRuntime.SelfImprovementEnabled {
 		agentService.ConfigureImprovement(improvementService)
@@ -384,29 +375,27 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 	agentHandler := handler.NewAgentHandler(agentService, improvementService)
 	agentHandler.ConfigureWorkspace(workspaceService)
 	projectHandler := handler.NewProjectHandler(workspaceService)
-	reflectionHandler := handler.NewReflectionHandler(reflectionService)
 	resourceHandler := handler.NewResourceHandler(resourceusecase.NewService(resourceQuery))
 
 	router := httpserver.NewRouter(httpserver.RouterDeps{
-		Logger:            log,
-		HealthHandler:     healthHandler,
-		AuthHandler:       authHandler,
-		OAuthHandler:      oauthHandler,
-		ProviderHandler:   providerHandler,
-		MemoryHandler:     memoryHandler,
-		ToolHandler:       toolHandler,
-		SkillHandler:      skillHandler,
-		AuditHandler:      auditHandler,
-		KnowledgeHandler:  knowledgeHandler,
-		DocumentHandler:   documentHandler,
-		AgentHandler:      agentHandler,
-		ProjectHandler:    projectHandler,
-		ReflectionHandler: reflectionHandler,
-		ResourceHandler:   resourceHandler,
-		AuthService:       authService,
-		APITokens:         apiTokenRepo,
-		Audits:            auditRepo,
-		CORSOrigins:       cfg.App.CORSAllowedOrigins,
+		Logger:           log,
+		HealthHandler:    healthHandler,
+		AuthHandler:      authHandler,
+		OAuthHandler:     oauthHandler,
+		ProviderHandler:  providerHandler,
+		MemoryHandler:    memoryHandler,
+		ToolHandler:      toolHandler,
+		SkillHandler:     skillHandler,
+		AuditHandler:     auditHandler,
+		KnowledgeHandler: knowledgeHandler,
+		DocumentHandler:  documentHandler,
+		AgentHandler:     agentHandler,
+		ProjectHandler:   projectHandler,
+		ResourceHandler:  resourceHandler,
+		AuthService:      authService,
+		APITokens:        apiTokenRepo,
+		Audits:           auditRepo,
+		CORSOrigins:      cfg.App.CORSAllowedOrigins,
 	})
 
 	return &App{Config: cfg, Logger: log, Router: router, AgentService: agentService, ImprovementService: improvementService}, nil

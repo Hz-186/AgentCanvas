@@ -408,6 +408,10 @@ func TestGitWorkspaceMigrationRoundTripIntegration(t *testing.T) {
 	assertReleaseRemovalMigrationState(t, testDB, true)
 	applyIntegrationMigration(t, testDB, filepath.Join(migrationRoot, "000010_conversation_compaction_alignment.up.sql"))
 	assertCompactionAlignmentMigrationState(t, testDB, true)
+	applyIntegrationMigration(t, testDB, filepath.Join(migrationRoot, "000016_sql_memory_canonical.up.sql"))
+	assertSQLMemoryCanonicalMigrationState(t, testDB, true)
+	applyIntegrationMigration(t, testDB, filepath.Join(migrationRoot, "000016_sql_memory_canonical.down.sql"))
+	assertSQLMemoryCanonicalMigrationState(t, testDB, false)
 }
 
 func applyIntegrationMigration(t *testing.T, db *sql.DB, path string) {
@@ -758,6 +762,43 @@ func assertCompactionAlignmentMigrationState(t *testing.T, db *sql.DB, applied b
 	}
 	if strings.Contains(columnType, "'runtime'") != applied {
 		t.Fatalf("conversation_compactions.trigger_type = %q, runtime expected=%v", columnType, applied)
+	}
+}
+
+func assertSQLMemoryCanonicalMigrationState(t *testing.T, db *sql.DB, applied bool) {
+	t.Helper()
+	for _, column := range []struct{ table, column string }{
+		{"memories", "usage_count"},
+		{"memories", "last_used_at"},
+	} {
+		var count int
+		if err := db.QueryRow("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?", column.table, column.column).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if (count == 1) != applied {
+			t.Fatalf("column %s.%s existence = %v, want %v", column.table, column.column, count == 1, applied)
+		}
+	}
+	for _, column := range []struct{ table, column string }{
+		{"memories", "recall_count"},
+		{"memories", "last_recalled_at"},
+	} {
+		var count int
+		if err := db.QueryRow("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?", column.table, column.column).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if (count == 1) == applied {
+			t.Fatalf("legacy column %s.%s existence = %v, want %v", column.table, column.column, count == 1, !applied)
+		}
+	}
+	for _, table := range []string{"memory_artifacts", "memory_write_jobs"} {
+		var count int
+		if err := db.QueryRow("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = ?", table).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if (count == 1) != applied {
+			t.Fatalf("table %s existence = %v, want %v", table, count == 1, applied)
+		}
 	}
 }
 

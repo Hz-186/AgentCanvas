@@ -3,9 +3,11 @@ package toolruntime
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 
 	"agentcanvas/internal/domain"
+	"agentcanvas/internal/domain/contextresource"
 	"agentcanvas/internal/domain/conversation"
 	"agentcanvas/internal/domain/memory"
 )
@@ -137,10 +139,14 @@ func (r *fakeMemoryRepo) MarkUsed(ctx context.Context, ownerID int64, ids []int6
 func (r *fakeMemoryRepo) ListByLevel(ctx context.Context, ownerID int64, level string, memoryTypes []string, limit int) ([]memory.Memory, error) {
 	return nil, nil
 }
+
+func (r *fakeMemoryRepo) ListBySources(ctx context.Context, ownerID int64, sources []string, limit int) ([]memory.Memory, error) {
+	return nil, nil
+}
 func (r *fakeMemoryRepo) ListActiveOwnerIDs(ctx context.Context, limit int) ([]int64, error) {
 	return nil, nil
 }
-func (r *fakeMemoryRepo) IncrementRecallCount(ctx context.Context, ownerID int64, id int64) error {
+func (r *fakeMemoryRepo) IncrementUsageCount(ctx context.Context, ownerID int64, id int64) error {
 	return nil
 }
 func (r *fakeMemoryRepo) IncrementPromotionCount(ctx context.Context, ownerID int64, id int64) error {
@@ -151,19 +157,6 @@ func (r *fakeMemoryRepo) MarkExpired(ctx context.Context, ownerID int64, maxAgeD
 }
 func (r *fakeMemoryRepo) UpdateDecayedImportance(ctx context.Context, ownerID int64, decayRate float64) (int64, error) {
 	return 0, nil
-}
-
-type fakeMemoryLogRepo struct {
-	items []memory.WriteLog
-}
-
-func (r *fakeMemoryLogRepo) Create(ctx context.Context, item *memory.WriteLog) error {
-	r.items = append(r.items, *item)
-	return nil
-}
-
-func (r *fakeMemoryLogRepo) ListByRun(ctx context.Context, ownerID, runID int64) ([]memory.WriteLog, error) {
-	return r.items, nil
 }
 
 func TestMemoryReadToolReadsAndMarksMemory(t *testing.T) {
@@ -196,38 +189,43 @@ func TestMemoryReadToolUsesProjectWithoutWorkspace(t *testing.T) {
 	}
 }
 
-func TestMemoryReadToolRequiresUnifiedVectorIndexByDefault(t *testing.T) {
+func TestMemoryReadToolRequiresUnifiedKeywordIndexByDefault(t *testing.T) {
 	repo := &fakeMemoryRepo{}
 	tool := MemoryReadTool{Memories: repo}
 
 	result, err := tool.Execute(context.Background(), ToolRunContext{OwnerID: 1, RunID: 2, Task: "relevant fact"}, json.RawMessage(`{"limit":3}`))
 	if err == nil || result != nil {
-		t.Fatalf("expected missing vector index configuration error, result=%+v err=%v", result, err)
+		t.Fatalf("expected missing keyword index configuration error, result=%+v err=%v", result, err)
 	}
 	if repo.readReq.limit != 0 {
 		t.Fatalf("memory list fallback must not be used: %+v", repo.readReq)
 	}
 }
 
-type fakeSemanticRetriever struct {
-	ids []int64
+type fakeContextKeywordIndex struct {
+	hits []contextresource.SearchResult
+	err  error
+	mode string
+	topK int
 }
 
-func (r *fakeSemanticRetriever) Index(ctx context.Context, item memory.Memory) error {
+func (f *fakeContextKeywordIndex) Upsert(context.Context, contextresource.Document, contextresource.EmbeddingProfile) (contextresource.EmbeddingProfile, error) {
+	return contextresource.EmbeddingProfile{}, nil
+}
+func (f *fakeContextKeywordIndex) Delete(context.Context, contextresource.OutboxItem) error {
 	return nil
 }
-func (r *fakeSemanticRetriever) Search(ctx context.Context, ownerID int64, query string, memoryTypes []string, limit int) ([]int64, error) {
-	return r.ids, nil
+func (f *fakeContextKeywordIndex) Search(_ context.Context, request contextresource.SearchRequest) ([]contextresource.SearchResult, error) {
+	f.mode = request.Mode
+	f.topK = request.TopK
+	return f.hits, f.err
 }
-func (r *fakeSemanticRetriever) Delete(ctx context.Context, memoryID int64) error { return nil }
 
-var _ memory.SemanticRetriever = (*fakeSemanticRetriever)(nil)
-
-func TestMemoryReadToolWithSemanticQuery(t *testing.T) {
+func TestMemoryReadToolWithKeywordQuery(t *testing.T) {
 	repo := &fakeMemoryRepo{}
 	repo.Create(context.Background(), &memory.Memory{SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: 42, OwnerID: 1}}, Status: memory.StatusActive, ScopeType: memory.ScopeUser, ScopeID: 1, MemoryType: memory.TypeProfile, RetentionTier: memory.TierLongTerm, Content: "user prefers dark mode"})
-	retriever := &fakeSemanticRetriever{ids: []int64{42}}
-	tool := MemoryReadTool{Memories: repo, Retriever: retriever}
+	index := &fakeContextKeywordIndex{hits: []contextresource.SearchResult{{ResourceType: contextresource.TypeLongTermMemory, ResourceID: "42", Score: 0.9}}}
+	tool := MemoryReadTool{Memories: repo, ContextIndex: index}
 
 	result, err := tool.Execute(context.Background(), ToolRunContext{OwnerID: 1}, json.RawMessage(`{
 		"query": "dark mode",
@@ -236,12 +234,15 @@ func TestMemoryReadToolWithSemanticQuery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if index.mode != "keyword" {
+		t.Fatalf("read_memory must search the keyword index, got mode %q", index.mode)
+	}
 	var output map[string]any
 	if err := json.Unmarshal(result.ContentJSON, &output); err != nil {
 		t.Fatal(err)
 	}
 	if output["count"].(float64) != 1 {
-		t.Fatalf("expected 1 result from semantic search, got %v", output["count"])
+		t.Fatalf("expected 1 result from keyword search, got %v", output["count"])
 	}
 	if output["query"] != "dark mode" {
 		t.Fatalf("expected query in output, got %v", output["query"])
@@ -250,8 +251,7 @@ func TestMemoryReadToolWithSemanticQuery(t *testing.T) {
 
 func TestMemoryReadToolFallsBackWithoutQuery(t *testing.T) {
 	repo := &fakeMemoryRepo{}
-	retriever := &fakeSemanticRetriever{ids: []int64{99}}
-	tool := MemoryReadTool{Memories: repo, Retriever: retriever, AllowLegacyListFallback: true}
+	tool := MemoryReadTool{Memories: repo, AllowLegacyListFallback: true}
 
 	_, err := tool.Execute(context.Background(), ToolRunContext{OwnerID: 1}, json.RawMessage(`{
 		"memory_types": ["profile"],
@@ -265,21 +265,20 @@ func TestMemoryReadToolFallsBackWithoutQuery(t *testing.T) {
 	}
 }
 
-func TestMemoryReadToolFallsBackWhenSearchFails(t *testing.T) {
+func TestMemoryReadToolReturnsErrorWhenKeywordIndexUnavailable(t *testing.T) {
 	repo := &fakeMemoryRepo{}
-	retriever := &fakeSemanticRetriever{ids: nil}
-	tool := MemoryReadTool{Memories: repo, Retriever: retriever, AllowLegacyListFallback: true}
+	index := &fakeContextKeywordIndex{err: errors.New("es unavailable")}
+	tool := MemoryReadTool{Memories: repo, ContextIndex: index, AllowLegacyListFallback: true}
 
-	_, err := tool.Execute(context.Background(), ToolRunContext{OwnerID: 1}, json.RawMessage(`{
+	result, err := tool.Execute(context.Background(), ToolRunContext{OwnerID: 1}, json.RawMessage(`{
 		"query": "something",
 		"memory_types": ["profile"],
 		"limit": 3
 	}`))
-	if err != nil {
-		t.Fatal(err)
+	if err == nil || result == nil || !result.IsError {
+		t.Fatalf("expected an observable keyword index error, result=%+v err=%v", result, err)
 	}
-	if repo.readReq.limit != 3 {
-		t.Fatalf("expected fallback to ListForRead, got %+v", repo.readReq)
+	if repo.readReq.limit != 0 {
+		t.Fatalf("full-table ListForRead fallback must not be used: %+v", repo.readReq)
 	}
 }
-
