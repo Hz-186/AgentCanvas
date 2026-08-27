@@ -73,7 +73,7 @@ Wave4(与 Wave2/3 文件不重叠，可并行):  T8(反思信号+窗口)   T9(�
 
 ## Wave 2 — Renderer and debounce scheduling
 
-- [ ] Task 3: Build the durable evidence renderer
+- [x] Task 3: Build the durable evidence renderer
   - complexity: 🔴
   - files: 新文件 `internal/application/memory_usecase/evidence_renderer.go` + 测试；复用 `redactDurableSecrets`（`durable_memory_pipeline.go:712`）
   - RED:

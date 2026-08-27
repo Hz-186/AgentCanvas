@@ -104,3 +104,22 @@ Should Improve 处理：Decision 10 扩至全部倾倒点（:426-428/:599-601/:6
 - Verdict: **PASS**（Must Fix 0）。gorm 占位符/参数序一致、裸错误风格与兄弟方法同；`domain.ImmutableModel` 无 `gorm.DeletedAt` → 无隐式软删过滤（新法真正返回归档行）；假驱动忽略 WHERE/ORDER BY 但测试诚实（记录 SQL + 罐头行镜像，既有包模式）；`archived_at` 意外出现会被大小写不敏感断言捕获（无假信心）；集成子测试 skip 逻辑与既有集成测试字节一致，且真在 id 范围内播种异 owner/异会话行验证过滤。
 - 门禁复跑：`GOOS=linux` build/vet 全 0；原生 vet 受阻于已知环境事实（GOOS=linux vet 为接受替代）。
 - Should Improve 3 条（非阻塞）：① `repository_test.go:74` 契约桩未转发 `conversationID`（编译钉为主，次要）；② 升序场景注释同上；③ 退化窗口（afterID==throughID / throughID==0）未测——SQL 语义下平凡安全，可选。
+
+### Task 3 — 实现者返回：DONE（无实质偏差）
+
+- 交付：`evidence_renderer.go`（301 行，纯渲染器：`Render([]conversation.Message) []EvidenceUnit`，text/exchange/orphan_output 三类单元，三态 `EvidenceErrorState`，复用未改动的 `redactDurableSecrets`@pipeline:712，精确 tool_call_id 配对，键序无关的同参失败连击+恢复检测，防御式 metadata 解析）+ 测试（353 行，7 场景全绿）。
+- 附加细节裁定（接受）：排除场景加播 `role=system` 行——spec 原文要求排除 "developer/system injected content"，实现逐字落实。
+
+### Review Evidence Task 3 — spec-compliance reviewer
+
+- Verdict: **PASS**（Must Fix 0）。7/7 场景逐字存在且断言等于或强于措辞；三条 ASSERT 均有专用锁（`assertNoRawSecret` 扫 Content/Arguments/Output；跨 run 同名工具双向不污染；`assertTriState` + unknown≠success≠failure 显式断言）。
+- 集成契约：`durable_memory_pipeline.go` 零 diff（redact 复用）；解析缺键/坏 JSON→unknown 无 panic；渲染器纯函数（仅 json/sort/strings/conversation 四导入）；签名与 Task 2 读路径返回类型吻合。范围 = 2 新文件 654 行，go.mod 零动。
+- 门禁复跑：`GOOS=linux build` exit 0；`-run EvidenceRenderer -count=1` 7/7 绿；全包回归绿。
+- Should Improve 3 条（非阻塞）：① 坏 JSON metadata 路径无直接测试（可于 Task 5 补）；② 场景 6 四名三种（注释已自证，外观项）；③ `.runtime` 文件提交时勿扫入（既有惯例）。
+
+### Review Evidence Task 3 — code-quality reviewer
+
+- Verdict: **PASS**（Must Fix 0）。逐行核验：坏 JSON/错型值→unknown 安全降级；指纹 `toolName+"\x00"+canonical(args)`（UseNumber+Marshal，键序确定，坏 JSON 回落原串不 panic）；连击按指纹独立成 map（异参成功不重置他人连击）；Recovered 仅在同指纹 ≥1 失败后出现成功时置位并回填；三遍配对（索引调用→绑定输出→发射）不依赖 id 序，输出早于调用仍可配对；重复 tool_call_id 首调用胜出、重复输出落 orphan 不丢弃；脱敏先于入单元（4 站点全覆盖，Arguments 脱敏在指纹化之前故连击键稳定）；`sort.SliceStable` + 单遍发射 → 严格升序。
+- 变异探针三项全捕获（默认 success、按 tool_name 配对、漏脱敏 arguments）。
+- 门禁复跑：build/全包回归/vet/gofmt 全绿（gofmt 标记的 5 个既有文件非本任务触碰）。
+- Should Improve 2 条（非阻塞）：① 4 个边界子测试可补（输出 id<调用 id、重复 tool_call_id、orphan 含密、异参成功穿插连击中）——代码已正确处理，仅测试未锁；② orphan 按工具名归组连击的语义建议一行注释。
