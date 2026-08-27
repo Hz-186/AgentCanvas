@@ -1,0 +1,17 @@
+change: memory-evidence-reflection
+stage: apply
+current_phase: apply
+base_commit: 235397ae4b492b44b9e3aeae4610ed48f8495d0f
+complexity_mode: standard
+execution_mode: serial
+active_task: ""
+active_review_stage: design_review
+last_verified_task: ""
+reverse_sync_required: false
+design_review_rounds: 3
+design_review_passed: true
+design_review_path: design-reviewer
+design_review_verdict: PASS
+propose_artifacts_complete: true
+user_confirm_apply: true
+known_issues: []
