@@ -5,7 +5,6 @@ import (
 	"strconv"
 	"strings"
 
-	agentusecase "agentcanvas/internal/application/agent_usecase"
 	memoryusecase "agentcanvas/internal/application/memory_usecase"
 	agenterrors "agentcanvas/internal/pkg/errors"
 	"agentcanvas/internal/pkg/response"
@@ -14,13 +13,7 @@ import (
 )
 
 type MemoryHandler struct {
-	service     *memoryusecase.Service
-	candidates  *memoryusecase.CandidateService
-	improvement *agentusecase.ImprovementService
-}
-
-func (h *MemoryHandler) ConfigureCandidates(candidates *memoryusecase.CandidateService, improvement *agentusecase.ImprovementService) {
-	h.candidates, h.improvement = candidates, improvement
+	service *memoryusecase.Service
 }
 
 func NewMemoryHandler(service *memoryusecase.Service) *MemoryHandler {
@@ -47,19 +40,6 @@ func (h *MemoryHandler) List(c *gin.Context) {
 	}
 	response.OK(c, items)
 }
-
-func (h *MemoryHandler) ListCandidates(c *gin.Context) {
-	_, ok := currentUserID(c)
-	if !ok {
-		response.Error(c, http.StatusUnauthorized, agenterrors.CodeUnauthorized, agenterrors.ErrUnauthorized.Error())
-		return
-	}
-	// Candidate APIs are retired together with the old durable-memory writer.
-	memoryWritesDisabled(c)
-}
-
-func (h *MemoryHandler) ApproveCandidate(c *gin.Context) { h.decideCandidate(c, true) }
-func (h *MemoryHandler) RejectCandidate(c *gin.Context)  { h.decideCandidate(c, false) }
 
 func (h *MemoryHandler) ListRecallLogs(c *gin.Context) {
 	ownerID, ok := currentUserID(c)
@@ -98,26 +78,6 @@ func (h *MemoryHandler) SetRecallFeedback(c *gin.Context) {
 	response.OK(c, gin.H{"success": true})
 }
 
-func (h *MemoryHandler) decideCandidate(c *gin.Context, _ bool) {
-	_, ok := currentUserID(c)
-	if !ok {
-		response.Error(c, http.StatusUnauthorized, agenterrors.CodeUnauthorized, agenterrors.ErrUnauthorized.Error())
-		return
-	}
-	// Memory proposals are no longer an effective write path. Durable memory
-	// changes are exclusively produced by the durable-memory consolidation worker.
-	memoryWritesDisabled(c)
-}
-
-func (h *MemoryHandler) Create(c *gin.Context) {
-	_, ok := currentUserID(c)
-	if !ok {
-		response.Error(c, http.StatusUnauthorized, agenterrors.CodeUnauthorized, agenterrors.ErrUnauthorized.Error())
-		return
-	}
-	memoryWritesDisabled(c)
-}
-
 func (h *MemoryHandler) Get(c *gin.Context) {
 	ownerID, id, ok := ownerAndID(c, "id")
 	if !ok {
@@ -129,28 +89,6 @@ func (h *MemoryHandler) Get(c *gin.Context) {
 		return
 	}
 	response.OK(c, item)
-}
-
-func (h *MemoryHandler) Update(c *gin.Context) {
-	_, ok := currentUserID(c)
-	if !ok {
-		response.Error(c, http.StatusUnauthorized, agenterrors.CodeUnauthorized, agenterrors.ErrUnauthorized.Error())
-		return
-	}
-	memoryWritesDisabled(c)
-}
-
-func (h *MemoryHandler) Delete(c *gin.Context) {
-	_, ok := currentUserID(c)
-	if !ok {
-		response.Error(c, http.StatusUnauthorized, agenterrors.CodeUnauthorized, agenterrors.ErrUnauthorized.Error())
-		return
-	}
-	memoryWritesDisabled(c)
-}
-
-func memoryWritesDisabled(c *gin.Context) {
-	response.Error(c, http.StatusForbidden, agenterrors.CodeForbidden, "durable memory writes are disabled; use the durable-memory consolidation pipeline")
 }
 
 func intQuery(c *gin.Context, name string, fallback int) int {

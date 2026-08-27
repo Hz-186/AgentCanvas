@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"strings"
 
-	"agentcanvas/internal/domain"
+	"agentcanvas/internal/domain/memory"
 	"agentcanvas/internal/domain/reflection"
 	runtimeagent "agentcanvas/internal/runtime/agent"
 )
@@ -31,44 +31,60 @@ func reflectionAffectsExecution(policy reflection.Policy) bool {
 	return policy.Enabled && policy.RuntimeMode == reflection.RuntimeActive
 }
 
-func reflectionLessonIDs(items []reflection.RecalledLesson) []int64 {
-	ids := make([]int64, 0, len(items))
-	for _, item := range items {
-		if item.ID > 0 {
-			ids = append(ids, item.ID)
-		}
-	}
-	return ids
-}
-
-func (n runtimeCore) finalizeReflection(ctx context.Context, rc *RunContext, cfg agentRuntimeConfig, loaded *LoadedProvider, task string, result *runtimeagent.RunResult, policy reflection.Policy) {
-	if n.Reflections == nil || rc == nil || loaded == nil || result == nil || !policy.Active() {
+// finalizeReflection is the terminal reflection extraction producer. Runs that
+// finish with inline reflection evidence enqueue an ordinary memory write job
+// with source reflection; runs without inline evidence produce nothing. The
+// legacy reflection analyzer, job queue and recall log resolve are retired.
+func (n runtimeCore) finalizeReflection(ctx context.Context, rc *RunContext, task string, result *runtimeagent.RunResult, policy reflection.Policy) {
+	if n.TerminalReflectionWriter == nil || rc == nil || result == nil || !policy.Active() {
 		return
 	}
 	if result.StopReason == runtimeagent.StopReasonWaitingHuman || result.StopReason == runtimeagent.StopReasonPaused {
 		return
 	}
-	outcome := result.StopReason
-	if result.StopReason == runtimeagent.StopReasonFinalAnswer {
-		outcome = "succeeded"
-	}
-	n.Reflections.ResolveRun(ctx, rc.OwnerID, rc.RunID, outcome)
 	if !policy.TerminalAsync {
 		return
 	}
-	payload, _ := json.Marshal(map[string]any{
-		"task": task, "stop_reason": result.StopReason, "final_answer": result.FinalAnswer,
-		"steps": runtimeagent.CompactSteps(result.Steps, 4096), "reflection_trace": result.Reflection,
+	content := terminalReflectionContent(result.Reflection.Inline)
+	if strings.TrimSpace(content) == "" {
+		return
+	}
+	evidence, _ := json.Marshal(map[string]any{
+		"task":              task,
+		"stop_reason":       result.StopReason,
+		"final_answer":      result.FinalAnswer,
+		"steps":             runtimeagent.CompactSteps(result.Steps, 4096),
+		"reflection_trace":  result.Reflection,
 		"reflection_policy": policy,
 	})
-	providerID, model := loaded.ProviderID, loaded.Model
-	if policy.ProviderID > 0 {
-		providerID = policy.ProviderID
+	_ = n.TerminalReflectionWriter.EnqueueTerminalReflection(ctx, memory.TerminalReflectionRequest{
+		OwnerID:      rc.OwnerID,
+		AgentID:      rc.AgentID,
+		RunID:        rc.RunID,
+		Task:         task,
+		Content:      content,
+		EvidenceJSON: evidence,
+	})
+}
+
+// terminalReflectionContent assembles the durable lesson text from inline
+// reflection entries. It is the only place inline runtime signals may become
+// memory evidence.
+func terminalReflectionContent(items []runtimeagent.InlineReflection) string {
+	parts := make([]string, 0, len(items))
+	for _, item := range items {
+		text := strings.TrimSpace(item.Lesson)
+		if corrective := strings.TrimSpace(item.CorrectiveAction); corrective != "" {
+			if text != "" {
+				text += "\nCorrective action: " + corrective
+			} else {
+				text = "Corrective action: " + corrective
+			}
+		}
+		if text == "" {
+			continue
+		}
+		parts = append(parts, text)
 	}
-	if strings.TrimSpace(policy.Model) != "" {
-		model = strings.TrimSpace(policy.Model)
-	}
-	_ = n.Reflections.Enqueue(ctx, &reflection.Job{BaseModel: domain.BaseModel{OwnerID: rc.OwnerID}, AgentID: rc.AgentID, RunID: rc.RunID,
-		ProviderID: providerID, Model: model, Mode: agentMode(cfg.Mode), Task: task,
-		PayloadJSON: payload, Status: reflection.JobPending, MaxAttempts: 3})
+	return strings.Join(parts, "\n\n")
 }

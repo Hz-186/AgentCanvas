@@ -474,10 +474,6 @@ func randomToken() (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
-func addChatUsage(left, right llm.Usage) llm.Usage {
-	return llm.Usage{PromptTokens: left.PromptTokens + right.PromptTokens, CompletionTokens: left.CompletionTokens + right.CompletionTokens, TotalTokens: left.TotalTokens + right.TotalTokens, CachedInputTokens: left.CachedInputTokens + right.CachedInputTokens, ReasoningTokens: left.ReasoningTokens + right.ReasoningTokens}
-}
-
 func min(a, b int) int {
 	if a < b {
 		return a

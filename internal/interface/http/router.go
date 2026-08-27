@@ -18,25 +18,24 @@ import (
 )
 
 type RouterDeps struct {
-	Logger            *slog.Logger
-	HealthHandler     *handler.HealthHandler
-	AuthHandler       *handler.AuthHandler
-	OAuthHandler      *handler.OAuthHandler
-	ProviderHandler   *handler.ProviderHandler
-	MemoryHandler     *handler.MemoryHandler
-	ReflectionHandler *handler.ReflectionHandler
-	ToolHandler       *handler.ToolHandler
-	SkillHandler      *handler.SkillHandler
-	AuditHandler      *handler.AuditHandler
-	KnowledgeHandler  *handler.KnowledgeHandler
-	DocumentHandler   *handler.DocumentHandler
-	AgentHandler      *handler.AgentHandler
-	ProjectHandler    *handler.ProjectHandler
-	ResourceHandler   *handler.ResourceHandler
-	AuthService       *authusecase.Service
-	APITokens         authdomain.APITokenRepository
-	Audits            audit.Repository
-	CORSOrigins       []string
+	Logger           *slog.Logger
+	HealthHandler    *handler.HealthHandler
+	AuthHandler      *handler.AuthHandler
+	OAuthHandler     *handler.OAuthHandler
+	ProviderHandler  *handler.ProviderHandler
+	MemoryHandler    *handler.MemoryHandler
+	ToolHandler      *handler.ToolHandler
+	SkillHandler     *handler.SkillHandler
+	AuditHandler     *handler.AuditHandler
+	KnowledgeHandler *handler.KnowledgeHandler
+	DocumentHandler  *handler.DocumentHandler
+	AgentHandler     *handler.AgentHandler
+	ProjectHandler   *handler.ProjectHandler
+	ResourceHandler  *handler.ResourceHandler
+	AuthService      *authusecase.Service
+	APITokens        authdomain.APITokenRepository
+	Audits           audit.Repository
+	CORSOrigins      []string
 }
 
 func NewRouter(deps RouterDeps) *gin.Engine {
@@ -54,7 +53,6 @@ func NewRouter(deps RouterDeps) *gin.Engine {
 		v1.GET("/health/redis", deps.HealthHandler.Redis)
 		v1.GET("/health/minio", deps.HealthHandler.MinIO)
 		v1.GET("/health/es", deps.HealthHandler.Elasticsearch)
-		v1.GET("/health/reflection-system", deps.HealthHandler.ReflectionSystem)
 		v1.GET("/health/context-system", deps.HealthHandler.ContextSystem)
 		v1.GET("/health/memory-system", deps.HealthHandler.MemorySystem)
 
@@ -102,8 +100,6 @@ func NewRouter(deps RouterDeps) *gin.Engine {
 			protected.GET("/agents/:id/session-search", deps.AgentHandler.SearchSessions)
 			protected.GET("/agents/:id/improvement-reviews", deps.AgentHandler.ListImprovementReviews)
 			protected.GET("/agents/:id/change-proposals", deps.AgentHandler.ListChangeProposals)
-			protected.GET("/agents/:id/reflections", deps.ReflectionHandler.List)
-			protected.PATCH("/agents/:id/reflections/:reflection_id", deps.ReflectionHandler.SetStatus)
 			protected.POST("/agent-change-proposals/:id/approve", deps.AgentHandler.ApproveChangeProposal)
 			protected.POST("/agent-change-proposals/:id/reject", deps.AgentHandler.RejectChangeProposal)
 			protected.GET("/runs/:id", deps.AgentHandler.GetRun)
@@ -122,7 +118,6 @@ func NewRouter(deps RouterDeps) *gin.Engine {
 			protected.POST("/workspaces/:id/refresh", deps.AgentHandler.RefreshWorkspace)
 			protected.POST("/runs/:id/cancel", deps.AgentHandler.CancelRun)
 			protected.POST("/runs/:id/resume", deps.AgentHandler.ResumeRun)
-			protected.POST("/runs/:id/reflections/:reflection_id/feedback", deps.ReflectionHandler.Feedback)
 			protected.GET("/approval-requests", deps.AgentHandler.ListApprovalRequests)
 			protected.POST("/approval-requests/:id/approve", deps.AgentHandler.ApproveRequest)
 			protected.POST("/approval-requests/:id/reject", deps.AgentHandler.RejectRequest)

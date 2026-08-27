@@ -20,21 +20,6 @@ const (
 	StatusDisputed   = "disputed"
 	StatusSuperseded = "superseded"
 	StatusArchived   = "archived"
-
-	JobPending   = "pending"
-	JobRunning   = "running"
-	JobCompleted = "completed"
-	JobFailed    = "failed"
-
-	OutboxPending    = "pending"
-	OutboxPublishing = "publishing"
-	OutboxPublished  = "published"
-	OutboxJob        = "job"
-	OutboxDLQ        = "dlq"
-
-	FailureRetryable = "retryable"
-	FailurePermanent = "permanent"
-	FailureExhausted = "exhausted"
 )
 
 // Reflection is an evidence-backed policy lesson derived from an Agent trajectory.
@@ -72,87 +57,3 @@ type Reflection struct {
 }
 
 func (Reflection) TableName() string { return "agent_reflections" }
-
-type Job struct {
-	domain.BaseModel
-	AgentID         int64           `json:"agent_id" gorm:"column:agent_id"`
-	RunID           int64           `json:"run_id" gorm:"column:run_id"`
-	TriggerHash     string          `json:"trigger_hash" gorm:"column:trigger_hash"`
-	ProviderID      int64           `json:"provider_id" gorm:"column:provider_id"`
-	Model           string          `json:"model" gorm:"column:model"`
-	Mode            string          `json:"mode" gorm:"column:mode"`
-	Task            string          `json:"task" gorm:"column:task"`
-	PayloadJSON     json.RawMessage `json:"payload_json" gorm:"column:payload_json"`
-	Status          string          `json:"status" gorm:"column:status"`
-	AttemptCount    int             `json:"attempt_count" gorm:"column:attempt_count"`
-	MaxAttempts     int             `json:"max_attempts" gorm:"column:max_attempts"`
-	LockedBy        string          `json:"locked_by" gorm:"column:locked_by"`
-	LockedAt        *time.Time      `json:"locked_at,omitempty" gorm:"column:locked_at"`
-	LockToken       string          `json:"-" gorm:"column:lock_token"`
-	LeaseExpiresAt  *time.Time      `json:"lease_expires_at,omitempty" gorm:"column:lease_expires_at"`
-	LastHeartbeatAt *time.Time      `json:"last_heartbeat_at,omitempty" gorm:"column:last_heartbeat_at"`
-	DispatchSeq     int             `json:"dispatch_seq" gorm:"column:dispatch_seq"`
-	RetryAt         *time.Time      `json:"retry_at,omitempty" gorm:"column:retry_at"`
-	ErrorMessage    string          `json:"error_message,omitempty" gorm:"column:error_message"`
-	FailureType     string          `json:"failure_type,omitempty" gorm:"column:failure_type"`
-	CompletedAt     *time.Time      `json:"completed_at,omitempty" gorm:"column:completed_at"`
-}
-
-func (Job) TableName() string { return "agent_reflection_jobs" }
-
-type JobOutbox struct {
-	ID           int64      `json:"id" gorm:"primaryKey;column:id"`
-	EventID      string     `json:"event_id" gorm:"column:event_id"`
-	JobID        int64      `json:"job_id" gorm:"column:job_id"`
-	DispatchSeq  int        `json:"dispatch_seq" gorm:"column:dispatch_seq"`
-	EventType    string     `json:"event_type" gorm:"column:event_type"`
-	AvailableAt  time.Time  `json:"available_at" gorm:"column:available_at"`
-	Status       string     `json:"status" gorm:"column:status"`
-	AttemptCount int        `json:"attempt_count" gorm:"column:attempt_count"`
-	LockedBy     string     `json:"locked_by" gorm:"column:locked_by"`
-	LockedAt     *time.Time `json:"locked_at,omitempty" gorm:"column:locked_at"`
-	PublishedAt  *time.Time `json:"published_at,omitempty" gorm:"column:published_at"`
-	LastError    string     `json:"last_error,omitempty" gorm:"column:last_error"`
-	CreatedAt    time.Time  `json:"created_at" gorm:"column:created_at"`
-	UpdatedAt    time.Time  `json:"updated_at" gorm:"column:updated_at"`
-}
-
-func (JobOutbox) TableName() string { return "agent_reflection_job_outbox" }
-
-type Evidence struct {
-	ID            int64           `json:"id" gorm:"primaryKey;column:id"`
-	ReflectionID  int64           `json:"reflection_id" gorm:"column:reflection_id"`
-	JobID         *int64          `json:"job_id,omitempty" gorm:"column:job_id"`
-	RunID         int64           `json:"run_id" gorm:"column:run_id"`
-	CandidateHash string          `json:"candidate_hash" gorm:"column:candidate_hash"`
-	EvidenceJSON  json.RawMessage `json:"evidence_json" gorm:"column:evidence_json"`
-	CreatedAt     time.Time       `json:"created_at" gorm:"column:created_at"`
-	UpdatedAt     time.Time       `json:"updated_at" gorm:"column:updated_at"`
-}
-
-func (Evidence) TableName() string { return "agent_reflection_evidence" }
-
-type RecallLog struct {
-	domain.BaseModel
-	ReflectionID   int64      `json:"reflection_id" gorm:"column:reflection_id"`
-	RunID          int64      `json:"run_id" gorm:"column:run_id"`
-	Score          float64    `json:"score" gorm:"column:score"`
-	Rank           int        `json:"rank" gorm:"column:rank"`
-	InjectedTokens int        `json:"injected_tokens" gorm:"column:injected_tokens"`
-	Outcome        string     `json:"outcome,omitempty" gorm:"column:outcome"`
-	Verdict        string     `json:"verdict,omitempty" gorm:"column:verdict"`
-	FeedbackNote   string     `json:"feedback_note,omitempty" gorm:"column:feedback_note"`
-	ResolvedAt     *time.Time `json:"resolved_at,omitempty" gorm:"column:resolved_at"`
-}
-
-func (RecallLog) TableName() string { return "agent_reflection_recall_logs" }
-
-// Event is the forward-compatible seam for a future event-sourced experience pipeline.
-type Event struct {
-	Type       string         `json:"type"`
-	OwnerID    int64          `json:"owner_id"`
-	AgentID    int64          `json:"agent_id"`
-	RunID      int64          `json:"run_id"`
-	Payload    map[string]any `json:"payload,omitempty"`
-	OccurredAt time.Time      `json:"occurred_at"`
-}

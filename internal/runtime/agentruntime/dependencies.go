@@ -10,7 +10,6 @@ import (
 	"agentcanvas/internal/domain/conversation"
 	"agentcanvas/internal/domain/goal"
 	"agentcanvas/internal/domain/memory"
-	"agentcanvas/internal/domain/reflection"
 	"agentcanvas/internal/domain/retrieval"
 	"agentcanvas/internal/domain/skill"
 	"agentcanvas/internal/domain/tool"
@@ -62,16 +61,17 @@ type Repositories struct {
 	SessionSearch    conversation.MessageSearchIndex
 	Memories         memory.Repository
 	MemoryReader     MemoryBatchReader
-	MemoryWriteLogs  memory.WriteLogRepository
 	MemoryRecallLogs memory.RecallLogRepository
-	MemoryCandidates memory.CandidateWriter
-	MemoryRetriever  memory.SemanticRetriever
-	MemoryFiles      memory.DurableReader
+	MemoryArtifacts  memory.MemoryArtifactRepository
 	AdHocNotes       memory.AdHocWriter
 	ToolPacks        tool.PackRepository
 	Skills           skill.Repository
+	SkillRetriever   skill.Retriever
 	MCPServers       tool.MCPRepository
 	ContextIndex     contextresource.Index
+	// TerminalReflectionWriter is the extraction producer that replaced the
+	// retired reflection analyzer/queue (source reflection write jobs).
+	TerminalReflectionWriter memory.TerminalReflectionWriter
 }
 
 type RuntimeClients struct {
@@ -96,8 +96,7 @@ type Workspace struct {
 }
 
 type Observability struct {
-	Audits      audit.Repository
-	Reflections reflection.Advisor
+	Audits audit.Repository
 }
 
 type Policies struct {
@@ -121,18 +120,19 @@ func buildRuntimeCore(deps Deps) runtimeCore {
 	workspaceRoot, _ := os.Getwd()
 	return runtimeCore{
 		coreRepositories: coreRepositories{
-			Providers: deps.Providers, ToolPacks: deps.ToolPacks, Skills: deps.Skills, MCPServers: deps.MCPServers,
-			Retriever: deps.Retriever, MemoryRetriever: deps.MemoryRetriever, Memories: deps.Memories, MemoryReader: deps.MemoryReader,
-			MemoryLogs: deps.MemoryWriteLogs, MemoryRecallLogs: deps.MemoryRecallLogs, MemoryCandidates: deps.MemoryCandidates,
-			MemoryFiles: deps.MemoryFiles, AdHocNotes: deps.AdHocNotes,
+			Providers: deps.Providers, ToolPacks: deps.ToolPacks, Skills: deps.Skills, SkillRetriever: deps.SkillRetriever, MCPServers: deps.MCPServers,
+			Retriever: deps.Retriever, Memories: deps.Memories, MemoryReader: deps.MemoryReader,
+			MemoryRecallLogs: deps.MemoryRecallLogs,
+			MemoryArtifacts:  deps.MemoryArtifacts, AdHocNotes: deps.AdHocNotes,
 			MessageHistory: deps.MessageHistory, MessageWriter: deps.MessageWriter, Compactions: deps.Compactions, SessionSearch: deps.SessionSearch,
-			ContextIndex: deps.ContextIndex,
+			ContextIndex:             deps.ContextIndex,
+			TerminalReflectionWriter: deps.TerminalReflectionWriter,
 		},
 		coreClients: coreClients{LLM: deps.ToolCalling, Embedder: deps.Embedder, Archival: deps.Archival},
 		coreTooling: coreTooling{Tools: deps.ToolRegistry, SubagentDispatcher: deps.SubagentDispatcher, DisableUpdatePlan: deps.DisableUpdatePlan, DefaultModeRequestUserInput: deps.DefaultModeRequestUserInput, Goals: deps.Goals, GoalTokenBudgetCeiling: deps.GoalTokenBudgetCeiling},
 		coreWorkspace: coreWorkspace{Sandbox: deps.Sandbox, Coordinator: conversationCoordinator(deps), Git: deps.Git,
 			FileReadMaxChars: deps.FileReadMaxChars, MaxOutputBytes: deps.MaxOutputBytes, WorkspaceTimeout: deps.WorkspaceTimeout, SkillRoot: workspaceRoot},
-		coreObservability: coreObservability{Audits: deps.Audits, Reflections: deps.Reflections},
+		coreObservability: coreObservability{Audits: deps.Audits},
 		corePolicies:      corePolicies{OnExtractTrigger: deps.MemoryExtractionTrigger, AdHocMemoryNoteWriter: deps.AdHocMemoryNoteWriter},
 	}
 }

@@ -1,0 +1,25 @@
+change: memory-usecase-dead-code-cleanup
+stage: verify
+current_phase: verify
+runtime:
+  auto_commit: true
+  commit_message_guidance: "Use English conventional-commit style messages (e.g. refactor(memory): ...). Never use Chinese in commit messages."
+execution_mode: serial
+base_commit: 6969f70
+branch: refactor/memory-usecase-cleanup
+complexity_mode: lightweight # 🟢 纯删除、零行为变化、不新建 Mapper/Service
+exploration_handoff_path: openspec/changes/memory-usecase-dead-code-cleanup/exploration-handoff.md
+skills_loaded:
+  explore:
+    - brainstorming
+    - vsdd-workflow-router
+    - openspec-explore
+  propose:
+    - vsdd-workflow-router
+    - vsdd-workflow-reverse-sync
+    - vsdd-workflow-design-review
+    - openspec-propose
+    - writing-plans
+design_review_passed: true # lightweight 全 🟢 跳过 design-reviewer（S5）
+user_confirm_apply: true # 用户原话（2026-08-27）："把所有冗余的部分都删除，现在开始 explore，然后自动进入 propose 之后 apply，整个过程要迅速！"
+created: 2026-08-27

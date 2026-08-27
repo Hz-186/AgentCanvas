@@ -37,15 +37,6 @@ func (h *HealthHandler) component(c *gin.Context, component string) {
 	response.OK(c, gin.H{"component": component, "status": "healthy"})
 }
 
-func (h *HealthHandler) ReflectionSystem(c *gin.Context) {
-	snapshot, err := h.service.ReflectionSystem(c.Request.Context())
-	if err != nil {
-		response.Error(c, http.StatusServiceUnavailable, errors.CodeDependencyUnavailable, err.Error())
-		return
-	}
-	response.OK(c, snapshot)
-}
-
 func (h *HealthHandler) ContextSystem(c *gin.Context) {
 	snapshot, err := h.service.ContextSystem(c.Request.Context())
 	if err != nil {

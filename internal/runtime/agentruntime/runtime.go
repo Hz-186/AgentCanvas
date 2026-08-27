@@ -12,7 +12,6 @@ import (
 	"agentcanvas/internal/domain/conversation"
 	"agentcanvas/internal/domain/goal"
 	"agentcanvas/internal/domain/memory"
-	"agentcanvas/internal/domain/reflection"
 	"agentcanvas/internal/domain/retrieval"
 	"agentcanvas/internal/domain/skill"
 	"agentcanvas/internal/domain/tool"
@@ -30,15 +29,13 @@ type coreRepositories struct {
 	Providers        ProviderConfigLoader
 	ToolPacks        tool.PackRepository
 	Skills           skill.Repository
+	SkillRetriever   skill.Retriever
 	MCPServers       tool.MCPRepository
 	Retriever        retrieval.Retriever
 	MemoryReader     MemoryBatchReader
-	MemoryRetriever  memory.SemanticRetriever
 	Memories         memory.Repository
-	MemoryLogs       memory.WriteLogRepository
+	MemoryArtifacts  memory.MemoryArtifactRepository
 	MemoryRecallLogs memory.RecallLogRepository
-	MemoryCandidates memory.CandidateWriter
-	MemoryFiles      memory.DurableReader
 	AdHocNotes       memory.AdHocWriter
 	MessageHistory   MessageHistoryReader
 	MessageWriter    MessageWriter
@@ -46,6 +43,10 @@ type coreRepositories struct {
 	SessionSearch    conversation.MessageSearchIndex
 	ContextIndex     contextresource.Index
 	ToolInvocations  tool.InvocationRepository
+	// TerminalReflectionWriter is the extraction producer that replaced the
+	// retired reflection analyzer/queue. Inline reflection evidence is handed
+	// to the unified memory write pipeline (source reflection).
+	TerminalReflectionWriter memory.TerminalReflectionWriter
 }
 
 type coreClients struct {
@@ -74,8 +75,7 @@ type coreWorkspace struct {
 }
 
 type coreObservability struct {
-	Audits      audit.Repository
-	Reflections reflection.Advisor
+	Audits audit.Repository
 }
 
 type corePolicies struct {

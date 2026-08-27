@@ -147,28 +147,27 @@ func TestBuildResumeRequestUsesCheckpointReflectionSnapshot(t *testing.T) {
 	checkpointPolicy := reflection.DefaultPolicy()
 	checkpointPolicy.RuntimeMode = reflection.RuntimeShadow
 	checkpoint := &Checkpoint{
-		Messages:              []llm.ChatMessage{{Role: conversation.RoleSystem, Content: "system"}},
-		Metadata:              map[string]any{},
-		ReflectionPolicy:      checkpointPolicy,
-		RecalledReflectionIDs: []int64{7, 8},
+		Messages:         []llm.ChatMessage{{Role: conversation.RoleSystem, Content: "system"}},
+		Metadata:         map[string]any{},
+		ReflectionPolicy: checkpointPolicy,
 	}
 	currentPolicy := reflection.DefaultPolicy()
 	resumed, err := BuildResumeRequest(ResumeRequest{RunRequest: RunRequest{
-		ReflectionPolicy: currentPolicy, RecalledReflectionIDs: []int64{99},
+		ReflectionPolicy: currentPolicy,
 	}, Checkpoint: checkpoint})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resumed.ReflectionPolicy.RuntimeMode != reflection.RuntimeShadow || len(resumed.RecalledReflectionIDs) != 2 || resumed.RecalledReflectionIDs[0] != 7 {
+	if resumed.ReflectionPolicy.RuntimeMode != reflection.RuntimeShadow {
 		t.Fatalf("reflection snapshot drifted during resume: %+v", resumed)
 	}
 }
 
 func TestCheckpointCapturesReflectionState(t *testing.T) {
 	policy := reflection.DefaultPolicy()
-	checkpoint := checkpointFromMessages(RunRequest{ReflectionPolicy: policy, RecalledReflectionIDs: []int64{4, 5}}, nil,
+	checkpoint := checkpointFromMessages(RunRequest{ReflectionPolicy: policy}, nil,
 		ContextTrace{}, nil, nil, StopReasonPaused, 1, 0)
-	if checkpoint.ReflectionPolicy.RuntimeMode != reflection.RuntimeActive || len(checkpoint.RecalledReflectionIDs) != 2 {
+	if checkpoint.ReflectionPolicy.RuntimeMode != reflection.RuntimeActive {
 		t.Fatalf("checkpoint did not capture reflection state: %+v", checkpoint)
 	}
 }

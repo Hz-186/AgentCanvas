@@ -218,8 +218,8 @@ func (r *MemoryRepository) MarkUsed(ctx context.Context, ownerID int64, ids []in
 	}
 	return nil
 }
-func (r *MemoryRepository) IncrementRecallCount(ctx context.Context, ownerID, id int64) error {
-	if err := r.Repository.IncrementRecallCount(ctx, ownerID, id); err != nil {
+func (r *MemoryRepository) IncrementUsageCount(ctx context.Context, ownerID, id int64) error {
+	if err := r.Repository.IncrementUsageCount(ctx, ownerID, id); err != nil {
 		return err
 	}
 	r.changed(ctx, ownerID)

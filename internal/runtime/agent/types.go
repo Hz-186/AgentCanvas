@@ -30,15 +30,14 @@ const (
 )
 
 const (
-	StepTypeLLMResponse      = "llm_response"
-	StepTypeProposedPlan     = "proposed_plan"
-	StepTypeToolCall         = "tool_call"
-	StepTypeToolResult       = "tool_result"
-	StepTypeApproval         = "approval_required"
-	StepTypeReflectionRecall = "reflection_recall"
-	StepTypeReflection       = "reflection"
-	StepTypeFinalAnswer      = "final_answer"
-	StepTypeError            = "error"
+	StepTypeLLMResponse  = "llm_response"
+	StepTypeProposedPlan = "proposed_plan"
+	StepTypeToolCall     = "tool_call"
+	StepTypeToolResult   = "tool_result"
+	StepTypeApproval     = "approval_required"
+	StepTypeReflection   = "reflection"
+	StepTypeFinalAnswer  = "final_answer"
+	StepTypeError        = "error"
 )
 
 // MessageSink persists transcript entries to the conversation message table
@@ -73,7 +72,6 @@ type RunRequest struct {
 	EnforceContextPrecedence        bool
 	ReflectionEnabled               bool
 	ReflectionPolicy                reflection.Policy
-	RecalledReflectionIDs           []int64
 	Temperature                     *float64
 	MaxIterations                   int
 	MaxToolCalls                    int
@@ -155,7 +153,6 @@ type InlineReflection struct {
 }
 
 type ReflectionTrace struct {
-	RecalledIDs         []int64            `json:"recalled_ids,omitempty"`
 	Inline              []InlineReflection `json:"inline,omitempty"`
 	TriggerFingerprints []string           `json:"trigger_fingerprints,omitempty"`
 	Errors              []string           `json:"errors,omitempty"`
@@ -223,7 +220,6 @@ type Checkpoint struct {
 	ToolNames             []string          `json:"tool_names"`
 	Metadata              map[string]any    `json:"metadata,omitempty"`
 	ReflectionPolicy      reflection.Policy `json:"reflection_policy,omitempty"`
-	RecalledReflectionIDs []int64           `json:"recalled_reflection_ids,omitempty"`
 	RuleHash              string            `json:"rule_hash,omitempty"`
 	Rules                 []rules.Rule      `json:"rules,omitempty"`
 	Interaction           *Interaction      `json:"interaction,omitempty"`

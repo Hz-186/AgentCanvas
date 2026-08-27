@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -15,6 +14,114 @@ import (
 	"agentcanvas/internal/domain/memory"
 	"agentcanvas/internal/infrastructure/llm"
 )
+
+var errNotFound = errors.New("record not found")
+
+type fakeExtractionRepo struct {
+	jobs    map[int64]*memory.ExtractionJob
+	nextID  int64
+	created []*memory.ExtractionJob
+}
+
+func (r *fakeExtractionRepo) Create(ctx context.Context, job *memory.ExtractionJob) error {
+	r.nextID++
+	job.ID = r.nextID
+	if r.jobs == nil {
+		r.jobs = map[int64]*memory.ExtractionJob{}
+	}
+	clone := *job
+	r.jobs[job.ID] = &clone
+	r.created = append(r.created, &clone)
+	return nil
+}
+
+func (r *fakeExtractionRepo) Update(ctx context.Context, job *memory.ExtractionJob) error {
+	if r.jobs == nil {
+		r.jobs = map[int64]*memory.ExtractionJob{}
+	}
+	clone := *job
+	r.jobs[job.ID] = &clone
+	return nil
+}
+
+func (r *fakeExtractionRepo) FindByID(ctx context.Context, ownerID, id int64) (*memory.ExtractionJob, error) {
+	if r.jobs == nil {
+		return nil, errNotFound
+	}
+	job, ok := r.jobs[id]
+	if !ok {
+		return nil, errNotFound
+	}
+	clone := *job
+	return &clone, nil
+}
+
+func (r *fakeExtractionRepo) FindByIdempotencyKey(ctx context.Context, ownerID int64, key string) (*memory.ExtractionJob, error) {
+	for _, job := range r.jobs {
+		if job.OwnerID == ownerID && job.IdempotencyKey == key {
+			clone := *job
+			return &clone, nil
+		}
+	}
+	return nil, errNotFound
+}
+
+func (r *fakeExtractionRepo) ListByStatus(ctx context.Context, ownerID int64, status string, limit int) ([]memory.ExtractionJob, error) {
+	var result []memory.ExtractionJob
+	for _, j := range r.jobs {
+		if j.OwnerID == ownerID && j.Status == status {
+			result = append(result, *j)
+		}
+	}
+	return result, nil
+}
+
+func (r *fakeExtractionRepo) ListPending(ctx context.Context, limit int) ([]memory.ExtractionJob, error) {
+	var result []memory.ExtractionJob
+	for _, j := range r.jobs {
+		if j.Status == string(memory.ExtractionPending) {
+			result = append(result, *j)
+		}
+	}
+	return result, nil
+}
+
+var _ memory.ExtractionJobRepository = (*fakeExtractionRepo)(nil)
+
+type fakeDreamMessages struct {
+	items []conversation.Message
+}
+
+func (f *fakeDreamMessages) ListActiveByConversation(context.Context, int64, int64) ([]conversation.Message, error) {
+	return append([]conversation.Message(nil), f.items...), nil
+}
+
+func (f *fakeDreamMessages) ListActiveThrough(_ context.Context, _, _, throughMessageID int64) ([]conversation.Message, error) {
+	items := make([]conversation.Message, 0, len(f.items))
+	for _, item := range f.items {
+		if item.ID <= throughMessageID {
+			items = append(items, item)
+		}
+	}
+	return items, nil
+}
+
+func (f *fakeDreamMessages) LatestActiveMessageID(_ context.Context, _, _ int64) (int64, error) {
+	if len(f.items) == 0 {
+		return 0, nil
+	}
+	return f.items[len(f.items)-1].ID, nil
+}
+
+func (f *fakeDreamMessages) ListActiveAfterThrough(_ context.Context, _, _, afterMessageID, throughMessageID int64) ([]conversation.Message, error) {
+	items := make([]conversation.Message, 0, len(f.items))
+	for _, item := range f.items {
+		if item.ID > afterMessageID && item.ID <= throughMessageID {
+			items = append(items, item)
+		}
+	}
+	return items, nil
+}
 
 type recordingDurableChatClient struct {
 	mu       sync.Mutex
@@ -43,8 +150,58 @@ func (c *recordingDurableChatClient) calls() int {
 	return len(c.requests)
 }
 
-func durableTestWorker(root string, chat llm.ChatClient, jobs memory.ExtractionJobRepository, messages DreamMessageRepository) *DurableMemoryWorker {
-	return NewDurableMemoryWorker(chat, messages, jobs, nil, DurableMemoryConfig{Enabled: true, Model: "test", Root: root}, "test-worker")
+// fakeMemorySourceRepo is an in-memory ConsolidationSourceReader returning the
+// seeded durable evidence memory rows for the requested owner and sources.
+// Rows keep their memories.id so tests can prove artifact refs carry it.
+type fakeMemorySourceRepo struct {
+	rows []memory.Memory
+}
+
+func newFakeMemorySourceRepo(rows ...memory.Memory) *fakeMemorySourceRepo {
+	return &fakeMemorySourceRepo{rows: rows}
+}
+
+func (r *fakeMemorySourceRepo) ListBySources(_ context.Context, ownerID int64, sources []string, _ int) ([]memory.Memory, error) {
+	allowed := make(map[string]struct{}, len(sources))
+	for _, source := range sources {
+		allowed[source] = struct{}{}
+	}
+	out := make([]memory.Memory, 0, len(r.rows))
+	for _, row := range r.rows {
+		if row.OwnerID != ownerID {
+			continue
+		}
+		if _, ok := allowed[row.Source]; !ok {
+			continue
+		}
+		out = append(out, row)
+	}
+	return out, nil
+}
+
+func consolidationSourceMemory(id int64, source string, content string, conversationID *int64, at time.Time) memory.Memory {
+	return memory.Memory{
+		SoftDeleteModel:      domain.SoftDeleteModel{BaseModel: domain.BaseModel{ID: id, OwnerID: 7, CreatedAt: at.Add(-48 * time.Hour), UpdatedAt: at}},
+		SourceConversationID: conversationID,
+		Status:               memory.StatusActive,
+		Content:              content,
+		Source:               source,
+	}
+}
+
+// durableProjectionTestWorker wires the Phase-2 SQL projection into the
+// durable worker with an in-memory artifact repository and memory-row
+// evidence sources.
+func durableProjectionTestWorker(root string, chat llm.ChatClient, jobs memory.ExtractionJobRepository, messages DreamMessageRepository, artifacts *fakeArtifactRepo, sources *fakeMemorySourceRepo) *DurableMemoryWorker {
+	projection := NewConsolidationProjection(artifacts)
+	projection.Now = projectionTestNow
+	return NewDurableMemoryWorker(
+		chat, messages, jobs, nil,
+		DurableMemoryConfig{Enabled: true, Model: "test", Root: root},
+		"test-worker",
+		WithConsolidationProjection(projection),
+		WithConsolidationSources(sources),
+	)
 }
 
 type recordingExtractionLeaseRepo struct {
@@ -90,7 +247,9 @@ func TestDurableHandleUsesOwnedUpdateAfterClearingLeaseFields(t *testing.T) {
 		BaseModel: domain.BaseModel{ID: 1, OwnerID: 7}, ConversationID: 3, ThroughMessageID: 1,
 		TriggerReason: "durable", Status: string(memory.ExtractionPending), ResultJSON: []byte(`{"raw_memory":"stored","rollout_summary":"summary"}`),
 	}}}}
-	worker := NewDurableMemoryWorker(nil, &fakeDreamMessages{}, jobs, nil, DurableMemoryConfig{Enabled: true, Root: t.TempDir()}, "test-worker")
+	artifacts := newFakeArtifactRepo()
+	chat := &recordingDurableChatClient{content: `{"memory":"# Memory\n\nstored","summary":"stored"}`}
+	worker := durableProjectionTestWorker(t.TempDir(), chat, jobs, &fakeDreamMessages{}, artifacts, newFakeMemorySourceRepo())
 	if err := worker.Handle(context.Background(), DurableMemoryPayload{JobID: 1, OwnerID: 7, ConversationID: 3}); err != nil {
 		t.Fatal(err)
 	}
@@ -99,41 +258,39 @@ func TestDurableHandleUsesOwnedUpdateAfterClearingLeaseFields(t *testing.T) {
 	}
 }
 
-func TestDurableConsolidateEmptyInputInitializesWithoutModel(t *testing.T) {
+func TestDurableConsolidateEmptyInputSkipsProjection(t *testing.T) {
 	root := t.TempDir()
 	chat := &recordingDurableChatClient{content: `{"memory":"unexpected","summary":"unexpected"}`}
-	worker := durableTestWorker(root, chat, &fakeExtractionRepo{}, &fakeDreamMessages{})
+	artifacts := newFakeArtifactRepo()
+	worker := durableProjectionTestWorker(root, chat, &fakeExtractionRepo{}, &fakeDreamMessages{}, artifacts, newFakeMemorySourceRepo())
 	if err := worker.consolidate(context.Background(), 7); err != nil {
 		t.Fatal(err)
 	}
 	if chat.calls() != 0 {
 		t.Fatalf("empty input called consolidation model %d time(s)", chat.calls())
 	}
-	ownerRoot := filepath.Join(root, "owner-7")
-	for _, name := range []string{"MEMORY.md", "memory_summary.md", "raw_memories.md"} {
-		if _, err := os.Stat(filepath.Join(ownerRoot, name)); err != nil {
-			t.Fatalf("missing empty-workspace artifact %s: %v", name, err)
-		}
+	if artifacts.count() != 0 {
+		t.Fatalf("empty input wrote %d artifact row(s), want zero", artifacts.count())
 	}
 }
 
 func TestDurableConsolidateConsumesAdHocNotesExactlyOnce(t *testing.T) {
 	root := t.TempDir()
-	ownerRoot := filepath.Join(root, "owner-7", "extensions", "ad_hoc", "notes")
-	if err := os.MkdirAll(ownerRoot, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	note := "# Ad-hoc memory note\n\n- source_run_id: 11\n\nRemember the user prefers concise Chinese replies."
-	if err := os.WriteFile(filepath.Join(ownerRoot, "20260101T000000.000000000Z-note.md"), []byte(note), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	conversationID := int64(3)
+	sources := newFakeMemorySourceRepo(
+		consolidationSourceMemory(21, "ad_hoc", "Remember the user prefers concise Chinese replies.", &conversationID, projectionTestNow()),
+	)
+	artifacts := newFakeArtifactRepo()
 	chat := &recordingDurableChatClient{content: `{"memory":"# Memory\n\nconcise Chinese replies","summary":"concise replies"}`}
-	worker := durableTestWorker(root, chat, &fakeExtractionRepo{}, &fakeDreamMessages{})
+	worker := durableProjectionTestWorker(root, chat, &fakeExtractionRepo{}, &fakeDreamMessages{}, artifacts, sources)
 	if err := worker.consolidate(context.Background(), 7); err != nil {
 		t.Fatal(err)
 	}
 	if chat.calls() != 1 || !strings.Contains(chat.requests[0].Messages[0].Content, "[ad-hoc note]") {
 		t.Fatalf("ad-hoc note was not supplied to consolidation: calls=%d requests=%+v", chat.calls(), chat.requests)
+	}
+	if artifacts.count() != 2 {
+		t.Fatalf("consolidation wrote %d artifact row(s), want handbook+summary", artifacts.count())
 	}
 	if err := worker.consolidate(context.Background(), 7); err != nil {
 		t.Fatal(err)
@@ -143,30 +300,81 @@ func TestDurableConsolidateConsumesAdHocNotesExactlyOnce(t *testing.T) {
 	}
 }
 
-func TestDurableConsolidateFailurePreservesPreviousBaseline(t *testing.T) {
+// TestDurableConsolidateSourceRefsCarryMemoryIDs is Fix round 1 for Task 7:
+// the canonical mapping decision makes SourceRefsJSON.source_id the memory
+// row's memories.id — never a write-job or durable-job ID. Both source kinds
+// are mapped from memory rows and the persisted refs carry the memory IDs.
+func TestDurableConsolidateSourceRefsCarryMemoryIDs(t *testing.T) {
 	root := t.TempDir()
-	ownerRoot := filepath.Join(root, "owner-7")
-	if err := os.MkdirAll(ownerRoot, 0o700); err != nil {
+	conversationID := int64(3)
+	sources := newFakeMemorySourceRepo(
+		consolidationSourceMemory(41, "ad_hoc", "ad-hoc fact from memory row 41", &conversationID, projectionTestNow()),
+		consolidationSourceMemory(42, "extraction", "extracted fact from memory row 42", nil, projectionTestNow()),
+	)
+	artifacts := newFakeArtifactRepo()
+	chat := &recordingDurableChatClient{content: `{"memory":"# Memory\n\nfacts","summary":"facts"}`}
+	worker := durableProjectionTestWorker(root, chat, &fakeExtractionRepo{}, &fakeDreamMessages{}, artifacts, sources)
+	if err := worker.consolidate(context.Background(), 7); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(ownerRoot, "MEMORY.md"), []byte("old memory"), 0o600); err != nil {
-		t.Fatal(err)
+	if chat.calls() != 1 {
+		t.Fatalf("consolidation model called %d time(s), want 1", chat.calls())
 	}
-	if err := os.WriteFile(filepath.Join(ownerRoot, "memory_summary.md"), []byte("v1\n\nold summary"), 0o600); err != nil {
-		t.Fatal(err)
+	if artifacts.count() != 2 {
+		t.Fatalf("consolidation wrote %d artifact row(s), want handbook+summary", artifacts.count())
 	}
-	jobs := &fakeExtractionRepo{jobs: map[int64]*memory.ExtractionJob{1: {
-		BaseModel: domain.BaseModel{ID: 1, OwnerID: 7}, ConversationID: 3, TriggerReason: "durable", Status: string(memory.ExtractionCompleted),
-		ResultJSON: []byte(`{"raw_memory":"new fact","rollout_summary":"new rollout"}`),
-	}}}
-	worker := durableTestWorker(root, &recordingDurableChatClient{err: errors.New("model unavailable")}, jobs, &fakeDreamMessages{})
+	handbook, err := artifacts.Latest(context.Background(), 7, memory.ArtifactKindHandbook)
+	if err != nil {
+		t.Fatalf("reload handbook artifact: %v", err)
+	}
+	var refs []ProjectionSourceRef
+	if err := decodeProjectionSourceRefs(handbook.SourceRefsJSON, &refs); err != nil {
+		t.Fatalf("decode handbook source refs: %v", err)
+	}
+	if len(refs) != 2 {
+		t.Fatalf("handbook source refs=%+v, want the two memory-row refs", refs)
+	}
+	// Refs are sorted by kind then source id: ad_hoc 41, rollout 42.
+	if refs[0].SourceID != 41 || refs[0].Kind != ConsolidationSourceAdHoc || refs[0].ConversationID != 3 {
+		t.Fatalf("ad-hoc ref=%+v, want memories.id 41 / kind ad_hoc / conversation 3", refs[0])
+	}
+	if refs[1].SourceID != 42 || refs[1].Kind != ConsolidationSourceRollout || refs[1].ConversationID != 0 {
+		t.Fatalf("extraction ref=%+v, want memories.id 42 / kind rollout / conversation 0", refs[1])
+	}
+	summary, err := artifacts.Latest(context.Background(), 7, memory.ArtifactKindSummary)
+	if err != nil {
+		t.Fatalf("reload summary artifact: %v", err)
+	}
+	var summaryRefs []ProjectionSourceRef
+	if err := decodeProjectionSourceRefs(summary.SourceRefsJSON, &summaryRefs); err != nil {
+		t.Fatalf("decode summary source refs: %v", err)
+	}
+	if len(summaryRefs) != 2 || summaryRefs[0].SourceID != 41 || summaryRefs[1].SourceID != 42 {
+		t.Fatalf("summary source refs=%+v, want memory IDs 41 and 42", summaryRefs)
+	}
+	// The agent prompt carried the memory-row content, not job payloads.
+	prompt := chat.requests[0].Messages[0].Content
+	if !strings.Contains(prompt, "ad-hoc fact from memory row 41") || !strings.Contains(prompt, "extracted fact from memory row 42") {
+		t.Fatalf("consolidation prompt lacks memory-row content: %q", prompt)
+	}
+}
+
+func TestDurableConsolidateFailureKeepsJobRetryableWithoutFiles(t *testing.T) {
+	root := t.TempDir()
+	artifacts := newFakeArtifactRepo()
+	artifacts.failCreate = errors.New("sql transaction failed")
+	sources := newFakeMemorySourceRepo(
+		consolidationSourceMemory(31, "extraction", "new fact", nil, projectionTestNow()),
+	)
+	worker := durableProjectionTestWorker(root, &recordingDurableChatClient{content: `{"memory":"# Memory\n\nnew fact","summary":"new fact"}`}, &fakeExtractionRepo{}, &fakeDreamMessages{}, artifacts, sources)
 	if err := worker.consolidate(context.Background(), 7); err == nil {
-		t.Fatal("expected consolidation error")
+		t.Fatal("expected consolidation artifact write error")
 	}
-	memoryFile, _ := os.ReadFile(filepath.Join(ownerRoot, "MEMORY.md"))
-	summaryFile, _ := os.ReadFile(filepath.Join(ownerRoot, "memory_summary.md"))
-	if string(memoryFile) != "old memory" || string(summaryFile) != "v1\n\nold summary" {
-		t.Fatalf("baseline changed after failed consolidation: memory=%q summary=%q", memoryFile, summaryFile)
+	if artifacts.count() != 0 {
+		t.Fatalf("failed artifact transaction persisted %d row(s), want zero", artifacts.count())
+	}
+	if entries, err := os.ReadDir(root); err == nil && len(entries) != 0 {
+		t.Fatalf("filesystem fallback attempted: %d entries under %s", len(entries), root)
 	}
 }
 
@@ -177,7 +385,12 @@ func TestDurableHandleRetryUsesStoredStageOneResult(t *testing.T) {
 		BaseModel: domain.BaseModel{ID: 1, OwnerID: 7}, ConversationID: 3, ThroughMessageID: 1, TriggerReason: "durable", Status: string(memory.ExtractionPending),
 		ResultJSON: []byte(`{"raw_memory":"already extracted","rollout_summary":"summary"}`),
 	}}}
-	worker := durableTestWorker(root, chat, jobs, &fakeDreamMessages{items: []conversation.Message{{ImmutableModel: domain.ImmutableModel{ID: 1}, Content: "must not re-extract"}}})
+	// Phase 2 consumes memory rows; a seeded extraction evidence row makes the
+	// consolidation actually run and hit the failing chat client.
+	sources := newFakeMemorySourceRepo(
+		consolidationSourceMemory(41, "extraction", "already extracted", nil, projectionTestNow()),
+	)
+	worker := durableProjectionTestWorker(root, chat, jobs, &fakeDreamMessages{items: []conversation.Message{{ImmutableModel: domain.ImmutableModel{ID: 1}, Content: "must not re-extract"}}}, newFakeArtifactRepo(), sources)
 	if err := worker.Handle(context.Background(), DurableMemoryPayload{JobID: 1, OwnerID: 7, ConversationID: 3}); err == nil {
 		t.Fatal("expected phase2 error")
 	}

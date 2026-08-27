@@ -3,8 +3,6 @@ package memory_usecase
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -27,6 +25,21 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+type DreamMessageRepository interface {
+	ListActiveByConversation(ctx context.Context, ownerID, conversationID int64) ([]conversation.Message, error)
+	ListActiveThrough(ctx context.Context, ownerID, conversationID, throughMessageID int64) ([]conversation.Message, error)
+}
+
+// Optional range readers keep the old message repository contract working while
+// allowing Dream to avoid loading the whole conversation for every extraction.
+type dreamMessageBoundaryReader interface {
+	LatestActiveMessageID(ctx context.Context, ownerID, conversationID int64) (int64, error)
+}
+
+type dreamMessageRangeReader interface {
+	ListActiveAfterThrough(ctx context.Context, ownerID, conversationID, afterMessageID, throughMessageID int64) ([]conversation.Message, error)
+}
+
 // DurableMemoryJobType is the only production memory-generation job. Candidate
 // proposals and retention-tier schedulers are deliberately not part of this
 // pipeline: a rollout is extracted once, then one consolidation writer owns
@@ -34,13 +47,10 @@ import (
 const DurableMemoryJobType = "memory:durable"
 
 const (
-	durableStage1Lease           = 2 * time.Minute
-	durablePhase2Lease           = 10 * time.Minute
-	durableMaxRolloutLen         = 120_000
-	durablePhase2MaxBackoff      = 6 * time.Hour
-	durableWorkspaceDiffFile     = "phase2_workspace_diff.md"
-	durableWorkspaceManifestFile = ".phase2.baseline.json"
-	durableConsumedWatermarkFile = ".phase2.consumed_watermark"
+	durableStage1Lease      = 2 * time.Minute
+	durablePhase2Lease      = 10 * time.Minute
+	durableMaxRolloutLen    = 120_000
+	durablePhase2MaxBackoff = 6 * time.Hour
 )
 
 // ponytail: one process-local lock is the smallest safe fallback when Redis
@@ -97,23 +107,29 @@ type durablePhase2RetryReader interface {
 	ListPhase2Retries(ctx context.Context, limit int) ([]memory.ExtractionJob, error)
 }
 
-type durableStatusAfterIDReader interface {
-	ListByStatusAfterID(ctx context.Context, ownerID int64, status string, afterID int64, limit int) ([]memory.ExtractionJob, error)
+// DurableMemoryWorkerOptions carries the Phase-2 consolidation collaborators
+// that replaced the retired file workspace. The projection is required for
+// production; tests may omit the collaborators to exercise Phase-1 paths in
+// isolation.
+type DurableMemoryWorkerOptions struct {
+	Projection *ConsolidationProjection
+	Sources    ConsolidationSourceReader
 }
 
-type durableAdHocInput struct {
-	Path    string
-	Content string
+// ConsolidationSourceReader lists durable evidence memory rows so Phase-2
+// consolidation consumes the canonical memory rows instead of job rows. The
+// returned rows are identified by memories.id: artifact source refs MUST carry
+// the memory ID, never a write-job or durable-job ID.
+type ConsolidationSourceReader interface {
+	ListBySources(ctx context.Context, ownerID int64, sources []string, limit int) ([]memory.Memory, error)
 }
 
-type durableRolloutInput struct {
-	Job    memory.ExtractionJob
-	Result DurableStage1Result
+func WithConsolidationProjection(projection *ConsolidationProjection) func(*DurableMemoryWorkerOptions) {
+	return func(options *DurableMemoryWorkerOptions) { options.Projection = projection }
 }
 
-type durableConsolidationResult struct {
-	Memory  string `json:"memory"`
-	Summary string `json:"summary"`
+func WithConsolidationSources(reader ConsolidationSourceReader) func(*DurableMemoryWorkerOptions) {
+	return func(options *DurableMemoryWorkerOptions) { options.Sources = reader }
 }
 
 type DurableMemoryWorker struct {
@@ -123,10 +139,19 @@ type DurableMemoryWorker struct {
 	redis      *redis.Client
 	cfg        DurableMemoryConfig
 	workerID   string
+
+	projection *ConsolidationProjection
+	sources    ConsolidationSourceReader
 }
 
-func NewDurableMemoryWorker(chatClient llm.ChatClient, messages DreamMessageRepository, jobs memory.ExtractionJobRepository, redisClient *redis.Client, cfg DurableMemoryConfig, workerID string) *DurableMemoryWorker {
-	return &DurableMemoryWorker{chatClient: chatClient, messages: messages, jobs: jobs, redis: redisClient, cfg: cfg, workerID: workerID}
+func NewDurableMemoryWorker(chatClient llm.ChatClient, messages DreamMessageRepository, jobs memory.ExtractionJobRepository, redisClient *redis.Client, cfg DurableMemoryConfig, workerID string, optionFns ...func(*DurableMemoryWorkerOptions)) *DurableMemoryWorker {
+	options := &DurableMemoryWorkerOptions{}
+	for _, apply := range optionFns {
+		if apply != nil {
+			apply(options)
+		}
+	}
+	return &DurableMemoryWorker{chatClient: chatClient, messages: messages, jobs: jobs, redis: redisClient, cfg: cfg, workerID: workerID, projection: options.Projection, sources: options.Sources}
 }
 
 // NewDurableMemoryTrigger schedules one job per stable conversation boundary.
@@ -484,89 +509,114 @@ func (w *DurableMemoryWorker) conversationLock(ctx context.Context, ownerID, con
 	}, nil
 }
 
+// consolidate is the Phase-2 entry point. It gathers the durable evidence
+// memory rows (ad_hoc and extraction), then delegates to the SQL
+// consolidation projection, which computes the version diff, invokes the
+// consolidation agent at most once and persists two versioned artifacts.
+// Any failure returned here keeps the job retryable through the caller's
+// Phase-2 retry bookkeeping; no filesystem fallback exists.
 func (w *DurableMemoryWorker) consolidate(ctx context.Context, ownerID int64) error {
 	unlock, err := w.phase2Lock(ctx)
 	if err != nil {
 		return err
 	}
 	defer unlock()
-	jobs, err := listCompletedDurableJobs(ctx, w.jobs, ownerID)
+	inputs, err := w.gatherConsolidationInputs(ctx, ownerID)
 	if err != nil {
 		return err
 	}
-	inputs := make([]durableRolloutInput, 0, len(jobs))
-	for _, job := range jobs {
-		if job.TriggerReason != "durable" || len(job.ResultJSON) == 0 {
-			continue
-		}
-		var result DurableStage1Result
-		if json.Unmarshal(job.ResultJSON, &result) == nil && (result.RawMemory != "" || result.RolloutSummary != "") {
-			inputs = append(inputs, durableRolloutInput{Job: job, Result: result})
-		}
-	}
-	sort.Slice(inputs, func(i, j int) bool { return inputs[i].Job.ID < inputs[j].Job.ID })
-	root := filepath.Join(w.cfg.Root, fmt.Sprintf("owner-%d", ownerID))
-	if _, err := ensureDurableDirectory(root, true, "rollout_summaries"); err != nil {
-		return err
-	}
-	notes, err := readDurableAdHocInputs(ctx, root)
-	if err != nil {
-		return err
-	}
-	digest := durableInputDigest(inputs, notes)
-	// The pipeline initializes an empty workspace without a model call. Once a
-	// baseline exists, however, deletions are workspace changes too and must go
-	// through the one consolidation writer rather than silently resetting it.
-	if len(inputs) == 0 && len(notes) == 0 {
-		if _, err := os.Stat(filepath.Join(root, durableWorkspaceManifestFile)); os.IsNotExist(err) {
-			return ensureDurableEmptyArtifacts(root, digest)
-		} else if err != nil {
-			return err
-		}
-	}
-	raw := renderDurableRawMemories(inputs, notes)
-	if err := writeDurableAtomic(filepath.Join(root, "raw_memories.md"), raw); err != nil {
-		return err
-	}
-	if err := syncDurableRolloutSummaries(root, inputs); err != nil {
-		return err
-	}
-	currentManifest, err := buildDurableWorkspaceManifest(root)
-	if err != nil {
-		return err
-	}
-	baseline, err := readDurableWorkspaceManifest(filepath.Join(root, durableWorkspaceManifestFile))
-	if err != nil {
-		return err
-	}
-	changes := durableWorkspaceChanges(baseline, currentManifest)
-	if len(changes) == 0 && durableArtifactsExist(root) {
+	if len(inputs) == 0 {
+		// Nothing to consolidate: no LLM call and no artifact mutation.
 		return nil
 	}
-	if err := writeDurableWorkspaceDiff(root, changes); err != nil {
-		return err
+	if w.projection == nil {
+		return fmt.Errorf("durable memory consolidation projection is not configured")
 	}
-	currentMemory, _ := os.ReadFile(filepath.Join(root, "MEMORY.md"))
-	currentSummary, _ := os.ReadFile(filepath.Join(root, "memory_summary.md"))
-	diffBytes, _ := os.ReadFile(filepath.Join(root, durableWorkspaceDiffFile))
-	result, err := w.runConsolidation(ctx, string(currentMemory), string(currentSummary), raw, string(diffBytes))
+	_, _, err = w.projection.Project(ctx, ownerID, inputs, w)
+	return err
+}
+
+// gatherConsolidationInputs selects the owner's durable evidence MEMORY ROWS
+// (source ad_hoc and extraction) as Phase-2 evidence. SourceID in every
+// ProjectionInput is the row's memories.id — the canonical mapping shared by
+// citations (Task 5), owner validation (Task 6) and lifecycle
+// protection/removal (Task 7). Durable extraction evidence with no
+// corresponding memory row is excluded: the extraction->memory write wiring
+// gap belongs to the extraction producer (Task 2) and the Task 8 migration.
+func (w *DurableMemoryWorker) gatherConsolidationInputs(ctx context.Context, ownerID int64) ([]ProjectionInput, error) {
+	if w.sources == nil {
+		return nil, nil
+	}
+	rows, err := w.sources.ListBySources(ctx, ownerID, []string{"ad_hoc", "extraction"}, 0)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if err := writeDurableConsolidatedArtifacts(root, string(currentMemory), string(currentSummary), result); err != nil {
-		return err
+	inputs := make([]ProjectionInput, 0, len(rows))
+	for _, row := range rows {
+		var kind string
+		switch row.Source {
+		case "ad_hoc":
+			kind = ConsolidationSourceAdHoc
+		case "extraction":
+			kind = ConsolidationSourceRollout
+		default:
+			continue
+		}
+		content := strings.TrimSpace(redactDurableSecrets(row.Content))
+		if content == "" {
+			continue
+		}
+		var conversationID int64
+		if row.SourceConversationID != nil {
+			conversationID = *row.SourceConversationID
+		}
+		inputs = append(inputs, ProjectionInput{
+			SourceRef:      ProjectionSourceRef{SourceID: row.ID, Kind: kind, ConversationID: conversationID},
+			RawMemory:      content,
+			RolloutSummary: "",
+			SourceAt:       consolidationSourceAt(row),
+		})
 	}
-	finalManifest, err := buildDurableWorkspaceManifest(root)
+	sort.Slice(inputs, func(i, j int) bool { return inputs[i].SourceRef.SourceID < inputs[j].SourceRef.SourceID })
+	return inputs, nil
+}
+
+// consolidationSourceAt is the SourceAt mapping for consolidation evidence:
+// COALESCE(last_used_at, updated_at, created_at) of the memory row.
+func consolidationSourceAt(item memory.Memory) time.Time {
+	if item.LastUsedAt != nil && !item.LastUsedAt.IsZero() {
+		return *item.LastUsedAt
+	}
+	if !item.UpdatedAt.IsZero() {
+		return item.UpdatedAt
+	}
+	return item.CreatedAt
+}
+
+// Consolidate implements ConsolidationAgent. The version diff is always
+// presented before the existing artifacts and the new raw input.
+func (w *DurableMemoryWorker) Consolidate(ctx context.Context, ownerID int64, diff ConsolidationDiff, currentMemory, currentSummary, raw string) (string, string, error) {
+	if w.chatClient == nil || w.cfg.Model == "" {
+		return raw, summarizeDurableText(raw), nil
+	}
+	prompt := "You are the single internal memory consolidation agent. Read the workspace diff first. Consolidate into one durable, non-duplicated handbook. Preserve supported facts, merge duplicates, remove stale contradictions, and keep provenance from rollout evidence. Return JSON only: {\"memory\":\"MEMORY.md markdown\",\"summary\":\"compact routing summary\"}. Do not include v1 in summary and do not emit taxonomy, scopes, tiers, or promotion instructions.\n\nWORKSPACE DIFF (read first):\n" + diff.RenderDiff() + "\nEXISTING MEMORY:\n" + currentMemory + "\n\nEXISTING SUMMARY:\n" + currentSummary + "\n\nNEW RAW INPUT:\n" + raw
+	response, err := w.chatClient.Chat(ctx, w.cfg.Provider, llm.ChatRequest{Model: w.cfg.Model, Messages: []llm.ChatMessage{{Role: conversation.RoleUser, Content: prompt}}})
 	if err != nil {
-		return err
+		return "", "", err
 	}
-	if err := writeDurableWorkspaceManifest(filepath.Join(root, durableWorkspaceManifestFile), finalManifest); err != nil {
-		return err
+	var result durableConsolidationResult
+	if err := json.Unmarshal([]byte(extractDurableJSON(response.Content)), &result); err != nil {
+		return "", "", err
 	}
-	if err := writeDurableAtomic(filepath.Join(root, ".phase2.sha256"), durableManifestDigest(finalManifest, digest)+"\n"); err != nil {
-		return err
+	result.Memory = strings.TrimSpace(result.Memory)
+	result.Summary = strings.TrimSpace(result.Summary)
+	if result.Memory == "" {
+		result.Memory = raw
 	}
-	return writeDurableAtomic(filepath.Join(root, durableConsumedWatermarkFile), fmt.Sprintf("%d\n", maxDurableJobID(inputs)))
+	if result.Summary == "" {
+		result.Summary = summarizeDurableText(result.Memory)
+	}
+	return result.Memory, result.Summary, nil
 }
 
 func (w *DurableMemoryWorker) phase2Lock(ctx context.Context) (func(), error) {
@@ -611,28 +661,9 @@ func renewDurableRedisLease(ctx context.Context, client *redis.Client, key, toke
 	}
 }
 
-func (w *DurableMemoryWorker) runConsolidation(ctx context.Context, currentMemory, currentSummary, raw, workspaceDiff string) (durableConsolidationResult, error) {
-	if w.chatClient == nil || w.cfg.Model == "" {
-		return durableConsolidationResult{Memory: raw, Summary: summarizeDurableText(raw)}, nil
-	}
-	prompt := "You are the single internal memory consolidation agent. Read the workspace diff first. Consolidate into one durable, non-duplicated handbook. Preserve supported facts, merge duplicates, remove stale contradictions, and keep provenance from rollout evidence. Return JSON only: {\"memory\":\"MEMORY.md markdown\",\"summary\":\"compact routing summary\"}. Do not include v1 in summary and do not emit taxonomy, scopes, tiers, or promotion instructions.\n\nWORKSPACE DIFF (read first):\n" + workspaceDiff + "\n\nEXISTING MEMORY:\n" + currentMemory + "\n\nEXISTING SUMMARY:\n" + currentSummary + "\n\nNEW RAW INPUT:\n" + raw
-	response, err := w.chatClient.Chat(ctx, w.cfg.Provider, llm.ChatRequest{Model: w.cfg.Model, Messages: []llm.ChatMessage{{Role: conversation.RoleUser, Content: prompt}}})
-	if err != nil {
-		return durableConsolidationResult{}, err
-	}
-	var result durableConsolidationResult
-	if err := json.Unmarshal([]byte(extractDurableJSON(response.Content)), &result); err != nil {
-		return durableConsolidationResult{}, err
-	}
-	result.Memory = strings.TrimSpace(result.Memory)
-	result.Summary = strings.TrimSpace(result.Summary)
-	if result.Memory == "" {
-		result.Memory = raw
-	}
-	if result.Summary == "" {
-		result.Summary = summarizeDurableText(result.Memory)
-	}
-	return result, nil
+type durableConsolidationResult struct {
+	Memory  string `json:"memory"`
+	Summary string `json:"summary"`
 }
 
 func latestDurableMessageID(ctx context.Context, messages DreamMessageRepository, ownerID, conversationID int64) (int64, error) {
@@ -646,439 +677,7 @@ func latestDurableMessageID(ctx context.Context, messages DreamMessageRepository
 	return items[len(items)-1].ID, nil
 }
 
-func listCompletedDurableJobs(ctx context.Context, jobs memory.ExtractionJobRepository, ownerID int64) ([]memory.ExtractionJob, error) {
-	if reader, ok := jobs.(durableStatusAfterIDReader); ok {
-		const pageSize = 500
-		all := make([]memory.ExtractionJob, 0, pageSize)
-		var afterID int64
-		for {
-			page, err := reader.ListByStatusAfterID(ctx, ownerID, string(memory.ExtractionCompleted), afterID, pageSize)
-			if err != nil {
-				return nil, err
-			}
-			if len(page) == 0 {
-				break
-			}
-			all = append(all, page...)
-			lastID := page[len(page)-1].ID
-			if lastID <= afterID {
-				return nil, fmt.Errorf("completed durable-memory job pagination did not advance")
-			}
-			afterID = lastID
-			if len(page) < pageSize {
-				break
-			}
-		}
-		return all, nil
-	}
-	// Test doubles and old repositories expose only the legacy bounded method.
-	// Production uses the keyset path above; the fallback keeps those callers
-	// source-compatible during the migration window.
-	return jobs.ListByStatus(ctx, ownerID, string(memory.ExtractionCompleted), 256)
-}
-
 func durablePtrTime(value time.Time) *time.Time { return &value }
-
-func durableInputDigest(inputs []durableRolloutInput, notes []durableAdHocInput) string {
-	hash := sha256.New()
-	for _, input := range inputs {
-		fmt.Fprintf(hash, "%d\x00%d\x00%s\x00%s\x00%s\n", input.Job.ID, input.Job.ThroughMessageID, input.Result.RawMemory, input.Result.RolloutSummary, input.Result.RolloutSlug)
-	}
-	for _, note := range notes {
-		fmt.Fprintf(hash, "note\x00%s\x00%s\n", note.Path, note.Content)
-	}
-	return hex.EncodeToString(hash.Sum(nil))
-}
-
-// durableWorkspaceManifest is the small, explicit baseline used instead of
-// treating a digest of only the input rows as the workspace state. It includes
-// every markdown artifact that Phase 2 may read or write, while excluding
-// locks, claims, and the generated diff itself.
-type durableWorkspaceManifest map[string]string
-
-type durableWorkspaceChange struct {
-	Status string
-	Path   string
-	Before string
-	After  string
-}
-
-func buildDurableWorkspaceManifest(root string) (durableWorkspaceManifest, error) {
-	manifest := durableWorkspaceManifest{}
-	for _, name := range []string{"MEMORY.md", "memory_summary.md", "raw_memories.md"} {
-		if err := addDurableManifestFile(root, name, manifest); err != nil {
-			return nil, err
-		}
-	}
-	for _, dir := range []string{"rollout_summaries", "skills", filepath.Join("extensions", "ad_hoc", "notes")} {
-		base := filepath.Join(root, dir)
-		walkErr := filepath.WalkDir(base, func(path string, entry os.DirEntry, err error) error {
-			if err != nil {
-				if os.IsNotExist(err) {
-					return nil
-				}
-				return err
-			}
-			if entry.IsDir() {
-				if path != base && strings.HasPrefix(entry.Name(), ".") {
-					return filepath.SkipDir
-				}
-				return nil
-			}
-			if entry.Type()&os.ModeSymlink != 0 || filepath.Ext(entry.Name()) != ".md" {
-				return nil
-			}
-			rel, relErr := filepath.Rel(root, path)
-			if relErr != nil {
-				return relErr
-			}
-			return addDurableManifestFile(root, filepath.ToSlash(rel), manifest)
-		})
-		if walkErr != nil {
-			return nil, walkErr
-		}
-	}
-	return manifest, nil
-}
-
-func addDurableManifestFile(root, rel string, manifest durableWorkspaceManifest) error {
-	path := filepath.Join(root, filepath.FromSlash(rel))
-	info, err := os.Lstat(path)
-	if os.IsNotExist(err) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("durable memory artifact must not be a symlink: %s", path)
-	}
-	if !info.Mode().IsRegular() {
-		return nil
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return err
-	}
-	sum := sha256.Sum256(data)
-	manifest[filepath.ToSlash(rel)] = hex.EncodeToString(sum[:])
-	return nil
-}
-
-func readDurableWorkspaceManifest(path string) (durableWorkspaceManifest, error) {
-	data, err := os.ReadFile(path)
-	if os.IsNotExist(err) {
-		return durableWorkspaceManifest{}, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	var manifest durableWorkspaceManifest
-	if err := json.Unmarshal(data, &manifest); err != nil {
-		return nil, fmt.Errorf("decode durable memory baseline: %w", err)
-	}
-	if manifest == nil {
-		manifest = durableWorkspaceManifest{}
-	}
-	return manifest, nil
-}
-
-func writeDurableWorkspaceManifest(path string, manifest durableWorkspaceManifest) error {
-	if manifest == nil {
-		manifest = durableWorkspaceManifest{}
-	}
-	data, err := json.MarshalIndent(manifest, "", "  ")
-	if err != nil {
-		return err
-	}
-	return writeDurableAtomic(path, string(data)+"\n")
-}
-
-func durableWorkspaceChanges(previous, current durableWorkspaceManifest) []durableWorkspaceChange {
-	paths := make(map[string]struct{}, len(previous)+len(current))
-	for path := range previous {
-		paths[path] = struct{}{}
-	}
-	for path := range current {
-		paths[path] = struct{}{}
-	}
-	changes := make([]durableWorkspaceChange, 0, len(paths))
-	for path := range paths {
-		before, hadBefore := previous[path]
-		after, hadAfter := current[path]
-		switch {
-		case !hadBefore && hadAfter:
-			changes = append(changes, durableWorkspaceChange{Status: "added", Path: path, After: after})
-		case hadBefore && !hadAfter:
-			changes = append(changes, durableWorkspaceChange{Status: "deleted", Path: path, Before: before})
-		case before != after:
-			changes = append(changes, durableWorkspaceChange{Status: "modified", Path: path, Before: before, After: after})
-		}
-	}
-	sort.Slice(changes, func(i, j int) bool { return changes[i].Path < changes[j].Path })
-	return changes
-}
-
-func writeDurableWorkspaceDiff(root string, changes []durableWorkspaceChange) error {
-	var b strings.Builder
-	b.WriteString("# Memory Workspace Diff\n\n")
-	b.WriteString("Generated before Phase 2. Read this file first; it is system input and must not be edited.\n\n")
-	if len(changes) == 0 {
-		b.WriteString("No workspace changes.\n")
-	} else {
-		b.WriteString("## Changes\n\n")
-		for _, change := range changes {
-			fmt.Fprintf(&b, "- %s: `%s`\n", change.Status, change.Path)
-		}
-		b.WriteString("\n## Content hashes\n\n")
-		for _, change := range changes {
-			fmt.Fprintf(&b, "- `%s` before=%s after=%s\n", change.Path, emptyHash(change.Before), emptyHash(change.After))
-		}
-	}
-	return writeDurableAtomic(filepath.Join(root, durableWorkspaceDiffFile), b.String())
-}
-
-func emptyHash(value string) string {
-	if value == "" {
-		return "<missing>"
-	}
-	return value
-}
-
-func durableManifestDigest(manifest durableWorkspaceManifest, inputDigest string) string {
-	data, _ := json.Marshal(manifest)
-	hash := sha256.New()
-	_, _ = hash.Write(data)
-	fmt.Fprintf(hash, "\x00%s", inputDigest)
-	return hex.EncodeToString(hash.Sum(nil))
-}
-
-func maxDurableJobID(inputs []durableRolloutInput) int64 {
-	var maxID int64
-	for _, input := range inputs {
-		if input.Job.ID > maxID {
-			maxID = input.Job.ID
-		}
-	}
-	return maxID
-}
-
-func renderDurableRawMemories(inputs []durableRolloutInput, notes []durableAdHocInput) string {
-	if len(inputs) == 0 && len(notes) == 0 {
-		return "# Raw Memories\n\nNo durable memory was extracted.\n"
-	}
-	var builder strings.Builder
-	builder.WriteString("# Raw Memories\n\n")
-	for _, input := range inputs {
-		builder.WriteString(fmt.Sprintf("## Rollout %d\n\n", input.Job.ID))
-		if input.Result.RawMemory != "" {
-			builder.WriteString(input.Result.RawMemory)
-			builder.WriteString("\n\n")
-		}
-		if input.Result.RolloutSummary != "" {
-			builder.WriteString("Summary: ")
-			builder.WriteString(input.Result.RolloutSummary)
-			builder.WriteString("\n\n")
-		}
-	}
-	for _, note := range notes {
-		builder.WriteString("## Ad-hoc note ")
-		builder.WriteString(note.Path)
-		builder.WriteString("\n\n[ad-hoc note]\n")
-		builder.WriteString(note.Content)
-		builder.WriteString("\n\n")
-	}
-	return builder.String()
-}
-
-func syncDurableRolloutSummaries(root string, inputs []durableRolloutInput) error {
-	dir := filepath.Join(root, "rollout_summaries")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
-	// Evidence is an audit trail. Upsert the summaries represented by this
-	// batch, but never clear older rollouts merely because the selection window
-	// is bounded.
-	for _, input := range inputs {
-		slug := safeDurableSlug(input.Result.RolloutSlug)
-		if slug == "" {
-			slug = fmt.Sprintf("rollout-%d", input.Job.ID)
-		}
-		path := filepath.Join(dir, fmt.Sprintf("%s-%d.md", slug, input.Job.ID))
-		content := fmt.Sprintf("# Rollout %d\n\n%s\n", input.Job.ID, input.Result.RolloutSummary)
-		if err := writeDurableAtomic(path, content); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func durableArtifactsExist(root string) bool {
-	for _, name := range []string{"MEMORY.md", "memory_summary.md", "raw_memories.md"} {
-		if _, err := os.Stat(filepath.Join(root, name)); err != nil {
-			return false
-		}
-	}
-	return true
-}
-
-func readDurableAdHocInputs(ctx context.Context, root string) ([]durableAdHocInput, error) {
-	dir := filepath.Join(root, "extensions", "ad_hoc", "notes")
-	entries, err := os.ReadDir(dir)
-	if os.IsNotExist(err) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	paths := make([]string, 0, len(entries))
-	for _, entry := range entries {
-		if entry.IsDir() || entry.Type()&os.ModeSymlink != 0 || filepath.Ext(entry.Name()) != ".md" {
-			continue
-		}
-		paths = append(paths, entry.Name())
-	}
-	sort.Strings(paths)
-	inputs := make([]durableAdHocInput, 0, len(paths))
-	for _, name := range paths {
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		default:
-		}
-		data, readErr := os.ReadFile(filepath.Join(dir, name))
-		if readErr != nil {
-			return nil, readErr
-		}
-		content := strings.TrimSpace(redactDurableSecrets(string(data)))
-		if content == "" {
-			continue
-		}
-		inputs = append(inputs, durableAdHocInput{Path: filepath.ToSlash(filepath.Join("extensions", "ad_hoc", "notes", name)), Content: content})
-	}
-	return inputs, nil
-}
-
-func durableWorkspaceDigest(root, inputDigest string) (string, error) {
-	hash := sha256.New()
-	fmt.Fprintf(hash, "input\x00%s\n", inputDigest)
-	paths := []string{"MEMORY.md", "memory_summary.md", "raw_memories.md"}
-	for _, dir := range []string{"rollout_summaries", "skills"} {
-		base := filepath.Join(root, dir)
-		walkErr := filepath.WalkDir(base, func(path string, entry os.DirEntry, err error) error {
-			if err != nil {
-				if os.IsNotExist(err) {
-					return nil
-				}
-				return err
-			}
-			if entry.IsDir() {
-				if path != base && strings.HasPrefix(entry.Name(), ".") {
-					return filepath.SkipDir
-				}
-				return nil
-			}
-			if entry.Type()&os.ModeSymlink != 0 || filepath.Ext(entry.Name()) != ".md" {
-				return nil
-			}
-			rel, relErr := filepath.Rel(root, path)
-			if relErr != nil {
-				return relErr
-			}
-			paths = append(paths, filepath.ToSlash(rel))
-			return nil
-		})
-		if walkErr != nil {
-			return "", walkErr
-		}
-	}
-	// Ad-hoc notes are inputs, but include their bytes so a changed note creates
-	// a new workspace state even when the extraction rows are unchanged.
-	notesDir := filepath.Join(root, "extensions", "ad_hoc", "notes")
-	if entries, readErr := os.ReadDir(notesDir); readErr == nil {
-		for _, entry := range entries {
-			if !entry.IsDir() && entry.Type()&os.ModeSymlink == 0 && filepath.Ext(entry.Name()) == ".md" {
-				rel := filepath.ToSlash(filepath.Join("extensions", "ad_hoc", "notes", entry.Name()))
-				paths = append(paths, rel)
-			}
-		}
-	} else if !os.IsNotExist(readErr) {
-		return "", readErr
-	}
-	sort.Strings(paths)
-	seen := make(map[string]struct{}, len(paths))
-	for _, rel := range paths {
-		if _, ok := seen[rel]; ok {
-			continue
-		}
-		seen[rel] = struct{}{}
-		data, readErr := os.ReadFile(filepath.Join(root, filepath.FromSlash(rel)))
-		if os.IsNotExist(readErr) {
-			fmt.Fprintf(hash, "file\x00%s\x00<missing>\n", rel)
-			continue
-		}
-		if readErr != nil {
-			return "", readErr
-		}
-		fmt.Fprintf(hash, "file\x00%s\x00%d\x00", rel, len(data))
-		_, _ = hash.Write(data)
-		_, _ = hash.Write([]byte{0})
-	}
-	return hex.EncodeToString(hash.Sum(nil)), nil
-}
-
-func ensureDurableEmptyArtifacts(root, inputDigest string) error {
-	for name, content := range map[string]string{
-		"raw_memories.md":   "# Raw Memories\n\nNo durable memory was extracted.\n",
-		"MEMORY.md":         "# Memory\n",
-		"memory_summary.md": "v1\n\nNo durable memory yet.\n",
-	} {
-		path := filepath.Join(root, name)
-		if _, err := os.Stat(path); os.IsNotExist(err) {
-			if err := writeDurableAtomic(path, content); err != nil {
-				return err
-			}
-		} else if err != nil {
-			return err
-		}
-	}
-	digest, err := durableWorkspaceDigest(root, inputDigest)
-	if err != nil {
-		return err
-	}
-	manifest, err := buildDurableWorkspaceManifest(root)
-	if err != nil {
-		return err
-	}
-	if err := writeDurableWorkspaceManifest(filepath.Join(root, durableWorkspaceManifestFile), manifest); err != nil {
-		return err
-	}
-	if err := writeDurableAtomic(filepath.Join(root, ".phase2.sha256"), digest+"\n"); err != nil {
-		return err
-	}
-	return writeDurableAtomic(filepath.Join(root, durableConsumedWatermarkFile), "0\n")
-}
-
-func writeDurableConsolidatedArtifacts(root, previousMemory, previousSummary string, result durableConsolidationResult) error {
-	memoryPath := filepath.Join(root, "MEMORY.md")
-	summaryPath := filepath.Join(root, "memory_summary.md")
-	if err := writeDurableAtomic(memoryPath, result.Memory); err != nil {
-		return err
-	}
-	if err := writeDurableAtomic(summaryPath, "v1\n\n"+result.Summary); err != nil {
-		// Keep the last successful pair intact if the second replacement fails.
-		if previousMemory == "" {
-			_ = os.Remove(memoryPath)
-		} else {
-			_ = writeDurableAtomic(memoryPath, previousMemory)
-		}
-		if previousSummary != "" {
-			_ = writeDurableAtomic(summaryPath, previousSummary)
-		}
-		return err
-	}
-	return nil
-}
 
 func durablePhase2RetryDelay(attempt int) time.Duration {
 	if attempt < 1 {
@@ -1102,31 +701,6 @@ func (w *DurableMemoryWorker) deferPhase2Retry(ctx context.Context, job *memory.
 	job.ErrorMessage = "phase2:" + cause.Error()
 	job.DueAt = durablePtrTime(time.Now().UTC().Add(durablePhase2RetryDelay(job.Phase2AttemptCount)))
 	return w.jobs.Update(ctx, job)
-}
-
-func writeDurableAtomic(path, content string) error {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
-	tmp, err := os.CreateTemp(dir, ".durable-memory-*")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
-	if err := tmp.Chmod(0o600); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if _, err := tmp.WriteString(content); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmpName, path)
 }
 
 var durableSecretPatterns = []*regexp.Regexp{

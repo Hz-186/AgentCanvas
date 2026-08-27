@@ -30,22 +30,21 @@ type Config struct {
 	// Runtime continuity is provided by conversation history/snapshots; no
 	// production component reads this field. Remove it after the migration
 	// window closes.
-	WorkingMemory               WorkingMemoryConfig   `yaml:"working_memory"`
-	NATS                        NATSConfig            `yaml:"nats"`
-	ReflectionQueue             ReflectionQueueConfig `yaml:"reflection_queue"`
-	AgentRuntime                AgentRuntimeConfig    `yaml:"agent_runtime"`
-	Tools                       ToolsConfig           `yaml:"tools"`
-	Goals                       GoalsConfig           `yaml:"goals"`
-	MinIO                       MinIOConfig           `yaml:"minio"`
-	Retrieval                   RetrievalConfig       `yaml:"retrieval"`
-	Elasticsearch               ElasticsearchConfig   `yaml:"elasticsearch"`
-	Milvus                      MilvusConfig          `yaml:"milvus"`
-	ContextIndex                ContextIndexConfig    `yaml:"context_index"`
-	OCR                         OCRConfig             `yaml:"ocr"`
-	PythonBridge                PythonBridgeConfig    `yaml:"python_bridge"`
-	Security                    SecurityConfig        `yaml:"security"`
-	OAuth                       OAuthConfig           `yaml:"oauth"`
-	GitWorkspace                GitWorkspaceConfig    `yaml:"git_workspace"`
+	WorkingMemory               WorkingMemoryConfig `yaml:"working_memory"`
+	NATS                        NATSConfig          `yaml:"nats"`
+	AgentRuntime                AgentRuntimeConfig  `yaml:"agent_runtime"`
+	Tools                       ToolsConfig         `yaml:"tools"`
+	Goals                       GoalsConfig         `yaml:"goals"`
+	MinIO                       MinIOConfig         `yaml:"minio"`
+	Retrieval                   RetrievalConfig     `yaml:"retrieval"`
+	Elasticsearch               ElasticsearchConfig `yaml:"elasticsearch"`
+	Milvus                      MilvusConfig        `yaml:"milvus"`
+	ContextIndex                ContextIndexConfig  `yaml:"context_index"`
+	OCR                         OCRConfig           `yaml:"ocr"`
+	PythonBridge                PythonBridgeConfig  `yaml:"python_bridge"`
+	Security                    SecurityConfig      `yaml:"security"`
+	OAuth                       OAuthConfig         `yaml:"oauth"`
+	GitWorkspace                GitWorkspaceConfig  `yaml:"git_workspace"`
 	durableMemoryConfigured     bool
 	codexMemoryLegacyConfigured bool
 }
@@ -168,6 +167,11 @@ type DurableMemoryConfig struct {
 	EmbeddingBaseURL      string `yaml:"embedding_base_url"`
 	EmbeddingAPIKey       string `yaml:"embedding_api_key"`
 	EmbeddingModel        string `yaml:"embedding_model"`
+	// Lifecycle selection controls for the SQL-first usage-driven lifecycle.
+	// Defaults (30 days, 256 entries) are applied in setDefaults and carried
+	// into production wiring; no static quality scoring exists on this path.
+	LifecycleColdWindowDays int `yaml:"lifecycle_cold_window_days"`
+	LifecycleSelectionCap   int `yaml:"lifecycle_selection_cap"`
 }
 
 // MemoryDreamConfig is kept as a source-compatible alias while deployments
@@ -197,25 +201,6 @@ type NATSConfig struct {
 	TLSCertFile          string `yaml:"tls_cert_file"`
 	TLSKeyFile           string `yaml:"tls_key_file"`
 	ReconnectWaitSeconds int    `yaml:"reconnect_wait_seconds"`
-}
-
-type ReflectionQueueConfig struct {
-	Backend                string `yaml:"backend"`
-	Stream                 string `yaml:"stream"`
-	Subject                string `yaml:"subject"`
-	DLQStream              string `yaml:"dlq_stream"`
-	DLQSubject             string `yaml:"dlq_subject"`
-	Durable                string `yaml:"durable"`
-	AckWaitSeconds         int    `yaml:"ack_wait_seconds"`
-	HeartbeatSeconds       int    `yaml:"heartbeat_seconds"`
-	LeaseSeconds           int    `yaml:"lease_seconds"`
-	Concurrency            int    `yaml:"concurrency"`
-	MaxAckPending          int    `yaml:"max_ack_pending"`
-	OutboxBatchSize        int    `yaml:"outbox_batch_size"`
-	OutboxPollMilliseconds int    `yaml:"outbox_poll_milliseconds"`
-	StreamMaxAgeDays       int    `yaml:"stream_max_age_days"`
-	StreamMaxBytes         int64  `yaml:"stream_max_bytes"`
-	StreamReplicas         int    `yaml:"stream_replicas"`
 }
 
 type MinIOConfig struct {
@@ -418,6 +403,14 @@ func (c *Config) setDefaults() {
 	if c.DurableMemory.IdleTimeoutSeconds == 0 {
 		c.DurableMemory.IdleTimeoutSeconds = 6 * 60 * 60
 	}
+	// Usage-driven lifecycle defaults, exact per spec: 30-day cold window and
+	// a 256-entry selection cap.
+	if c.DurableMemory.LifecycleColdWindowDays <= 0 {
+		c.DurableMemory.LifecycleColdWindowDays = 30
+	}
+	if c.DurableMemory.LifecycleSelectionCap <= 0 {
+		c.DurableMemory.LifecycleSelectionCap = 256
+	}
 	if c.NATS.URL == "" {
 		c.NATS.URL = "nats://localhost:4222"
 	}
@@ -438,54 +431,6 @@ func (c *Config) setDefaults() {
 	}
 	if c.NATS.ReconnectWaitSeconds == 0 {
 		c.NATS.ReconnectWaitSeconds = 2
-	}
-	if c.ReflectionQueue.Backend == "" {
-		c.ReflectionQueue.Backend = "mysql"
-	}
-	if c.ReflectionQueue.Stream == "" {
-		c.ReflectionQueue.Stream = "AGENTCANVAS_REFLECTION"
-	}
-	if c.ReflectionQueue.Subject == "" {
-		c.ReflectionQueue.Subject = "agentcanvas.reflection.jobs"
-	}
-	if c.ReflectionQueue.DLQStream == "" {
-		c.ReflectionQueue.DLQStream = "AGENTCANVAS_REFLECTION_DLQ"
-	}
-	if c.ReflectionQueue.DLQSubject == "" {
-		c.ReflectionQueue.DLQSubject = "agentcanvas.reflection.dlq"
-	}
-	if c.ReflectionQueue.Durable == "" {
-		c.ReflectionQueue.Durable = "reflection-workers"
-	}
-	if c.ReflectionQueue.AckWaitSeconds == 0 {
-		c.ReflectionQueue.AckWaitSeconds = 120
-	}
-	if c.ReflectionQueue.HeartbeatSeconds == 0 {
-		c.ReflectionQueue.HeartbeatSeconds = 30
-	}
-	if c.ReflectionQueue.LeaseSeconds == 0 {
-		c.ReflectionQueue.LeaseSeconds = 180
-	}
-	if c.ReflectionQueue.Concurrency == 0 {
-		c.ReflectionQueue.Concurrency = 2
-	}
-	if c.ReflectionQueue.MaxAckPending == 0 {
-		c.ReflectionQueue.MaxAckPending = c.ReflectionQueue.Concurrency
-	}
-	if c.ReflectionQueue.OutboxBatchSize == 0 {
-		c.ReflectionQueue.OutboxBatchSize = 100
-	}
-	if c.ReflectionQueue.OutboxPollMilliseconds == 0 {
-		c.ReflectionQueue.OutboxPollMilliseconds = 500
-	}
-	if c.ReflectionQueue.StreamMaxAgeDays == 0 {
-		c.ReflectionQueue.StreamMaxAgeDays = 30
-	}
-	if c.ReflectionQueue.StreamMaxBytes == 0 {
-		c.ReflectionQueue.StreamMaxBytes = 1 << 30
-	}
-	if c.ReflectionQueue.StreamReplicas == 0 {
-		c.ReflectionQueue.StreamReplicas = 1
 	}
 	if c.AgentRuntime.WorkerConcurrency == 0 {
 		c.AgentRuntime.WorkerConcurrency = 2
@@ -636,9 +581,6 @@ func (c *Config) Validate() error {
 	if c.Queue.Backend == "nats" && c.NATS.URL == "" {
 		return fmt.Errorf("nats.url is required when queue.backend is nats")
 	}
-	if c.ReflectionQueue.Backend != "mysql" && c.ReflectionQueue.Backend != "nats" {
-		return fmt.Errorf("reflection_queue.backend must be mysql or nats")
-	}
 	if c.GitWorkspace.FetchTimeoutSeconds <= 0 || c.GitWorkspace.FetchFreshnessSeconds <= 0 || c.GitWorkspace.GitCommandTimeoutSeconds <= 0 {
 		return fmt.Errorf("git_workspace timeout settings must be positive")
 	}
@@ -659,24 +601,6 @@ func (c *Config) Validate() error {
 	worktreeDir := strings.TrimSpace(c.GitWorkspace.WorktreeDirName)
 	if worktreeDir == "" || filepath.IsAbs(worktreeDir) || filepath.Clean(worktreeDir) != worktreeDir || filepath.Base(worktreeDir) != worktreeDir || worktreeDir == "." || worktreeDir == ".." {
 		return fmt.Errorf("git_workspace.worktree_dir_name must be a single relative directory name")
-	}
-	if c.ReflectionQueue.Backend == "nats" && c.NATS.URL == "" {
-		return fmt.Errorf("nats.url is required when reflection_queue.backend is nats")
-	}
-	if c.ReflectionQueue.AckWaitSeconds <= 0 || c.ReflectionQueue.HeartbeatSeconds <= 0 || c.ReflectionQueue.LeaseSeconds <= 0 {
-		return fmt.Errorf("reflection_queue ack, heartbeat, and lease durations must be positive")
-	}
-	if c.ReflectionQueue.HeartbeatSeconds*2 >= c.ReflectionQueue.AckWaitSeconds {
-		return fmt.Errorf("reflection_queue.heartbeat_seconds must be less than half ack_wait_seconds")
-	}
-	if c.ReflectionQueue.LeaseSeconds < c.ReflectionQueue.AckWaitSeconds {
-		return fmt.Errorf("reflection_queue.lease_seconds must be at least ack_wait_seconds")
-	}
-	if c.ReflectionQueue.Concurrency <= 0 || c.ReflectionQueue.MaxAckPending != c.ReflectionQueue.Concurrency {
-		return fmt.Errorf("reflection_queue.max_ack_pending must equal concurrency and both must be positive")
-	}
-	if c.ReflectionQueue.OutboxBatchSize <= 0 || c.ReflectionQueue.OutboxPollMilliseconds <= 0 || c.ReflectionQueue.StreamReplicas <= 0 {
-		return fmt.Errorf("reflection_queue outbox and stream settings must be positive")
 	}
 	if c.Retrieval.Backend != "elasticsearch" && c.Retrieval.Backend != "milvus" {
 		return fmt.Errorf("retrieval.backend must be elasticsearch or milvus")
