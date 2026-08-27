@@ -17,6 +17,7 @@ Wave4(与 Wave2/3 文件不重叠，可并行):  T8(反思信号+窗口)   T9(�
 - 工具链：`D:\Users\hongze01.zhang\sdk\go1.26.6\bin\go.exe`（不在 PATH）。
 - Windows 编译约束：除 `internal/infrastructure/mysql` 外，`internal/runtime/toolruntime/filesystem_path.go:100,106` 直接使用 `syscall.Flock`（commit 7e624eb 引入，无构建标签），导致依赖它的 `agent`/`agentruntime` 包在 Windows 上无法原生 `go test`。
 - 测试执行规则：`compaction`、`memory_usecase`、`domain` 等无 toolruntime 依赖的包原生执行；`agent`/`agentruntime` 包测试用 `go test -overlay`，把 `filesystem_path.go` 映射为仓库外 `%TEMP%` 下的 Windows 可编译等价副本（仅替换两处 Flock 为进程内等价实现；`acquirePathLock` 不被这些包测试触达）。垫片不进装运代码、不提交。
+- 补充（Task 2 实测，2026-08-28）：`internal/infrastructure/mysql` 测试二进制还经传递依赖触碰 `workspace_usecase/git.go`（Flock）与 `cleanup.go:144`（`syscall.Kill`）两个额外的 Windows 编译阻断点；推荐用 `GOOS=linux go test -c` 交叉编译验证替代原生执行，或将这些文件一并纳入测试期 overlay。
 - 装运编译门禁（每任务必过）：`GOOS=linux go build ./...` exit 0，无 overlay。
 
 - 串行约束：T3 依赖 T1 的 Entry 字段与 T2 的读路径；T4 与 T5 共享 `durable_memory_pipeline.go` 不同区段，仍按序执行；T5→T6→T7 严格串行（候选格式→门禁消费→归并整合）。
@@ -52,7 +53,7 @@ Wave4(与 Wave2/3 文件不重叠，可并行):  T8(反思信号+窗口)   T9(�
   - DoD:
     - 上述测试全部转绿 + `GOOS=linux go build ./...` exit 0 + `grep -rn "is_error" internal/runtime/agentruntime/message_sink.go` 命中新代码。
 
-- [ ] Task 2: Add archive-inclusive window read for durable extraction
+- [x] Task 2: Add archive-inclusive window read for durable extraction
   - complexity: 🟡
   - files: `internal/domain/conversation/`（MessageRepository 接口）、`internal/infrastructure/mysql/message_repo.go`、对应测试
   - RED:

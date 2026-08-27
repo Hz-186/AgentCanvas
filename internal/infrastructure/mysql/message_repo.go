@@ -138,6 +138,18 @@ func (r *MessageRepository) ListActiveAfterThrough(ctx context.Context, ownerID,
 	return messages, err
 }
 
+// ListThroughIncludingArchived reads the window (afterMessageID,
+// throughMessageID] without the archived_at IS NULL filter so soft-archived
+// (compacted) rows reach the durable memory extraction pipeline. Active
+// context reads must stay on the ListActive* methods.
+func (r *MessageRepository) ListThroughIncludingArchived(ctx context.Context, ownerID, conversationID, afterMessageID, throughMessageID int64) ([]conversation.Message, error) {
+	var messages []conversation.Message
+	err := r.db.WithContext(ctx).
+		Where("owner_id = ? AND conversation_id = ? AND id > ? AND id <= ?", ownerID, conversationID, afterMessageID, throughMessageID).
+		Order("id ASC").Find(&messages).Error
+	return messages, err
+}
+
 func (r *MessageRepository) ListByRun(ctx context.Context, ownerID, runID int64) ([]conversation.Message, error) {
 	var messages []conversation.Message
 	err := r.db.WithContext(ctx).

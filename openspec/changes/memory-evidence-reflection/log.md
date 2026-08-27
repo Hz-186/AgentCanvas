@@ -86,3 +86,21 @@ Should Improve 处理：Decision 10 扩至全部倾倒点（:426-428/:599-601/:6
 - 正确性核验：三态 `*bool` 每 entry 独立指针；`toolResultErrorCode` nil/非字符串安全；步骤类型过滤存在且正确（干扰项测试覆盖）；json.Marshal map 键排序 → 字节确定；checkpoint JSON 往返保留 Error/ErrorCode；`error_code` 元数据仅批执行器两个生产者写入，无工具泄漏面。
 - 副作用爆炸半径审计：事件流副本无双重上报；`reflectionSignal` denied 启发式开始纳入 Error 文本（判定更准，属已裁定偏差半径）；checkpoint steps 携带 Error/ErrorCode 为回放确定性所必需。
 - Should Improve 4 条（非阻塞）：① **混合版本恢复边界**（值得跟踪）：旧二进制持久化的 2 键行，新二进制恢复重放再富化为 4 键 → `verifyTranscriptPayload` 字节冲突 → 该批 `PersistEntries` 中止，runner 优雅降级（error step + cursor 前进，无崩溃）——记入 known_issues，verify 阶段裁定是否需修复；② 成功行四键断言可收紧（偏差 §3 不变式未全锁）；③ 缺 `item.err`（无元数据）端到端步骤用例；④ 防空洞守卫用 `metadataMap` 解析更贴合文件风格。
+
+### Task 2 — 实现者返回：DONE（无偏差阻断）
+
+- 交付：`ListThroughIncludingArchived`（domain 接口 + mysql 实现，`owner_id AND conversation_id AND id > ? AND id <= ?` + `ORDER BY id ASC`，无 `archived_at` 条件）；纯增量 +473 行；活跃读零 diff。
+- 偏差裁定（接受）：方法名以 design.md Decision 2 的 `ListThroughIncludingArchived` 为准（派发示例名非规范）。
+- 环境补充（已回写 tasks.md 全局节）：mysql 测试二进制另触碰 `workspace_usecase/git.go`（Flock）与 `cleanup.go:144`（`syscall.Kill`）两个 Windows 阻断点；验证用 `GOOS=linux go test -c` 交叉编译。
+
+### Review Evidence Task 2 — spec-compliance reviewer
+
+- Verdict: **PASS**（Must Fix 0）。6/6 场景逐字存在且断言等于或强于 tasks.md 措辞（精确 id 集合 + 精确 SQL 谓词串 + 参数序）；`shouldLeaveActiveReadUnchanged` 钉死两活跃方法完整条件串；SQL 侧无 `archived_at`（大小写不敏感负断言锁定）；纯增量（474+ / 0-）；范围 = 4 个清单文件，无迁移、go.mod 零动。
+- 门禁复跑：`GOOS=linux go build` exit 0；domain 测试原生绿；mysql 测试 `GOOS=linux go test -c` exit 0（原生编译受阻于已知 flock，符合预期）。
+- Should Improve 3 条（非阻塞）：① 升序场景注释措辞（ordering 由 SQL 断言证明）；② 集成子测试本机 skip（DSN 缺省，有证据）；③ tasks.md 环境补充行属 apply 期回写槽位（仅备注）。
+
+### Review Evidence Task 2 — code-quality reviewer
+
+- Verdict: **PASS**（Must Fix 0）。gorm 占位符/参数序一致、裸错误风格与兄弟方法同；`domain.ImmutableModel` 无 `gorm.DeletedAt` → 无隐式软删过滤（新法真正返回归档行）；假驱动忽略 WHERE/ORDER BY 但测试诚实（记录 SQL + 罐头行镜像，既有包模式）；`archived_at` 意外出现会被大小写不敏感断言捕获（无假信心）；集成子测试 skip 逻辑与既有集成测试字节一致，且真在 id 范围内播种异 owner/异会话行验证过滤。
+- 门禁复跑：`GOOS=linux` build/vet 全 0；原生 vet 受阻于已知环境事实（GOOS=linux vet 为接受替代）。
+- Should Improve 3 条（非阻塞）：① `repository_test.go:74` 契约桩未转发 `conversationID`（编译钉为主，次要）；② 升序场景注释同上；③ 退化窗口（afterID==throughID / throughID==0）未测——SQL 语义下平凡安全，可选。
