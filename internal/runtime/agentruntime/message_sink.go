@@ -63,11 +63,15 @@ func (s *conversationMessageSink) PersistEntries(ctx context.Context, entries []
 
 func (s *conversationMessageSink) rowFor(entry compaction.Entry) *conversation.Message {
 	row := &conversation.Message{
-		ImmutableModel:  domain.ImmutableModel{OwnerID: s.ownerID},
-		ConversationID:  s.conversationID,
-		Role:            entry.Role,
-		ContentType:     entry.ContentType,
-		RunID:           &s.runID,
+		ImmutableModel: domain.ImmutableModel{OwnerID: s.ownerID},
+		ConversationID: s.conversationID,
+		Role:           entry.Role,
+		ContentType:    entry.ContentType,
+		RunID:          &s.runID,
+	}
+	if entry.TranscriptEntryID != "" {
+		id := entry.TranscriptEntryID
+		row.TranscriptEntryID = &id
 	}
 	switch entry.ContentType {
 	case conversation.ContentTypeFunctionCall:
