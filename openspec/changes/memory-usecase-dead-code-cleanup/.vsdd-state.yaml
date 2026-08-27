@@ -1,6 +1,9 @@
 change: memory-usecase-dead-code-cleanup
-stage: propose
-current_phase: propose
+stage: verify
+current_phase: verify
+runtime:
+  auto_commit: true
+  commit_message_guidance: "Use English conventional-commit style messages (e.g. refactor(memory): ...). Never use Chinese in commit messages."
 execution_mode: serial
 base_commit: 6969f70
 branch: refactor/memory-usecase-cleanup

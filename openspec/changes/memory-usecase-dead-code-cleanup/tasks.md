@@ -8,7 +8,7 @@ T1（包内清理）──▶ T2（相邻层清理）──▶ T3（验证+交�
 
 串行原因：T2 删除的 `CandidateWriter` 接口仍被 T1 前的包内文件实现/引用；T3 的全库 grep 零残留断言依赖 T1+T2 完成。不可并行，不拆 worktree。
 
-- [ ] Task 1: 清理 memory_usecase 包内死代码
+- [x] Task 1: 清理 memory_usecase 包内死代码
 
   **Files:**
   - Move: `dream_worker.go:27-44` 三接口 → `durable_memory_pipeline.go`
@@ -22,7 +22,7 @@ T1（包内清理）──▶ T2（相邻层清理）──▶ T3（验证+交�
   **DoD:** 上述文件/成员删除完毕且全库编译通过；`DreamJobType` 与三接口保留。
   **Commit:** `refactor(memory): remove retired dream and candidate write paths`
 
-- [ ] Task 2: 删除相邻层死链
+- [x] Task 2: 删除相邻层死链
 
   **Files:**
   - Modify: `internal/runtime/toolruntime/memory_tools.go`（删 `MemoryWriteTool` 及注册点）
@@ -34,7 +34,7 @@ T1（包内清理）──▶ T2（相邻层清理）──▶ T3（验证+交�
   **DoD:** 相邻层死链删除完毕且编译通过；路由表四条读路由不变。
   **Commit:** `refactor(runtime): drop retired candidate writer chain`
 
-- [ ] Task 3: 全量验证与交付
+- [x] Task 3: 全量验证与交付
 
   **步骤:** `GOOS=linux go build ./... && go vet ./...`；`go test ./internal/application/memory_usecase/...`；grep 零残留断言（REQ-5）；push 分支 `refactor/memory-usecase-cleanup`；交付 PR title/body（gh 未认证则文本交付）。
   **验收:** REQ-5 全部满足。
