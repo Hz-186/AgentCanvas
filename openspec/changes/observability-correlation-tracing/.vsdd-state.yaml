@@ -1,0 +1,32 @@
+change: observability-correlation-tracing
+stage: apply
+current_phase: apply
+execution_mode: serial
+complexity_mode: standard
+base_commit: ff9eaf914eedd477874df0164308b5849788f6b2
+branch: feature/observability-correlation-tracing
+exploration_handoff_path: openspec/changes/observability-correlation-tracing/exploration-handoff.md
+skills_loaded:
+  explore:
+    - brainstorming
+    - vsdd-workflow-router
+    - openspec-explore
+  propose:
+    - vsdd-workflow-router
+    - vsdd-workflow-reverse-sync
+    - vsdd-workflow-design-review
+    - openspec-propose
+    - writing-plans
+reverse_sync_required: false
+last_verified_task: 5
+active_review_stage: verify
+verify_result: PASS
+verify_report_path: openspec/changes/observability-correlation-tracing/verify-report.md
+design_review_rounds: 2
+design_review_passed: true
+design_review_agent: design-reviewer
+design_review_path: openspec/changes/observability-correlation-tracing/log.md
+design_review_verdict: PASS
+propose_artifacts_complete: true
+user_confirm_apply: true
+created: 2026-08-28
