@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -14,6 +16,7 @@ import (
 	"agentcanvas/internal/domain/conversation"
 	workspacedomain "agentcanvas/internal/domain/workspace"
 	"agentcanvas/internal/infrastructure/llm"
+	"agentcanvas/internal/pkg/observability"
 	runtimeevent "agentcanvas/internal/runtime/event"
 	"agentcanvas/internal/runtime/eventhub"
 )
@@ -243,5 +246,105 @@ func TestPausedSnapshotKeepsStreamOpenForResume(t *testing.T) {
 	}
 	if got := receiveStreamEvent(t, live); got.Kind != "assistant.start" {
 		t.Fatalf("resume event = %+v", got)
+	}
+}
+
+type publisherOrderTracker struct {
+	mu  sync.Mutex
+	ops []string
+}
+
+func (o *publisherOrderTracker) record(op string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.ops = append(o.ops, op)
+}
+
+func (o *publisherOrderTracker) snapshot() []string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return append([]string(nil), o.ops...)
+}
+
+type orderingRunEventRepo struct {
+	tracker *publisherOrderTracker
+	err     error
+}
+
+func (r *orderingRunEventRepo) Create(_ context.Context, _ *agentdomain.RunEvent) error {
+	if r.err != nil {
+		return r.err
+	}
+	r.tracker.record("create")
+	return nil
+}
+
+func (r *orderingRunEventRepo) ListByRun(context.Context, int64, int64) ([]agentdomain.RunEvent, error) {
+	return nil, nil
+}
+
+type recordingOrderHub struct {
+	inner   runStreamHub
+	tracker *publisherOrderTracker
+}
+
+func (h *recordingOrderHub) Prepare(runID int64, event eventhub.StreamEvent) eventhub.StreamEvent {
+	return h.inner.Prepare(runID, event)
+}
+
+func (h *recordingOrderHub) PublishPrepared(event eventhub.StreamEvent) {
+	h.tracker.record("publish")
+	h.inner.PublishPrepared(event)
+}
+
+func (h *recordingOrderHub) Subscribe(runID int64, afterSeq uint64) ([]eventhub.StreamEvent, <-chan eventhub.StreamEvent, func()) {
+	return h.inner.Subscribe(runID, afterSeq)
+}
+
+func (h *recordingOrderHub) Snapshot(runID int64) (eventhub.StreamEvent, error) { return h.inner.Snapshot(runID) }
+
+func (h *recordingOrderHub) CloseRun(runID int64, terminal eventhub.StreamEvent) {
+	h.inner.CloseRun(runID, terminal)
+}
+
+type failingDiagnosticsHandler struct {
+	calls atomic.Int32
+}
+
+func (h *failingDiagnosticsHandler) Enabled(context.Context, slog.Level) bool { return true }
+
+func (h *failingDiagnosticsHandler) Handle(context.Context, slog.Record) error {
+	h.calls.Add(1)
+	return errors.New("diagnostics sink unavailable")
+}
+
+func (h *failingDiagnosticsHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h *failingDiagnosticsHandler) WithGroup(string) slog.Handler      { return h }
+
+func TestRunPublisherDiagnosticsPublishesAfterAuditEvenWhenLoggerFails(t *testing.T) {
+	tracker := &publisherOrderTracker{}
+	repo := &orderingRunEventRepo{tracker: tracker}
+	innerHub := eventhub.NewMemoryHub(eventhub.Config{SubscriberBuffer: 4})
+	hub := &recordingOrderHub{inner: innerHub, tracker: tracker}
+	_, live, cancel := hub.Subscribe(9, 0)
+	defer cancel()
+	failing := &failingDiagnosticsHandler{}
+	emitter := &runEventEmitter{repo: repo, hub: hub, ownerID: 1, runID: 9, diagnostics: slog.New(failing)}
+	ctx := observability.WithCorrelation(context.Background(), observability.Correlation{}.
+		WithRequestID("rid-pub-1").WithOwnerID(1).WithRunID(9))
+
+	payload := map[string]any{"content": "payload-secret"}
+	if err := emitter.Emit(ctx, runtimeevent.Event{Type: runtimeevent.AgentStarted, Payload: payload}); err != nil {
+		t.Fatalf("diagnostics failure must not change Emit's business result: %v", err)
+	}
+	if failing.calls.Load() == 0 {
+		t.Fatal("diagnostics were not attempted during Emit")
+	}
+	ops := tracker.snapshot()
+	if len(ops) != 2 || ops[0] != "create" || ops[1] != "publish" {
+		t.Fatalf("RunEvent must stay DB-first (create -> publish) despite logger failure: %v", ops)
+	}
+	if got := receiveStreamEvent(t, live); got.Kind != "status.update" {
+		t.Fatalf("run event was not published after audit despite logger failure: %+v", got)
 	}
 }

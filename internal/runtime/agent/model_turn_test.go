@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,8 +13,112 @@ import (
 
 	"agentcanvas/internal/domain/conversation"
 	"agentcanvas/internal/infrastructure/llm"
+	"agentcanvas/internal/pkg/logger"
+	"agentcanvas/internal/pkg/observability"
 	"agentcanvas/internal/runtime/toolruntime"
 )
+
+type modelTurnProviderError struct{ message string }
+
+func (e *modelTurnProviderError) Error() string { return e.message }
+
+func modelTurnDiagnosticsContext() context.Context {
+	return observability.WithCorrelation(context.Background(), observability.Correlation{}.
+		WithRequestID("rid-llm-1").
+		WithOwnerID(3).
+		WithConversationID(20).
+		WithRunID(401).
+		WithTurnID(201))
+}
+
+func TestModelTurnDiagnosticsLogsSuccessfulLLMUsage(t *testing.T) {
+	want := &llm.ToolChatResponse{
+		Message: llm.ChatMessage{Role: conversation.RoleAssistant, Content: "answer"},
+		Usage:   llm.Usage{PromptTokens: 5, CompletionTokens: 7, TotalTokens: 12},
+	}
+	client := &fallbackOnlyRunnerClient{response: want}
+	captured := &diagnosticsCapturingHandler{}
+	runner := &Runner{LLM: client, Logger: slog.New(logger.NewDiagnosticsHandler(captured))}
+
+	response, err := runner.executeModelTurn(modelTurnDiagnosticsContext(), llm.ChatProviderConfig{ProviderType: "openai_compatible", APIKey: "secret-api-key"}, llm.ToolChatRequest{Model: "gpt-4"})
+	if err != nil || response != want {
+		t.Fatalf("successful model turn must pass the response through unchanged: response=%+v err=%v", response, err)
+	}
+	requests := captured.eventsNamed("llm.request")
+	if len(requests) != 1 {
+		t.Fatalf("expected exactly one llm.request event, got %d", len(requests))
+	}
+	for key, value := range map[string]any{"event": "llm.request", "phase": "llm", "result": "ok", "provider": "openai_compatible", "model": "gpt-4"} {
+		if requests[0].attrs[key] != value {
+			t.Fatalf("llm.request attribute %q = %#v, want %#v", key, requests[0].attrs[key], value)
+		}
+	}
+	completed := captured.eventsNamed("llm.completed")
+	if len(completed) != 1 {
+		t.Fatalf("expected exactly one llm.completed event, got %d", len(completed))
+	}
+	for key, value := range map[string]any{
+		"event":      "llm.completed",
+		"phase":      "llm",
+		"result":     "ok",
+		"provider":   "openai_compatible",
+		"model":      "gpt-4",
+		"request_id": "rid-llm-1",
+		"run_id":     int64(401),
+		"turn_id":    int64(201),
+	} {
+		if completed[0].attrs[key] != value {
+			t.Fatalf("llm.completed attribute %q = %#v, want %#v", key, completed[0].attrs[key], value)
+		}
+	}
+	if latencyMS, ok := completed[0].attrs["latency_ms"].(int64); !ok || latencyMS < 0 {
+		t.Fatalf("llm.completed latency_ms = %#v, want non-negative int", completed[0].attrs["latency_ms"])
+	}
+	usage, ok := completed[0].attrs["usage"].(map[string]int)
+	if !ok || usage["prompt_tokens"] != 5 || usage["completion_tokens"] != 7 || usage["total_tokens"] != 12 {
+		t.Fatalf("llm.completed usage summary = %#v, want token counts 5/7/12", completed[0].attrs["usage"])
+	}
+	if captured.containsValue("secret-api-key") {
+		t.Fatal("provider API key leaked into LLM diagnostics")
+	}
+}
+
+func TestModelTurnDiagnosticsLogsLLMFailureAndReturnsError(t *testing.T) {
+	providerErr := &modelTurnProviderError{message: "provider failed with key=secret-api-key"}
+	client := &fallbackOnlyRunnerClient{err: providerErr}
+	captured := &diagnosticsCapturingHandler{}
+	runner := &Runner{LLM: client, Logger: slog.New(logger.NewDiagnosticsHandler(captured))}
+
+	response, err := runner.executeModelTurn(modelTurnDiagnosticsContext(), llm.ChatProviderConfig{ProviderType: "openai_compatible"}, llm.ToolChatRequest{Model: "gpt-4"})
+	if response != nil || err != providerErr {
+		t.Fatalf("LLM failure must return the exact provider error: response=%+v err=%v", response, err)
+	}
+	completed := captured.eventsNamed("llm.completed")
+	if len(completed) != 1 {
+		t.Fatalf("expected exactly one llm.completed event, got %d", len(completed))
+	}
+	for key, value := range map[string]any{
+		"event":       "llm.completed",
+		"phase":       "llm",
+		"result":      "error",
+		"error_class": fmt.Sprintf("%T", providerErr),
+		"provider":    "openai_compatible",
+		"model":       "gpt-4",
+	} {
+		if completed[0].attrs[key] != value {
+			t.Fatalf("llm.completed attribute %q = %#v, want %#v", key, completed[0].attrs[key], value)
+		}
+	}
+	if _, hasUsage := completed[0].attrs["usage"]; hasUsage {
+		t.Fatalf("failed LLM turn must not report usage: %#v", completed[0].attrs)
+	}
+	if len(captured.eventsNamed("llm.request")) != 1 {
+		t.Fatalf("expected exactly one llm.request event, got %d", len(captured.eventsNamed("llm.request")))
+	}
+	if captured.containsValue("secret-api-key") || captured.containsValue(providerErr.message) {
+		t.Fatal("LLM diagnostics leaked error text or API key content")
+	}
+}
 
 type streamingRunnerClient struct {
 	responses []llm.ToolChatResponse

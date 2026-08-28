@@ -7,12 +7,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
 	"agentcanvas/internal/domain"
 	"agentcanvas/internal/domain/conversation"
 	"agentcanvas/internal/infrastructure/llm"
+	"agentcanvas/internal/pkg/logger"
 	"agentcanvas/internal/pkg/tokencounter"
 	"agentcanvas/internal/runtime/compaction"
 
@@ -73,6 +75,7 @@ func runtimeTokenStatus(req RunRequest, baseMessages, transcript []llm.ChatMessa
 func (r *Runner) compactRuntimeTranscript(ctx context.Context, req RunRequest, transcript []llm.ChatMessage) ([]llm.ChatMessage, llm.Usage, *CompactionTrace) {
 	history := runtimeCompactionHistory(req, transcript)
 	beforeTokens := modelMessagesTokens(req, history)
+	started := r.now()
 	trace := &CompactionTrace{Trigger: "runtime", Scope: autoCompactScope(req), Status: "completed"}
 	if req.TokenBudgetCompaction {
 		var retained []llm.ChatMessage
@@ -81,6 +84,7 @@ func (r *Runner) compactRuntimeTranscript(ctx context.Context, req RunRequest, t
 		}
 		trace.AfterTokens = modelMessagesTokens(req, retained)
 		trace.SavedTokens = maxInt(0, beforeTokens-trace.AfterTokens)
+		r.logCompactionCompleted(ctx, req, nil, llm.Usage{}, beforeTokens, trace, started)
 		return retained, llm.Usage{}, trace
 	}
 	provider, model := req.CompactionProvider, strings.TrimSpace(req.CompactionModel)
@@ -99,6 +103,7 @@ func (r *Runner) compactRuntimeTranscript(ctx context.Context, req RunRequest, t
 	if err != nil {
 		trace.Status = "failed"
 		trace.Error = err.Error()
+		r.logCompactionCompleted(ctx, req, err, result.Usage, beforeTokens, trace, started)
 		return transcript, result.Usage, trace
 	}
 	kept := make([]llm.ChatMessage, 0, len(result.Retained)+1)
@@ -108,7 +113,39 @@ func (r *Runner) compactRuntimeTranscript(ctx context.Context, req RunRequest, t
 	kept = append(kept, llm.ChatMessage{Role: conversation.RoleUser, Content: compaction.SummaryPrefix + result.Summary})
 	trace.AfterTokens = modelMessagesTokens(req, kept)
 	trace.SavedTokens = maxInt(0, beforeTokens-trace.AfterTokens)
+	r.logCompactionCompleted(ctx, req, nil, result.Usage, beforeTokens, trace, started)
 	return kept, result.Usage, trace
+}
+
+// logCompactionCompleted emits the bounded, metadata-only compaction.completed
+// diagnostic. Only token counts and identifiers are reported; history and
+// summary text never enter diagnostics.
+func (r *Runner) logCompactionCompleted(ctx context.Context, req RunRequest, compactionErr error, usage llm.Usage, beforeTokens int, trace *CompactionTrace, started time.Time) {
+	resultValue := "ok"
+	level := slog.LevelInfo
+	if compactionErr != nil || trace.Status == "failed" {
+		resultValue, level = "error", slog.LevelError
+	}
+	attrs := []any{"event", "compaction.completed", "phase", "compaction", "result", resultValue,
+		"latency_ms", int(r.now().Sub(started).Milliseconds()),
+		"usage", map[string]int{
+			"prompt_tokens":     usage.PromptTokens,
+			"completion_tokens": usage.CompletionTokens,
+			"total_tokens":      usage.TotalTokens,
+			"before_tokens":     beforeTokens,
+			"after_tokens":      trace.AfterTokens,
+			"saved_tokens":      trace.SavedTokens,
+		}}
+	if req.ConversationID != nil {
+		attrs = append(attrs, "conversation_id", *req.ConversationID)
+	}
+	if req.RunID != 0 {
+		attrs = append(attrs, "run_id", req.RunID)
+	}
+	if compactionErr != nil {
+		attrs = append(attrs, "error_class", logger.ErrorClass(compactionErr))
+	}
+	r.diagnosticsLogger().Log(ctx, level, "compaction.completed", attrs...)
 }
 
 // chatClientAdapter lets the core package drive a ToolCallingClient through
