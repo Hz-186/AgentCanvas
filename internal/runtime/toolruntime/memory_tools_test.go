@@ -16,7 +16,6 @@ type fakeSessionSearchIndex struct {
 	request conversation.MessageSearchRequest
 }
 
-func (*fakeSessionSearchIndex) EnsureIndex(context.Context) error { return nil }
 func (*fakeSessionSearchIndex) IndexMessage(context.Context, int64, int64, *conversation.Message) error {
 	return nil
 }

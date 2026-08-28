@@ -91,38 +91,6 @@ func (s *ElasticsearchStore) Delete(ctx context.Context, collection string, ids 
 	return nil
 }
 
-func (s *ElasticsearchStore) DeleteByFilter(ctx context.Context, collection string, filter map[string]any) error {
-	return s.updateByQuery(ctx, collection, filter, nil)
-}
-
-func (s *ElasticsearchStore) UpdateMetadataByFilter(ctx context.Context, collection string, filter map[string]any, mutate func(map[string]any) map[string]any) error {
-	if mutate == nil {
-		return nil
-	}
-	docs, err := s.queryDocuments(ctx, collection, filter)
-	if err != nil {
-		return err
-	}
-	for _, doc := range docs {
-		metadata := mutate(cloneMetadata(doc.Metadata))
-		body, err := json.Marshal(map[string]any{"text": doc.Text, "vector": doc.Vector, "metadata": metadata})
-		if err != nil {
-			return err
-		}
-		res, err := s.client.Index(collection, bytes.NewReader(body), s.client.Index.WithContext(ctx), s.client.Index.WithDocumentID(doc.ID), s.client.Index.WithRefresh("true"))
-		if err != nil {
-			return err
-		}
-		if res.IsError() {
-			err = esResponseError("update vector metadata", res.Body, res.Status())
-			res.Body.Close()
-			return err
-		}
-		res.Body.Close()
-	}
-	return nil
-}
-
 func (s *ElasticsearchStore) Search(ctx context.Context, req SearchRequest) ([]SearchResult, error) {
 	if s == nil || s.client == nil || strings.TrimSpace(req.Collection) == "" || len(req.Vector) == 0 {
 		return nil, fmt.Errorf("elasticsearch vector index and query vector are required")
@@ -177,59 +145,6 @@ func (s *ElasticsearchStore) Search(ctx context.Context, req SearchRequest) ([]S
 		results = append(results, SearchResult{ID: hit.ID, Score: hit.Score, Metadata: metadata})
 	}
 	return results, nil
-}
-
-func (s *ElasticsearchStore) queryDocuments(ctx context.Context, collection string, filter map[string]any) ([]VectorDocument, error) {
-	filters := make([]map[string]any, 0, len(filter))
-	for key, value := range filter {
-		filters = append(filters, metadataFilter(key, value))
-	}
-	body, _ := json.Marshal(map[string]any{"size": 10000, "query": map[string]any{"bool": map[string]any{"filter": filters}}})
-	res, err := s.client.Search(s.client.Search.WithContext(ctx), s.client.Search.WithIndex(collection), s.client.Search.WithBody(bytes.NewReader(body)))
-	if err != nil {
-		return nil, err
-	}
-	defer res.Body.Close()
-	if res.IsError() {
-		return nil, esResponseError("query vector documents", res.Body, res.Status())
-	}
-	var decoded struct {
-		Hits struct {
-			Hits []struct {
-				ID     string `json:"_id"`
-				Source struct {
-					Text     string         `json:"text"`
-					Vector   []float32      `json:"vector"`
-					Metadata map[string]any `json:"metadata"`
-				} `json:"_source"`
-			} `json:"hits"`
-		} `json:"hits"`
-	}
-	if err := json.NewDecoder(res.Body).Decode(&decoded); err != nil {
-		return nil, err
-	}
-	result := make([]VectorDocument, 0, len(decoded.Hits.Hits))
-	for _, hit := range decoded.Hits.Hits {
-		result = append(result, VectorDocument{ID: hit.ID, Text: hit.Source.Text, Vector: hit.Source.Vector, Metadata: hit.Source.Metadata})
-	}
-	return result, nil
-}
-
-func (s *ElasticsearchStore) updateByQuery(ctx context.Context, collection string, filter map[string]any, _ func(map[string]any) map[string]any) error {
-	filters := make([]map[string]any, 0, len(filter))
-	for key, value := range filter {
-		filters = append(filters, metadataFilter(key, value))
-	}
-	body, _ := json.Marshal(map[string]any{"query": map[string]any{"bool": map[string]any{"filter": filters}}})
-	res, err := s.client.DeleteByQuery([]string{collection}, bytes.NewReader(body), s.client.DeleteByQuery.WithContext(ctx), s.client.DeleteByQuery.WithRefresh(true))
-	if err != nil {
-		return err
-	}
-	defer res.Body.Close()
-	if res.IsError() {
-		return esResponseError("delete vector documents", res.Body, res.Status())
-	}
-	return nil
 }
 
 func esResponseError(action string, body io.Reader, status string) error {

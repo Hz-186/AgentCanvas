@@ -89,10 +89,6 @@ func (r *AgentRuntime) ConfigureSessionSearch(index conversation.MessageSearchIn
 	r.core.SessionSearch = index
 }
 
-func (r *AgentRuntime) ConfigureMemoryReader(reader MemoryBatchReader) {
-	r.core.MemoryReader = reader
-}
-
 func New(deps Deps) (*AgentRuntime, error) {
 	if deps.ToolCalling == nil {
 		return nil, fmt.Errorf("tool calling client is required")

@@ -32,14 +32,13 @@ type coreRepositories struct {
 	SkillRetriever   skill.Retriever
 	MCPServers       tool.MCPRepository
 	Retriever        retrieval.Retriever
-	MemoryReader     MemoryBatchReader
 	Memories         memory.Repository
 	MemoryArtifacts  memory.MemoryArtifactRepository
 	MemoryRecallLogs memory.RecallLogRepository
 	AdHocNotes       memory.AdHocWriter
 	MessageHistory   MessageHistoryReader
 	MessageWriter    MessageWriter
-	Compactions      conversation.CompactionRepository
+	Compactions      conversation.SnapshotRepository
 	SessionSearch    conversation.MessageSearchIndex
 	ContextIndex     contextresource.Index
 	ToolInvocations  tool.InvocationRepository
@@ -52,7 +51,6 @@ type coreRepositories struct {
 type coreClients struct {
 	LLM      llm.ToolCallingClient
 	Embedder llm.EmbeddingClient
-	Archival ArchivalIndexFactory
 }
 
 type coreTooling struct {
@@ -90,10 +88,6 @@ type runtimeCore struct {
 	coreWorkspace
 	coreObservability
 	corePolicies
-}
-
-type MemoryBatchReader interface {
-	GetMany(ctx context.Context, ownerID int64, ids []int64) ([]memory.Memory, error)
 }
 
 type queryUnderstandingPlanner interface {
@@ -235,24 +229,6 @@ func (c *agentRuntimeConfig) UnmarshalJSON(data []byte) error {
 		c.RuntimeRules = *nested.RulesConfig
 	}
 	return nil
-}
-
-func decodeRuntimeConfig(config json.RawMessage) (agentRuntimeConfig, error) {
-	var cfg agentRuntimeConfig
-	if err := json.Unmarshal(config, &cfg); err != nil {
-		return cfg, fmt.Errorf("%w: invalid agent config", agenterrors.ErrInvalidInput)
-	}
-	var fields map[string]json.RawMessage
-	if json.Unmarshal(config, &fields) == nil {
-		_, cfg.MemoryEnabledSet = fields["memory_enabled"]
-		if !cfg.MemoryEnabledSet {
-			var nested map[string]json.RawMessage
-			if json.Unmarshal(fields["memory_policy"], &nested) == nil {
-				_, cfg.MemoryEnabledSet = nested["memory_enabled"]
-			}
-		}
-	}
-	return cfg, nil
 }
 
 func validateAgentRuntimeConfig(cfg agentRuntimeConfig, requireProvider bool) error {

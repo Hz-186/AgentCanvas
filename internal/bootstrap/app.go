@@ -22,7 +22,6 @@ import (
 	workspaceusecase "agentcanvas/internal/application/workspace_usecase"
 	"agentcanvas/internal/domain/contextresource"
 	"agentcanvas/internal/domain/knowledge"
-	"agentcanvas/internal/domain/memory"
 	"agentcanvas/internal/domain/resource"
 	domainretrieval "agentcanvas/internal/domain/retrieval"
 	"agentcanvas/internal/infrastructure"
@@ -301,21 +300,13 @@ func NewApp(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, er
 	agentRuntime, err := agentruntime.New(agentruntime.Deps{
 		Repositories: agentruntime.Repositories{
 			Retriever: retrievalService, Providers: providerLoader, MessageHistory: messageRepo, MessageWriter: messageRepo, Compactions: compactionRepo,
-			SessionSearch: sessionSearch, Memories: memoryRepo, MemoryReader: memoryService,
+			SessionSearch: sessionSearch, Memories: memoryRepo,
 			MemoryRecallLogs: memoryRecallLogRepo, MemoryArtifacts: mysqlinfra.NewMemoryArtifactRepository(db), AdHocNotes: adHocNoteWriter,
 			ToolPacks: toolPackRepo, Skills: skillRepo, SkillRetriever: skillusecase.NewRetriever(skillRepo), MCPServers: mcpRepo,
 			ContextIndex:             contextIndex,
 			TerminalReflectionWriter: terminalReflectionWriter,
 		},
-		RuntimeClients: agentruntime.RuntimeClients{
-			LLM: chatClient, ToolCalling: toolCallingClient, Embedder: embeddingClient,
-			Archival: agentruntime.ArchivalIndexFactoryFunc(func(provider agentruntime.LoadedProvider) memory.ArchivalIndex {
-				if archivalVecStore == nil || strings.TrimSpace(provider.EmbeddingModel) == "" {
-					return nil
-				}
-				return contextretrieval.ArchivalMemoryIndex{Store: archivalVecStore, Embedder: embeddingClient, Provider: provider.EmbeddingConfig, ProviderID: provider.ProviderID, Model: provider.EmbeddingModel}
-			}),
-		},
+		RuntimeClients: agentruntime.RuntimeClients{LLM: chatClient, ToolCalling: toolCallingClient, Embedder: embeddingClient},
 		Tooling: agentruntime.Tooling{ToolRegistry: toolRegistry, Goals: goalRepo, GoalTokenBudgetCeiling: cfg.Goals.MaxTokenBudget,
 			DefaultModeRequestUserInput: cfg.Tools.DefaultModeRequestUserInput.Enabled != nil && *cfg.Tools.DefaultModeRequestUserInput.Enabled,
 			DisableUpdatePlan:           cfg.Tools.UpdatePlan.Enabled != nil && !*cfg.Tools.UpdatePlan.Enabled},
