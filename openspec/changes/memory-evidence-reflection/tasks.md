@@ -208,7 +208,7 @@ Wave4(与 Wave2/3 文件不重叠，可并行):  T8(反思信号+窗口)   T9(�
   - DoD:
     - 上述测试全部转绿 + `GOOS=linux go build ./...` exit 0。
 
-- [ ] Task 9: Complete terminal reflection structure and make enqueue failures observable
+- [x] Task 9: Complete terminal reflection structure and make enqueue failures observable
   - complexity: 🟡
   - files: `internal/runtime/agentruntime/reflection.go` + 测试
   - RED:

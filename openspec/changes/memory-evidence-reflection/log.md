@@ -263,3 +263,36 @@ Should Improve 处理：Decision 10 扩至全部倾倒点（:426-428/:599-601/:6
 - Should Improve（非阻塞）：① 与 spec 评审同一发现的上游接线缝（runner 拦截步无 ErrorCode → schema 分类降级；一行修复候选同上）；② `normalizeArgumentsJSON` 用 Decoder.Decode 忽略尾随杂散字符（稳定确定、外观）；③ 报告引用 `runner.go:561` 表述不精确（:561 为 InvalidAlias 回退、:596 无码步靠 "not available" 子串——分类结果仍正确）。
 - 主会话复核：工作树 2 文件 +612/-18 与评审包一致；上游接线缝两审独立发现、裁定一致——Task 8 规范正确且范围锁定，缺口属 Task 1 载体接线，记入 known_issues（后续候选），不阻塞本任务。
 - `reverse_sync_required: false`。双 PASS，Task 8 关闭。
+
+### Task 8 关闭（2026-08-28）
+
+- 门禁复跑（主会话）：`GOOS=linux go build ./...` exit 0；工作树与评审包一致。
+- 提交 `c0662d6` feat(runtime): scan full tool trajectories for reflection signals（6 文件 +774/-21）。
+
+### Task 9 — 实现者返回：DONE（无范围外偏差）
+
+- 交付：`terminalReflectionContent`（reflection.go:95-117）四段结构（Root cause / Corrective action / Lesson / Applicability，空段跳过、全空条目丢弃、条目间空行）；`finalizeReflection`（:66-86）入队失败改为先 `slog.Warn`（owner_id/agent_id/run_id/error 结构化属性）再发 1 个尽力而为 AgentStep 事件（沿用 `execution.go:153/:433/:484` 的 StepTypeError 载荷模式，无新事件类型）；`emitRuntimeEvent`（support.go:15-20）本身上不抛错；运行不失败（函数 void、调用点 bare statement）；成功路径静默；waiting_human/paused 仍跳过；`runtimeCore`/Deps 零字段新增。
+- 偏差披露：3 个指令场景（保持运行成功、成功静默、跳过两种 stop reason）RED 即过——为既有语义回归锁；其余为授权内的设计裁量（段标签措辞、1 个空段跳过额外子测试）。
+- 报告：task-9-report.md；评审包 /tmp/task9-review.diff（344 行，2 文件：+280/-12）。
+
+### Review Evidence Task 9 — spec-compliance reviewer
+
+- Verdict: **PASS**（Must Fix 0）。diff 与工作树逐字节一致（反向应用校验通过）。6/6 场景逐字在场全绿（`reflection_test.go:87/135/159/184/205/226`）+ 1 个披露额外子测试（空段跳过 :113）。
+- 回归锁裁定（3 个 RED 即过场景）全部有牙：去守卫 → 场景 6 失败（错误写手使"仅错误跳过"变异同被捕获）；成功路径加日志/事件 → 场景 5 失败；错误路径引入 panic/重试/短路 → 场景 4 失败（recover 守卫 + 恰 1 次调用断言）。
+- 需求 3 溯源：四段稳定序（:99-110）、TrimSpace 守卫、全空丢弃（:111-113）、`"\n\n"` 连接（:116）、doc 注释准确（:89-94）。
+- 需求 4 溯源：warn 先于事件（:78-83 → :84-85）、`emitRuntimeEvent` 不上抛（support.go:15-20）、恰 1 事件（消息串非测试代码仅现于 :78/:85）、载荷与 execution.go 模式同形、事件类型目录零 diff、Deps/runtimeCore 零字段（dependencies.go/runtime.go/context.go 均空）、结构化属性非格式化消息。
+- MUST-NOT-CHANGE 全核验：幂等键 `reflection:run:%d`（write_adapters.go:38 零 diff）、请求字段集、五重守卫与顺序、证据 JSON 键、策略函数均未触。
+- 门禁复跑（自建独立 overlay）：build/vet exit 0；定向 6+1 场景全绿；全包 4.819s 绿；agent 包回归 8.205s 绿；gofmt 干净。
+- Should Improve：① 报告测试行号区间小误（外观）；② `.vsdd-state.yaml.runtime` 建议 gitignore（非本任务产物）；③ `"error"` 属性可用 `slog.Any(err)` 更惯用（非必需）。
+- 透明披露：评审误跑 `go fmt` 波及 16 个无关文件（CRLF→LF），已 `git checkout` 全数复原并复核字节一致。
+
+### Review Evidence Task 9 — code-quality reviewer
+
+- Verdict: **PASS**（Must Fix 0）。RED 状态独立复现（以 HEAD 版 reflection.go + flock shim 组 overlay 重跑，输出与报告一致：4 真失败 + 3 锁）。
+- 内容组装：四段独立条件句稳定序、标签风格与既有 `Corrective action:` 及 `reflection_usecase/conversion.go:108` 一致；全字段 TrimSpace、纯 `strings.Join` 构造无尾空白；部分条目发射其有段、全空条目丢弃（测试用仅含 Action 的空条目，Action 非四段之一——意图精确）。
+- 可观测路径：先日志后事件；属性 int64 直传、蛇形键、错误不拼入消息、消息文本稳定可 grep；单分支恰一次；守卫全部早于日志代码（跳过的运行不可能产生警告）；调用点（:326/:388/:440）未变。
+- 测试卫生：`capturePackageLogs` 经 `t.Cleanup` 还原 `slog.Default()`（包内唯一 SetDefault、无 t.Parallel → 全局替换安全）；事件捕获复用包标准件；无 flaky 构造；gofmt 干净。
+- 门禁复跑：build/vet 0；定向绿；全包 5.071s 绿；agent 回归 7.557s 绿（自建独立 overlay）。
+- Should Improve（非阻塞，记录）：① 双非空条目间 `"\n\n"` 连接无直接断言（两条目测试丢了一条）；② 仅 RootCause+Applicability 条目组合（规范场景 GIVEN）无专项子测试；③ `TerminalAsync=false` 守卫无测试锁（守卫在场且顺序正确，删除不会使任何测试失败）。
+- 主会话裁决：3 条均为纯增量测试覆盖缺口、非缺陷；任务 DoD（6 场景绿 + 构建门禁）满足，按流程记录备查，不做修复轮（若后续需要可作独立补测试提交）。
+- `reverse_sync_required: false`。双 PASS，Task 9 关闭。全部 9 个任务完成，进入 verify 阶段。
