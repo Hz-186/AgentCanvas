@@ -143,13 +143,6 @@ func (s *Service) ClearGoal(ctx context.Context, ownerID, conversationID int64) 
 	return err
 }
 
-func (s *Service) UpdateGoalUsage(ctx context.Context, ownerID, conversationID, timeDelta, tokenDelta int64, mode string) (*goal.ThreadGoal, error) {
-	if s.goals == nil {
-		return nil, errors.New("goal repository is not configured")
-	}
-	return s.goals.Account(ctx, ownerID, conversationID, timeDelta, tokenDelta, mode)
-}
-
 func goalTokenDelta(usage llm.Usage) int64 {
 	input := usage.PromptTokens - usage.CachedInputTokens
 	if input < 0 {
