@@ -43,25 +43,11 @@ type ExtractionJob struct {
 
 func (ExtractionJob) TableName() string { return "memory_extraction_jobs" }
 
-type ExtractionResult struct {
-	ProfileMemories  []ExtractedMemoryItem `json:"profile_memories"`
-	EpisodicMemories []ExtractedMemoryItem `json:"episodic_memories"`
-	TaskMemories     []ExtractedMemoryItem `json:"task_memories"`
-}
-
-type ExtractedMemoryItem struct {
-	Title      string  `json:"title"`
-	Content    string  `json:"content"`
-	Importance float64 `json:"importance"`
-	Confidence float64 `json:"confidence"`
-}
-
 type ExtractionJobRepository interface {
 	Create(ctx context.Context, job *ExtractionJob) error
 	Update(ctx context.Context, job *ExtractionJob) error
 	FindByID(ctx context.Context, ownerID, id int64) (*ExtractionJob, error)
 	FindByIdempotencyKey(ctx context.Context, ownerID int64, key string) (*ExtractionJob, error)
-	ListByStatus(ctx context.Context, ownerID int64, status string, limit int) ([]ExtractionJob, error)
 	ListPending(ctx context.Context, limit int) ([]ExtractionJob, error)
 	// LatestDurableJob returns the conversation's newest durable extraction
 	// job (MAX(id), any status, any idempotency-key generation) so the

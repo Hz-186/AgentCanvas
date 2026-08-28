@@ -9,10 +9,6 @@ import (
 
 const (
 	WriteModeSuggest = "suggest"
-	// WriteModeDirect is retained only so old persisted configs decode. Direct
-	// Agent writes are retired; the asynchronous consolidation worker is the sole
-	// durable-memory writer.
-	WriteModeDirect = "direct"
 )
 
 type Policy struct {
@@ -27,7 +23,11 @@ type Policy struct {
 
 func DefaultPolicy() Policy {
 	recall := true
-	return Policy{RecallEnabled: &recall, WriteMode: WriteModeSuggest, TopK: 8, TokenBudget: 1200}
+	return Policy{
+		RecallEnabled: &recall,
+		WriteMode:     WriteModeSuggest,
+		TopK:          8, TokenBudget: 1200,
+	}
 }
 
 func ParsePolicy(raw json.RawMessage) (Policy, error) {

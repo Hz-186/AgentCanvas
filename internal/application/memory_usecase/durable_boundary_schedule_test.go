@@ -371,9 +371,6 @@ func TestBoundaryWindow(t *testing.T) {
 		if boundary != 500 {
 			t.Fatalf("window start = %d, want the conversation's latest completed through 500", boundary)
 		}
-		if jobs.listByStatusCalls != 0 {
-			t.Fatalf("previousBoundary used the retired %d-row ListByStatus scan %d time(s)", 200, jobs.listByStatusCalls)
-		}
 	})
 
 	t.Run("shouldKeepOutOfOrderShadowRule", func(t *testing.T) {

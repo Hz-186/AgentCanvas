@@ -3,11 +3,9 @@ package mysql
 import (
 	"context"
 	"encoding/json"
-	"math"
 	"os"
 	"strconv"
 	"testing"
-	"time"
 
 	"agentcanvas/internal/domain"
 	"agentcanvas/internal/domain/contextresource"
@@ -53,7 +51,7 @@ func TestMemoryV2RepositoryIntegration(t *testing.T) {
 	oldSourceKey := "memory-v2-integration:old"
 	old := &memory.Memory{SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{OwnerID: ownerID}}, MemoryType: memory.TypeProfile, RetentionTier: memory.TierLongTerm,
 		Title: "response style", Content: "User prefers concise answers", Importance: 1, Source: "manual",
-		DeduplicationKey: &oldSourceKey, ScopeType: memory.ScopeAgent, ScopeID: 7, Status: memory.StatusActive}
+		DeduplicationKey: &oldSourceKey, ScopeType: memory.ScopeAgent, ScopeID: 7, Status: memory.StatusSuperseded}
 	if err := repository.Create(ctx, old); err != nil {
 		t.Fatal(err)
 	}
@@ -61,22 +59,9 @@ func TestMemoryV2RepositoryIntegration(t *testing.T) {
 	replacementSourceKey := "memory-v2-integration:replacement"
 	replacement := &memory.Memory{SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{OwnerID: ownerID}}, MemoryType: memory.TypeProfile, RetentionTier: memory.TierLongTerm,
 		Title: "response style", Content: "User prefers detailed answers", Importance: 1, Source: "proposal",
-		DeduplicationKey: &replacementSourceKey, ScopeType: memory.ScopeAgent, ScopeID: 7, Status: memory.StatusActive}
-	if err := repository.Replace(ctx, ownerID, old.ID, replacement); err != nil {
+		DeduplicationKey: &replacementSourceKey, ScopeType: memory.ScopeAgent, ScopeID: 7, Status: memory.StatusActive, SupersedesID: &old.ID}
+	if err := repository.Create(ctx, replacement); err != nil {
 		t.Fatal(err)
-	}
-	previous, err := repository.FindByID(ctx, ownerID, old.ID)
-	if err != nil || previous.Status != memory.StatusSuperseded || replacement.SupersedesID == nil || *replacement.SupersedesID != old.ID {
-		t.Fatalf("invalid replacement lineage: previous=%+v replacement=%+v err=%v", previous, replacement, err)
-	}
-
-	replayed := &memory.Memory{SoftDeleteModel: domain.SoftDeleteModel{BaseModel: domain.BaseModel{OwnerID: ownerID}}, MemoryType: memory.TypeProfile, Content: replacement.Content,
-		DeduplicationKey: &replacementSourceKey, ScopeType: memory.ScopeAgent, ScopeID: 7}
-	if err := repository.Replace(ctx, ownerID, old.ID, replayed); err != nil {
-		t.Fatalf("replacement replay must be idempotent: %v", err)
-	}
-	if replayed.ID != replacement.ID {
-		t.Fatalf("replacement replay created a duplicate: first=%d replay=%d", replacement.ID, replayed.ID)
 	}
 
 	filtered, err := repository.ListFiltered(ctx, ownerID, memory.ListFilter{Statuses: []string{memory.StatusActive}, ScopeTypes: []string{memory.ScopeAgent}, ScopeID: pointerInt64(7), Limit: 10})
@@ -93,27 +78,6 @@ func TestMemoryV2RepositoryIntegration(t *testing.T) {
 	used, err := repository.FindByID(ctx, ownerID, replacement.ID)
 	if err != nil || used.UsageCount != 1 || used.LastUsedAt == nil {
 		t.Fatalf("actual recall must atomically update lifecycle counters: memory=%+v err=%v", used, err)
-	}
-
-	decayBase := time.Now().UTC().Add(-72 * time.Hour)
-	if err := db.Model(&memory.Memory{}).Where("owner_id = ? AND id = ?", ownerID, replacement.ID).
-		Updates(map[string]any{"importance": 1.0, "created_at": decayBase, "last_used_at": decayBase, "last_decay_at": nil}).Error; err != nil {
-		t.Fatal(err)
-	}
-	if count, err := repository.UpdateDecayedImportance(ctx, ownerID, 0.1); err != nil || count != 1 {
-		t.Fatalf("expected one incremental decay, count=%d err=%v", count, err)
-	}
-	decayed, err := repository.FindByID(ctx, ownerID, replacement.ID)
-	if err != nil || decayed.Importance >= 1 || decayed.LastDecayAt == nil {
-		t.Fatalf("first decay was not persisted: memory=%+v err=%v", decayed, err)
-	}
-	firstImportance := decayed.Importance
-	if count, err := repository.UpdateDecayedImportance(ctx, ownerID, 0.1); err != nil || count != 0 {
-		t.Fatalf("immediate retry must not apply cumulative decay, count=%d err=%v", count, err)
-	}
-	decayedAgain, err := repository.FindByID(ctx, ownerID, replacement.ID)
-	if err != nil || math.Abs(decayedAgain.Importance-firstImportance) > 1e-12 {
-		t.Fatalf("importance changed on immediate decay retry: before=%f after=%f err=%v", firstImportance, decayedAgain.Importance, err)
 	}
 
 	details, err := json.Marshal([]memory.RecallDetail{{MemoryID: replacement.ID, Source: replacement.Source, ScopeType: replacement.ScopeType, ScopeID: replacement.ScopeID, Score: 0.9, Reason: "unified_context_index", TokenCost: 8}})
@@ -135,8 +99,8 @@ func TestMemoryV2RepositoryIntegration(t *testing.T) {
 		[]string{strconv.FormatInt(old.ID, 10), strconv.FormatInt(replacement.ID, 10)}).Count(&outboxCount).Error; err != nil {
 		t.Fatal(err)
 	}
-	if outboxCount < 3 {
-		t.Fatalf("expected create, replacement upsert and superseded delete outbox rows, got %d", outboxCount)
+	if outboxCount < 2 {
+		t.Fatalf("expected one outbox row per created memory, got %d", outboxCount)
 	}
 }
 

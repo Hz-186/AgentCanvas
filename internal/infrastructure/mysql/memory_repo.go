@@ -2,8 +2,6 @@ package mysql
 
 import (
 	"context"
-	"fmt"
-	"math"
 	"time"
 
 	"agentcanvas/internal/domain/contextresource"
@@ -60,69 +58,6 @@ func (r *MemoryRepository) Update(ctx context.Context, item *memory.Memory) erro
 			return err
 		}
 		return enqueueMemoryContextResource(ctx, tx, item, item.UpdatedAt)
-	})
-}
-
-func (r *MemoryRepository) Replace(ctx context.Context, ownerID, supersededID int64, replacement *memory.Memory) error {
-	if replacement == nil || ownerID <= 0 || supersededID <= 0 || replacement.OwnerID != ownerID {
-		return fmt.Errorf("invalid memory replacement")
-	}
-	now := time.Now().UTC()
-	replacement.ApplyV2Defaults()
-	replacement.RetentionTier = memory.TierLongTerm
-	replacement.Status = memory.StatusActive
-	replacement.SupersedesID = &supersededID
-	if replacement.CreatedAt.IsZero() {
-		replacement.CreatedAt = now
-	}
-	replacement.UpdatedAt = now
-	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var previous memory.Memory
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-			Where("owner_id = ? AND id = ? AND deleted_at IS NULL", ownerID, supersededID).First(&previous).Error; err != nil {
-			return err
-		}
-		if previous.Status != "" && previous.Status != memory.StatusActive && previous.Status != memory.StatusSuperseded {
-			return fmt.Errorf("memory %d cannot be superseded from status %s", supersededID, previous.Status)
-		}
-
-		created := true
-		var create *gorm.DB
-		if replacement.DeduplicationKey != nil {
-			create = tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "owner_id"}, {Name: "deduplication_key"}}, DoNothing: true}).Create(replacement)
-		} else {
-			create = tx.Create(replacement)
-		}
-		if create.Error != nil {
-			return create.Error
-		}
-		if create.RowsAffected == 0 && replacement.DeduplicationKey != nil {
-			created = false
-			if err := tx.Where("owner_id = ? AND deduplication_key = ?", ownerID, *replacement.DeduplicationKey).First(replacement).Error; err != nil {
-				return err
-			}
-			if replacement.SupersedesID == nil || *replacement.SupersedesID != supersededID {
-				return fmt.Errorf("idempotency key belongs to a different memory replacement")
-			}
-		}
-
-		if previous.Status == memory.StatusSuperseded && !created {
-			return nil
-		}
-		if previous.Status != memory.StatusActive {
-			return fmt.Errorf("memory %d is already superseded", supersededID)
-		}
-		if created {
-			if err := enqueueMemoryContextResource(ctx, tx, replacement, now); err != nil {
-				return err
-			}
-		}
-		if err := tx.Model(&memory.Memory{}).Where("owner_id = ? AND id = ? AND status = ? AND deleted_at IS NULL", ownerID, supersededID, memory.StatusActive).
-			Updates(map[string]any{"status": memory.StatusSuperseded, "updated_at": now}).Error; err != nil {
-			return err
-		}
-		previousAgentID, previousConversationID, _ := memoryIndexScope(&previous)
-		return enqueueContextResource(ctx, tx, ownerID, previousAgentID, previousConversationID, contextresource.TypeLongTermMemory, supersededID, contextresource.OperationDelete, "")
 	})
 }
 
@@ -257,23 +192,6 @@ func (r *MemoryRepository) listForRead(ctx context.Context, ownerID, agentID int
 	return items, err
 }
 
-func (r *MemoryRepository) SoftDelete(ctx context.Context, ownerID, id int64) error {
-	now := time.Now().UTC()
-	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var item memory.Memory
-		if err := tx.Where("owner_id = ? AND id = ? AND deleted_at IS NULL", ownerID, id).First(&item).Error; err != nil {
-			return err
-		}
-		result := tx.Model(&memory.Memory{}).Where("owner_id = ? AND id = ? AND deleted_at IS NULL", ownerID, id).
-			Updates(map[string]any{"deleted_at": now, "updated_at": now})
-		if result.Error != nil || result.RowsAffected == 0 {
-			return result.Error
-		}
-		agentID, conversationID, _ := memoryIndexScope(&item)
-		return enqueueContextResource(ctx, tx, ownerID, agentID, conversationID, contextresource.TypeLongTermMemory, id, contextresource.OperationDelete, "")
-	})
-}
-
 func (r *MemoryRepository) MarkUsed(ctx context.Context, ownerID int64, ids []int64) error {
 	if len(ids) == 0 {
 		return nil
@@ -282,193 +200,6 @@ func (r *MemoryRepository) MarkUsed(ctx context.Context, ownerID int64, ids []in
 	return r.db.WithContext(ctx).Model(&memory.Memory{}).
 		Where("owner_id = ? AND id IN ? AND deleted_at IS NULL AND status = ?", ownerID, ids, memory.StatusActive).
 		Updates(map[string]any{"last_used_at": now, "updated_at": now, "usage_count": gorm.Expr("usage_count + 1")}).Error
-}
-
-func (r *MemoryRepository) ListByLevel(ctx context.Context, ownerID int64, level string, memoryTypes []string, limit int) ([]memory.Memory, error) {
-	var items []memory.Memory
-	if ownerID <= 0 {
-		return items, nil
-	}
-	query := r.db.WithContext(ctx).Where("retention_tier = ? AND deleted_at IS NULL", level).
-		Where("owner_id = ?", ownerID).
-		Where("status = ? AND has_conflict = ?", memory.StatusActive, false).
-		Where("(expires_at IS NULL OR expires_at > ?)", time.Now().UTC())
-	if len(memoryTypes) > 0 {
-		query = query.Where("memory_type IN ?", memoryTypes)
-	}
-	if limit <= 0 || limit > 50 {
-		limit = 20
-	}
-	err := query.Order("importance DESC, usage_count DESC, updated_at DESC").Limit(limit).Find(&items).Error
-	return items, err
-}
-
-func (r *MemoryRepository) ListActiveOwnerIDs(ctx context.Context, limit int) ([]int64, error) {
-	if limit <= 0 || limit > 10000 {
-		limit = 1000
-	}
-	var ownerIDs []int64
-	err := r.db.WithContext(ctx).Model(&memory.Memory{}).
-		Where("deleted_at IS NULL").
-		Where("status = ?", memory.StatusActive).
-		Where("retention_tier IN ?", []string{memory.TierShortTerm, memory.TierLongTerm}).
-		Distinct("owner_id").
-		Order("owner_id ASC").
-		Limit(limit).
-		Pluck("owner_id", &ownerIDs).Error
-	return ownerIDs, err
-}
-
-func (r *MemoryRepository) IncrementUsageCount(ctx context.Context, ownerID int64, id int64) error {
-	return r.db.WithContext(ctx).Model(&memory.Memory{}).
-		Where("owner_id = ? AND id = ? AND deleted_at IS NULL", ownerID, id).
-		UpdateColumn("usage_count", gorm.Expr("usage_count + 1")).Error
-}
-
-func (r *MemoryRepository) IncrementPromotionCount(ctx context.Context, ownerID int64, id int64) error {
-	return r.db.WithContext(ctx).Model(&memory.Memory{}).
-		Where("owner_id = ? AND id = ? AND deleted_at IS NULL", ownerID, id).
-		UpdateColumn("promotion_count", gorm.Expr("promotion_count + 1")).Error
-}
-
-func (r *MemoryRepository) MarkExpired(ctx context.Context, ownerID int64, maxAgeDays int) (int64, error) {
-	now := time.Now().UTC()
-	var count int64
-	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		query := tx.Model(&memory.Memory{}).Where("owner_id = ? AND deleted_at IS NULL", ownerID).
-			Where("expires_at IS NOT NULL AND expires_at <= ?", now)
-		if maxAgeDays > 0 {
-			cutoff := now.AddDate(0, 0, -maxAgeDays)
-			query = tx.Model(&memory.Memory{}).Where("owner_id = ? AND deleted_at IS NULL", ownerID).
-				Where("(expires_at IS NOT NULL AND expires_at <= ?) OR (retention_tier = ? AND updated_at <= ?)", now, memory.TierShortTerm, cutoff)
-		}
-		var ids []int64
-		if err := query.Pluck("id", &ids).Error; err != nil || len(ids) == 0 {
-			return err
-		}
-		result := tx.Model(&memory.Memory{}).Where("owner_id = ? AND id IN ? AND deleted_at IS NULL", ownerID, ids).
-			Updates(map[string]any{"deleted_at": now, "updated_at": now})
-		if result.Error != nil {
-			return result.Error
-		}
-		count = result.RowsAffected
-		for _, id := range ids {
-			if err := enqueueContextResource(ctx, tx, ownerID, 0, 0, contextresource.TypeLongTermMemory, id, contextresource.OperationDelete, ""); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-	return count, err
-}
-
-func (r *MemoryRepository) UpdateDecayedImportance(ctx context.Context, ownerID int64, decayRate float64) (int64, error) {
-	now := time.Now().UTC()
-	cutoff := now.Add(-23 * time.Hour)
-	decayBase := "GREATEST(COALESCE(last_decay_at, created_at), COALESCE(last_used_at, created_at))"
-	result := r.db.WithContext(ctx).Model(&memory.Memory{}).
-		Where("owner_id = ? AND deleted_at IS NULL AND status = ? AND retention_tier = ?", ownerID, memory.StatusActive, memory.TierLongTerm).
-		Where(decayBase+" <= ?", cutoff).
-		Updates(map[string]any{
-			"importance":    gorm.Expr("GREATEST(?, importance * EXP(? * (TIMESTAMPDIFF(SECOND, "+decayBase+", ?) / 86400.0)))", decayMinImportance, -decayRate, now),
-			"last_decay_at": now,
-			"updated_at":    now,
-		})
-	var count int64
-	if result.Error != nil {
-		return 0, result.Error
-	}
-	count = result.RowsAffected
-	return count, nil
-}
-
-// lifecycleRecencySQL is the recency fallback used by lifecycle SQL: the
-// spec's source_updated_at has no current column, so updated_at is the
-// source-updated fallback (COALESCE(last_used_at, updated_at)).
-const lifecycleRecencySQL = "COALESCE(last_used_at, updated_at)"
-
-// SelectLifecycleCandidates implements memory.LifecycleRepository with one
-// deterministic SQL query: active recallable rows ordered by
-// usage_count DESC, COALESCE(last_used_at, updated_at) DESC, id ASC, with the
-// cold-window and consolidated-protection filters pushed down and capped at
-// limit. The lifecycle service re-applies the identical predicate.
-func (r *MemoryRepository) SelectLifecycleCandidates(ctx context.Context, ownerID int64, cutoff time.Time, protectedIDs []int64, limit int) ([]memory.Memory, error) {
-	if limit <= 0 || limit > 256 {
-		limit = 256
-	}
-	var items []memory.Memory
-	query := r.db.WithContext(ctx).
-		Where("owner_id = ? AND deleted_at IS NULL AND status = ? AND has_conflict = ?", ownerID, memory.StatusActive, false).
-		Where("(expires_at IS NULL OR expires_at > ?)", time.Now().UTC())
-	warmClause := lifecycleRecencySQL + " >= ?"
-	warmArgs := []any{cutoff}
-	if len(protectedIDs) > 0 {
-		warmClause = "(" + warmClause + " OR id IN ?)"
-		warmArgs = append(warmArgs, protectedIDs)
-	}
-	err := query.Where(warmClause, warmArgs...).
-		Order("usage_count DESC, " + lifecycleRecencySQL + " DESC, id ASC").
-		Limit(limit).
-		Find(&items).Error
-	return items, err
-}
-
-// ListColdRows implements memory.LifecycleRepository: active rows whose
-// recency falls before cutoff, protected IDs pushed down as SQL, ordered by id
-// ASC. The lifecycle service re-checks protection before deleting.
-func (r *MemoryRepository) ListColdRows(ctx context.Context, ownerID int64, cutoff time.Time, protectedIDs []int64) ([]memory.Memory, error) {
-	var items []memory.Memory
-	query := r.db.WithContext(ctx).
-		Where("owner_id = ? AND deleted_at IS NULL AND status = ? AND has_conflict = ?", ownerID, memory.StatusActive, false).
-		Where("(expires_at IS NULL OR expires_at > ?)", time.Now().UTC()).
-		Where(lifecycleRecencySQL+" < ?", cutoff)
-	if len(protectedIDs) > 0 {
-		query = query.Where("id NOT IN ?", protectedIDs)
-	}
-	err := query.Order("id ASC").Find(&items).Error
-	return items, err
-}
-
-// PruneMemories implements memory.LifecycleRepository: soft-deletes the given
-// active rows, enqueues the context index deletion work and returns the IDs
-// actually deleted.
-func (r *MemoryRepository) PruneMemories(ctx context.Context, ownerID int64, ids []int64) ([]int64, error) {
-	deleted := make([]int64, 0, len(ids))
-	if len(ids) == 0 {
-		return deleted, nil
-	}
-	now := time.Now().UTC()
-	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		result := tx.Model(&memory.Memory{}).
-			Where("owner_id = ? AND id IN ? AND deleted_at IS NULL AND status = ?", ownerID, ids, memory.StatusActive).
-			Updates(map[string]any{"deleted_at": now, "updated_at": now})
-		if result.Error != nil {
-			return result.Error
-		}
-		if result.RowsAffected == 0 {
-			return nil
-		}
-		// The caller derived the ID set from the cold query moments earlier;
-		// report the requested set and keep the outbox delete work per ID.
-		for _, id := range ids {
-			deleted = append(deleted, id)
-			if err := enqueueContextResource(ctx, tx, ownerID, 0, 0, contextresource.TypeLongTermMemory, id, contextresource.OperationDelete, ""); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-	return deleted, err
-}
-
-const decayMinImportance = 0.05
-
-func initialDecayedImportance(originalImportance float64, daysSinceLastAccess int, decayRate float64) float64 {
-	decayed := originalImportance * math.Exp(-decayRate*float64(daysSinceLastAccess))
-	if decayed < decayMinImportance {
-		return decayMinImportance
-	}
-	return decayed
 }
 
 func filterMemories(query *gorm.DB, memoryTypes []string, conversationID, projectID *int64) *gorm.DB {
@@ -511,8 +242,6 @@ func memoryIndexScope(item *memory.Memory) (agentID, conversationID, projectID i
 }
 
 type MemoryRecallLogRepository struct{ db *gorm.DB }
-
-var _ memory.LifecycleRepository = (*MemoryRepository)(nil)
 
 func NewMemoryRecallLogRepository(db *gorm.DB) *MemoryRecallLogRepository {
 	return &MemoryRecallLogRepository{db: db}

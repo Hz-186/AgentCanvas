@@ -23,9 +23,6 @@ type fakeExtractionRepo struct {
 	jobs    map[int64]*memory.ExtractionJob
 	nextID  int64
 	created []*memory.ExtractionJob
-	// listByStatusCalls proves the retired 200-row scan is gone from the
-	// boundary coverage logic.
-	listByStatusCalls int
 	// onLatestDurableJob simulates a concurrent writer landing right after
 	// the scheduler read the latest row: a worker claim flipping the row to
 	// running, or a rival scheduler inserting the same successor.
@@ -79,17 +76,6 @@ func (r *fakeExtractionRepo) FindByIdempotencyKey(ctx context.Context, ownerID i
 		}
 	}
 	return nil, errNotFound
-}
-
-func (r *fakeExtractionRepo) ListByStatus(ctx context.Context, ownerID int64, status string, limit int) ([]memory.ExtractionJob, error) {
-	r.listByStatusCalls++
-	var result []memory.ExtractionJob
-	for _, j := range r.jobs {
-		if j.OwnerID == ownerID && j.Status == status {
-			result = append(result, *j)
-		}
-	}
-	return result, nil
 }
 
 // LatestDurableJob mirrors the conversation-scoped latest-row lookup: any

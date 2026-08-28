@@ -67,14 +67,6 @@ func (r *MemoryWriteJobRepository) Create(ctx context.Context, job *memory.Memor
 	return nil
 }
 
-func (r *MemoryWriteJobRepository) FindByIdempotencyKey(ctx context.Context, ownerID int64, key string) (*memory.MemoryWriteJob, error) {
-	var job memory.MemoryWriteJob
-	if err := r.db.WithContext(ctx).Where("owner_id = ? AND idempotency_key = ?", ownerID, key).First(&job).Error; err != nil {
-		return nil, err
-	}
-	return &job, nil
-}
-
 func (r *MemoryWriteJobRepository) ClaimPending(ctx context.Context, workerID string, now time.Time, leaseUntil time.Time, limit int) ([]memory.MemoryWriteJob, error) {
 	if limit <= 0 {
 		limit = 10
