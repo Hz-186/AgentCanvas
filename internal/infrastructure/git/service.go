@@ -2,8 +2,6 @@ package git
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -242,14 +240,6 @@ func ParseWorktrees(output string) []Worktree {
 	return items
 }
 
-func SanitizeBranch(value string) string {
-	return workspacedomain.SanitizeBranch(value)
-}
-
-func Slugify(value string) string {
-	return workspacedomain.Slugify(value)
-}
-
 func BranchName(projectSlug string, runID int64, task string) string {
 	return workspacedomain.BranchName(projectSlug, runID, task)
 }
@@ -338,11 +328,6 @@ func (s *Service) LockWorktree(ctx context.Context, root, path, reason string) e
 
 func (s *Service) UnlockWorktree(ctx context.Context, root, path string) error {
 	_, err := s.run(ctx, root, 10*time.Second, "worktree", "unlock", path)
-	return err
-}
-
-func (s *Service) Prune(ctx context.Context, root string) error {
-	_, err := s.run(ctx, root, s.cfg.CommandTimeout, "worktree", "prune")
 	return err
 }
 
@@ -584,15 +569,6 @@ func selectCommitPaths(changed, requested []string) ([]string, error) {
 	return items, nil
 }
 
-func (s *Service) HashFile(path string) (string, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return "", err
-	}
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:]), nil
-}
-
 func EnsureInside(root, target string) (string, error) {
 	return workspacedomain.EnsureInside(root, target)
 }
@@ -605,9 +581,4 @@ func EnsureSafePath(root, target string) (string, error) {
 
 func IsSensitivePath(root, target string) bool {
 	return workspacedomain.IsSensitivePath(root, target)
-}
-
-func SortedWorktrees(items []Worktree) []Worktree {
-	sort.Slice(items, func(i, j int) bool { return items[i].Path < items[j].Path })
-	return items
 }

@@ -50,38 +50,6 @@ func isLikelyEnglish(text string) bool {
 	return float64(asciiRunes)/float64(total) > 0.5
 }
 
-func estimateCharWidth(chars []TextChar) float64 {
-	if len(chars) == 0 {
-		return 0
-	}
-	widths := make([]float64, 0, len(chars))
-	for _, c := range chars {
-		if c.W > 0 && c.H > 0 {
-			widths = append(widths, c.W)
-		}
-	}
-	if len(widths) == 0 {
-		return 0
-	}
-	return MedianFloat64(widths)
-}
-
-func estimateCharHeight(chars []TextChar) float64 {
-	if len(chars) == 0 {
-		return 0
-	}
-	heights := make([]float64, 0, len(chars))
-	for _, c := range chars {
-		if c.H > 0 {
-			heights = append(heights, c.H)
-		}
-	}
-	if len(heights) == 0 {
-		return 0
-	}
-	return MedianFloat64(heights)
-}
-
 func isGarbledRune(r rune) bool {
 	return r == '\ufffd' || unicode.IsControl(r) ||
 		(r >= 0xE000 && r <= 0xF8FF) ||

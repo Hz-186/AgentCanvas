@@ -1,15 +1,29 @@
 package llm
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestProposedPlanStreamParserSupportsChunkedExclusiveLines(t *testing.T) {
 	parser := &ProposedPlanStreamParser{}
-	parser.Push("answer\n<proposed_")
-	parser.Push("plan>\nstep one\n</proposed_plan>")
-	parser.Finish()
-	parserVisible, parserPlan := parser.VisiblePlan()
-	if parserVisible != "answer\n" || parserPlan != "step one\n" {
-		t.Fatalf("stream parser state = visible %q plan %q", parserVisible, parserPlan)
+	var visibleBuf strings.Builder
+	var planBuf strings.Builder
+	collect := func(events []ModelStreamEvent) {
+		for _, event := range events {
+			switch event.Kind {
+			case ModelTextDelta:
+				visibleBuf.WriteString(event.Text)
+			case ModelProposedPlanDelta:
+				planBuf.WriteString(event.Text)
+			}
+		}
+	}
+	collect(parser.Push("answer\n<proposed_"))
+	collect(parser.Push("plan>\nstep one\n</proposed_plan>"))
+	collect(parser.Finish())
+	if visibleBuf.String() != "answer\n" || planBuf.String() != "step one\n" {
+		t.Fatalf("stream parser state = visible %q plan %q", visibleBuf.String(), planBuf.String())
 	}
 	visible, plan := NormalizeProposedPlan("answer\n<proposed_plan>\nstep one\n</proposed_plan>\n")
 	if visible != "answer\n" || plan != "step one\n" {

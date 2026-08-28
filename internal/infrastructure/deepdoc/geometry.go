@@ -2,11 +2,6 @@ package deepdoc
 
 import "math"
 
-type Point struct {
-	X float64
-	Y float64
-}
-
 type Rect struct {
 	Left   float64
 	Top    float64
@@ -79,34 +74,12 @@ func (r Rect) OverlapRatioY(other Rect) float64 {
 	return overlap / minHeight
 }
 
-func (r Rect) OverlapRatioX(other Rect) float64 {
-	overlap := r.OverlapX(other)
-	if overlap <= 0 {
-		return 0
-	}
-	minWidth := math.Min(r.Width(), other.Width())
-	if minWidth <= 0 {
-		return 0
-	}
-	return overlap / minWidth
-}
-
 func (r Rect) YGap(other Rect) float64 {
 	if r.Bottom < other.Top {
 		return other.Top - r.Bottom
 	}
 	if other.Bottom < r.Top {
 		return r.Top - other.Bottom
-	}
-	return 0
-}
-
-func (r Rect) XGap(other Rect) float64 {
-	if r.Right < other.Left {
-		return other.Left - r.Right
-	}
-	if other.Right < r.Left {
-		return r.Left - other.Right
 	}
 	return 0
 }

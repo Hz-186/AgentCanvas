@@ -332,14 +332,6 @@ func columnIndex(boxes []TextBox, idx int) int {
 	return km.Labels[idx]
 }
 
-type LayoutBlock struct {
-	Type     string
-	Text     string
-	PageNo   int
-	BBox     Rect
-	Metadata map[string]any
-}
-
 func BoxesToSections(boxes []TextBox) []Section {
 	sections := make([]Section, 0, len(boxes))
 	for i, box := range boxes {
