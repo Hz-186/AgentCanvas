@@ -55,9 +55,6 @@ func NewMemoryHub(config ...Config) *MemoryHub {
 	return &MemoryHub{runs: make(map[int64]*runState), config: cfg.withDefaults()}
 }
 
-// New is a short constructor alias used by bootstrap code.
-func New(config ...Config) *MemoryHub { return NewMemoryHub(config...) }
-
 // Config returns a copy of the effective hub configuration.
 func (h *MemoryHub) Config() Config {
 	if h == nil {

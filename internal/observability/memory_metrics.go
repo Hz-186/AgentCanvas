@@ -36,10 +36,6 @@ func (m *MemoryMetrics) RecordMemoryApprovalWait(latencyMS int64) {
 		m.memoryApprovalWaitMS.Add(latencyMS)
 	}
 }
-func (m *MemoryMetrics) RecordSchedulerRun()         { m.schedulerRuns.Add(1) }
-func (m *MemoryMetrics) RecordSchedulerFailure()     { m.schedulerFailures.Add(1) }
-func (m *MemoryMetrics) RecordSchedulerLockFailure() { m.schedulerLockFailures.Add(1) }
-
 func (m *MemoryMetrics) Snapshot() map[string]int64 {
 	return map[string]int64{
 		"dream_scheduled":                   m.dreamScheduled.Load(),

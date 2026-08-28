@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
 	"regexp"
 	"sort"
 	"strings"
@@ -119,22 +118,6 @@ func VerifySnapshot(snapshot *Snapshot) error {
 	}
 	_, err = validateRules(snapshot.Rules)
 	return err
-}
-
-func DecodeSnapshot(data json.RawMessage) (*Snapshot, error) {
-	var snapshot Snapshot
-	decoder := json.NewDecoder(strings.NewReader(string(data)))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&snapshot); err != nil {
-		return nil, err
-	}
-	if err := decoder.Decode(&struct{}{}); err != io.EOF {
-		return nil, fmt.Errorf("rule snapshot contains trailing JSON content")
-	}
-	if err := VerifySnapshot(&snapshot); err != nil {
-		return nil, err
-	}
-	return &snapshot, nil
 }
 
 func HashLoadedRules(items []Rule) (string, error) {

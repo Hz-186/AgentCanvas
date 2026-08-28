@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"agentcanvas/internal/pkg/strutil"
 	"agentcanvas/internal/runtime/harness/hooks"
 )
 
@@ -20,11 +19,6 @@ func CheckCallChain(callChain []int64, targetID int64, maxDepth int, currentDept
 		return fmt.Errorf("max subagent depth exceeded: current=%d max=%d", currentDepth, maxDepth)
 	}
 	return nil
-}
-
-// CompactToolOutput bounds tool payloads before they are stored in run traces.
-func CompactToolOutput(content string, maxBytes int) string {
-	return strutil.TruncateWithSuffix(content, maxBytes, "...[compressed]")
 }
 
 // RedactSensitiveFields is shared by trace paths and the current hook chain.

@@ -4,10 +4,6 @@ import (
 	"encoding/json"
 )
 
-func TruncateString(value string, maxBytes int) string {
-	return TruncateWithSuffix(value, maxBytes, "...")
-}
-
 func TruncateWithSuffix(value string, maxBytes int, suffix string) string {
 	truncated, _ := TruncateWithSuffixFlag(value, maxBytes, suffix)
 	return truncated

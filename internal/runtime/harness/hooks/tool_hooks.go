@@ -90,10 +90,6 @@ type ToolHookChain struct {
 	Post []PostToolUseHook
 }
 
-func (c ToolHookChain) Empty() bool {
-	return len(c.Pre) == 0 && len(c.Post) == 0
-}
-
 func DefaultToolHookChain() ToolHookChain {
 	return ToolHookChain{
 		Pre:  []PreToolUseHook{PolicyPreToolUseHook{}},
