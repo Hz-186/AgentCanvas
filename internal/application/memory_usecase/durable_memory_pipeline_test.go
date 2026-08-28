@@ -17,13 +17,28 @@ import (
 
 var errNotFound = errors.New("record not found")
 
+var errFakeDuplicateIdempotencyKey = errors.New("duplicate idempotency key")
+
 type fakeExtractionRepo struct {
 	jobs    map[int64]*memory.ExtractionJob
 	nextID  int64
 	created []*memory.ExtractionJob
+	// listByStatusCalls proves the retired 200-row scan is gone from the
+	// boundary coverage logic.
+	listByStatusCalls int
+	// onLatestDurableJob simulates a concurrent writer landing right after
+	// the scheduler read the latest row: a worker claim flipping the row to
+	// running, or a rival scheduler inserting the same successor.
+	onLatestDurableJob func(r *fakeExtractionRepo)
 }
 
 func (r *fakeExtractionRepo) Create(ctx context.Context, job *memory.ExtractionJob) error {
+	// Mirror the database unique key (owner_id, idempotency_key).
+	for _, existing := range r.jobs {
+		if existing.OwnerID == job.OwnerID && existing.IdempotencyKey == job.IdempotencyKey {
+			return errFakeDuplicateIdempotencyKey
+		}
+	}
 	r.nextID++
 	job.ID = r.nextID
 	if r.jobs == nil {
@@ -67,6 +82,7 @@ func (r *fakeExtractionRepo) FindByIdempotencyKey(ctx context.Context, ownerID i
 }
 
 func (r *fakeExtractionRepo) ListByStatus(ctx context.Context, ownerID int64, status string, limit int) ([]memory.ExtractionJob, error) {
+	r.listByStatusCalls++
 	var result []memory.ExtractionJob
 	for _, j := range r.jobs {
 		if j.OwnerID == ownerID && j.Status == status {
@@ -74,6 +90,59 @@ func (r *fakeExtractionRepo) ListByStatus(ctx context.Context, ownerID int64, st
 		}
 	}
 	return result, nil
+}
+
+// LatestDurableJob mirrors the conversation-scoped latest-row lookup: any
+// status, MAX(id), idempotency key format irrelevant (legacy rows included).
+func (r *fakeExtractionRepo) LatestDurableJob(ctx context.Context, ownerID, conversationID int64) (*memory.ExtractionJob, error) {
+	var latest *memory.ExtractionJob
+	for _, job := range r.jobs {
+		if job.OwnerID != ownerID || job.ConversationID != conversationID || job.TriggerReason != "durable" {
+			continue
+		}
+		if latest == nil || job.ID > latest.ID {
+			latest = job
+		}
+	}
+	if latest == nil {
+		return nil, nil
+	}
+	clone := *latest
+	if r.onLatestDurableJob != nil {
+		r.onLatestDurableJob(r)
+	}
+	return &clone, nil
+}
+
+// RefreshPendingBoundary mirrors the conditional UPDATE: it only touches a row
+// that is still pending at call time, reporting whether it was refreshed.
+func (r *fakeExtractionRepo) RefreshPendingBoundary(ctx context.Context, ownerID, jobID, throughMessageID int64, dueAt time.Time) (bool, error) {
+	job, ok := r.jobs[jobID]
+	if !ok || job.OwnerID != ownerID || job.Status != string(memory.ExtractionPending) {
+		return false, nil
+	}
+	due := dueAt.UTC()
+	job.ThroughMessageID = throughMessageID
+	job.DueAt = &due
+	return true, nil
+}
+
+// LatestCompletedDurableThrough mirrors the targeted window-start query: the
+// conversation's latest (MAX(id)) completed durable job's through_message_id.
+func (r *fakeExtractionRepo) LatestCompletedDurableThrough(ctx context.Context, ownerID, conversationID int64) (int64, error) {
+	var latest *memory.ExtractionJob
+	for _, job := range r.jobs {
+		if job.OwnerID != ownerID || job.ConversationID != conversationID || job.TriggerReason != "durable" || job.Status != string(memory.ExtractionCompleted) {
+			continue
+		}
+		if latest == nil || job.ID > latest.ID {
+			latest = job
+		}
+	}
+	if latest == nil {
+		return 0, nil
+	}
+	return latest.ThroughMessageID, nil
 }
 
 func (r *fakeExtractionRepo) ListPending(ctx context.Context, limit int) ([]memory.ExtractionJob, error) {

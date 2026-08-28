@@ -96,10 +96,19 @@ func (s *conversationMessageSink) rowFor(entry compaction.Entry) *conversation.M
 		if strings.TrimSpace(entry.ToolCallID) == "" {
 			return nil
 		}
-		metadata, err := json.Marshal(map[string]any{
+		meta := map[string]any{
 			"tool_call_id": entry.ToolCallID,
 			"tool_name":    entry.ToolName,
-		})
+		}
+		if entry.IsError != nil {
+			// Enriched rows carry both keys deterministically (error_code as
+			// an explicit empty string when the failed step had no code) so
+			// replayed rows stay byte-identical for verifyTranscriptPayload.
+			// Unenriched rows keep the legacy two-key shape (unknown state).
+			meta["is_error"] = *entry.IsError
+			meta["error_code"] = entry.ErrorCode
+		}
+		metadata, err := json.Marshal(meta)
 		if err != nil {
 			return nil
 		}

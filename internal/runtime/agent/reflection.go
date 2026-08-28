@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -10,6 +11,15 @@ import (
 	"agentcanvas/internal/domain/reflection"
 	"agentcanvas/internal/infrastructure/llm"
 	"agentcanvas/internal/observability"
+)
+
+const (
+	// reflectionWindowMaxSteps caps how many trajectory steps the reflection
+	// prompt carries around the selected signal step.
+	reflectionWindowMaxSteps = 12
+	// reflectionEvidenceCap is the shared tail-truncation cap (in bytes) for
+	// arguments, content, and error text rendered into the prompt.
+	reflectionEvidenceCap = 1200
 )
 
 func extractJSONContent(content string) string {
@@ -26,7 +36,14 @@ func (r *Runner) maybeReflect(ctx context.Context, req RunRequest, result *RunRe
 	if !policy.Active() || policy.RuntimeMode != reflection.RuntimeActive || !policy.InlineOnHardFailure || len(result.Reflection.Inline) >= policy.MaxInlinePerRun {
 		return nil
 	}
-	signal, ok := reflectionSignal(recent)
+	// The signal scan covers the run's full tool trajectory so earlier batches
+	// still count toward repeated-failure detection. Direct callers (tests)
+	// hand the evidence over through recent while result.Steps is still empty.
+	scanSteps := result.Steps
+	if len(scanSteps) == 0 {
+		scanSteps = recent
+	}
+	signal, ok := reflectionSignal(scanSteps)
 	if !ok {
 		return nil
 	}
@@ -90,33 +107,226 @@ func validInlineReflection(generated InlineReflection, policy reflection.Policy)
 	return generated.Confidence >= policy.Normalize().MinConfidence
 }
 
+// reflectionSignalFailure records one classified, fingerprinted failure step
+// discovered by the trajectory scan.
+type reflectionSignalFailure struct {
+	position    int
+	step        RunStep
+	signalType  string
+	fingerprint string
+}
+
+// reflectionSignal scans the full tool trajectory instead of stopping at the
+// first error. Every failed tool_result step is classified and fingerprinted;
+// a fingerprint repeated across two or more failures with no same-fingerprint
+// success in between produces a repeated_no_progress signal.
+//
+// Selection rule (deterministic, locked by tests):
+//  1. Any repeated fingerprint wins; among repeated fingerprints the latest
+//     failure step is selected.
+//  2. Otherwise the highest-priority classification wins, ordered
+//     schema > not-found > denied > generic tool error.
+//  3. Ties are broken by the latest step position.
 func reflectionSignal(steps []RunStep) (reflection.Signal, bool) {
-	for _, step := range steps {
-		if step.Type != StepTypeToolResult || !step.IsError {
+	argsByCallID := reflectionArgumentsByCallID(steps)
+	var failures []reflectionSignalFailure
+	streaks := make(map[string]int)    // fingerprint -> consecutive failure count
+	repeatedAt := make(map[string]int) // fingerprint -> latest failure position
+	for position, step := range steps {
+		if step.Type != StepTypeToolResult {
 			continue
 		}
-		typ := reflection.SignalToolError
-		if strings.Contains(strings.ToLower(step.Error+" "+step.Content), "denied") {
-			typ = reflection.SignalToolDenied
+		argsKey := normalizeArgumentsJSON(reflectionStepArguments(step, argsByCallID))
+		if !step.IsError {
+			// A success resets every failure streak sharing the same
+			// tool + normalized arguments, regardless of error code.
+			prefix := step.ToolName + "\x00" + argsKey + "\x00"
+			for fingerprint := range streaks {
+				if strings.HasPrefix(fingerprint, prefix) {
+					delete(streaks, fingerprint)
+					delete(repeatedAt, fingerprint)
+				}
+			}
+			continue
 		}
-		if strings.Contains(strings.ToLower(step.Content), "not available") {
-			typ = reflection.SignalToolNotFound
+		fingerprint := step.ToolName + "\x00" + argsKey + "\x00" + step.ErrorCode
+		streaks[fingerprint]++
+		failures = append(failures, reflectionSignalFailure{
+			position:    position,
+			step:        step,
+			signalType:  classifyToolFailure(step),
+			fingerprint: fingerprint,
+		})
+		if streaks[fingerprint] >= 2 {
+			repeatedAt[fingerprint] = position
 		}
-		return reflection.Signal{Type: typ, StepIndex: step.Index, Severity: .8, EvidenceStrength: .9, Correctable: true,
-			Message: compactString(step.ToolName+": "+step.Content, 1200), Metadata: map[string]any{"tool_name": step.ToolName}}, true
 	}
-	return reflection.Signal{}, false
+	if len(failures) == 0 {
+		return reflection.Signal{}, false
+	}
+	if len(repeatedAt) > 0 {
+		var chosen reflectionSignalFailure
+		chosenPosition := -1
+		for _, failure := range failures {
+			latest, ok := repeatedAt[failure.fingerprint]
+			if !ok || latest != failure.position {
+				continue
+			}
+			if failure.position > chosenPosition {
+				chosenPosition = failure.position
+				chosen = failure
+			}
+		}
+		return reflectionSignalFrom(chosen.step, reflection.SignalRepeatedNoProgress, streaks[chosen.fingerprint]), true
+	}
+	classPriority := map[string]int{
+		reflection.SignalSchemaFailure: 3,
+		reflection.SignalToolNotFound:  2,
+		reflection.SignalToolDenied:    1,
+		reflection.SignalToolError:     0,
+	}
+	var chosen reflectionSignalFailure
+	best := -1
+	for _, failure := range failures {
+		priority := classPriority[failure.signalType]
+		if priority > best || (priority == best && failure.position > chosen.position) {
+			best = priority
+			chosen = failure
+		}
+	}
+	return reflectionSignalFrom(chosen.step, chosen.signalType, 1), true
+}
+
+func reflectionSignalFrom(step RunStep, signalType string, occurrences int) reflection.Signal {
+	metadata := map[string]any{"tool_name": step.ToolName, "error_code": step.ErrorCode}
+	if occurrences > 1 {
+		metadata["occurrences"] = occurrences
+	}
+	return reflection.Signal{Type: signalType, StepIndex: step.Index, Severity: .8, EvidenceStrength: .9, Correctable: true,
+		Message: compactString(step.ToolName+": "+step.Content, reflectionEvidenceCap), Metadata: metadata}
+}
+
+// classifyToolFailure assigns exactly one signal type per failed step. The
+// structured ErrorCode carried on the step is consulted first; substring
+// heuristics are only a fallback. Precedence is deterministic and
+// non-overwriting: schema > not-found > denied > generic tool error. The
+// first matching class wins and no later check can overwrite it.
+func classifyToolFailure(step RunStep) string {
+	switch step.ErrorCode {
+	case string(ToolCallIssueInvalidJSON), string(ToolCallIssueInvalidArguments):
+		// Argument/schema validation failures produced by the tool-call
+		// normalizer (tool_normalizer.go: invalid_json, invalid_arguments).
+		return reflection.SignalSchemaFailure
+	case string(ToolCallIssueMissingName), string(ToolCallIssueUnknownName), string(ToolCallIssueAmbiguousName), string(ToolCallIssueInvalidAlias):
+		// Tool name resolution failures produced by the tool-call
+		// normalizer (missing_name, unknown_name, ambiguous_name,
+		// invalid_alias).
+		return reflection.SignalToolNotFound
+	}
+	text := strings.ToLower(step.Error + " " + step.Content)
+	if strings.Contains(text, "invalid arguments") || strings.Contains(text, "arguments are not valid json") ||
+		strings.Contains(text, "missing required field") {
+		return reflection.SignalSchemaFailure
+	}
+	if strings.Contains(text, "not available") || strings.Contains(text, "not found") {
+		return reflection.SignalToolNotFound
+	}
+	if strings.Contains(text, "denied") {
+		return reflection.SignalToolDenied
+	}
+	return reflection.SignalToolError
+}
+
+// normalizeArgumentsJSON serializes tool arguments deterministically for
+// fingerprinting: arguments are parsed and re-marshaled so JSON key order
+// never matters. Malformed or empty arguments collapse to one stable empty
+// marker.
+func normalizeArgumentsJSON(raw json.RawMessage) string {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return "{}"
+	}
+	decoder := json.NewDecoder(bytes.NewReader(trimmed))
+	decoder.UseNumber()
+	var value any
+	if err := decoder.Decode(&value); err != nil {
+		return "{}"
+	}
+	normalized, err := json.Marshal(value)
+	if err != nil {
+		return "{}"
+	}
+	return string(normalized)
+}
+
+// reflectionArgumentsByCallID maps tool_call_id to the call arguments carried
+// by tool_call steps. tool_result steps do not repeat the arguments in
+// production trajectories, so fingerprints and prompt entries resolve them
+// through the paired call.
+func reflectionArgumentsByCallID(steps []RunStep) map[string]json.RawMessage {
+	byCallID := make(map[string]json.RawMessage)
+	for _, step := range steps {
+		if step.Type == StepTypeToolCall && step.ToolCallID != "" && len(step.ArgumentsJSON) > 0 {
+			byCallID[step.ToolCallID] = step.ArgumentsJSON
+		}
+	}
+	return byCallID
+}
+
+func reflectionStepArguments(step RunStep, argsByCallID map[string]json.RawMessage) json.RawMessage {
+	if len(step.ArgumentsJSON) > 0 {
+		return step.ArgumentsJSON
+	}
+	if step.ToolCallID != "" {
+		return argsByCallID[step.ToolCallID]
+	}
+	return nil
+}
+
+// reflectionPromptWindow selects up to size steps centered on the signal step
+// (offset size/2 within the window when the trajectory allows), clamped at
+// both ends of the trajectory. A signal index that does not match any step
+// anchors the window at the end of the trajectory.
+func reflectionPromptWindow(steps []RunStep, signalIndex, size int) []RunStep {
+	total := len(steps)
+	if total == 0 {
+		return nil
+	}
+	if size > total {
+		size = total
+	}
+	position := total - 1
+	for index, step := range steps {
+		if step.Index == signalIndex {
+			position = index
+			break
+		}
+	}
+	start := position - size/2
+	if start < 0 {
+		start = 0
+	}
+	if start > total-size {
+		start = total - size
+	}
+	return steps[start : start+size]
 }
 
 func buildReflectionPrompt(req RunRequest, result *RunResult, signal reflection.Signal) string {
-	steps := result.Steps
-	if len(steps) > 6 {
-		steps = steps[len(steps)-6:]
-	}
-	compact := make([]map[string]any, 0, len(steps))
-	for _, step := range steps {
-		compact = append(compact, map[string]any{"index": step.Index, "type": step.Type, "tool": step.ToolName,
-			"content": compactString(step.Content, 1200), "error": compactString(step.Error, 500), "is_error": step.IsError})
+	window := reflectionPromptWindow(result.Steps, signal.StepIndex, reflectionWindowMaxSteps)
+	argsByCallID := reflectionArgumentsByCallID(result.Steps)
+	compact := make([]map[string]any, 0, len(window))
+	for _, step := range window {
+		compact = append(compact, map[string]any{
+			"index":      step.Index,
+			"type":       step.Type,
+			"tool":       step.ToolName,
+			"arguments":  compactString(string(reflectionStepArguments(step, argsByCallID)), reflectionEvidenceCap),
+			"content":    compactString(step.Content, reflectionEvidenceCap),
+			"error_code": step.ErrorCode,
+			"error":      compactString(step.Error, reflectionEvidenceCap),
+			"is_error":   step.IsError,
+		})
 	}
 	trajectory, _ := json.Marshal(compact)
 	return fmt.Sprintf(`Analyze a verified Agent failure and produce actionable verbal reinforcement.

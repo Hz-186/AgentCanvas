@@ -29,6 +29,16 @@ type Entry struct {
 	ToolCallID        string // pairs function_call with function_call_output
 	ToolName          string
 	Arguments         json.RawMessage // function_call arguments
+	// IsError records the executed tool's error state on function_call_output
+	// entries. nil means unknown: no tool_result step matched during runner
+	// enrichment, so persisted rows carry no error keys and stay
+	// byte-compatible with legacy rows (readers treat the missing key as
+	// unknown, never as success).
+	IsError *bool
+	// ErrorCode is the structured error code carried by the matched
+	// tool_result step; deterministic empty string when the step failed
+	// without a code.
+	ErrorCode string
 }
 
 // FromMessages converts persisted conversation rows to entries. MetadataJSON

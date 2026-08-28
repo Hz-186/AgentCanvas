@@ -224,6 +224,12 @@ func main() {
 	extractionJobRepo := mysqlinfra.NewExtractionJobRepository(db)
 	memoryRepo := mysqlinfra.NewMemoryRepository(db)
 	durableMemoryCfg := memoryusecase.NewDurableMemoryConfig(cfg.EffectiveDurableMemory())
+	writeJobPipeline := memoryusecase.NewMemoryWritePipeline(
+		workerID,
+		mysqlinfra.NewMemoryWriteJobRepository(db),
+		memoryusecase.NewSQLMemoryWriter(memoryRepo),
+		memoryusecase.SlogWriteWarnings{Logger: appLogger},
+	)
 	durableMemoryWorker := memoryusecase.NewDurableMemoryWorker(
 		baseChatClient(),
 		messageRepo,
@@ -233,12 +239,7 @@ func main() {
 		workerID,
 		memoryusecase.WithConsolidationProjection(memoryusecase.NewConsolidationProjection(mysqlinfra.NewMemoryArtifactRepository(db))),
 		memoryusecase.WithConsolidationSources(memoryRepo),
-	)
-	writeJobPipeline := memoryusecase.NewMemoryWritePipeline(
-		workerID,
-		mysqlinfra.NewMemoryWriteJobRepository(db),
-		memoryusecase.NewSQLMemoryWriter(memoryRepo),
-		memoryusecase.SlogWriteWarnings{Logger: appLogger},
+		memoryusecase.WithExtractionWrites(writeJobPipeline),
 	)
 	writeJobWorker := memoryusecase.NewWriteJobWorker(writeJobPipeline)
 	appLogger.Info("worker started", "worker_id", workerID)

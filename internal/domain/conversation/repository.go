@@ -30,6 +30,12 @@ type MessageRepository interface {
 	ListByConversation(ctx context.Context, ownerID, conversationID int64) ([]Message, error)
 	ListActiveByConversation(ctx context.Context, ownerID, conversationID int64) ([]Message, error)
 	ListByRun(ctx context.Context, ownerID, runID int64) ([]Message, error)
+	// ListThroughIncludingArchived reads the window (afterID, throughID]
+	// including soft-archived rows. It is reserved for the durable memory
+	// extraction pipeline; context building and boundary computation must keep
+	// using the ListActive* reads so the compaction window semantics stay
+	// unchanged.
+	ListThroughIncludingArchived(ctx context.Context, ownerID, conversationID, afterID, throughID int64) ([]Message, error)
 }
 
 type MessageSearchRequest struct {

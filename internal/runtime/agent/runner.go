@@ -765,24 +765,45 @@ func (r *Runner) executeToolBatch(
 		})
 		result.HookTrace = appendHookTrace(result.HookTrace, item.call.Name, post.Traces)
 		messages = append(messages, toolMessage(item.call.ID, post.Content))
-		step := r.appendStep(result, RunStep{
-			Type:       StepTypeToolResult,
-			ToolCallID: item.call.ID,
-			ToolName:   item.call.Name,
-			Content:    post.Content,
-			OutputJSON: post.OutputJSON,
-			Compressed: post.Compressed,
-			IsError:    item.result.IsError,
-			LatencyMS:  item.latencyMS,
-			ProviderID: r.ProviderID,
-			Model:      r.ModelName,
-		})
-		if item.err != nil {
-			step.Error = item.err.Error()
-		}
+		step := r.appendStep(result, r.newToolResultStep(item, post))
 		_ = r.emit(ctx, step)
 	}
 	return false, messages
+}
+
+// newToolResultStep builds the tool_result step for one executed batch item.
+// The structured error code is lifted from the result metadata where the batch
+// executor records it (call issues, cancellation); plain execution errors keep
+// their text in Error and leave the code empty.
+func (r *Runner) newToolResultStep(item *preparedToolCall, post hooks.PostToolUseResult) RunStep {
+	step := RunStep{
+		Type:       StepTypeToolResult,
+		ToolCallID: item.call.ID,
+		ToolName:   item.call.Name,
+		Content:    post.Content,
+		OutputJSON: post.OutputJSON,
+		Compressed: post.Compressed,
+		IsError:    item.result.IsError,
+		ErrorCode:  toolResultErrorCode(item.result),
+		LatencyMS:  item.latencyMS,
+		ProviderID: r.ProviderID,
+		Model:      r.ModelName,
+	}
+	if item.err != nil {
+		step.Error = item.err.Error()
+	}
+	return step
+}
+
+// toolResultErrorCode extracts the structured error code the batch executor
+// stores in the result metadata. Success results and plain execution errors
+// carry no code.
+func toolResultErrorCode(result *toolruntime.ToolResult) string {
+	if result == nil {
+		return ""
+	}
+	code, _ := result.Metadata["error_code"].(string)
+	return code
 }
 
 func checkpointFromMessages(
@@ -844,7 +865,9 @@ func (r *Runner) persistTranscriptEntries(ctx context.Context, result *RunResult
 	if req.MessageSink == nil {
 		return persistedCount + len(entries), 0
 	}
-	firstID, err := req.MessageSink.PersistEntries(ctx, compaction.FromChatAt(sanitizePersistedEntries(entries), transcriptStart))
+	persisted := compaction.FromChatAt(sanitizePersistedEntries(entries), transcriptStart)
+	EnrichTranscriptEntries(persisted, result.Steps)
+	firstID, err := req.MessageSink.PersistEntries(ctx, persisted)
 	if err != nil {
 		step := r.appendStep(result, RunStep{
 			Type:       StepTypeError,
@@ -855,6 +878,35 @@ func (r *Runner) persistTranscriptEntries(ctx context.Context, result *RunResult
 		_ = r.emit(ctx, step)
 	}
 	return persistedCount + len(entries), firstID
+}
+
+// EnrichTranscriptEntries fills tool error state on function_call_output
+// entries by exact ToolCallID lookup against the run's tool_result steps.
+// Entries without a matching step keep zero error fields so their persisted
+// rows stay byte-compatible with legacy rows; readers treat a missing is_error
+// key as unknown. Replay determinism holds because resumed runs restore the
+// same steps through the checkpoint before their transcript is re-persisted.
+func EnrichTranscriptEntries(entries []compaction.Entry, steps []RunStep) {
+	byCallID := make(map[string]RunStep)
+	for _, step := range steps {
+		if step.Type != StepTypeToolResult || step.ToolCallID == "" {
+			continue
+		}
+		byCallID[step.ToolCallID] = step
+	}
+	for i := range entries {
+		entry := &entries[i]
+		if entry.ContentType != conversation.ContentTypeFunctionCallOutput || entry.ToolCallID == "" {
+			continue
+		}
+		step, ok := byCallID[entry.ToolCallID]
+		if !ok {
+			continue
+		}
+		isError := step.IsError
+		entry.IsError = &isError
+		entry.ErrorCode = step.ErrorCode
+	}
 }
 
 // sanitizePersistedEntries copies entries and strips citation block lines from
