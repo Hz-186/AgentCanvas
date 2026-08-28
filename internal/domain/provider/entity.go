@@ -16,8 +16,7 @@ const (
 )
 
 const (
-	ProviderDisabled = false
-	ProviderEnabled  = true
+	ProviderEnabled = true
 )
 
 type ModelProvider struct {

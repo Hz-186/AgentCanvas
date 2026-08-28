@@ -28,17 +28,11 @@ type handlerProjectRepository struct {
 	item projectdomain.Project
 }
 
-func (r *handlerProjectRepository) Create(_ context.Context, item *projectdomain.Project) error {
+func (r *handlerProjectRepository) CreateWithPrimaryFolder(ctx context.Context, item *projectdomain.Project, folder *projectdomain.ProjectFolder) error {
 	r.item = *item
 	if r.item.ID == 0 {
 		r.item.ID = 1
 		item.ID = r.item.ID
-	}
-	return nil
-}
-func (r *handlerProjectRepository) CreateWithPrimaryFolder(ctx context.Context, item *projectdomain.Project, folder *projectdomain.ProjectFolder) error {
-	if err := r.Create(ctx, item); err != nil {
-		return err
 	}
 	folder.OwnerID = item.OwnerID
 	folder.ProjectID = item.ID
@@ -93,7 +87,13 @@ func (r *handlerProjectRepository) AddPrimaryFolder(ctx context.Context, item *p
 	if err := r.AddFolder(ctx, item); err != nil {
 		return err
 	}
-	return r.SetPrimaryFolder(ctx, item.OwnerID, item.ProjectID, item.ID)
+	for index := range r.item.Folders {
+		r.item.Folders[index].IsRepositoryRoot = r.item.Folders[index].ID == item.ID
+		if r.item.Folders[index].IsRepositoryRoot {
+			r.item.RepositoryRoot = r.item.Folders[index].Path
+		}
+	}
+	return nil
 }
 func (r *handlerProjectRepository) DeleteFolder(_ context.Context, ownerID, projectID, folderID int64) error {
 	if r.item.ID != projectID || r.item.OwnerID != ownerID {
@@ -106,18 +106,6 @@ func (r *handlerProjectRepository) DeleteFolder(_ context.Context, ownerID, proj
 		}
 	}
 	return agenterrors.ErrNotFound
-}
-func (r *handlerProjectRepository) SetPrimaryFolder(_ context.Context, ownerID, projectID, folderID int64) error {
-	if r.item.ID != projectID || r.item.OwnerID != ownerID {
-		return agenterrors.ErrNotFound
-	}
-	for index := range r.item.Folders {
-		r.item.Folders[index].IsRepositoryRoot = r.item.Folders[index].ID == folderID
-		if r.item.Folders[index].IsRepositoryRoot {
-			r.item.RepositoryRoot = r.item.Folders[index].Path
-		}
-	}
-	return nil
 }
 
 type handlerWorkspaceRepository struct {

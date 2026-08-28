@@ -45,7 +45,7 @@ type memoryProjectRepository struct {
 	nextFolderID int64
 }
 
-func (r *memoryProjectRepository) Create(_ context.Context, item *projectdomain.Project) error {
+func (r *memoryProjectRepository) CreateWithPrimaryFolder(ctx context.Context, item *projectdomain.Project, folder *projectdomain.ProjectFolder) error {
 	if r.items == nil {
 		r.items = make(map[int64]projectdomain.Project)
 	}
@@ -53,12 +53,6 @@ func (r *memoryProjectRepository) Create(_ context.Context, item *projectdomain.
 		item.ID = int64(len(r.items) + 1)
 	}
 	r.items[item.ID] = *item
-	return nil
-}
-func (r *memoryProjectRepository) CreateWithPrimaryFolder(ctx context.Context, item *projectdomain.Project, folder *projectdomain.ProjectFolder) error {
-	if err := r.Create(ctx, item); err != nil {
-		return err
-	}
 	folder.OwnerID = item.OwnerID
 	folder.ProjectID = item.ID
 	folder.Path = item.RepositoryRoot
@@ -134,9 +128,6 @@ func (r *memoryProjectRepository) AddPrimaryFolder(ctx context.Context, item *pr
 	return nil
 }
 func (r *memoryProjectRepository) DeleteFolder(context.Context, int64, int64, int64) error {
-	return nil
-}
-func (r *memoryProjectRepository) SetPrimaryFolder(context.Context, int64, int64, int64) error {
 	return nil
 }
 

@@ -8,14 +8,11 @@ import (
 )
 
 const (
-	ScopeAgent  = "agent"
-	ScopeGlobal = "global"
+	ScopeAgent = "agent"
 
 	KindErrorLesson       = "error_lesson"
 	KindImportantStrategy = "important_strategy"
 
-	StatusCandidate  = "candidate"
-	StatusActive     = "active"
 	StatusValidated  = "validated"
 	StatusDisputed   = "disputed"
 	StatusSuperseded = "superseded"

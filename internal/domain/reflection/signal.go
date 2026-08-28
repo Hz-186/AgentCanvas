@@ -8,11 +8,6 @@ const (
 	SignalToolNotFound       = "tool_not_found"
 	SignalRepeatedNoProgress = "repeated_no_progress"
 	SignalSchemaFailure      = "schema_failure"
-	SignalPlanFailure        = "plan_failure"
-	SignalLimitReached       = "limit_reached"
-	SignalTimeout            = "timeout"
-	SignalExternalEval       = "external_eval"
-	SignalUserCorrection     = "user_correction"
 )
 
 type Signal struct {

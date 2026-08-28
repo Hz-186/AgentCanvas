@@ -233,21 +233,20 @@ func TestProjectWorkspaceRepositoriesIntegration(t *testing.T) {
 	if err := projects.AddFolder(ctx, secondaryFolder); err != nil {
 		t.Fatal(err)
 	}
-	if err := projects.SetPrimaryFolder(ctx, ownerID, projectItem.ID, secondaryFolder.ID); err != nil {
+	switchFolder := &projectdomain.ProjectFolder{OwnerID: ownerID, ProjectID: projectItem.ID, Path: "/tmp/atomic-project-switched", Label: "Switched"}
+	if err := projects.AddPrimaryFolder(ctx, switchFolder); err != nil {
 		t.Fatal(err)
 	}
 	loaded, err = projects.FindByID(ctx, ownerID, projectItem.ID)
-	if err != nil || loaded.RepositoryRoot != secondaryFolder.Path || len(loaded.Folders) != 2 || countRepositoryRoots(loaded.Folders) != 1 || !loaded.Folders[0].IsRepositoryRoot || loaded.Folders[0].ID != secondaryFolder.ID || loaded.Folders[0].Path != loaded.RepositoryRoot {
+	if err != nil || loaded.RepositoryRoot != switchFolder.Path || len(loaded.Folders) != 3 || countRepositoryRoots(loaded.Folders) != 1 || !loaded.Folders[0].IsRepositoryRoot || loaded.Folders[0].ID != switchFolder.ID || loaded.Folders[0].Path != loaded.RepositoryRoot {
 		t.Fatalf("primary folder switch mismatch: project=%#v err=%v", loaded, err)
 	}
-	if err := projects.SetPrimaryFolder(ctx, ownerID+1, projectItem.ID, secondaryFolder.ID); !errors.Is(err, agenterrors.ErrNotFound) {
+	intruderFolder := &projectdomain.ProjectFolder{OwnerID: ownerID + 1, ProjectID: projectItem.ID, Path: "/tmp/atomic-project-intruder", Label: "Intruder"}
+	if err := projects.AddPrimaryFolder(ctx, intruderFolder); !errors.Is(err, agenterrors.ErrNotFound) {
 		t.Fatalf("cross-owner primary folder switch error = %v, want not found", err)
 	}
-	if err := projects.SetPrimaryFolder(ctx, ownerID, projectItem.ID, secondaryFolder.ID+1_000_000); !errors.Is(err, agenterrors.ErrNotFound) {
-		t.Fatalf("missing primary folder switch error = %v, want not found", err)
-	}
 	loaded, err = projects.FindByID(ctx, ownerID, projectItem.ID)
-	if err != nil || loaded.RepositoryRoot != secondaryFolder.Path || len(loaded.Folders) != 2 || countRepositoryRoots(loaded.Folders) != 1 || !loaded.Folders[0].IsRepositoryRoot || loaded.Folders[0].ID != secondaryFolder.ID || loaded.Folders[0].Path != loaded.RepositoryRoot {
+	if err != nil || loaded.RepositoryRoot != switchFolder.Path || len(loaded.Folders) != 3 || countRepositoryRoots(loaded.Folders) != 1 || !loaded.Folders[0].IsRepositoryRoot || loaded.Folders[0].ID != switchFolder.ID || loaded.Folders[0].Path != loaded.RepositoryRoot {
 		t.Fatalf("failed primary switch changed the existing primary folder: project=%#v err=%v", loaded, err)
 	}
 

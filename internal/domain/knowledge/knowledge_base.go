@@ -23,8 +23,7 @@ const (
 )
 
 const (
-	KnowledgeBaseDisabled = false
-	KnowledgeBaseEnabled  = true
+	KnowledgeBaseEnabled = true
 )
 
 type KnowledgeBase struct {

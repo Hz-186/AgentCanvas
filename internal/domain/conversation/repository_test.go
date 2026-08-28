@@ -26,10 +26,6 @@ func (s *windowReadStub) ListActiveByConversation(context.Context, int64, int64)
 	return nil, nil
 }
 
-func (s *windowReadStub) ListByRun(context.Context, int64, int64) ([]Message, error) {
-	return nil, nil
-}
-
 func (s *windowReadStub) ListThroughIncludingArchived(_ context.Context, ownerID, _ int64, afterID, throughID int64) ([]Message, error) {
 	s.lastOwnerID = ownerID
 	s.lastAfterID = afterID

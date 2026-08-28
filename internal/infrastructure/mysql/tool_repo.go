@@ -89,12 +89,6 @@ func (r *ToolInvocationRepository) Create(ctx context.Context, item *tool.Invoca
 	return r.db.WithContext(ctx).Create(item).Error
 }
 
-func (r *ToolInvocationRepository) ListByRun(ctx context.Context, ownerID, runID int64) ([]tool.Invocation, error) {
-	var items []tool.Invocation
-	err := r.db.WithContext(ctx).Where("owner_id = ? AND run_id = ?", ownerID, runID).Order("id ASC").Find(&items).Error
-	return items, err
-}
-
 type ToolPackRepository struct{ db *gorm.DB }
 
 func NewToolPackRepository(db *gorm.DB) *ToolPackRepository {

@@ -13,8 +13,6 @@ const (
 	CompactionTriggerRuntime = "runtime"
 	CompactionSummaryPrefix  = "SUMMARY:\n"
 	CompactionCompleted      = "completed"
-	CompactionFallback       = "fallback"
-	CompactionFailed         = "failed"
 )
 
 type Compaction struct {
@@ -43,12 +41,6 @@ type Compaction struct {
 }
 
 func (Compaction) TableName() string { return "conversation_compactions" }
-
-type CompactionRepository interface {
-	Create(context.Context, *Compaction) error
-	FindByFingerprint(context.Context, int64, int64, string) (*Compaction, error)
-	FindLatest(context.Context, int64, int64) (*Compaction, error)
-}
 
 type SnapshotRepository interface {
 	FindCurrentSnapshot(context.Context, int64, int64) (*Compaction, error)

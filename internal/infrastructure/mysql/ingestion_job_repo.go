@@ -182,10 +182,6 @@ func (r *IngestionJobRepository) MarkFailedAt(ctx context.Context, id int64, mes
 	return r.markFailedAt(ctx, id, "", message, retryAt)
 }
 
-func (r *IngestionJobRepository) MarkFailedOwnedAt(ctx context.Context, id int64, workerID, message string, retryAt time.Time) (bool, error) {
-	return r.markFailedAt(ctx, id, workerID, message, retryAt)
-}
-
 func (r *IngestionJobRepository) markFailedAt(ctx context.Context, id int64, workerID, message string, requestedRetryAt time.Time) (bool, error) {
 	now := time.Now().UTC()
 	final := false
