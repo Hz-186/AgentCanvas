@@ -230,3 +230,36 @@ Should Improve 处理：Decision 10 扩至全部倾倒点（:426-428/:599-601/:6
 - 透明披露：评审期间误跑 `go fmt` 波及 5 个未触碰文件（仅 CRLF），已 `git checkout` 复原并复核工作树与评审包字节一致。
 - 主会话复核：工作树 5 文件 +731/-17 与评审包一致；报告偏差 #4 引用误述（"spec sentence" 实为 tasks.md 场景）已按评审意见修正。
 - `reverse_sync_required: false`。双 PASS，Task 7 关闭。
+
+### Task 7 关闭（2026-08-28）
+
+- 门禁复跑（主会话）：`GOOS=linux go build ./...` exit 0；`go test ./internal/application/memory_usecase -count=1` ok 2.000s。
+- 提交 `20cc5b4` feat(memory): merge multi-chunk extraction candidates before gating（9 文件 +926/-20；`.vsdd-state.yaml.runtime` 已先行 reset）。
+
+### Task 8 — 实现者返回：DONE（4 项披露偏差）
+
+- 交付：`reflection.go` 全轨迹信号扫描（分类：结构化 ErrorCode 优先→子串兜底，不覆盖优先级 schema>not-found>denied>generic；指纹 `tool_name+规范化参数+error_code`（键序无关重序列化，畸形/空→稳定 `{}`）；2+ 同指纹失败且其间无同指纹成功 → `repeated_no_progress`；选择规则：重复信号（最新）→ 类别优先级 → 最新 index）；12 步居中提示词窗口（参数经配对 tool_call 步按 ToolCallID 解析、与 content 共享 1200 尾截断上限、含 error_code/错误文本/后续同工具恢复）；防注入系统消息、`validInlineReflection`、`extractJSONContent`、`fixedReflectionFeedback`、触发指纹去重、用量/指标全部字节不变。
+- 偏差披露：a) error_code→类别映射（schema: `invalid_json`/`invalid_arguments`；not-found: `missing_name`/`unknown_name`/`ambiguous_name`/`invalid_alias`，均溯源自 Task 1 交付的 normalizer/executor/runner 代码）；b) 选择规则；c) 「生产 tool_result 步从不携带 ArgumentsJSON，参数从配对 tool_call 步取」；d) 偶数窗口居中偏移取 size/2。
+- 报告：task-8-report.md；评审包 /tmp/task8-review.diff（678 行，2 文件：+612/-18）。
+
+### Review Evidence Task 8 — spec-compliance reviewer
+
+- Verdict: **PASS**（Must Fix 0）。8/8 指令场景逐字在场全绿（`reflection_evidence_test.go:54/87/104/131/153/215/253/300`）+ 4 个额外锁定（并列选择、畸形/空参数同指纹、尾截断、防注入文案）；`SignalSchemaFailure` 首次赋值确认（常量原在 `domain/reflection/signal.go:10`，HEAD 前 domain 外零引用）。
+- 偏差裁定：a) 接受、无杜撰——6 个码值全部有真实生产者（`tool_normalizer.go:121/125/106/138/159/157`、`runner.go:561` 防御回退）；b) 接受——确定性选择、严格 `>` 位置决胜、规范"最高优先级指纹而非首个错误"满足；c) 接受、硬核验属实——3 个生产 tool_result 构造点（`runner.go:597/:661/:780`）均不置 ArgumentsJSON，唯 `StepTypeToolCall` 步携带；按 ToolCallID 精确配对（非工具名）→ 同名多次调用正确区分；孤儿 tool_result → `"{}"` 无 panic；d) 接受——居中数学锁定（30 步信号@20 → 14..25，两端钳制）。
+- MUST-NOT-CHANGE 全核验：策略门禁、触发指纹去重、防注入消息逐字节、验证/抽取/反馈函数、用量指标——仅以上下文行出现。
+- RED 真实性：报告失败行号与新测试文件逐一对应，失效形态均匹配旧代码（首错即返、denied 被 notfound 覆盖、无指纹、6 步尾窗、无 arguments 键）。
+- 门禁复跑（评审自建独立 overlay）：build/vet/定向 12 子测试/全包/agentruntime 全绿。范围：恰 2 文件 + 过程工件；go.mod 零触。
+- Should Improve：① **上游接线缝**（非 Task 8 缺陷）：`runner.go:589-606` 拦截分支（既有、Task 1 未触）构造的 tool_result 步不带 ErrorCode → 被拦截的 `invalid_json` 等消息文本不匹配 schema 子串，生产降级为 generic tool_error；Task 8 规范正确且范围锁定禁改 runner，记为 Task 1 后续（一行修复候选：拦截点置 `ErrorCode=normalized.Issue.Code`，或扩 schema 子串）；② 测试 :163 字面量可换常量（外观）。
+- 透明披露：评审误跑 `go fmt` 触及 2 文件（CRLF→LF），已字节级复原（md5 复核一致）。
+
+### Review Evidence Task 8 — code-quality reviewer
+
+- Verdict: **PASS**（Must Fix 0）。
+- 优先目标裁定：① 成功重置语义健全——重置用 `tool+参数` 前缀匹配（:143-149）而非全指纹精确匹配 → 任意 error_code 的同参成功均可重置；NUL 分隔安全（json.Marshal 转义控制字符）；② 配对按 ToolCallID、全轨迹建表一次复用（窗口外亦可解析参数），测试用双 ID 区分同工具两次调用；③ 截断单一常量 `reflectionEvidenceCap=1200`（:22）经 `compactString`→`strutil.TruncateWithSuffixFlag` 尾截断、字节制、与既有 content 上限同单位同向，错误文本 500→1200 系规范钦定；中段 rune 切断由 json.Marshal 净化（合法 JSON 保持）；④ 触发去重交互可接受——去重键含绝对 StepIndex、选择对固定轨迹确定；增长连击选出不同信号再触发系特性且有 `MaxInlinePerRun` 上限。
+- 扫描确定性：maps 仅作计数/查找，选择全部遍历有序 `failures` 切片；`chosen` 在 `repeatedAt` 非空时不可能零值。分类无覆盖：switch-on-ErrorCode 先返回 + 有序 if 链，双向测试覆盖。规范化：parse+重序列化、stdlib 键排序保证、`UseNumber` 保数值字面；乱序键测试真实（仅当规范化抹平键序才可能触发 repeated）。
+- 窗口数学核验：偏移/钳制/恰好 size 条、无 off-by-one；提示词条目固定 8 键、json.Marshal 排序 → 稳定契约。
+- 行为保持：diff 恰 4 个 hunk；既有函数与消息逐字节；全轨迹扫描用 `result.Steps`、空时回退 `recent`（直测路径），生产调用点（`runner.go:189/412`）传全轨迹切片。
+- 门禁复跑：build/vet 0；定向 `-count=2` 12/12 确定；全包与 agentruntime 绿；两文件 gofmt 一致（CRLF 为全仓 22/24 文件共同惯例）。
+- Should Improve（非阻塞）：① 与 spec 评审同一发现的上游接线缝（runner 拦截步无 ErrorCode → schema 分类降级；一行修复候选同上）；② `normalizeArgumentsJSON` 用 Decoder.Decode 忽略尾随杂散字符（稳定确定、外观）；③ 报告引用 `runner.go:561` 表述不精确（:561 为 InvalidAlias 回退、:596 无码步靠 "not available" 子串——分类结果仍正确）。
+- 主会话复核：工作树 2 文件 +612/-18 与评审包一致；上游接线缝两审独立发现、裁定一致——Task 8 规范正确且范围锁定，缺口属 Task 1 载体接线，记入 known_issues（后续候选），不阻塞本任务。
+- `reverse_sync_required: false`。双 PASS，Task 8 关闭。

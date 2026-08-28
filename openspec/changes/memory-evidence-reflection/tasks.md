@@ -187,7 +187,7 @@ Wave4(与 Wave2/3 文件不重叠，可并行):  T8(反思信号+窗口)   T9(�
 
 ## Wave 4 — Reflection evidence
 
-- [ ] Task 8: Scan full tool trajectories and build evidence-rich reflection prompts
+- [x] Task 8: Scan full tool trajectories and build evidence-rich reflection prompts
   - complexity: 🔴
   - files: `internal/runtime/agent/reflection.go` + 测试（消费 Task 1 交付的 `RunStep.ErrorCode` 与参数/错误码载体，不重复其管线改动）
   - RED:

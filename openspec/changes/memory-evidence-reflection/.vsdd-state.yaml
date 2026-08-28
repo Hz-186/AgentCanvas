@@ -4,9 +4,9 @@ current_phase: apply
 base_commit: 235397ae4b492b44b9e3aeae4610ed48f8495d0f
 complexity_mode: standard
 execution_mode: serial
-active_task: Task 8
+active_task: Task 9
 active_review_stage: implementation
-last_verified_task: Task 7
+last_verified_task: Task 8
 reverse_sync_required: false
 design_review_rounds: 3
 design_review_passed: true
@@ -19,3 +19,4 @@ known_issues:
   - "OPEN (verify-phase adjudication): mixed-version resume edge — legacy 2-key output rows persisted by the pre-change binary, re-enriched to 4 keys on resume replay, trip verifyTranscriptPayload byte-equality; runner degrades gracefully (error step + cursor advance, no crash). Decided non-blocking by both Task 1 reviewers."
   - "OPEN (follow-up candidate): phase2 retry channel has no attempt cap (durablePhase2RetryDelay clamps ~128min). Pre-existing, but Decision 10's no-model-fails now routes persistent consolidation failures into it, so a permanently unconfigured model retries phase2 forever. Consider an attempt cap in a later change."
   - "OPEN (archive adjudication): Task 7 no_output consolidation gate can defer owner-scoped consolidation for owners whose durable jobs are all no_output while ad_hoc rows accumulate; inputs are never lost (next extracted job re-consolidates all rows) and the gate is tasks.md-mandated. Consider an ad_hoc-driven consolidation trigger in a follow-up."
+  - "OPEN (follow-up candidate, Task 1 wiring seam): runner.go issue-intercept branch (~:589-606, pre-existing) builds inline tool_result steps WITHOUT ErrorCode, so the structured schema/not-found classification in reflection.go degrades to substring fallback for intercepted calls (invalid_json message text does not match schema substrings -> generic tool_error). Task 8 is spec-correct and scope-locked against runner changes. One-line fix candidates: set ErrorCode from normalized.Issue.Code at runner.go:596, or add 'must be valid json' to schema substrings. Both Task 8 reviewers flagged independently."
