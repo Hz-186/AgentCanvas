@@ -15,12 +15,6 @@ type ProjectRepository struct{ db *gorm.DB }
 
 func NewProjectRepository(db *gorm.DB) *ProjectRepository { return &ProjectRepository{db: db} }
 
-func (r *ProjectRepository) Create(ctx context.Context, item *projectdomain.Project) error {
-	now := time.Now().UTC()
-	item.CreatedAt, item.UpdatedAt = now, now
-	return mapMySQLConstraintError(r.db.WithContext(ctx).Create(item).Error)
-}
-
 func (r *ProjectRepository) CreateWithPrimaryFolder(ctx context.Context, item *projectdomain.Project, folder *projectdomain.ProjectFolder) error {
 	now := time.Now().UTC()
 	item.CreatedAt, item.UpdatedAt = now, now
@@ -156,46 +150,4 @@ func (r *ProjectRepository) DeleteFolder(ctx context.Context, ownerID, projectID
 		return agenterrors.ErrNotFound
 	}
 	return nil
-}
-
-func (r *ProjectRepository) SetPrimaryFolder(ctx context.Context, ownerID, projectID, folderID int64) error {
-	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var folder projectdomain.ProjectFolder
-		if err := tx.Where("id = ? AND owner_id = ? AND project_id = ?", folderID, ownerID, projectID).First(&folder).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return agenterrors.ErrNotFound
-			}
-			return err
-		}
-		var projectCount int64
-		if err := tx.Model(&projectdomain.Project{}).Where("id = ? AND owner_id = ?", projectID, ownerID).Count(&projectCount).Error; err != nil {
-			return err
-		}
-		if projectCount == 0 {
-			return agenterrors.ErrNotFound
-		}
-		if err := tx.Model(&projectdomain.ProjectFolder{}).Where("owner_id = ? AND project_id = ?", ownerID, projectID).Update("is_repository_root", false).Error; err != nil {
-			return err
-		}
-		folderResult := tx.Model(&projectdomain.ProjectFolder{}).
-			Where("id = ? AND owner_id = ? AND project_id = ?", folderID, ownerID, projectID).
-			Update("is_repository_root", true)
-		if folderResult.Error != nil {
-			return folderResult.Error
-		}
-		if folderResult.RowsAffected == 0 {
-			return agenterrors.ErrNotFound
-		}
-		projectResult := tx.Model(&projectdomain.Project{}).
-			Where("id = ? AND owner_id = ?", projectID, ownerID).
-			Update("repository_root", folder.Path)
-		if projectResult.Error != nil {
-			return projectResult.Error
-		}
-		if projectResult.RowsAffected == 0 {
-			return agenterrors.ErrNotFound
-		}
-		return nil
-	})
-	return mapMySQLConstraintError(err)
 }

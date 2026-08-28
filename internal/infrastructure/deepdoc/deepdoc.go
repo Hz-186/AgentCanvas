@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"math"
 	"regexp"
 	"sort"
 	"strconv"
@@ -612,10 +611,6 @@ func needsOCR(text string) bool {
 		return true
 	}
 	return nonSpace >= 20 && float64(letters)/float64(nonSpace) < 0.15
-}
-
-func max(a, b int) int {
-	return int(math.Max(float64(a), float64(b)))
 }
 
 func utf8RuneCount(text string) int {

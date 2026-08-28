@@ -117,7 +117,3 @@ func (r *fakeIngestionJobRepo) MarkFailedAt(_ context.Context, id int64, _ strin
 	r.failed[id] = true
 	return true, nil
 }
-
-func (r *fakeIngestionJobRepo) MarkFailedOwnedAt(_ context.Context, _ int64, _ string, _ string, _ time.Time) (bool, error) {
-	return true, nil
-}

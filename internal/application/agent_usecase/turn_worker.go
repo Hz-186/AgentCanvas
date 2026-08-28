@@ -191,47 +191,6 @@ func (w turnWorker) resume(ctx context.Context, turn *agentdomain.Turn, run *age
 	return err
 }
 
-// executeResumeTurnOwned keeps resume execution on the same durable Turn
-// worker path as an initial turn. The HTTP request only transitions the Run
-// and Turn to a queued/resuming state; this method owns the checkpoint and
-// model call after ClaimNext has acquired the lease.
-func (s *Service) executeResumeTurnOwned(ctx context.Context, turn *agentdomain.Turn, run *agentdomain.Run) error {
-	if s.approvals == nil || turn == nil || run == nil || run.ID <= 0 {
-		return fmt.Errorf("resume dependencies are not configured")
-	}
-	checkpoint, err := s.approvals.FindLatestCheckpointByRun(ctx, run.OwnerID, run.ID)
-	if err != nil {
-		return mapNotFound(err)
-	}
-
-	input, err := decodeInputJSON(turn.InputJSON)
-	if err != nil {
-		return fmt.Errorf("decode resume input: %w", err)
-	}
-	var decision *agentdomain.ApprovalRequest
-	if approved, ok := input["resume_approved"].(bool); ok {
-		decision = &agentdomain.ApprovalRequest{Status: agentdomain.ApprovalStatusRejected}
-		if approved {
-			decision.Status = agentdomain.ApprovalStatusApproved
-		}
-		if note, ok := input["resume_note"].(string); ok {
-			decision.DecisionNote = note
-		}
-		if answers, ok := input["resume_answers"].(map[string]any); ok {
-			encoded, _ := json.Marshal(answers)
-			decision.DecisionNote = "answers:" + string(encoded)
-		}
-	}
-	execCtx, cancel := context.WithCancel(ctx)
-	s.registerCancel(run.ID, cancel)
-	defer func() { cancel(); s.unregisterCancel(run.ID) }()
-	if turn.LeaseToken != "" {
-		go s.heartbeatLease(execCtx, turn.ID, turn.LeaseToken, cancel)
-	}
-	_, err = s.resumeRun(execCtx, run, checkpoint, decision, turn)
-	return err
-}
-
 func (s *Service) ConfigureWorker(leaseDuration time.Duration) {
 	if leaseDuration >= 10*time.Second {
 		s.leaseDuration = leaseDuration

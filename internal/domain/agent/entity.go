@@ -338,23 +338,6 @@ func (d Definition) ResourceSnapshot() (json.RawMessage, string, string, error) 
 	return raw, hex.EncodeToString(ruleSum[:]), hex.EncodeToString(toolSum[:]), nil
 }
 
-func normalizeNames(names []string) []string {
-	seen := make(map[string]struct{}, len(names))
-	result := make([]string, 0, len(names))
-	for _, name := range names {
-		name = strings.TrimSpace(name)
-		if name == "" {
-			continue
-		}
-		if _, exists := seen[name]; exists {
-			continue
-		}
-		seen[name] = struct{}{}
-		result = append(result, name)
-	}
-	return result
-}
-
 type Agent struct {
 	domain.SoftDeleteModel
 	Name                string          `json:"name" gorm:"column:name"`

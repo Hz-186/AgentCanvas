@@ -9,12 +9,10 @@ import (
 const (
 	LoginTypePassword = "password"
 	LoginTypeGithub   = "github"
-	LoginTypeMixed    = "mixed"
 )
 
 const (
-	StatusDisabled = domain.StatusDisabled
-	StatusActive   = domain.StatusActive
+	StatusActive = domain.StatusActive
 )
 
 type User struct {

@@ -52,7 +52,6 @@ type ReliableIngestionJobRepository interface {
 // business row instead of relying on an in-memory transport delay.
 type RetryableIngestionJobRepository interface {
 	MarkFailedAt(ctx context.Context, id int64, message string, retryAt time.Time) (bool, error)
-	MarkFailedOwnedAt(ctx context.Context, id int64, workerID, message string, retryAt time.Time) (bool, error)
 }
 
 type GenerationCommitter interface {

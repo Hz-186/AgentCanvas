@@ -340,15 +340,6 @@ func (r *AgentTurnRepository) CancelByRun(ctx context.Context, ownerID, runID in
 	return &item, nil
 }
 
-func (r *AgentTurnRepository) ListQueued(ctx context.Context, limit int) ([]agentdomain.Turn, error) {
-	if limit <= 0 || limit > 1000 {
-		limit = 100
-	}
-	var items []agentdomain.Turn
-	err := r.db.WithContext(ctx).Where("status = ?", agentdomain.TurnStatusQueued).Order("id ASC").Limit(limit).Find(&items).Error
-	return items, err
-}
-
 func (r *AgentTurnRepository) ClaimNext(ctx context.Context, workerID, leaseToken string, leaseUntil time.Time) (*agentdomain.Turn, error) {
 	var claimed agentdomain.Turn
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -472,20 +463,6 @@ func (r *AgentImprovementRepository) ClaimNextReview(ctx context.Context, worker
 	return &claimed, err
 }
 
-func (r *AgentImprovementRepository) RenewReviewLease(ctx context.Context, reviewID int64, leaseToken string, leaseUntil time.Time) error {
-	now := time.Now().UTC()
-	result := r.db.WithContext(ctx).Model(&agentdomain.ImprovementReview{}).
-		Where("id = ? AND lease_token = ? AND status = ?", reviewID, leaseToken, agentdomain.ReviewStatusRunning).
-		Updates(map[string]any{"lease_expires_at": leaseUntil.UTC(), "last_heartbeat_at": now, "updated_at": now})
-	if result.Error != nil {
-		return result.Error
-	}
-	if result.RowsAffected != 1 {
-		return agentdomain.ErrLeaseLost
-	}
-	return nil
-}
-
 func (r *AgentImprovementRepository) CompleteReview(ctx context.Context, review *agentdomain.ImprovementReview, proposals []agentdomain.ChangeProposal) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		now := time.Now().UTC()
@@ -505,22 +482,6 @@ func (r *AgentImprovementRepository) CompleteReview(ctx context.Context, review 
 		}
 		return nil
 	})
-}
-
-func (r *AgentImprovementRepository) CreateProposal(ctx context.Context, item *agentdomain.ChangeProposal) error {
-	now := time.Now().UTC()
-	if item.CreatedAt.IsZero() {
-		item.CreatedAt = now
-	}
-	item.UpdatedAt = now
-	result := r.db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(item)
-	if result.Error != nil {
-		return result.Error
-	}
-	if result.RowsAffected == 0 {
-		return r.db.WithContext(ctx).Where("owner_id = ? AND agent_id = ? AND kind = ? AND checksum = ?", item.OwnerID, item.AgentID, item.Kind, item.Checksum).First(item).Error
-	}
-	return nil
 }
 
 func (r *AgentImprovementRepository) FailReview(ctx context.Context, review *agentdomain.ImprovementReview, cause error, retryAt *time.Time) error {

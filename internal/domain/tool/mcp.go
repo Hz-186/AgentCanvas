@@ -15,8 +15,7 @@ const (
 )
 
 const (
-	MCPDisabled = false
-	MCPEnabled  = true
+	MCPEnabled = true
 )
 
 type MCPServer struct {

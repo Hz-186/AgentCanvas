@@ -71,13 +71,6 @@ func (s *ImprovementService) ConfigureReviewModel(providerID int64, model string
 	s.reviewProviderID, s.reviewModel = providerID, strings.TrimSpace(model)
 }
 
-func (s *ImprovementService) ConfigureMemoryCommands(commands memory.Commander) {
-	// Durable memory is owned exclusively by the durable-memory consolidation pipeline.
-	// Keep this method as a source-compatible no-op for callers that have not
-	// migrated their bootstrap graph yet; self-improvement must never retain a
-	// memory command writer.
-}
-
 func NewImprovementService(repository agentdomain.ImprovementRepository, agents agentdomain.Repository, turns agentdomain.TurnRepository, runs agentdomain.RunRepository,
 	conversations conversation.Repository, messages conversation.MessageRepository, steps agentdomain.RunStepRepository, memories memory.Repository, proposals ProposalMemoryWriter,
 	skills skill.Repository, providers ImprovementProviderLoader, client llm.ToolCallingClient, memoryMode string) *ImprovementService {
@@ -220,12 +213,6 @@ func improvementReviewSpec(_ bool) (json.RawMessage, string) {
 	return json.RawMessage(schema), guidance
 }
 
-func defaultProjectMemoryPayload(candidates []proposedChange, projectID int64) []proposedChange {
-	// Project scoping was part of the retired candidate taxonomy.
-	_ = projectID
-	return candidates
-}
-
 func (s *ImprovementService) reviewTrajectory(ctx context.Context, review *agentdomain.ImprovementReview) (string, error) {
 	messages, err := s.messages.ListByConversation(ctx, review.OwnerID, review.ConversationID)
 	if err != nil {
@@ -336,10 +323,6 @@ func (s *ImprovementService) DecideProposal(ctx context.Context, ownerID, propos
 		observability.MemoryRuntimeMetrics.RecordMemoryApprovalWait(approvalWaitMS)
 	}
 	return proposal, err
-}
-
-func (s *ImprovementService) DecideMemoryProposal(ctx context.Context, ownerID, proposalID int64, approved bool, note string) (*agentdomain.ChangeProposal, error) {
-	return nil, fmt.Errorf("durable memory proposals are disabled; use the durable-memory consolidation pipeline")
 }
 
 func (s *ImprovementService) applyProposal(ctx context.Context, proposal *agentdomain.ChangeProposal) error {

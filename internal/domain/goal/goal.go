@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"strings"
-	"time"
 
 	"agentcanvas/internal/domain"
 )
@@ -116,5 +115,3 @@ func NormalizeBudget(value *int64, ceiling *int64) (*int64, error) {
 	}
 	return value, nil
 }
-
-func (g *ThreadGoal) Touch(now time.Time) { g.UpdatedAt = now }

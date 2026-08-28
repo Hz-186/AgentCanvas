@@ -42,25 +42,14 @@ type MessageWriter interface {
 	Create(ctx context.Context, message *conversation.Message) error
 }
 
-type ArchivalIndexFactory interface {
-	ForProvider(LoadedProvider) memory.ArchivalIndex
-}
-
-type ArchivalIndexFactoryFunc func(LoadedProvider) memory.ArchivalIndex
-
-func (f ArchivalIndexFactoryFunc) ForProvider(provider LoadedProvider) memory.ArchivalIndex {
-	return f(provider)
-}
-
 type Repositories struct {
 	Retriever        retrieval.Retriever
 	Providers        ProviderConfigLoader
 	MessageHistory   MessageHistoryReader
 	MessageWriter    MessageWriter
-	Compactions      conversation.CompactionRepository
+	Compactions      conversation.SnapshotRepository
 	SessionSearch    conversation.MessageSearchIndex
 	Memories         memory.Repository
-	MemoryReader     MemoryBatchReader
 	MemoryRecallLogs memory.RecallLogRepository
 	MemoryArtifacts  memory.MemoryArtifactRepository
 	AdHocNotes       memory.AdHocWriter
@@ -78,7 +67,6 @@ type RuntimeClients struct {
 	LLM         llm.ChatClient
 	ToolCalling llm.ToolCallingClient
 	Embedder    llm.EmbeddingClient
-	Archival    ArchivalIndexFactory
 }
 
 type Tooling struct {
@@ -121,14 +109,14 @@ func buildRuntimeCore(deps Deps) runtimeCore {
 	return runtimeCore{
 		coreRepositories: coreRepositories{
 			Providers: deps.Providers, ToolPacks: deps.ToolPacks, Skills: deps.Skills, SkillRetriever: deps.SkillRetriever, MCPServers: deps.MCPServers,
-			Retriever: deps.Retriever, Memories: deps.Memories, MemoryReader: deps.MemoryReader,
+			Retriever: deps.Retriever, Memories: deps.Memories,
 			MemoryRecallLogs: deps.MemoryRecallLogs,
 			MemoryArtifacts:  deps.MemoryArtifacts, AdHocNotes: deps.AdHocNotes,
 			MessageHistory: deps.MessageHistory, MessageWriter: deps.MessageWriter, Compactions: deps.Compactions, SessionSearch: deps.SessionSearch,
 			ContextIndex:             deps.ContextIndex,
 			TerminalReflectionWriter: deps.TerminalReflectionWriter,
 		},
-		coreClients: coreClients{LLM: deps.ToolCalling, Embedder: deps.Embedder, Archival: deps.Archival},
+		coreClients: coreClients{LLM: deps.ToolCalling, Embedder: deps.Embedder},
 		coreTooling: coreTooling{Tools: deps.ToolRegistry, SubagentDispatcher: deps.SubagentDispatcher, DisableUpdatePlan: deps.DisableUpdatePlan, DefaultModeRequestUserInput: deps.DefaultModeRequestUserInput, Goals: deps.Goals, GoalTokenBudgetCeiling: deps.GoalTokenBudgetCeiling},
 		coreWorkspace: coreWorkspace{Sandbox: deps.Sandbox, Coordinator: conversationCoordinator(deps), Git: deps.Git,
 			FileReadMaxChars: deps.FileReadMaxChars, MaxOutputBytes: deps.MaxOutputBytes, WorkspaceTimeout: deps.WorkspaceTimeout, SkillRoot: workspaceRoot},
@@ -138,9 +126,8 @@ func buildRuntimeCore(deps Deps) runtimeCore {
 }
 
 func conversationCoordinator(deps Deps) *conversationcontext.Coordinator {
-	snapshots, ok := deps.Compactions.(conversation.SnapshotRepository)
-	if !ok || deps.MessageHistory == nil || deps.LLM == nil {
+	if deps.Compactions == nil || deps.MessageHistory == nil || deps.LLM == nil {
 		return nil
 	}
-	return &conversationcontext.Coordinator{History: deps.MessageHistory, Snapshots: snapshots, Client: deps.LLM}
+	return &conversationcontext.Coordinator{History: deps.MessageHistory, Snapshots: deps.Compactions, Client: deps.LLM}
 }

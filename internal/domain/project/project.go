@@ -32,7 +32,6 @@ type ProjectFolder struct {
 func (ProjectFolder) TableName() string { return "project_folders" }
 
 type Repository interface {
-	Create(ctx context.Context, item *Project) error
 	CreateWithPrimaryFolder(ctx context.Context, item *Project, folder *ProjectFolder) error
 	ListByOwner(ctx context.Context, ownerID int64, includeArchived bool) ([]Project, error)
 	FindByID(ctx context.Context, ownerID, id int64) (*Project, error)
@@ -42,5 +41,4 @@ type Repository interface {
 	AddFolder(ctx context.Context, item *ProjectFolder) error
 	AddPrimaryFolder(ctx context.Context, item *ProjectFolder) error
 	DeleteFolder(ctx context.Context, ownerID, projectID, folderID int64) error
-	SetPrimaryFolder(ctx context.Context, ownerID, projectID, folderID int64) error
 }

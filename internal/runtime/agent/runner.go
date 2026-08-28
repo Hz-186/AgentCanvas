@@ -21,7 +21,6 @@ import (
 
 var ErrNoToolCallingClient = errors.New("llm client does not support tool calling")
 var ErrMandatoryRuleBudgetExceeded = errors.New("mandatory rules exceed the configured input context budget")
-var ErrContextOverflow = errors.New("context exceeds the model input window")
 var ErrDuplicateToolName = errors.New("duplicate tool name")
 var ErrRunPaused = errors.New("run paused")
 
@@ -955,18 +954,6 @@ func toolResultContent(result *toolruntime.ToolResult, toolErr error) string {
 		content = toolErr.Error()
 	}
 	return content
-}
-
-func toolExecutionContext(ctx context.Context, metadata toolruntime.ToolMetadata, policy ToolPolicy) (context.Context, context.CancelFunc, error) {
-	if err := toolruntime.ValidateAllowedHosts(metadata.AllowedHosts, policy.AllowedHosts, false); err != nil {
-		return ctx, nil, err
-	}
-	timeoutMS := toolruntime.EffectiveLimit(metadata.TimeoutMS, policy.MaxToolTimeoutMS)
-	if timeoutMS <= 0 {
-		return ctx, nil, nil
-	}
-	execCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutMS)*time.Millisecond)
-	return execCtx, cancel, nil
 }
 
 func summarizeMessages(messages []llm.ChatMessage) string {

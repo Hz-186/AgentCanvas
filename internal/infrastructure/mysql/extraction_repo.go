@@ -131,16 +131,6 @@ func (r *ExtractionJobRepository) FindByIdempotencyKey(ctx context.Context, owne
 	return &job, nil
 }
 
-func (r *ExtractionJobRepository) ListByStatus(ctx context.Context, ownerID int64, status string, limit int) ([]memory.ExtractionJob, error) {
-	var jobs []memory.ExtractionJob
-	if limit <= 0 {
-		limit = 50
-	}
-	err := r.db.WithContext(ctx).Where("owner_id = ? AND status = ?", ownerID, status).
-		Order("id DESC").Limit(limit).Find(&jobs).Error
-	return jobs, err
-}
-
 // ListPhase2Retries is intentionally separate from the Phase 1 pending queue:
 // a completed extraction with a phase-2 error must be consolidated again
 // without re-running rollout extraction.
@@ -153,17 +143,6 @@ func (r *ExtractionJobRepository) ListPhase2Retries(ctx context.Context, limit i
 		Where("status = ? AND trigger_reason = ? AND error_message LIKE ? AND (due_at IS NULL OR due_at <= ?)", string(memory.ExtractionCompleted), "durable", "phase2:%", time.Now().UTC()).
 		Order("id ASC").Limit(limit).Find(&jobs).Error
 	return jobs, err
-}
-
-func (r *ExtractionJobRepository) LatestCompletedThrough(ctx context.Context, ownerID, conversationID, beforeJobID int64) (int64, error) {
-	var through int64
-	query := r.db.WithContext(ctx).Model(&memory.ExtractionJob{}).
-		Where("owner_id = ? AND conversation_id = ? AND status = ?", ownerID, conversationID, string(memory.ExtractionCompleted))
-	if beforeJobID > 0 {
-		query = query.Where("id < ?", beforeJobID)
-	}
-	err := query.Select("COALESCE(MAX(through_message_id), 0)").Scan(&through).Error
-	return through, err
 }
 
 // LatestDurableJob returns the conversation's newest durable extraction job

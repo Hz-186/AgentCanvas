@@ -76,13 +76,6 @@ func (a *ToolStreamAccumulator) AddToolCallDelta(index int, callID, name, argume
 	}
 }
 
-// AddToolCall is a convenience alias for AddToolCallDelta when a caller has
-// one complete fragment available.  It intentionally has the same merge
-// semantics as streamed deltas.
-func (a *ToolStreamAccumulator) AddToolCall(index int, callID, name, argumentDelta string) {
-	a.AddToolCallDelta(index, callID, name, argumentDelta)
-}
-
 // ToolCall returns a validated, complete ToolCall for index.  Empty argument
 // streams are represented as an empty JSON object, matching the OpenAI
 // function-calling convention.
@@ -160,22 +153,6 @@ func (a *ToolStreamAccumulator) Response() (*ToolChatResponse, error) {
 		},
 		Usage: a.usage,
 	}, nil
-}
-
-// Content returns the accumulated assistant text.
-func (a *ToolStreamAccumulator) Content() string {
-	if a == nil {
-		return ""
-	}
-	return a.content.String()
-}
-
-// Usage returns the latest usage report.
-func (a *ToolStreamAccumulator) Usage() Usage {
-	if a == nil {
-		return Usage{}
-	}
-	return a.usage
 }
 
 func validToolArguments(raw string) (json.RawMessage, error) {

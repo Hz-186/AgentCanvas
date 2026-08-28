@@ -7,7 +7,7 @@ const (
 	CodeUnauthorized
 	CodeForbidden
 	CodeNotFound
-	CodeConflict
+	_ // reserved: former CodeConflict slot, kept so later codes stay stable
 	CodeInternal
 	CodeDependencyUnavailable
 )

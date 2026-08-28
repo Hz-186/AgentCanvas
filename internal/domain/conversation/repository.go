@@ -12,10 +12,7 @@ var ErrTranscriptEntryConflict = errors.New("transcript entry identity conflict"
 
 type Repository interface {
 	Create(ctx context.Context, item *Conversation) error
-	ListByOwner(ctx context.Context, ownerID int64) ([]Conversation, error)
 	FindByID(ctx context.Context, ownerID, id int64) (*Conversation, error)
-	Update(ctx context.Context, item *Conversation) error
-	UpdateLastMessageAt(ctx context.Context, ownerID, id int64) error
 	SoftDelete(ctx context.Context, ownerID, id int64) error
 }
 
@@ -29,7 +26,6 @@ type MessageRepository interface {
 	Create(ctx context.Context, message *Message) error
 	ListByConversation(ctx context.Context, ownerID, conversationID int64) ([]Message, error)
 	ListActiveByConversation(ctx context.Context, ownerID, conversationID int64) ([]Message, error)
-	ListByRun(ctx context.Context, ownerID, runID int64) ([]Message, error)
 	// ListThroughIncludingArchived reads the window (afterID, throughID]
 	// including soft-archived rows. It is reserved for the durable memory
 	// extraction pipeline; context building and boundary computation must keep
@@ -59,7 +55,6 @@ type MessageSearchResult struct {
 }
 
 type MessageSearchIndex interface {
-	EnsureIndex(context.Context) error
 	IndexMessage(context.Context, int64, int64, *Message) error
 	SearchMessages(context.Context, MessageSearchRequest) ([]MessageSearchResult, error)
 	DeleteConversation(context.Context, int64, int64, int64) error

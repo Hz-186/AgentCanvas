@@ -43,13 +43,6 @@ var historicalReflectionStatuses = []string{
 	reflection.StatusArchived,
 }
 
-// HistoricalReflectionStatuses returns the reflection statuses eligible for
-// conversion. It is exported so the migration command can drive the same
-// per-owner sweep used by ReflectionMigration.Run.
-func HistoricalReflectionStatuses() []string {
-	return append([]string(nil), historicalReflectionStatuses...)
-}
-
 // HistoricalOwnerIDs returns the distinct owners that still hold convertible
 // reflection rows, sorted ascending.
 func (m *ReflectionMigration) HistoricalOwnerIDs(ctx context.Context) ([]int64, error) {

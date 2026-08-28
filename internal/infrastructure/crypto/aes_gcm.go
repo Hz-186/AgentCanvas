@@ -107,13 +107,3 @@ func (b *SecretBox) Decrypt(encoded string) (string, error) {
 	}
 	return string(plain), nil
 }
-
-func MaskSecret(secret string) string {
-	if secret == "" {
-		return ""
-	}
-	if len(secret) <= 8 {
-		return "****"
-	}
-	return secret[:4] + "****" + secret[len(secret)-4:]
-}

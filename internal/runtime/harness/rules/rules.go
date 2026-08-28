@@ -172,19 +172,6 @@ func normalizedSet(values []string) map[string]bool {
 	return set
 }
 
-func dedupeStrings(values []string) []string {
-	seen := make(map[string]bool, len(values))
-	result := make([]string, 0, len(values))
-	for _, value := range values {
-		value = strings.TrimSpace(value)
-		if value != "" && !seen[value] {
-			seen[value] = true
-			result = append(result, value)
-		}
-	}
-	return result
-}
-
 func (t *Trace) skip(ruleID, reason string) {
 	t.Skipped = append(t.Skipped, ruleID)
 	if reason != "" {

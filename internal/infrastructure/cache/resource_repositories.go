@@ -131,24 +131,6 @@ func (r *MemoryRepository) changed(ctx context.Context, ownerID int64) {
 		_ = r.memoryCache.InvalidateOwner(ctx, ownerID)
 	}
 }
-func (r *MemoryRepository) Create(ctx context.Context, item *memory.Memory) error {
-	if err := r.Repository.Create(ctx, item); err != nil {
-		return err
-	}
-	r.changed(ctx, item.OwnerID)
-	return nil
-}
-func (r *MemoryRepository) Replace(ctx context.Context, ownerID, supersededID int64, replacement *memory.Memory) error {
-	repository, ok := r.Repository.(memory.AtomicReplacementRepository)
-	if !ok {
-		return fmt.Errorf("memory repository does not support atomic replacement")
-	}
-	if err := repository.Replace(ctx, ownerID, supersededID, replacement); err != nil {
-		return err
-	}
-	r.changed(ctx, ownerID)
-	return nil
-}
 func (r *MemoryRepository) ListFiltered(ctx context.Context, ownerID int64, filter memory.ListFilter) ([]memory.Memory, error) {
 	repository, ok := r.Repository.(memory.FilteredRepository)
 	if !ok {
@@ -195,20 +177,6 @@ func (r *MemoryRepository) FindByIDs(ctx context.Context, ownerID int64, ids []i
 	}
 	return ordered, nil
 }
-func (r *MemoryRepository) Update(ctx context.Context, item *memory.Memory) error {
-	if err := r.Repository.Update(ctx, item); err != nil {
-		return err
-	}
-	r.changed(ctx, item.OwnerID)
-	return nil
-}
-func (r *MemoryRepository) SoftDelete(ctx context.Context, ownerID, id int64) error {
-	if err := r.Repository.SoftDelete(ctx, ownerID, id); err != nil {
-		return err
-	}
-	r.changed(ctx, ownerID)
-	return nil
-}
 func (r *MemoryRepository) MarkUsed(ctx context.Context, ownerID int64, ids []int64) error {
 	if err := r.Repository.MarkUsed(ctx, ownerID, ids); err != nil {
 		return err
@@ -217,32 +185,4 @@ func (r *MemoryRepository) MarkUsed(ctx context.Context, ownerID int64, ids []in
 		r.changed(ctx, ownerID)
 	}
 	return nil
-}
-func (r *MemoryRepository) IncrementUsageCount(ctx context.Context, ownerID, id int64) error {
-	if err := r.Repository.IncrementUsageCount(ctx, ownerID, id); err != nil {
-		return err
-	}
-	r.changed(ctx, ownerID)
-	return nil
-}
-func (r *MemoryRepository) IncrementPromotionCount(ctx context.Context, ownerID, id int64) error {
-	if err := r.Repository.IncrementPromotionCount(ctx, ownerID, id); err != nil {
-		return err
-	}
-	r.changed(ctx, ownerID)
-	return nil
-}
-func (r *MemoryRepository) MarkExpired(ctx context.Context, ownerID int64, maxAgeDays int) (int64, error) {
-	count, err := r.Repository.MarkExpired(ctx, ownerID, maxAgeDays)
-	if err == nil && count > 0 {
-		r.changed(ctx, ownerID)
-	}
-	return count, err
-}
-func (r *MemoryRepository) UpdateDecayedImportance(ctx context.Context, ownerID int64, decayRate float64) (int64, error) {
-	count, err := r.Repository.UpdateDecayedImportance(ctx, ownerID, decayRate)
-	if err == nil && count > 0 {
-		r.changed(ctx, ownerID)
-	}
-	return count, err
 }

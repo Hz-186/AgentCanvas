@@ -233,20 +233,6 @@ func (c *MCPClient) Discover(ctx context.Context) ([]MCPToolDef, error) {
 	return result, nil
 }
 
-func (c *MCPClient) Refresh(ctx context.Context) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	tools, err := c.fetchTools(ctx)
-	if err != nil {
-		c.lastError = err
-		return err
-	}
-	c.tools = tools
-	c.cachedAt = time.Now()
-	c.lastError = nil
-	return nil
-}
-
 func (c *MCPClient) Invalidate() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -666,100 +652,6 @@ func (s *mcpStdioSession) closed() bool {
 	default:
 		return false
 	}
-}
-
-func (c *MCPClient) runStdioSession(ctx context.Context, requests []mcpJSONRPCRequest) (map[int64]json.RawMessage, error) {
-	if strings.TrimSpace(c.Command) == "" {
-		return nil, fmt.Errorf("mcp stdio command is required")
-	}
-	cmd := exec.CommandContext(ctx, c.Command, c.Args...)
-	if len(c.Env) > 0 {
-		cmd.Env = append(cmd.Environ(), envPairs(c.Env)...)
-	}
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		return nil, err
-	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, err
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return nil, err
-	}
-	if err := cmd.Start(); err != nil {
-		return nil, err
-	}
-
-	responsesCh := make(chan map[int64]json.RawMessage, 1)
-	errCh := make(chan error, 2)
-	go func() {
-		responses := map[int64]json.RawMessage{}
-		scanner := bufio.NewScanner(stdout)
-		for scanner.Scan() {
-			line := strings.TrimSpace(scanner.Text())
-			if line == "" {
-				continue
-			}
-			var resp mcpJSONRPCResponse
-			if err := json.Unmarshal([]byte(line), &resp); err != nil {
-				continue
-			}
-			if resp.ID == 0 {
-				continue
-			}
-			if resp.Error != nil {
-				errCh <- fmt.Errorf("mcp stdio error %d: %s", resp.Error.Code, resp.Error.Message)
-				return
-			}
-			responses[resp.ID] = resp.Result
-			if len(responses) >= countRequestIDs(requests) {
-				break
-			}
-		}
-		if err := scanner.Err(); err != nil {
-			errCh <- err
-			return
-		}
-		responsesCh <- responses
-	}()
-
-	encoder := json.NewEncoder(stdin)
-	for _, req := range requests {
-		if err := encoder.Encode(req); err != nil {
-			_ = stdin.Close()
-			_ = cmd.Wait()
-			return nil, err
-		}
-	}
-	_ = stdin.Close()
-
-	var responses map[int64]json.RawMessage
-	select {
-	case responses = <-responsesCh:
-	case err := <-errCh:
-		_ = cmd.Wait()
-		return nil, err
-	case <-ctx.Done():
-		_ = cmd.Wait()
-		return nil, ctx.Err()
-	}
-	stderrBytes, _ := io.ReadAll(stderr)
-	if err := cmd.Wait(); err != nil {
-		return nil, fmt.Errorf("mcp stdio command failed: %w stderr=%s", err, strings.TrimSpace(string(stderrBytes)))
-	}
-	return responses, nil
-}
-
-func countRequestIDs(requests []mcpJSONRPCRequest) int {
-	count := 0
-	for _, req := range requests {
-		if req.ID != 0 {
-			count++
-		}
-	}
-	return count
 }
 
 func cloneStringMap(input map[string]string) map[string]string {

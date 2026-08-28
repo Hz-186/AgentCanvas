@@ -33,13 +33,6 @@ const (
 	StatusRevoked    = "revoked"
 )
 
-const (
-	WriteActionCreate   = "create"
-	WriteActionUpdate   = "update"
-	WriteActionNoop     = "noop"
-	WriteActionConflict = "conflict"
-)
-
 type Memory struct {
 	domain.SoftDeleteModel
 	ConflictWithID       *int64          `json:"conflict_with_id,omitempty" gorm:"column:conflict_with_id"`
@@ -117,16 +110,10 @@ const (
 	WriteJobStatusPending    = "pending"
 	WriteJobStatusRunning    = "running"
 	WriteJobStatusCompleted  = "completed"
-	WriteJobStatusFailed     = "failed"
 	WriteJobStatusDeadLetter = "dead_letter"
 )
 
 var WriteJobSources = []string{"extraction", "ad_hoc", "proposal", "consolidation", "reflection", "manual"}
-
-// ValidSources is the canonical source vocabulary shared by memories and jobs.
-var ValidSources = WriteJobSources
-
-func ValidateSource(source string) error { return ValidateWriteJobSource(source) }
 
 func ValidateWriteJobSource(source string) error {
 	for _, allowed := range WriteJobSources {
@@ -191,7 +178,6 @@ type MemoryArtifactRepository interface {
 
 type MemoryWriteJobRepository interface {
 	Create(ctx context.Context, job *MemoryWriteJob) error
-	FindByIdempotencyKey(ctx context.Context, ownerID int64, key string) (*MemoryWriteJob, error)
 	ClaimPending(ctx context.Context, workerID string, now time.Time, leaseUntil time.Time, limit int) ([]MemoryWriteJob, error)
 	Update(ctx context.Context, job *MemoryWriteJob) error
 }

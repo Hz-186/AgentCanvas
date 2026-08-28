@@ -28,11 +28,6 @@ func effectiveReflectionPolicy(cfg agentRuntimeConfig) (reflection.Policy, error
 	return policy, nil
 }
 
-func reflectionAffectsExecution(policy reflection.Policy) bool {
-	policy = policy.Normalize()
-	return policy.Enabled && policy.RuntimeMode == reflection.RuntimeActive
-}
-
 // finalizeReflection is the terminal reflection extraction producer. Runs that
 // finish with inline reflection evidence enqueue an ordinary memory write job
 // with source reflection; runs without inline evidence produce nothing. The

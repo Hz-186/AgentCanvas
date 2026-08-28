@@ -27,15 +27,6 @@ func (r *ConversationRepository) Create(ctx context.Context, item *conversation.
 	return nil
 }
 
-func (r *ConversationRepository) ListByOwner(ctx context.Context, ownerID int64) ([]conversation.Conversation, error) {
-	var items []conversation.Conversation
-	err := r.db.WithContext(ctx).
-		Where("owner_id = ? AND deleted_at IS NULL", ownerID).
-		Order("last_message_at DESC, id DESC").
-		Find(&items).Error
-	return items, err
-}
-
 func (r *ConversationRepository) ListByAgent(ctx context.Context, ownerID, agentID int64) ([]conversation.Conversation, error) {
 	var items []conversation.Conversation
 	err := r.db.WithContext(ctx).
@@ -60,23 +51,6 @@ func (r *ConversationRepository) FindByID(ctx context.Context, ownerID, id int64
 		return nil, err
 	}
 	return &item, nil
-}
-
-func (r *ConversationRepository) Update(ctx context.Context, item *conversation.Conversation) error {
-	now := time.Now().UTC()
-	item.UpdatedAt = now
-	item.LastMessageAt = &now
-	if err := r.db.WithContext(ctx).Save(item).Error; err != nil {
-		return err
-	}
-	return nil
-}
-
-func (r *ConversationRepository) UpdateLastMessageAt(ctx context.Context, ownerID, id int64) error {
-	now := time.Now().UTC()
-	return r.db.WithContext(ctx).Model(&conversation.Conversation{}).
-		Where("id = ? AND owner_id = ? AND deleted_at IS NULL", id, ownerID).
-		Updates(map[string]any{"last_message_at": now, "updated_at": now}).Error
 }
 
 func (r *ConversationRepository) SoftDelete(ctx context.Context, ownerID, id int64) error {

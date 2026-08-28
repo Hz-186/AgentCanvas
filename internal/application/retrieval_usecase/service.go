@@ -20,15 +20,14 @@ const (
 )
 
 type Service struct {
-	kbs           knowledge.KnowledgeBaseRepository
-	providers     providerdomain.Repository
-	raw           retrieval.Retriever
-	backends      map[string]retrieval.Retriever
-	embedder      llm.EmbeddingClient
-	reranker      llm.Reranker
-	secrets       providerdomain.SecretCodec
-	rewriter      QueryRewriter
-	recordMetrics func(lowRecall, clarification, rewrite bool)
+	kbs       knowledge.KnowledgeBaseRepository
+	providers providerdomain.Repository
+	raw       retrieval.Retriever
+	backends  map[string]retrieval.Retriever
+	embedder  llm.EmbeddingClient
+	reranker  llm.Reranker
+	secrets   providerdomain.SecretCodec
+	rewriter  QueryRewriter
 }
 
 func NewService(kbs knowledge.KnowledgeBaseRepository, providers providerdomain.Repository, raw retrieval.Retriever, embedder llm.EmbeddingClient, reranker llm.Reranker, secrets providerdomain.SecretCodec) *Service {
@@ -50,11 +49,6 @@ func (s *Service) WithBackends(backends map[string]retrieval.Retriever) *Service
 	return s
 }
 
-func (s *Service) WithMetrics(record func(bool, bool, bool)) *Service {
-	s.recordMetrics = record
-	return s
-}
-
 func (s *Service) PlanQuery(ctx context.Context, req retrieval.RetrievalRequest) (retrieval.QueryPlan, error) {
 	plan := BuildQueryPlan(req.Query, req.Conversation)
 	if plan.NeedsClarification && s.rewriter != nil && req.RewriteProviderID > 0 && !plan.RewriteInvoked {
@@ -66,18 +60,7 @@ func (s *Service) PlanQuery(ctx context.Context, req retrieval.RetrievalRequest)
 	return plan, nil
 }
 
-func (s *Service) Search(ctx context.Context, req retrieval.RetrievalRequest) (response *retrieval.RetrievalResponse, err error) {
-	defer func() {
-		if response == nil {
-			return
-		}
-		lowRecall := response.Diagnostics != nil && response.Diagnostics.LowRecall
-		clarification := response.Clarification != nil && response.Clarification.Required
-		rewrite := response.QueryPlan != nil && response.QueryPlan.RewriteInvoked
-		if s.recordMetrics != nil {
-			s.recordMetrics(lowRecall, clarification, rewrite)
-		}
-	}()
+func (s *Service) Search(ctx context.Context, req retrieval.RetrievalRequest) (*retrieval.RetrievalResponse, error) {
 	if s.raw == nil && len(s.backends) == 0 {
 		return nil, fmt.Errorf("retriever is not configured")
 	}

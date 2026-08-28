@@ -12,7 +12,6 @@ type DefinitionRepository interface {
 
 type InvocationRepository interface {
 	Create(ctx context.Context, item *Invocation) error
-	ListByRun(ctx context.Context, ownerID, runID int64) ([]Invocation, error)
 }
 
 type PackRepository interface {

@@ -71,7 +71,6 @@ type MemoryReadTool struct {
 	// Memories is the SQL hydration authority for keyword index hits.
 	Memories   memory.Repository
 	RecallLogs memory.RecallLogRepository
-	Archival   memory.ArchivalIndex
 	// ContextIndex is the unified keyword index required for every read.
 	ContextIndex contextresource.Index
 	AgentID      int64
@@ -128,7 +127,7 @@ func (t MemoryReadTool) Execute(ctx context.Context, rc ToolRunContext, input js
 		agentID = rc.AgentID
 	}
 	projectID := projectIDFromToolRunContext(rc)
-	result, err := (memory.RuntimeService{Memories: t.Memories, RecallLogs: t.RecallLogs, Archival: t.Archival, ContextIndex: t.ContextIndex, AgentID: agentID, Profile: t.Profile}).Read(ctx, memory.ReadRequest{
+	result, err := (memory.RuntimeService{Memories: t.Memories, RecallLogs: t.RecallLogs, ContextIndex: t.ContextIndex, AgentID: agentID, Profile: t.Profile}).Read(ctx, memory.ReadRequest{
 		OwnerID: rc.OwnerID, ConversationID: rc.ConversationID, ProjectID: projectID, AgentID: agentID, RunID: rc.RunID, Query: query, Limit: parsed.Limit, TokenBudget: t.TokenBudget, SemanticOnly: semanticOnly, AllowLegacyListFallback: allowLegacyFallback,
 	})
 	if err != nil {

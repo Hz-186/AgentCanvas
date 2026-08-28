@@ -808,10 +808,3 @@ func mapNotFound(err error) error {
 	}
 	return err
 }
-
-func int64PtrValue(v *int64) int64 {
-	if v == nil {
-		return 0
-	}
-	return *v
-}

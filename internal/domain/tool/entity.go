@@ -11,8 +11,7 @@ const (
 )
 
 const (
-	Disabled = false
-	Enabled  = true
+	Enabled = true
 )
 
 const ( // result

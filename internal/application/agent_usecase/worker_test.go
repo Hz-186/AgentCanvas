@@ -111,7 +111,6 @@ func (r *workerTurnRepo) Update(context.Context, *agent.Turn) error {
 func (*workerTurnRepo) CancelByRun(context.Context, int64, int64, time.Time) (*agent.Turn, error) {
 	return nil, agent.ErrNoTurnAvailable
 }
-func (*workerTurnRepo) ListQueued(context.Context, int) ([]agent.Turn, error) { return nil, nil }
 func (*workerTurnRepo) ClaimNext(context.Context, string, string, time.Time) (*agent.Turn, error) {
 	return nil, agent.ErrNoTurnAvailable
 }

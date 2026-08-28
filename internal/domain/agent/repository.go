@@ -31,7 +31,6 @@ type TurnRepository interface {
 	FindLatestByConversation(ctx context.Context, ownerID, agentID, conversationID int64) (*Turn, error)
 	Update(ctx context.Context, item *Turn) error
 	CancelByRun(ctx context.Context, ownerID, runID int64, finishedAt time.Time) (*Turn, error)
-	ListQueued(ctx context.Context, limit int) ([]Turn, error)
 	ClaimNext(ctx context.Context, workerID, leaseToken string, leaseUntil time.Time) (*Turn, error)
 	RenewLease(ctx context.Context, turnID int64, leaseToken string, leaseUntil time.Time) error
 	ListExpiredRunning(ctx context.Context, before time.Time, limit int) ([]Turn, error)
@@ -79,9 +78,7 @@ type ApprovalRepository interface {
 type ImprovementRepository interface {
 	EnqueueReview(ctx context.Context, item *ImprovementReview) error
 	ClaimNextReview(ctx context.Context, workerID, leaseToken string, leaseUntil time.Time) (*ImprovementReview, error)
-	RenewReviewLease(ctx context.Context, reviewID int64, leaseToken string, leaseUntil time.Time) error
 	CompleteReview(ctx context.Context, review *ImprovementReview, proposals []ChangeProposal) error
-	CreateProposal(ctx context.Context, item *ChangeProposal) error
 	FailReview(ctx context.Context, review *ImprovementReview, cause error, retryAt *time.Time) error
 	ListReviews(ctx context.Context, ownerID, agentID int64, limit int) ([]ImprovementReview, error)
 	ListProposals(ctx context.Context, ownerID, agentID int64, status string, limit int) ([]ChangeProposal, error)

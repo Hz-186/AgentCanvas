@@ -132,13 +132,6 @@ func (p *ProposedPlanStreamParser) flushLine() []ModelStreamEvent {
 	return []ModelStreamEvent{{Kind: ModelTextDelta, Text: line}}
 }
 
-func (p *ProposedPlanStreamParser) VisiblePlan() (string, string) {
-	if p == nil {
-		return "", ""
-	}
-	return p.visible.String(), p.lastPlan
-}
-
 // NormalizeProposedPlan removes plan blocks from a completed assistant
 // message and returns the final block (the last block wins).
 func NormalizeProposedPlan(text string) (visible, plan string) {
