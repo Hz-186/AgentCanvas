@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -27,6 +28,10 @@ type runEventEmitter struct {
 	ownerID, runID int64
 	conversationID *int64
 	onUsage        func(context.Context, int64, llm.Usage)
+	// diagnostics is the optional fail-open observation seam for RunEvent
+	// lifecycle diagnostics. It only ever sees event metadata, never the
+	// payload. Nil falls back to slog.Default.
+	diagnostics *slog.Logger
 
 	// mu is the per-run publication lane. It keeps sequence reservation, the
 	// durable audit append, and live publication in the same order while also
@@ -43,6 +48,7 @@ func (s *Service) ConfigureEventHub(hub runStreamHub) {
 
 func (s *Service) newRunEventEmitter(ownerID, runID int64, conversationID *int64) *runEventEmitter {
 	return &runEventEmitter{repo: s.events, hub: s.streamHub, ownerID: ownerID, runID: runID, conversationID: conversationID,
+		diagnostics: s.diagnosticsLogger(),
 		onUsage: func(ctx context.Context, runID int64, usage llm.Usage) {
 			s.accountGoalUsageEvent(ctx, ownerID, runID, usage)
 		}}
@@ -80,7 +86,29 @@ func (e *runEventEmitter) Emit(ctx context.Context, event runtimeevent.Event) er
 		return err
 	}
 	e.publish(projected)
+	// Side-effect diagnostic only: it runs after the DB-first audit and
+	// publication, never reads the payload, and never changes Emit's result.
+	e.logRunEventAudited(ctx, event)
 	return nil
+}
+
+// logRunEventAudited emits one bounded, metadata-only diagnostic for a
+// persisted RunEvent. Logger/sink failure fails open: slog never returns an
+// error to this call site.
+func (e *runEventEmitter) logRunEventAudited(ctx context.Context, event runtimeevent.Event) {
+	attrs := []any{"event", "run_event.audited", "phase", "run_event", "result", "ok",
+		"status", event.Type, "owner_id", e.ownerID, "run_id", e.runID}
+	if e.conversationID != nil {
+		attrs = append(attrs, "conversation_id", *e.conversationID)
+	}
+	e.diagnosticsLogger().Log(ctx, slog.LevelInfo, "run_event.audited", attrs...)
+}
+
+func (e *runEventEmitter) diagnosticsLogger() *slog.Logger {
+	if e.diagnostics != nil {
+		return e.diagnostics
+	}
+	return slog.Default()
 }
 
 // EmitModelEvent is live-only by design. In particular, reasoning never

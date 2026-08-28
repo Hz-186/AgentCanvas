@@ -5,6 +5,7 @@ import (
 	"agentcanvas/internal/domain/audit"
 	authdomain "agentcanvas/internal/domain/auth"
 	agenterrors "agentcanvas/internal/pkg/errors"
+	"agentcanvas/internal/pkg/observability"
 	"agentcanvas/internal/pkg/response"
 	"encoding/json"
 	"log/slog"
@@ -105,6 +106,8 @@ func setPrincipal(c *gin.Context, principal Principal) {
 	c.Set(UserIDKey, principal.UserID)
 	c.Set(AuthKindKey, principal.Kind)
 	c.Set(AuthScopesKey, append([]string(nil), principal.Scopes...))
+	correlation, _ := observability.CorrelationFromContext(c.Request.Context())
+	c.Request = c.Request.WithContext(observability.WithCorrelation(c.Request.Context(), correlation.WithOwnerID(principal.UserID)))
 }
 
 // RequireRouteScope keeps scope policy in one place while allowing regular JWT

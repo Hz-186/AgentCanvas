@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"strings"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"agentcanvas/internal/domain/memory"
 	"agentcanvas/internal/infrastructure/llm"
 	"agentcanvas/internal/observability"
+	"agentcanvas/internal/pkg/logger"
 	"agentcanvas/internal/pkg/strutil"
 	"agentcanvas/internal/runtime/compaction"
 	"agentcanvas/internal/runtime/harness/hooks"
@@ -34,10 +36,22 @@ type Runner struct {
 	ProviderID   int64
 	ModelName    string
 	Snapshots    conversation.SnapshotRepository
+	// Logger is the optional diagnostics seam for tool/LLM/compaction
+	// lifecycle events. Nil keeps production behavior via slog.Default.
+	Logger *slog.Logger
 }
 
 func NewRunner(client llm.ToolCallingClient) *Runner {
 	return &Runner{LLM: client}
+}
+
+// diagnosticsLogger is the fail-open observation seam for lifecycle
+// diagnostics. Diagnostics never change runtime results.
+func (r *Runner) diagnosticsLogger() *slog.Logger {
+	if r.Logger != nil {
+		return r.Logger
+	}
+	return slog.Default()
 }
 
 func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
@@ -533,6 +547,7 @@ type preparedToolCall struct {
 	result     *toolruntime.ToolResult
 	err        error
 	latencyMS  int
+	stepIndex  int
 }
 
 func (r *Runner) executeToolBatch(
@@ -583,6 +598,7 @@ func (r *Runner) executeToolBatch(
 			ProviderID:    r.ProviderID,
 			Model:         r.ModelName,
 		})
+		toolStepIndex := toolStep.Index
 		_ = r.emit(ctx, toolStep)
 		toolImpl := normalized.Tool
 		if normalized.Issue != nil || toolImpl == nil {
@@ -679,6 +695,7 @@ func (r *Runner) executeToolBatch(
 			metadata:   metadata,
 			execCtx:    execCtx,
 			execCancel: pre.Cancel,
+			stepIndex:  toolStepIndex,
 		})
 	}
 
@@ -694,6 +711,7 @@ func (r *Runner) executeToolBatch(
 	segments := PlanToolBatch(plannedCalls, nil)
 	executions := ExecuteToolBatch(ctx, segments, req.MaxParallelTools, func(_ context.Context, batchItem ToolBatchItem) (*toolruntime.ToolResult, error) {
 		item := &prepared[batchItem.Index]
+		r.logToolStarted(ctx, item)
 		started := r.now()
 		toolResult, toolErr := item.tool.Execute(item.execCtx, toolruntime.ToolRunContext{
 			OwnerID:                     req.OwnerID,
@@ -715,6 +733,7 @@ func (r *Runner) executeToolBatch(
 			item.execCancel = nil
 		}
 		item.latencyMS = int(r.now().Sub(started).Milliseconds())
+		r.logToolCompleted(ctx, item, toolResult, toolErr)
 		return toolResult, toolErr
 	})
 	for _, execution := range executions {
@@ -803,6 +822,42 @@ func toolResultErrorCode(result *toolruntime.ToolResult) string {
 	}
 	code, _ := result.Metadata["error_code"].(string)
 	return code
+}
+
+// logToolStarted emits the bounded, metadata-only tool.started diagnostic.
+// It never includes tool arguments.
+func (r *Runner) logToolStarted(ctx context.Context, item *preparedToolCall) {
+	r.diagnosticsLogger().Log(ctx, slog.LevelInfo, "tool.started",
+		"event", "tool.started", "phase", "tool", "result", "ok", "latency_ms", 0,
+		"tool_name", item.call.Name, "tool_call_id", item.call.ID, "step_index", item.stepIndex)
+}
+
+// logToolCompleted emits the bounded, metadata-only tool.completed diagnostic.
+// It classifies from the callback-scope toolResult/toolErr: item.result is
+// only assigned after ExecuteToolBatch returns, so it is unusable here. On
+// failure it reports the error TYPE (or the structured error_code for
+// IsError results without a Go error); tool output never enters diagnostics
+// and the original result/error still flow to the caller unchanged.
+func (r *Runner) logToolCompleted(ctx context.Context, item *preparedToolCall, toolResult *toolruntime.ToolResult, toolErr error) {
+	resultValue := "ok"
+	errorClass := ""
+	switch {
+	case toolErr != nil:
+		resultValue, errorClass = "error", logger.ErrorClass(toolErr)
+	case toolResult != nil && toolResult.IsError:
+		resultValue, errorClass = "error", toolResultErrorCode(toolResult)
+	}
+	level := slog.LevelInfo
+	if resultValue == "error" {
+		level = slog.LevelWarn
+	}
+	attrs := []any{"event", "tool.completed", "phase", "tool", "result", resultValue,
+		"tool_name", item.call.Name, "tool_call_id", item.call.ID, "step_index", item.stepIndex,
+		"latency_ms", item.latencyMS}
+	if errorClass != "" {
+		attrs = append(attrs, "error_class", errorClass)
+	}
+	r.diagnosticsLogger().Log(ctx, level, "tool.completed", attrs...)
 }
 
 func checkpointFromMessages(

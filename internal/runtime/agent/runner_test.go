@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"testing"
@@ -12,6 +14,8 @@ import (
 	"agentcanvas/internal/domain/conversation"
 	reflectiondomain "agentcanvas/internal/domain/reflection"
 	"agentcanvas/internal/infrastructure/llm"
+	"agentcanvas/internal/pkg/logger"
+	"agentcanvas/internal/pkg/observability"
 	"agentcanvas/internal/runtime/compaction"
 	"agentcanvas/internal/runtime/harness/rules"
 	"agentcanvas/internal/runtime/toolruntime"
@@ -21,6 +25,64 @@ type fakeToolClient struct {
 	responses []llm.ToolChatResponse
 	requests  []llm.ToolChatRequest
 	errs      []error
+}
+
+// diagnosticsCapturingHandler records every diagnostic record emitted through
+// an injected Runner.Logger seam so tests can assert event contracts.
+type diagnosticsCapturingHandler struct {
+	mu     sync.Mutex
+	events []capturedDiagnosticEvent
+}
+
+type capturedDiagnosticEvent struct {
+	level slog.Level
+	msg   string
+	attrs map[string]any
+}
+
+func (*diagnosticsCapturingHandler) Enabled(context.Context, slog.Level) bool { return true }
+
+func (h *diagnosticsCapturingHandler) Handle(_ context.Context, record slog.Record) error {
+	event := capturedDiagnosticEvent{level: record.Level, msg: record.Message, attrs: map[string]any{}}
+	record.Attrs(func(attr slog.Attr) bool {
+		event.attrs[attr.Key] = attr.Value.Any()
+		return true
+	})
+	h.mu.Lock()
+	h.events = append(h.events, event)
+	h.mu.Unlock()
+	return nil
+}
+
+func (h *diagnosticsCapturingHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h *diagnosticsCapturingHandler) WithGroup(string) slog.Handler      { return h }
+
+func (h *diagnosticsCapturingHandler) eventsNamed(name string) []capturedDiagnosticEvent {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	matched := make([]capturedDiagnosticEvent, 0)
+	for _, event := range h.events {
+		if event.attrs["event"] == name {
+			matched = append(matched, event)
+		}
+	}
+	return matched
+}
+
+func (h *diagnosticsCapturingHandler) containsValue(needle string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, event := range h.events {
+		if strings.Contains(event.msg, needle) {
+			return true
+		}
+		for _, value := range event.attrs {
+			if strings.Contains(fmt.Sprintf("%v", value), needle) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 type runtimeSnapshotRepo struct {
@@ -1858,5 +1920,143 @@ func TestDelegationPairPersistsExactlyTwoEntriesViaParentSink(t *testing.T) {
 	}
 	if entries[2].ContentType != conversation.ContentTypeText || entries[2].Role != conversation.RoleAssistant {
 		t.Fatalf("last entry must be the final answer text: %+v", entries[2])
+	}
+}
+
+type diagnosticToolError struct{ message string }
+
+func (e *diagnosticToolError) Error() string { return e.message }
+
+type errorRuntimeTool struct {
+	name string
+	err  error
+}
+
+func (t *errorRuntimeTool) Name() string        { return t.name }
+func (t *errorRuntimeTool) Description() string { return "error tool" }
+func (t *errorRuntimeTool) Parameters() json.RawMessage {
+	return json.RawMessage(`{"type":"object","properties":{"secret":{"type":"string"}}}`)
+}
+func (t *errorRuntimeTool) Metadata() toolruntime.ToolMetadata {
+	return toolruntime.ToolMetadata{RiskLevel: toolruntime.RiskLow}
+}
+func (t *errorRuntimeTool) Execute(context.Context, toolruntime.ToolRunContext, json.RawMessage) (*toolruntime.ToolResult, error) {
+	return nil, t.err
+}
+
+func TestRunnerToolDiagnosticsSummarizesToolFailure(t *testing.T) {
+	client := &fakeToolClient{responses: []llm.ToolChatResponse{
+		{Message: llm.ChatMessage{Role: conversation.RoleAssistant, ToolCalls: []llm.ToolCall{{ID: "call_diag", Name: "diag_tool", Arguments: json.RawMessage(`{"secret":"top_secret_arg"}`)}}}},
+		{Message: llm.ChatMessage{Role: conversation.RoleAssistant, Content: "done"}},
+	}}
+	toolErr := &diagnosticToolError{message: "tool failed: top_secret_output"}
+	tool := &errorRuntimeTool{name: "diag_tool", err: toolErr}
+	captured := &diagnosticsCapturingHandler{}
+	runner := &Runner{LLM: client, Logger: slog.New(logger.NewDiagnosticsHandler(captured))}
+	ctx := observability.WithCorrelation(context.Background(), observability.Correlation{}.
+		WithRequestID("rid-tool-1").WithOwnerID(1).WithConversationID(20).WithRunID(2).WithTurnID(3))
+
+	result, err := runner.Run(ctx, RunRequest{
+		OwnerID: 1, RunID: 2, Model: "m", Task: "probe", MaxIterations: 3, MaxToolCalls: 2,
+		Tools: []toolruntime.RuntimeTool{tool},
+	})
+	if err != nil || result.FinalAnswer != "done" {
+		t.Fatalf("tool failure must stay recoverable: result=%+v err=%v", result, err)
+	}
+	started := captured.eventsNamed("tool.started")
+	completed := captured.eventsNamed("tool.completed")
+	if len(started) != 1 || len(completed) != 1 {
+		t.Fatalf("expected one tool.started/tool.completed pair: started=%d completed=%d events=%+v", len(started), len(completed), captured.events)
+	}
+	for key, value := range map[string]any{"event": "tool.started", "phase": "tool", "result": "ok", "tool_name": "diag_tool", "tool_call_id": "call_diag"} {
+		if started[0].attrs[key] != value {
+			t.Fatalf("tool.started attribute %q = %#v, want %#v", key, started[0].attrs[key], value)
+		}
+	}
+	if stepIndex, ok := started[0].attrs["step_index"].(int64); !ok || stepIndex <= 0 {
+		t.Fatalf("tool.started step_index = %#v, want positive int", started[0].attrs["step_index"])
+	}
+	for key, value := range map[string]any{
+		"event":        "tool.completed",
+		"phase":        "tool",
+		"result":       "error",
+		"tool_name":    "diag_tool",
+		"tool_call_id": "call_diag",
+		"error_class":  fmt.Sprintf("%T", toolErr),
+		"request_id":   "rid-tool-1",
+		"run_id":       int64(2),
+	} {
+		if completed[0].attrs[key] != value {
+			t.Fatalf("tool.completed attribute %q = %#v, want %#v", key, completed[0].attrs[key], value)
+		}
+	}
+	if stepIndex, ok := completed[0].attrs["step_index"].(int64); !ok || stepIndex <= 0 {
+		t.Fatalf("tool.completed step_index = %#v, want positive int", completed[0].attrs["step_index"])
+	}
+	if latencyMS, ok := completed[0].attrs["latency_ms"].(int64); !ok || latencyMS < 0 {
+		t.Fatalf("tool.completed latency_ms = %#v, want non-negative int", completed[0].attrs["latency_ms"])
+	}
+	if captured.containsValue("top_secret_arg") || captured.containsValue("top_secret_output") {
+		t.Fatal("tool diagnostics leaked full arguments or output content")
+	}
+}
+
+type softErrorRuntimeTool struct {
+	name string
+}
+
+func (t *softErrorRuntimeTool) Name() string        { return t.name }
+func (t *softErrorRuntimeTool) Description() string { return "soft error tool" }
+func (t *softErrorRuntimeTool) Parameters() json.RawMessage {
+	return json.RawMessage(`{"type":"object","properties":{}}`)
+}
+func (t *softErrorRuntimeTool) Metadata() toolruntime.ToolMetadata {
+	return toolruntime.ToolMetadata{RiskLevel: toolruntime.RiskLow}
+}
+func (t *softErrorRuntimeTool) Execute(context.Context, toolruntime.ToolRunContext, json.RawMessage) (*toolruntime.ToolResult, error) {
+	// Structured failure: IsError=true with no Go error.
+	return &toolruntime.ToolResult{
+		ContentText: "soft failure body",
+		IsError:     true,
+		Metadata:    map[string]any{"error_code": "soft_failure"},
+	}, nil
+}
+
+func TestRunnerToolDiagnosticsClassifiesSoftToolFailure(t *testing.T) {
+	client := &fakeToolClient{responses: []llm.ToolChatResponse{
+		{Message: llm.ChatMessage{Role: conversation.RoleAssistant, ToolCalls: []llm.ToolCall{{ID: "call_soft", Name: "soft_tool", Arguments: json.RawMessage(`{}`)}}}},
+		{Message: llm.ChatMessage{Role: conversation.RoleAssistant, Content: "done"}},
+	}}
+	tool := &softErrorRuntimeTool{name: "soft_tool"}
+	captured := &diagnosticsCapturingHandler{}
+	runner := &Runner{LLM: client, Logger: slog.New(logger.NewDiagnosticsHandler(captured))}
+	ctx := observability.WithCorrelation(context.Background(), observability.Correlation{}.
+		WithRequestID("rid-tool-soft").WithOwnerID(1).WithRunID(2))
+
+	result, err := runner.Run(ctx, RunRequest{
+		OwnerID: 1, RunID: 2, Model: "m", Task: "probe", MaxIterations: 3, MaxToolCalls: 2,
+		Tools: []toolruntime.RuntimeTool{tool},
+	})
+	if err != nil || result.FinalAnswer != "done" {
+		t.Fatalf("soft tool failure must stay recoverable: result=%+v err=%v", result, err)
+	}
+	completed := captured.eventsNamed("tool.completed")
+	if len(completed) != 1 {
+		t.Fatalf("expected exactly one tool.completed event, got %d", len(completed))
+	}
+	for key, value := range map[string]any{
+		"event":        "tool.completed",
+		"phase":        "tool",
+		"result":       "error",
+		"tool_name":    "soft_tool",
+		"tool_call_id": "call_soft",
+		"error_class":  "soft_failure",
+	} {
+		if completed[0].attrs[key] != value {
+			t.Fatalf("tool.completed attribute %q = %#v, want %#v", key, completed[0].attrs[key], value)
+		}
+	}
+	if captured.containsValue("soft failure body") {
+		t.Fatal("tool diagnostics leaked output content for a soft failure")
 	}
 }

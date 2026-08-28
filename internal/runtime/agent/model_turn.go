@@ -4,8 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"time"
 
 	"agentcanvas/internal/infrastructure/llm"
+	"agentcanvas/internal/pkg/logger"
 )
 
 // ModelEventEmitter receives provider-neutral model events. It is separate
@@ -15,10 +18,18 @@ type ModelEventEmitter func(context.Context, llm.ModelStreamEvent) error
 
 var ErrEmptyModelResponse = errors.New("model returned an empty response")
 
-func (r *Runner) executeModelTurn(ctx context.Context, cfg llm.ChatProviderConfig, req llm.ToolChatRequest) (*llm.ToolChatResponse, error) {
+func (r *Runner) executeModelTurn(ctx context.Context, cfg llm.ChatProviderConfig, req llm.ToolChatRequest) (response *llm.ToolChatResponse, err error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	started := r.now()
+	r.logLLMRequest(ctx, cfg, req)
+	// The completion diagnostic observes the final named returns, so every
+	// return path (streaming, capability fallback, non-streaming) emits
+	// exactly one llm.completed without touching the pass-through values.
+	defer func() {
+		r.logLLMCompleted(ctx, cfg, req, response, err, started)
+	}()
 	if streaming, ok := r.LLM.(llm.ToolStreamingClient); ok {
 		state := modelTurnStreamState{}
 		response, err := streaming.StreamChatWithTools(ctx, cfg, req, func(event llm.ModelStreamEvent) error {
@@ -182,6 +193,38 @@ func (r *Runner) emitModelEvent(ctx context.Context, event llm.ModelStreamEvent)
 		return nil
 	}
 	return r.OnModelEvent(ctx, event)
+}
+
+// logLLMRequest emits the bounded, metadata-only llm.request diagnostic. The
+// provider API key never enters diagnostics.
+func (r *Runner) logLLMRequest(ctx context.Context, cfg llm.ChatProviderConfig, req llm.ToolChatRequest) {
+	r.diagnosticsLogger().Log(ctx, slog.LevelInfo, "llm.request",
+		"event", "llm.request", "phase", "llm", "result", "ok", "latency_ms", 0,
+		"provider", cfg.ProviderType, "model", req.Model)
+}
+
+// logLLMCompleted emits the bounded, metadata-only llm.completed diagnostic
+// with usage token counts only. The original response/error pass through
+// unchanged; on failure the error TYPE is reported, never the error text.
+func (r *Runner) logLLMCompleted(ctx context.Context, cfg llm.ChatProviderConfig, req llm.ToolChatRequest, response *llm.ToolChatResponse, callErr error, started time.Time) {
+	latencyMS := int(r.now().Sub(started).Milliseconds())
+	if callErr != nil {
+		r.diagnosticsLogger().Log(ctx, slog.LevelError, "llm.completed",
+			"event", "llm.completed", "phase", "llm", "result", "error",
+			"provider", cfg.ProviderType, "model", req.Model,
+			"latency_ms", latencyMS, "error_class", logger.ErrorClass(callErr))
+		return
+	}
+	attrs := []any{"event", "llm.completed", "phase", "llm", "result", "ok",
+		"provider", cfg.ProviderType, "model", req.Model, "latency_ms", latencyMS}
+	if response != nil {
+		attrs = append(attrs, "usage", map[string]int{
+			"prompt_tokens":     response.Usage.PromptTokens,
+			"completion_tokens": response.Usage.CompletionTokens,
+			"total_tokens":      response.Usage.TotalTokens,
+		})
+	}
+	r.diagnosticsLogger().Log(ctx, slog.LevelInfo, "llm.completed", attrs...)
 }
 
 // emitAccumulatedModelEvents keeps non-streaming clients compatible with the

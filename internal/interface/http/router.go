@@ -43,6 +43,7 @@ func NewRouter(deps RouterDeps) *gin.Engine {
 
 	// middleware
 	r.Use(middleware.RequestID())
+	r.Use(middleware.AccessLog(deps.Logger))
 	r.Use(middleware.Recovery(deps.Logger))
 	r.Use(middleware.CORS(deps.CORSOrigins))
 

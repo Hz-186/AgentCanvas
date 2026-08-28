@@ -19,6 +19,7 @@ import (
 	workspacedomain "agentcanvas/internal/domain/workspace"
 	"agentcanvas/internal/infrastructure/llm"
 	agenterrors "agentcanvas/internal/pkg/errors"
+	"agentcanvas/internal/pkg/observability"
 	runtimeagent "agentcanvas/internal/runtime/agent"
 	agentruntime "agentcanvas/internal/runtime/agentruntime"
 	runtimeevent "agentcanvas/internal/runtime/event"
@@ -73,6 +74,21 @@ func (w turnWorker) execute(ctx context.Context, turn *agentdomain.Turn) {
 	if mode, modeErr := normalizeAgentMode(fmt.Sprint(input["mode"])); modeErr == nil {
 		definition.Mode = mode
 	}
+	// Restore correlation from persisted metadata so async execution stays
+	// linkable without the original HTTP context. Legacy records keep an
+	// empty request ID; malformed metadata degrades to persisted IDs with a
+	// single bounded parse diagnostic.
+	requestID, metadataOK := decodeObservabilityRequestID(input)
+	if !metadataOK {
+		s.logTurnLifecycle(ctx, "turn.metadata_parse_error", "error", slog.LevelWarn, turn, run, 0, "invalid_observability_metadata")
+	}
+	ctx = observability.WithCorrelation(ctx, observability.Correlation{}.
+		WithRequestID(requestID).
+		WithOwnerID(turn.OwnerID).
+		WithConversationID(turn.ConversationID).
+		WithRunID(run.ID).
+		WithTurnID(turn.ID).
+		WithParentRunID(run.ParentRunID))
 	emitter := s.newRunEventEmitter(turn.OwnerID, run.ID, &turn.ConversationID)
 
 	var runtimeWorkspace *toolruntime.WorkspaceContext
@@ -130,6 +146,7 @@ func (w turnWorker) execute(ctx context.Context, turn *agentdomain.Turn) {
 		s.failTurn(ctx, turn, run, err)
 		return
 	}
+	s.logTurnLifecycle(ctx, "turn.started", "ok", slog.LevelInfo, turn, run, 0, "")
 	result, execErr := s.runtime.Execute(ctx,
 		agentruntime.RunRequest{
 			RunIdentity:         agentruntime.RunIdentity{OwnerID: turn.OwnerID, AgentID: turn.AgentID, RunID: run.ID, UserMessageID: turn.UserMessageID, ParentRunID: run.ParentRunID},
@@ -457,6 +474,7 @@ func (s *Service) failTurn(ctx context.Context, turn *agentdomain.Turn, run *age
 	if run == nil {
 		if err := s.turns.Update(ctx, &failedTurn); err == nil {
 			*turn = failedTurn
+			s.logTurnLifecycle(ctx, "turn.failed", "error", slog.LevelError, turn, nil, 0, turnErrorClass(cause))
 		} else if !errors.Is(err, agentdomain.ErrLeaseLost) {
 			slog.Default().Error("fail agent turn update failed", "turn_id", turn.ID, "run_id", turn.RunID, "error", err)
 		}
@@ -476,6 +494,7 @@ func (s *Service) failTurn(ctx context.Context, turn *agentdomain.Turn, run *age
 		return
 	}
 	*turn, *run = failedTurn, failedRun
+	s.logTurnLifecycle(ctx, "turn.failed", "error", slog.LevelError, turn, run, int64(run.LatencyMS), turnErrorClass(cause))
 	// Flush wall-clock and any usage events already received before dropping the
 	// run accounting marker; error/abort paths are billable just like success.
 	s.accountGoalRun(ctx, run, &agentruntime.RunResult{Output: agentruntime.RunOutput{}})
@@ -587,6 +606,7 @@ func (s *Service) completeTurn(ctx context.Context, turn *agentdomain.Turn, run 
 			}
 			return
 		}
+		s.logTurnLifecycle(ctx, "turn.finished", "ok", slog.LevelInfo, turn, run, int64(run.LatencyMS), "")
 		s.publishRunSnapshot(run, turn, nil, usageFromOutput(result.Output))
 		return
 	}
@@ -646,6 +666,7 @@ func (s *Service) completeTurn(ctx context.Context, turn *agentdomain.Turn, run 
 		s.failTurn(ctx, turn, run, err)
 		return
 	}
+	s.logTurnLifecycle(ctx, "turn.finished", "ok", slog.LevelInfo, turn, run, int64(run.LatencyMS), "")
 	input, _ := decodeInputJSON(run.InputJSON)
 	mode, _ := normalizeAgentMode(fmt.Sprint(input["mode"]))
 	if s.improvement != nil && mode != "plan" {

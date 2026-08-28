@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -19,6 +20,7 @@ import (
 	"agentcanvas/internal/domain/provider"
 	workspacedomain "agentcanvas/internal/domain/workspace"
 	agenterrors "agentcanvas/internal/pkg/errors"
+	"agentcanvas/internal/pkg/observability"
 	agentruntime "agentcanvas/internal/runtime/agentruntime"
 	"agentcanvas/internal/runtime/harness/rules"
 	"agentcanvas/internal/runtime/toolruntime"
@@ -52,6 +54,17 @@ type Service struct {
 	goalUsageMu            sync.Mutex
 	goalUsageByRun         map[int64]goalUsageState
 	goalStreams            *goalStreamHub
+	diagnostics            *slog.Logger
+}
+
+// diagnosticsLogger is the fail-open observation seam for lifecycle
+// diagnostics. It defaults to slog.Default so tests can capture events by
+// assigning a dedicated logger to the unexported diagnostics field.
+func (s *Service) diagnosticsLogger() *slog.Logger {
+	if s == nil || s.diagnostics == nil {
+		return slog.Default()
+	}
+	return s.diagnostics
 }
 
 func (s *Service) ConfigureGoalRepository(repository goal.Repository) { s.goals = repository }
@@ -452,6 +465,84 @@ func decodeInputJSON(raw json.RawMessage) (map[string]any, error) {
 	return input, nil
 }
 
+// inputObservabilityVersion is the only supported schema version for the
+// additive observability namespace persisted in Run/Turn input JSON.
+const inputObservabilityVersion = 1
+
+// inputObservabilityMetadata builds the additive correlation namespace that
+// lets an async worker restore request identity after the HTTP context is
+// gone. Only identifiers available at creation time are persisted; run/turn
+// IDs are filled by the worker from the durable records it loads.
+func inputObservabilityMetadata(ctx context.Context, ownerID, conversationID int64) map[string]any {
+	metadata := map[string]any{
+		"version":         inputObservabilityVersion,
+		"request_id":      "",
+		"owner_id":        ownerID,
+		"conversation_id": conversationID,
+	}
+	if correlation, ok := observability.CorrelationFromContext(ctx); ok {
+		metadata["request_id"] = correlation.RequestID
+	}
+	return metadata
+}
+
+// decodeObservabilityRequestID extracts the request ID persisted in the
+// versioned observability namespace of Run/Turn input JSON. Absent metadata
+// (legacy records) returns ok=true with an empty request ID and requires no
+// diagnostic; malformed or unsupported metadata returns ok=false so callers
+// emit one bounded parse diagnostic while continuing with persisted IDs.
+func decodeObservabilityRequestID(input map[string]any) (string, bool) {
+	raw, present := input["observability"]
+	if !present {
+		return "", true
+	}
+	metadata, isObject := raw.(map[string]any)
+	if !isObject {
+		return "", false
+	}
+	version, _ := metadata["version"].(float64)
+	if version != inputObservabilityVersion {
+		return "", false
+	}
+	requestID, _ := metadata["request_id"].(string)
+	return requestID, true
+}
+
+// logTurnLifecycle emits one bounded, metadata-only turn lifecycle event
+// (turn.started / turn.finished / turn.failed and parse fallbacks). It is a
+// side-effect log: it never mutates durable state, return values, or the
+// business outcome of the turn.
+func (s *Service) logTurnLifecycle(ctx context.Context, event, result string, level slog.Level, turn *agentdomain.Turn, run *agentdomain.Run, latencyMS int64, errorClass string) {
+	attrs := []any{"event", event, "phase", "turn", "result", result, "latency_ms", latencyMS}
+	if correlation, ok := observability.CorrelationFromContext(ctx); ok && correlation.RequestID != "" {
+		attrs = append(attrs, "request_id", correlation.RequestID)
+	}
+	if turn != nil {
+		attrs = append(attrs, "owner_id", turn.OwnerID, "conversation_id", turn.ConversationID, "turn_id", turn.ID)
+	}
+	if run != nil {
+		attrs = append(attrs, "run_id", run.ID)
+		if run.ParentRunID != nil {
+			attrs = append(attrs, "parent_run_id", *run.ParentRunID)
+		}
+	} else if turn != nil && turn.RunID != nil {
+		attrs = append(attrs, "run_id", *turn.RunID)
+	}
+	if errorClass != "" {
+		attrs = append(attrs, "error_class", errorClass)
+	}
+	s.diagnosticsLogger().Log(ctx, level, event, attrs...)
+}
+
+// turnErrorClass derives a bounded, metadata-only error classification from a
+// cause; the full error message never enters diagnostics.
+func turnErrorClass(cause error) string {
+	if cause == nil {
+		return ""
+	}
+	return fmt.Sprintf("%T", cause)
+}
+
 func (s *Service) CreateConversation(ctx context.Context, ownerID, agentID int64, req CreateConversationRequest) (*conversation.Conversation, error) {
 	if _, err := s.getAgent(ctx, ownerID, agentID); err != nil {
 		return nil, err
@@ -780,7 +871,9 @@ func (s *Service) StartTurn(ctx context.Context, ownerID, agentID, conversationI
 	if err != nil {
 		return nil, err
 	}
-	inputJSON, _ := json.Marshal(map[string]any{"query": content, "mode": mode, "manual_compaction": req.ManualCompaction})
+	input := map[string]any{"query": content, "mode": mode, "manual_compaction": req.ManualCompaction}
+	input["observability"] = inputObservabilityMetadata(ctx, ownerID, conversationID)
+	inputJSON, _ := json.Marshal(input)
 	run := &agentdomain.Run{
 		BaseModel: domain.BaseModel{
 			OwnerID:   ownerID,
